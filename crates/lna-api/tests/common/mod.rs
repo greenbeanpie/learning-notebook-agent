@@ -106,8 +106,15 @@ pub fn classify(system: &str, body: &Value) -> Kind {
 
 type Handler = dyn Fn(&Req) -> Reply + Send + Sync;
 
+/// Embedding function used by the mock's `/embeddings` endpoint.
+pub type Embedder = Arc<dyn Fn(&str) -> Vec<f32> + Send + Sync>;
+
 pub struct MockLlm {
     pub port: u16,
+    /// Number of texts embedded so far (all `/embeddings` calls).
+    pub embedded_texts: Arc<std::sync::atomic::AtomicUsize>,
+    /// When set, `/embeddings` answers with this HTTP status instead of vectors.
+    pub embeddings_fail: Arc<AtomicBool>,
     pub requests: Arc<Mutex<Vec<Req>>>,
     tracker: Arc<Tracker>,
     stop: Arc<AtomicBool>,
@@ -115,6 +122,16 @@ pub struct MockLlm {
 
 impl MockLlm {
     pub fn start(handler: impl Fn(&Req) -> Reply + Send + Sync + 'static) -> MockLlm {
+        Self::start_with(handler, None)
+    }
+
+    pub fn start_with(
+        handler: impl Fn(&Req) -> Reply + Send + Sync + 'static,
+        embedder: Option<Embedder>,
+    ) -> MockLlm {
+        let embedded_texts = Arc::new(AtomicUsize::new(0));
+        let embeddings_fail = Arc::new(AtomicBool::new(false));
+        let emb_ctx = (embedder, embedded_texts.clone(), embeddings_fail.clone());
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -135,8 +152,9 @@ impl MockLlm {
                             let requests = requests.clone();
                             let counts = counts.clone();
                             let tracker = tracker.clone();
+                            let emb_ctx = emb_ctx.clone();
                             std::thread::spawn(move || {
-                                let _ = serve(stream, h, requests, counts, tracker);
+                                let _ = serve(stream, h, requests, counts, tracker, emb_ctx);
                             });
                         }
                         Err(_) => std::thread::sleep(Duration::from_millis(10)),
@@ -146,6 +164,8 @@ impl MockLlm {
         }
         MockLlm {
             port,
+            embedded_texts,
+            embeddings_fail,
             requests,
             tracker: tracker_out,
             stop,
@@ -234,6 +254,7 @@ fn serve(
     requests: Arc<Mutex<Vec<Req>>>,
     counts: Arc<Mutex<Vec<(Kind, usize)>>>,
     tracker: Arc<Tracker>,
+    emb_ctx: (Option<Embedder>, Arc<AtomicUsize>, Arc<AtomicBool>),
 ) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -276,6 +297,43 @@ fn serve(
         buf.extend_from_slice(&tmp[..n]);
     }
     let body: Value = serde_json::from_slice(&buf[header_end..]).unwrap_or(json!({}));
+
+    if path.ends_with("/embeddings") {
+        let (embedder, counter, fail) = &emb_ctx;
+        if fail.load(Ordering::SeqCst) || embedder.is_none() {
+            let b = r#"{"error":{"message":"embedding backend down"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 503 X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                b.len(),
+                b
+            )?;
+            return Ok(());
+        }
+        let inputs: Vec<String> = match &body["input"] {
+            Value::Array(a) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            Value::String(s) => vec![s.clone()],
+            _ => Vec::new(),
+        };
+        counter.fetch_add(inputs.len(), Ordering::SeqCst);
+        let f = embedder.as_ref().unwrap();
+        let data: Vec<Value> = inputs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| json!({ "index": i, "embedding": f(s) }))
+            .collect();
+        let b = json!({ "data": data }).to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            b.len(),
+            b
+        )?;
+        return Ok(());
+    }
 
     if path.ends_with("/models") {
         let b = json!({"data":[{"id":"mock-model"}]}).to_string();
@@ -556,4 +614,94 @@ pub fn studio_reply(r: &Req) -> Reply {
         return Reply::Text("{}".into());
     };
     Reply::Text(json.to_string())
+}
+
+/// A tiny "concept" embedder: each language-independent concept is one dimension, so a Chinese
+/// question and an English passage about the same idea end up close together.
+pub fn concept_embedder() -> Embedder {
+    const CONCEPTS: [&[&str]; 8] = [
+        &["基", "维数", "basis", "dimension"],
+        &["秩", "rank"],
+        &["零空间", "null space", "nullspace"],
+        &["特征", "eigen", "对角化", "diagonaliz"],
+        &["行列式", "determinant"],
+        &[
+            "投影",
+            "projection",
+            "projected",
+            "正交",
+            "orthogonal",
+            "orthonormal",
+            "gram",
+        ],
+        &["奇异值", "singular", "pca", "主成分"],
+        &["最小二乘", "least squares", "normal equations", "residual"],
+    ];
+    Arc::new(|text: &str| {
+        let lower = text.to_lowercase();
+        let mut v: Vec<f32> = CONCEPTS
+            .iter()
+            .map(|words| {
+                words
+                    .iter()
+                    .map(|w| lower.matches(w).count() as f32)
+                    .sum::<f32>()
+            })
+            .collect();
+        v.push(0.05);
+        v
+    })
+}
+
+/// Serves fixed files over HTTP on 127.0.0.1 (for model download tests).
+pub struct FileServer {
+    pub port: u16,
+    pub hits: Arc<Mutex<Vec<String>>>,
+}
+
+impl FileServer {
+    pub fn start(files: Vec<(&'static str, Vec<u8>)>) -> FileServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let files = files.clone();
+                let h = h.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    h.lock().unwrap().push(path.clone());
+                    match files.iter().find(|(p, _)| *p == path) {
+                        Some((_, body)) => {
+                            let _ = write!(
+                                s,
+                                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            for part in body.chunks(8192) {
+                                if s.write_all(part).is_err() {
+                                    return;
+                                }
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                        }
+                        None => {
+                            let _ = write!(
+                                s,
+                                "HTTP/1.1 404 X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                            );
+                        }
+                    }
+                    let _ = s.shutdown(std::net::Shutdown::Write);
+                    std::thread::sleep(Duration::from_millis(100));
+                });
+            }
+        });
+        FileServer { port, hits }
+    }
 }

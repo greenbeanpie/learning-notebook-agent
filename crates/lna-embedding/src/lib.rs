@@ -1,3 +1,5 @@
+pub mod download;
+
 use lna_secrets::SecretStore;
 use lna_storage::{db::map_sql_err, Database};
 use lna_types::{new_ulid, now_ms, ErrorCode, LnaError, LnaResult};

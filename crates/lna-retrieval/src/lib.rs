@@ -74,18 +74,15 @@ const STOP_WORDS: &[&str] = &[
 
 pub fn build_fts_query(query: &str) -> String {
     let norm: String = query.nfkc().collect::<String>().to_lowercase();
-    let mut words: Vec<&str> = jieba()
+    // Technical terms are often split into single characters by jieba ("基", "数"), so lone CJK
+    // characters stay; the stop-word list removes the function words ("有", "的", "是") that would
+    // otherwise make every Chinese question "grounded".
+    let words: Vec<&str> = jieba()
         .cut_for_search(&norm, false)
         .into_iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty() && !STOP_WORDS.contains(s))
         .collect();
-    // A lone CJK character ("有", "多") matches almost every Chinese chunk; it only counts when the
-    // question has no longer term at all.
-    let is_lone_cjk = |s: &str| s.chars().count() == 1 && !s.is_ascii();
-    if words.iter().any(|w| !is_lone_cjk(w)) {
-        words.retain(|w| !is_lone_cjk(w));
-    }
     words
         .into_iter()
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
@@ -204,7 +201,12 @@ impl RetrievalEngine {
             let selected_set: HashSet<String> = selected_source_ids.iter().cloned().collect();
 
             for q in queries {
-                if let Ok(qvec) = self.embedding.embed_query(q).await {
+                let qvec_res = self.embedding.embed_query(q).await;
+                if let Err(ref e) = qvec_res {
+                    tracing::warn!(error = %e.message, "Query embedding failed; degrading to BM25");
+                    vector_err = Some(e.message.clone());
+                }
+                if let Ok(qvec) = qvec_res {
                     let qbytes: Vec<u8> = qvec.iter().flat_map(|f| f.to_le_bytes()).collect();
                     let tbl = &model.vec_table;
                     let vec_hits: Vec<(i64, String, f32)> = self

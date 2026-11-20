@@ -35,6 +35,8 @@ pub struct CoreRuntime {
     pub events: broadcast::Sender<ApiEvent>,
     seq: Arc<AtomicU64>,
     shutdown: CancellationToken,
+    /// The model download in progress, if any: (cancel token, latest progress).
+    model_download: Arc<std::sync::Mutex<Option<(CancellationToken, Value)>>>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -98,6 +100,7 @@ impl CoreRuntime {
             events,
             seq,
             shutdown: CancellationToken::new(),
+            model_download: Arc::new(std::sync::Mutex::new(None)),
             rt,
         });
 
@@ -923,41 +926,122 @@ impl CoreRuntime {
                 Ok(json!({ "ok": true }))
             }
             "embedding.rebuild" => {
-                let model = self.embedding.active_model()?.ok_or_else(|| {
-                    LnaError::new(
-                        ErrorCode::CapabilityMissing,
-                        "No active embedding model configured",
-                    )
-                })?;
                 let force = p.get("force").and_then(|x| x.as_bool()).unwrap_or(false);
-                if force {
-                    self.db.write(|conn| {
-                        conn.execute(
-                            "DELETE FROM chunk_embedding_state WHERE embedding_model_id = ?1",
-                            [&model.id],
-                        )
-                        .map_err(map_sql_err)?;
-                        Ok(())
-                    })?;
-                }
-                let ready_sources: Vec<(String, String)> = self.db.read(|conn| {
-                    let mut stmt = conn
-                        .prepare("SELECT id, notebook_id FROM sources WHERE status = 'READY'")
-                        .map_err(map_sql_err)?;
-                    let rows = stmt
-                        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-                        .map_err(map_sql_err)?;
-                    let mut out = Vec::new();
-                    for r in rows {
-                        out.push(r.map_err(map_sql_err)?);
-                    }
-                    Ok(out)
-                })?;
-                let count = ready_sources.len();
-                for (sid, nid) in ready_sources {
-                    self.jobs.enqueue("embed_source", Some(&nid), &sid, 50)?;
-                }
+                let count = queue_embeddings(&self.db, &self.embedding, &self.jobs, force)?;
                 Ok(json!({ "ok": true, "queued": count > 0, "sources_queued": count }))
+            }
+
+            "embedding.default_model" => {
+                let spec = lna_embedding::download::ModelSpec::default_multilingual();
+                Ok(json!({
+                    "id": spec.id,
+                    "display_name": spec.display_name,
+                    "dimension": spec.dimension,
+                    "total_bytes": spec.files.iter().map(|f| f.size).sum::<u64>(),
+                    "installed": self.embedding.model_files_present(&spec),
+                }))
+            }
+            "embedding.download_status" => {
+                let g = self
+                    .model_download
+                    .lock()
+                    .map_err(|_| LnaError::internal("lock"))?;
+                Ok(match g.as_ref() {
+                    Some((_, progress)) => json!({ "running": true, "progress": progress }),
+                    None => json!({ "running": false }),
+                })
+            }
+            "embedding.download_cancel" => {
+                if let Some((tok, _)) = self
+                    .model_download
+                    .lock()
+                    .map_err(|_| LnaError::internal("lock"))?
+                    .as_ref()
+                {
+                    tok.cancel();
+                }
+                Ok(json!({ "ok": true }))
+            }
+            "embedding.download" => {
+                // `spec` lets advanced users (and tests) point at another model; default is the built-in one.
+                let spec: lna_embedding::download::ModelSpec = match p.get("spec") {
+                    Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                        .map_err(|e| LnaError::invalid(format!("invalid model spec: {e}")))?,
+                    _ => lna_embedding::download::ModelSpec::default_multilingual(),
+                };
+                spec.validate()?;
+                let activate = p.get("activate").and_then(|x| x.as_bool()).unwrap_or(true);
+                let cancel = CancellationToken::new();
+                {
+                    let mut g = self
+                        .model_download
+                        .lock()
+                        .map_err(|_| LnaError::internal("lock"))?;
+                    if g.is_some() {
+                        return Err(LnaError::new(
+                            ErrorCode::Conflict,
+                            "A model download is already running",
+                        ));
+                    }
+                    *g = Some((cancel.clone(), json!({})));
+                }
+                let embedding = self.embedding.clone();
+                let db = self.db.clone();
+                let jobs = self.jobs.clone();
+                let events = self.events.clone();
+                let seq = self.seq.clone();
+                let state = self.model_download.clone();
+                let emit = move |event: &str, data: Value| {
+                    let s = seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    let _ = events.send(ApiEvent {
+                        topic: "embedding".into(),
+                        event: event.into(),
+                        seq: s,
+                        data,
+                    });
+                };
+                self.rt.spawn(async move {
+                    let state_for_progress = state.clone();
+                    let emit_progress = emit.clone();
+                    let res = embedding
+                        .download_model(&spec, cancel, move |pr| {
+                            let v = serde_json::to_value(&pr).unwrap_or_default();
+                            if let Ok(mut g) = state_for_progress.lock() {
+                                if let Some((_, slot)) = g.as_mut() {
+                                    *slot = v.clone();
+                                }
+                            }
+                            emit_progress("embedding.download_progress", v);
+                        })
+                        .await;
+                    let outcome = match res {
+                        Ok(_) if activate => embedding
+                            .configure(
+                                "local_onnx",
+                                &spec.id,
+                                spec.dimension,
+                                &spec.query_prefix,
+                                &spec.passage_prefix,
+                                None,
+                            )
+                            .and_then(|_| {
+                                queue_embeddings(&db, &embedding, &jobs, false).map(|_| ())
+                            }),
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(e),
+                    };
+                    if let Ok(mut g) = state.lock() {
+                        *g = None;
+                    }
+                    match outcome {
+                        Ok(()) => emit("embedding.download_done", json!({ "ok": true })),
+                        Err(e) => emit(
+                            "embedding.download_done",
+                            json!({ "ok": false, "error": e }),
+                        ),
+                    }
+                });
+                Ok(json!({ "ok": true, "started": true }))
             }
 
             // --- Search / Research (deferred per user request) ---
@@ -974,6 +1058,52 @@ impl CoreRuntime {
         self.shutdown.cancel();
         let _ = self.db.checkpoint_truncate();
     }
+}
+
+/// Queues embedding jobs for every ready source (all vectors are recomputed with `force`).
+fn queue_embeddings(
+    db: &Database,
+    embedding: &EmbeddingService,
+    jobs: &JobQueue,
+    force: bool,
+) -> LnaResult<usize> {
+    let model = embedding.active_model()?.ok_or_else(|| {
+        LnaError::new(
+            ErrorCode::CapabilityMissing,
+            "No active embedding model configured",
+        )
+    })?;
+    if force {
+        db.write(|conn| {
+            // The vec0 table has a primary key per chunk, so old vectors must go before new ones are written.
+            conn.execute(&format!("DELETE FROM {}", model.vec_table), [])
+                .map_err(map_sql_err)?;
+            conn.execute(
+                "DELETE FROM chunk_embedding_state WHERE embedding_model_id = ?1",
+                [&model.id],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })?;
+    }
+    let ready_sources: Vec<(String, String)> = db.read(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT id, notebook_id FROM sources WHERE status = 'READY'")
+            .map_err(map_sql_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(map_sql_err)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(map_sql_err)?);
+        }
+        Ok(out)
+    })?;
+    let count = ready_sources.len();
+    for (sid, nid) in ready_sources {
+        jobs.enqueue("embed_source", Some(&nid), &sid, 50)?;
+    }
+    Ok(count)
 }
 
 fn is_non_loopback_http_endpoint(base_url: &str) -> bool {

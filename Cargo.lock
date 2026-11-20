@@ -1580,6 +1580,7 @@ dependencies = [
 name = "lna-api"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "lna-agent",
  "lna-embedding",
  "lna-ingest",
@@ -1594,6 +1595,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1621,6 +1623,8 @@ dependencies = [
 name = "lna-embedding"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
+ "hex",
  "lna-secrets",
  "lna-storage",
  "lna-types",
@@ -1630,9 +1634,12 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2",
  "tokenizers",
  "tokio",
+ "tokio-util",
  "tracing",
+ "url",
 ]
 
 [[package]]

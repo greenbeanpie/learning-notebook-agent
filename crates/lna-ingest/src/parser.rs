@@ -342,6 +342,39 @@ pub fn parse_pdf(path: &Path) -> LnaResult<ParsedDoc> {
     parse_pdf_with(path, &pdfium_search_dirs(), true)
 }
 
+/// Parses a PDF using the PDFium library found in `lib_dir` only (tests, tools).
+pub fn parse_pdf_from(path: &Path, lib_dir: &Path) -> LnaResult<ParsedDoc> {
+    parse_pdf_with(path, &[lib_dir.to_path_buf()], false)
+}
+
+/// Header/footer detection key: running page numbers ("Page 3 of 10") must still match.
+fn header_key(line: &str) -> String {
+    line.chars()
+        .map(|c| if c.is_ascii_digit() { '#' } else { c })
+        .collect()
+}
+
+/// Flattens the bookmark tree into `(page_index, depth, title)` in document order.
+fn collect_bookmarks(
+    bookmark: Option<pdfium_render::prelude::PdfBookmark<'_>>,
+    depth: usize,
+    out: &mut Vec<(usize, usize, String)>,
+) {
+    let mut current = bookmark;
+    while let Some(bm) = current {
+        let title = bm.title().unwrap_or_default().trim().to_string();
+        let page = bm
+            .destination()
+            .and_then(|d| d.page_index().ok())
+            .map(|p| p as usize);
+        if let (Some(page), false) = (page, title.is_empty()) {
+            out.push((page, depth, title));
+        }
+        collect_bookmarks(bm.first_child(), depth + 1, out);
+        current = bm.next_sibling();
+    }
+}
+
 fn parse_pdf_with(
     path: &Path,
     lib_dirs: &[std::path::PathBuf],
@@ -355,10 +388,16 @@ fn parse_pdf_with(
         let msg = e.to_string();
         if msg.to_lowercase().contains("password") || msg.to_lowercase().contains("encrypt") {
             LnaError::new(ErrorCode::SourceEncrypted, "PDF is password-protected")
-        } else {
+        } else if msg.contains("FormatError") {
             LnaError::new(
                 ErrorCode::SourceUnsupported,
-                format!("Failed to open PDF: {msg}"),
+                "PDF file is damaged or not a valid PDF",
+            )
+        } else {
+            let one_line = msg.split_whitespace().collect::<Vec<_>>().join(" ");
+            LnaError::new(
+                ErrorCode::SourceUnsupported,
+                format!("Failed to open PDF: {one_line}"),
             )
         }
     })?;
@@ -386,10 +425,10 @@ fn parse_pdf_with(
             .filter(|l| !l.is_empty())
             .collect();
         if let Some(first) = lines.first() {
-            *line_freq.entry(first.clone()).or_insert(0) += 1;
+            *line_freq.entry(header_key(first)).or_insert(0) += 1;
         }
         if let Some(last) = lines.last() {
-            *line_freq.entry(last.clone()).or_insert(0) += 1;
+            *line_freq.entry(header_key(last)).or_insert(0) += 1;
         }
         page_lines.push(lines);
     }
@@ -402,6 +441,20 @@ fn parse_pdf_with(
     }
 
     let header_footer_threshold = (page_count / 3).max(3);
+    let mut outline: Vec<(usize, usize, String)> = Vec::new();
+    collect_bookmarks(doc.bookmarks().root(), 0, &mut outline);
+    // Section path of a page = the chain of bookmarks in effect at its first position.
+    let section_for_page = |page_index: usize| -> Vec<String> {
+        let mut stack: Vec<(usize, String)> = Vec::new();
+        for (bm_page, depth, title) in &outline {
+            if *bm_page > page_index {
+                continue;
+            }
+            stack.retain(|(d, _)| d < depth);
+            stack.push((*depth, title.clone()));
+        }
+        stack.into_iter().map(|(_, title)| title).collect()
+    };
     let mut blocks = Vec::new();
     let mut cursor = 0usize;
 
@@ -409,16 +462,21 @@ fn parse_pdf_with(
         let page_no = (idx + 1) as u32;
         let filtered: Vec<String> = lines
             .into_iter()
-            .filter(|l| line_freq.get(l).copied().unwrap_or(0) < header_footer_threshold)
+            .filter(|l| {
+                line_freq.get(&header_key(l)).copied().unwrap_or(0) < header_footer_threshold
+            })
             .collect();
 
         // Fix line-end hyphenation and group into paragraphs
+        // PDFium reports an end-of-line hyphen as U+0002; soft hyphens are U+00AD.
+        let ends_with_hyphen =
+            |s: &str| s.ends_with('-') || s.ends_with('\u{2}') || s.ends_with('\u{ad}');
         let mut joined = String::new();
         for l in filtered {
-            if joined.ends_with('-')
+            if ends_with_hyphen(&joined)
                 && l.chars()
                     .next()
-                    .map(|c| c.is_ascii_alphabetic())
+                    .map(|c| c.is_ascii_lowercase())
                     .unwrap_or(false)
             {
                 joined.pop();
@@ -430,6 +488,7 @@ fn parse_pdf_with(
                 joined.push_str(&l);
             }
         }
+        joined.retain(|c| c != '\u{2}' && c != '\u{ad}');
         if !joined.is_empty() {
             let start = cursor;
             cursor += joined.len();
@@ -437,7 +496,7 @@ fn parse_pdf_with(
                 kind: BlockKind::Paragraph,
                 text: joined,
                 page: Some(page_no),
-                section_path: vec![],
+                section_path: section_for_page(idx),
                 char_range: start..cursor,
             });
         }
@@ -449,8 +508,13 @@ fn parse_pdf_with(
         .map(|b| b.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
+    let title = doc
+        .metadata()
+        .get(PdfDocumentMetadataTagType::Title)
+        .map(|tag| tag.value().trim().to_string())
+        .filter(|s| !s.is_empty());
     Ok(ParsedDoc {
-        title: None,
+        title,
         language: Some(detect_language(&sample)),
         page_count: Some(page_count as i64),
         blocks,

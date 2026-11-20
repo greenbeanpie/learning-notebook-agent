@@ -236,6 +236,15 @@ impl IngestService {
 
         self.update_status(source_id, "CHUNKING", None, None)?;
         let drafts = chunker::chunk_document(&doc);
+        if drafts.is_empty() {
+            let e = LnaError::new(
+                ErrorCode::SourceUnsupported,
+                "No extractable text in this source",
+            );
+            let _ =
+                self.update_status(source_id, "FAILED", Some(e.code.as_str()), Some(&e.message));
+            return Err(e);
+        }
         let total_tokens: i64 = drafts.iter().map(|c| c.token_count as i64).sum();
 
         self.db.write(|conn| {
@@ -369,6 +378,7 @@ impl IngestService {
         source_id: &str,
         page: Option<i32>,
     ) -> LnaResult<Vec<lna_types::SourceChunk>> {
+        lna_storage::get_source(&self.db, source_id)?; // NOT_FOUND for unknown ids
         self.db.read(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, source_id, notebook_id, chunk_index, section_path, page_start, page_end, char_start, char_end, content, token_count

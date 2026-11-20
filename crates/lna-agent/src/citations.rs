@@ -152,4 +152,61 @@ mod tests {
         all.extend(c4);
         assert_eq!(all, vec![1]);
     }
+
+    fn run(chunks: &[&str]) -> (String, Vec<i32>) {
+        let valid: HashSet<i32> = [1, 2, 3].into_iter().collect();
+        let mut norm = CitationStreamNormalizer::new(valid);
+        let mut out = String::new();
+        let mut cites = Vec::new();
+        for c in chunks {
+            let (o, n) = norm.push(c);
+            out.push_str(&o);
+            cites.extend(n);
+        }
+        let (o, n) = norm.finish();
+        out.push_str(&o);
+        cites.extend(n);
+        (out, cites)
+    }
+
+    /// C3: the result never depends on where the model's stream happens to be split.
+    #[test]
+    fn output_is_identical_for_every_split_point_and_one_char_chunks() {
+        let samples = [
+            "基是线性无关的组[1]，维数相同[2]。",
+            "全角括号【1】与范围 [1-3] 与连续 [1][2] 引用。",
+            "区间 [1,2] 和 [0, 1] 不是引用，[99] 无效，[0] 也无效。",
+            "链接 [文本](http://x.y/z) 之后 [3]。",
+            "未闭合的 [1 在末尾",
+            "嵌套 [[1]] 与 [a[2]b] 与 [",
+            "[1-100] 超范围区间 [3-1] 倒序。",
+            "换行 [1
+2] 不是引用 [ 2 ] 有空格。",
+        ];
+        for s in samples {
+            let whole = run(&[s]);
+            let chars: Vec<String> = s.chars().map(|c| c.to_string()).collect();
+            let refs: Vec<&str> = chars.iter().map(String::as_str).collect();
+            assert_eq!(run(&refs), whole, "one-char chunks differ for {s:?}");
+            let idx: Vec<usize> = s.char_indices().map(|(i, _)| i).collect();
+            for &i in &idx {
+                assert_eq!(
+                    run(&[&s[..i], &s[i..]]),
+                    whole,
+                    "split at {i} differs for {s:?}"
+                );
+            }
+        }
+    }
+
+    /// C3: the supported spellings all normalise to `[n]`, invalid numbers disappear.
+    #[test]
+    fn spellings_are_normalised_and_invalid_numbers_removed() {
+        assert_eq!(run(&["甲【1】乙"]).0, "甲[1]乙");
+        assert_eq!(run(&["甲[1-3]乙"]).0, "甲[1][2][3]乙");
+        assert_eq!(run(&["甲[1][2]乙"]).0, "甲[1][2]乙");
+        assert_eq!(run(&["甲[99]乙"]).0, "甲乙");
+        assert_eq!(run(&["甲[2-9]乙"]), ("甲[2][3]乙".to_string(), vec![2, 3]));
+        assert_eq!(run(&["区间[1,2]"]).0, "区间[1,2]");
+    }
 }
