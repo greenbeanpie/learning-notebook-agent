@@ -756,6 +756,17 @@ impl StudioService {
                 }
                 std::fs::write(out_path, csv).map_err(|e| LnaError::internal(e.to_string()))
             }
+            "wav" => {
+                let src = art
+                    .output_dir
+                    .as_deref()
+                    .map(|d| std::path::Path::new(d).join("overview.wav"))
+                    .filter(|p| p.exists())
+                    .ok_or_else(|| LnaError::not_found("No audio file for this artifact"))?;
+                std::fs::copy(src, out_path)
+                    .map(|_| ())
+                    .map_err(|e| LnaError::internal(e.to_string()))
+            }
             "svg" => render::render_infographic_svg(&payload, out_path),
             "pptx" => render::render_pptx(&payload, out_path),
             _ => {

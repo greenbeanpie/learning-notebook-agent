@@ -17,7 +17,21 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- NU1903 on Microsoft.DotNet.ILCompiler 10.0.13 is the compiler that ships with the installed .NET SDK; it runs at
+         build time only and is not part of the shipped app. It goes away when the SDK is updated to a patched release;
+         pinning a newer ILCompiler on its own breaks the publish (runtime pack mismatch). -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-p3jp-9v83-76w9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- KaTeX for the formula view (G6): local files only, loaded through a virtual host name. -->
+    <Content Include="Assets\katex\**\*" CopyToOutputDirectory="PreserveNewest" Link="Assets\katex\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <!-- Newer WebView2 projection: the one bundled with Windows App SDK 1.6 cannot be created under NativeAOT. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
   </ItemGroup>
 </Project>

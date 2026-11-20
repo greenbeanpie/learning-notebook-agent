@@ -210,6 +210,15 @@ impl AgentService {
         self.send_message(notebook_id, &user_text).await
     }
 
+    /// Cancels every running answer (shutdown).
+    pub fn cancel_all(&self) {
+        if let Ok(g) = self.active_runs.lock() {
+            for tok in g.values() {
+                tok.cancel();
+            }
+        }
+    }
+
     pub fn cancel(&self, notebook_id: &str) -> LnaResult<()> {
         if let Ok(mut g) = self.active_runs.lock() {
             if let Some(tok) = g.remove(notebook_id) {
@@ -1152,7 +1161,11 @@ impl AgentService {
         self.get_message(&asst_msg_id)
     }
 
-    pub async fn refresh_notebook_summary(&self, notebook_id: &str) -> LnaResult<()> {
+    pub async fn refresh_notebook_summary(
+        &self,
+        notebook_id: &str,
+        cancel: CancellationToken,
+    ) -> LnaResult<()> {
         let profile = match lna_storage::get_active_profile(&self.db)? {
             Some(p) => p,
             None => return Ok(()), // Section 7.5: skip if no model configured
@@ -1223,10 +1236,7 @@ impl AgentService {
             reasoning: ReasoningOptions::default(),
         };
 
-        let (raw, _) = self
-            .llm
-            .complete_text(&resolved, &req, CancellationToken::new())
-            .await?;
+        let (raw, _) = self.llm.complete_text(&resolved, &req, cancel).await?;
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
             let summary_md = v.get("summary_md").and_then(|x| x.as_str()).unwrap_or("");
             let title_sugg = v.get("title_suggestion").and_then(|x| x.as_str());

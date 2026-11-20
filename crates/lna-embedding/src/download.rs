@@ -204,52 +204,113 @@ impl EmbeddingService {
                 let _ = std::fs::remove_file(&target);
             }
 
-            let resp = tokio::select! {
-                _ = cancel.cancelled() => return Err(LnaError::new(ErrorCode::Cancelled, "Download cancelled")),
-                r = http.get(&file.url).send() => r.map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?,
-            };
-            if !resp.status().is_success() {
-                return Err(LnaError::new(
-                    ErrorCode::FetchFailed,
-                    format!("{}: HTTP {}", file.name, resp.status().as_u16()),
-                ));
-            }
+            // Network hiccups are common on a 470 MB download: resume from the bytes already on disk
+            // (hash state is kept in memory) a few times before giving up.
             let mut out = tokio::fs::File::create(&part)
                 .await
                 .map_err(|e| LnaError::internal(e.to_string()))?;
             let mut hasher = Sha256::new();
             let mut done = 0u64;
             let mut last_report = std::time::Instant::now();
-            let mut stream = resp.bytes_stream();
-            loop {
-                let next = tokio::select! {
+            let mut attempt = 0u32;
+            'attempts: loop {
+                let mut request = http.get(&file.url);
+                if done > 0 {
+                    request = request.header("Range", format!("bytes={done}-"));
+                }
+                let resp = tokio::select! {
                     _ = cancel.cancelled() => {
                         drop(out);
                         let _ = std::fs::remove_file(&part);
                         return Err(LnaError::new(ErrorCode::Cancelled, "Download cancelled"));
                     }
-                    _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                        return Err(LnaError::new(ErrorCode::FetchFailed, format!("{}: no data for 60 s", file.name)));
-                    }
-                    n = stream.next() => n,
+                    r = tokio::time::timeout(Duration::from_secs(60), request.send()) => r,
                 };
-                match next {
-                    Some(Ok(bytes)) => {
-                        hasher.update(&bytes);
-                        out.write_all(&bytes)
-                            .await
-                            .map_err(|e| LnaError::internal(e.to_string()))?;
-                        done += bytes.len() as u64;
-                        if last_report.elapsed() >= Duration::from_millis(250) {
-                            last_report = std::time::Instant::now();
-                            report(done, overall_done + done, &mut on_progress);
+                let resp = match resp {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
+                        attempt += 1;
+                        if attempt > 5 {
+                            let _ = std::fs::remove_file(&part);
+                            return Err(LnaError::new(ErrorCode::FetchFailed, e.to_string()));
                         }
+                        tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+                        continue 'attempts;
                     }
-                    Some(Err(e)) => {
-                        let _ = std::fs::remove_file(&part);
-                        return Err(LnaError::new(ErrorCode::FetchFailed, e.to_string()));
+                    Err(_) => {
+                        attempt += 1;
+                        if attempt > 5 {
+                            let _ = std::fs::remove_file(&part);
+                            return Err(LnaError::new(
+                                ErrorCode::FetchFailed,
+                                format!("{}: the server did not respond within 60 s", file.name),
+                            ));
+                        }
+                        tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+                        continue 'attempts;
                     }
-                    None => break,
+                };
+                let status = resp.status().as_u16();
+                if status == 200 && done > 0 {
+                    // The server ignored the Range header: start over from the beginning.
+                    use tokio::io::AsyncSeekExt;
+                    out.set_len(0)
+                        .await
+                        .map_err(|e| LnaError::internal(e.to_string()))?;
+                    out.seek(std::io::SeekFrom::Start(0))
+                        .await
+                        .map_err(|e| LnaError::internal(e.to_string()))?;
+                    hasher = Sha256::new();
+                    done = 0;
+                } else if !(status == 200 || status == 206) {
+                    let _ = std::fs::remove_file(&part);
+                    return Err(LnaError::new(
+                        ErrorCode::FetchFailed,
+                        format!("{}: HTTP {status}", file.name),
+                    ));
+                }
+                let mut stream = resp.bytes_stream();
+                loop {
+                    let next = tokio::select! {
+                        _ = cancel.cancelled() => {
+                            drop(out);
+                            let _ = std::fs::remove_file(&part);
+                            return Err(LnaError::new(ErrorCode::Cancelled, "Download cancelled"));
+                        }
+                        _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                            Some(Err(None))
+                        }
+                        n = stream.next() => n.map(|r| r.map_err(Some)),
+                    };
+                    match next {
+                        Some(Ok(bytes)) => {
+                            hasher.update(&bytes);
+                            out.write_all(&bytes)
+                                .await
+                                .map_err(|e| LnaError::internal(e.to_string()))?;
+                            done += bytes.len() as u64;
+                            if last_report.elapsed() >= Duration::from_millis(250) {
+                                last_report = std::time::Instant::now();
+                                report(done, overall_done + done, &mut on_progress);
+                            }
+                        }
+                        Some(Err(err)) => {
+                            attempt += 1;
+                            if attempt > 5 {
+                                let _ = std::fs::remove_file(&part);
+                                let msg = err
+                                    .map(|e| e.to_string())
+                                    .unwrap_or_else(|| "no data for 60 s".into());
+                                return Err(LnaError::new(
+                                    ErrorCode::FetchFailed,
+                                    format!("{}: {msg}", file.name),
+                                ));
+                            }
+                            tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+                            continue 'attempts;
+                        }
+                        None => break 'attempts,
+                    }
                 }
             }
             out.flush()

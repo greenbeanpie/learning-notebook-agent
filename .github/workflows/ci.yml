@@ -25,6 +25,15 @@ jobs:
         env:
           LNA_REQUIRE_PDFIUM: '1'
         run: cargo test --workspace
+      - name: Upload retrieval evaluation report (Recall@8, MRR, refusal rate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: target/eval-report.json
+          if-no-files-found: ignore
+      - name: Build every binary (the smoke test drives lna-devtools)
+        run: cargo build --workspace --all-targets
       - name: E2E Smoke Test (including PDF import)
         shell: pwsh
         run: pwsh tests/e2e/run-smoke.ps1 -Pdf

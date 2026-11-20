@@ -196,6 +196,15 @@ impl JobQueue {
         })
     }
 
+    /// Cancels every running job (used on shutdown so in-flight work stops promptly).
+    pub fn cancel_all_running(&self) {
+        if let Ok(g) = self.tokens.lock() {
+            for tok in g.values() {
+                tok.cancel();
+            }
+        }
+    }
+
     pub fn register_token(&self, job_id: &str) -> CancellationToken {
         let tok = CancellationToken::new();
         if let Ok(mut g) = self.tokens.lock() {

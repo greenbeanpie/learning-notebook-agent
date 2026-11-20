@@ -15,20 +15,37 @@
             <ColumnDefinition Width="340" />
         </Grid.ColumnDefinitions>
 
-        <!-- Top Header -->
+        <!-- Top header -->
         <Grid Grid.Row="0" Grid.ColumnSpan="3" Padding="8,0">
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                <TextBlock x:Name="NotebookTitleText" Text="Local Notebook Agent" FontSize="18" FontWeight="SemiBold" Foreground="#E3E3E3" />
+                <TextBlock x:Name="NotebookTitleText" Text="Local Notebook Agent" FontSize="18" FontWeight="SemiBold" Foreground="#E3E3E3" VerticalAlignment="Center" />
                 <ComboBox x:Name="NotebookPicker" MinWidth="180" PlaceholderText="切换笔记本"
                           AutomationProperties.Name="切换笔记本" SelectionChanged="OnNotebookPicked" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
                 <Button x:Name="NewNotebookBtn" Content="新建笔记本" Click="OnNewNotebookClick" />
+                <Button x:Name="EmbeddingBtn" Content="语义检索" Click="OnOpenEmbeddingClick" AutomationProperties.Name="语义检索设置" />
                 <Button x:Name="ModelSettingsBtn" Content="模型协议配置" Click="OnOpenSettingsClick" />
+                <Button x:Name="NotebookMenuBtn" Content="⋯" AutomationProperties.Name="笔记本菜单" Padding="12,4">
+                    <Button.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Text="重命名笔记本" Click="OnRenameNotebookClick" />
+                            <MenuFlyoutItem Text="导出为 .lna" Click="OnExportLnaClick" />
+                            <MenuFlyoutItem Text="导出为 Markdown" Click="OnExportMarkdownClick" />
+                            <MenuFlyoutItem Text="导入 .lna" Click="OnImportLnaClick" />
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="清空对话" Click="OnClearChatClick" />
+                            <MenuFlyoutItem Text="删除笔记本" Click="OnDeleteNotebookClick" />
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="导出诊断包" Click="OnExportDiagnosticsClick" />
+                            <MenuFlyoutItem Text="隐私说明" Click="OnShowPrivacyClick" />
+                        </MenuFlyout>
+                    </Button.Flyout>
+                </Button>
             </StackPanel>
         </Grid>
 
-        <!-- Left Pane: Sources (Search deferred/omitted) -->
+        <!-- Left: sources and notes -->
         <Border Grid.Row="1" Grid.Column="0" Background="{StaticResource PanelBgBrush}" CornerRadius="16" Padding="14">
             <Grid RowSpacing="10">
                 <Grid.RowDefinitions>
@@ -42,35 +59,48 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <Button Grid.Column="0" HorizontalAlignment="Stretch" Content="+ 添加来源" Click="OnAddSourceClick" />
+                    <DropDownButton Grid.Column="0" HorizontalAlignment="Stretch" Content="+ 添加来源" AutomationProperties.Name="添加来源">
+                        <DropDownButton.Flyout>
+                            <MenuFlyout>
+                                <MenuFlyoutItem Text="本地文件（PDF / Markdown / 文本）" Click="OnAddSourceClick" />
+                                <MenuFlyoutItem Text="网页地址" Click="OnAddUrlClick" />
+                                <MenuFlyoutItem Text="粘贴文本" Click="OnAddPasteClick" />
+                            </MenuFlyout>
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
                     <Button Grid.Column="1" HorizontalAlignment="Stretch" Content="+ 创建笔记" Click="OnCreateNoteClick" />
                 </Grid>
                 <ListView x:Name="SourcesList" Grid.Row="2" SelectionMode="None" />
             </Grid>
         </Border>
 
-        <!-- Center Pane: Chat -->
+        <!-- Center: chat -->
         <Border Grid.Row="1" Grid.Column="1" Background="{StaticResource PanelBgBrush}" CornerRadius="16" Padding="18">
-            <Grid RowSpacing="12">
+            <Grid RowSpacing="10">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <TextBlock x:Name="SummaryText" Grid.Row="0" Text="请添加来源或直接提问。" TextWrapping="Wrap" Foreground="#C4C7C5" />
+                <StackPanel Grid.Row="0" Spacing="4" x:Name="SummaryCard">
+                    <TextBlock x:Name="SummaryText" Text="请添加来源或直接提问。" TextWrapping="Wrap" Foreground="#C4C7C5" MaxLines="6" TextTrimming="CharacterEllipsis" IsTextSelectionEnabled="True" />
+                    <StackPanel x:Name="SuggestedPanel" Spacing="2" />
+                </StackPanel>
                 <ListView x:Name="ChatList" Grid.Row="1" SelectionMode="None" />
                 <Grid Grid.Row="2" ColumnSpacing="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBox x:Name="ChatInputBox" Grid.Column="0" PlaceholderText="提问或创作内容..." AcceptsReturn="False" KeyDown="OnChatKeyDown" />
                     <Button x:Name="SendBtn" Grid.Column="1" Content="发送" Click="OnSendChatClick" />
+                    <Button x:Name="StopBtn" Grid.Column="2" Content="停止" Click="OnStopChatClick" Visibility="Collapsed" />
                 </Grid>
             </Grid>
         </Border>
 
-        <!-- Right Pane: Studio (7 modalities, Video removed) -->
+        <!-- Right: Studio -->
         <Border Grid.Row="1" Grid.Column="2" Background="{StaticResource PanelBgBrush}" CornerRadius="16" Padding="14">
             <Grid RowSpacing="12">
                 <Grid.RowDefinitions>

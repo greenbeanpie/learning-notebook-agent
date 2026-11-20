@@ -175,7 +175,9 @@ impl CoreRuntime {
                     let res = match job.kind.as_str() {
                         "ingest_source" => core.ingest.process_ingest_job(&job.subject_id).await,
                         "refresh_summary" => {
-                            core.agent.refresh_notebook_summary(&job.subject_id).await
+                            core.agent
+                                .refresh_notebook_summary(&job.subject_id, _tok.clone())
+                                .await
                         }
                         "embed_source" => {
                             match lna_storage::get_source(&core.db, &job.subject_id) {
@@ -1056,6 +1058,14 @@ impl CoreRuntime {
 
     pub fn shutdown(&self) {
         self.shutdown.cancel();
+        // Stop in-flight answers, Studio jobs and downloads so the runtime can wind down quickly (B-16).
+        self.agent.cancel_all();
+        self.jobs.cancel_all_running();
+        if let Ok(g) = self.model_download.lock() {
+            if let Some((tok, _)) = g.as_ref() {
+                tok.cancel();
+            }
+        }
         let _ = self.db.checkpoint_truncate();
     }
 }

@@ -13,6 +13,19 @@ public partial class App : Application
     public App()
     {
         InitializeComponent();
+        // A bug in one handler should show an error, not take the whole app down.
+        UnhandledException += (_, e) =>
+        {
+            e.Handled = true;
+            try
+            {
+                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalNotebook", "logs");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(Path.Combine(dir, "ui-errors.log"), $"{DateTime.Now:O} {e.Exception}{Environment.NewLine}{Environment.NewLine}");
+            }
+            catch (IOException) { }
+            if (_window is MainWindow mw) mw.DispatcherQueue.TryEnqueue(() => mw.ReportStartupFailure($"界面出现错误：{e.Message}"));
+        };
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)

@@ -657,33 +657,74 @@ pub fn concept_embedder() -> Embedder {
 pub struct FileServer {
     pub port: u16,
     pub hits: Arc<Mutex<Vec<String>>>,
+    /// Request lines that carried a Range header (resumed downloads).
+    pub ranges: Arc<Mutex<Vec<String>>>,
 }
 
 impl FileServer {
     pub fn start(files: Vec<(&'static str, Vec<u8>)>) -> FileServer {
+        Self::start_with(files, false)
+    }
+
+    /// `flaky`: the first full response of every file is cut off half way (connection closed).
+    pub fn start_with(files: Vec<(&'static str, Vec<u8>)>, flaky: bool) -> FileServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let hits = Arc::new(Mutex::new(Vec::new()));
-        let h = hits.clone();
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let cut: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let (h, rg) = (hits.clone(), ranges.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut s) = stream else { continue };
                 let files = files.clone();
-                let h = h.clone();
+                let (h, rg, cut) = (h.clone(), rg.clone(), cut.clone());
                 std::thread::spawn(move || {
                     let mut buf = [0u8; 4096];
                     let n = s.read(&mut buf).unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]).to_string();
                     let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
                     h.lock().unwrap().push(path.clone());
+                    let start: usize = req
+                        .lines()
+                        .find_map(|l| {
+                            l.to_lowercase()
+                                .strip_prefix("range: bytes=")
+                                .map(str::to_string)
+                        })
+                        .and_then(|r| r.trim_end_matches('-').trim().parse().ok())
+                        .unwrap_or(0);
+                    if start > 0 {
+                        rg.lock().unwrap().push(format!("{path} from {start}"));
+                    }
                     match files.iter().find(|(p, _)| *p == path) {
                         Some((_, body)) => {
+                            let body = &body[start.min(body.len())..];
+                            let first_time = {
+                                let mut c = cut.lock().unwrap();
+                                if flaky && start == 0 && !c.contains(&path) {
+                                    c.push(path.clone());
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                            let status = if start > 0 {
+                                "206 Partial Content"
+                            } else {
+                                "200 OK"
+                            };
                             let _ = write!(
                                 s,
-                                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                                "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                                 body.len()
                             );
-                            for part in body.chunks(8192) {
+                            let limit = if first_time {
+                                body.len() / 2
+                            } else {
+                                body.len()
+                            };
+                            for part in body[..limit].chunks(8192) {
                                 if s.write_all(part).is_err() {
                                     return;
                                 }
@@ -702,6 +743,6 @@ impl FileServer {
                 });
             }
         });
-        FileServer { port, hits }
+        FileServer { port, hits, ranges }
     }
 }

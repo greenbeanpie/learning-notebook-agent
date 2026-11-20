@@ -273,8 +273,14 @@ impl EmbeddingService {
                 .tokenizer
                 .encode(text.as_str(), true)
                 .map_err(|e| LnaError::internal(e.to_string()))?;
-            let ids: Vec<i64> = enc.get_ids().iter().map(|&x| x as i64).collect();
-            let mask: Vec<i64> = enc.get_attention_mask().iter().map(|&x| x as i64).collect();
+            // XLM-R based models (multilingual-e5) accept at most 512 positions.
+            let ids: Vec<i64> = enc.get_ids().iter().take(512).map(|&x| x as i64).collect();
+            let mask: Vec<i64> = enc
+                .get_attention_mask()
+                .iter()
+                .take(512)
+                .map(|&x| x as i64)
+                .collect();
             let seq_len = ids.len();
 
             let input_ids = ort::value::Tensor::from_array(([1, seq_len], ids))
@@ -282,10 +288,28 @@ impl EmbeddingService {
             let attn_mask = ort::value::Tensor::from_array(([1, seq_len], mask))
                 .map_err(|e| LnaError::internal(e.to_string()))?;
 
-            let outputs = loaded
+            // Some exports (BERT-style) declare a required `token_type_ids` input; all zeros for
+            // single-sequence input. Others (XLM-R style) do not declare it and reject extras.
+            let wants_token_type = loaded
                 .session
-                .run(ort::inputs!["input_ids" => input_ids, "attention_mask" => attn_mask])
-                .map_err(|e| LnaError::internal(e.to_string()))?;
+                .inputs
+                .iter()
+                .any(|i| i.name == "token_type_ids");
+            let outputs = if wants_token_type {
+                let token_type =
+                    ort::value::Tensor::from_array(([1, seq_len], vec![0i64; seq_len]))
+                        .map_err(|e| LnaError::internal(e.to_string()))?;
+                loaded.session.run(ort::inputs![
+                    "input_ids" => input_ids,
+                    "attention_mask" => attn_mask,
+                    "token_type_ids" => token_type
+                ])
+            } else {
+                loaded
+                    .session
+                    .run(ort::inputs!["input_ids" => input_ids, "attention_mask" => attn_mask])
+            }
+            .map_err(|e| LnaError::internal(e.to_string()))?;
 
             let (_shape, data) = outputs[0]
                 .try_extract_tensor::<f32>()
