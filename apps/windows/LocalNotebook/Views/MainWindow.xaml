@@ -7,6 +7,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="48" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="300" />
@@ -18,6 +19,8 @@
         <Grid Grid.Row="0" Grid.ColumnSpan="3" Padding="8,0">
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                 <TextBlock x:Name="NotebookTitleText" Text="Local Notebook Agent" FontSize="18" FontWeight="SemiBold" Foreground="#E3E3E3" />
+                <ComboBox x:Name="NotebookPicker" MinWidth="180" PlaceholderText="切换笔记本"
+                          AutomationProperties.Name="切换笔记本" SelectionChanged="OnNotebookPicked" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
                 <Button x:Name="NewNotebookBtn" Content="新建笔记本" Click="OnNewNotebookClick" />
@@ -61,7 +64,7 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBox x:Name="ChatInputBox" Grid.Column="0" PlaceholderText="提问或创作内容..." />
+                    <TextBox x:Name="ChatInputBox" Grid.Column="0" PlaceholderText="提问或创作内容..." AcceptsReturn="False" KeyDown="OnChatKeyDown" />
                     <Button x:Name="SendBtn" Grid.Column="1" Content="发送" Click="OnSendChatClick" />
                 </Grid>
             </Grid>
@@ -98,5 +101,9 @@
                 <ListView x:Name="ArtifactsList" Grid.Row="2" SelectionMode="None" />
             </Grid>
         </Border>
+
+        <!-- Status bar: every core error is surfaced here instead of being swallowed -->
+        <InfoBar x:Name="StatusBar" Grid.Row="2" Grid.ColumnSpan="3" IsOpen="False" IsClosable="True"
+                 Severity="Informational" Title="" Message="" />
     </Grid>
 </Window>

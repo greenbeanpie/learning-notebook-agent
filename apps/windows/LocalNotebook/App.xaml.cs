@@ -27,7 +27,19 @@ public partial class App : Application
 
         _ = Task.Run(() =>
         {
-            Core.Open(appData);
+            try
+            {
+                Core.Open(appData);
+            }
+            catch (Exception ex)
+            {
+                // Without this the unobserved exception leaves a window that silently does nothing.
+                if (_window is MainWindow failed)
+                {
+                    failed.DispatcherQueue.TryEnqueue(() => failed.ReportStartupFailure(ex.Message));
+                }
+                return;
+            }
             if (_window is MainWindow mw)
             {
                 mw.DispatcherQueue.TryEnqueue(async () => await mw.OnCoreReadyAsync());

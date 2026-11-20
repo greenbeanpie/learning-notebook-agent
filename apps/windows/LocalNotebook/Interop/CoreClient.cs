@@ -32,8 +32,20 @@ public sealed unsafe class CoreClient : IDisposable
         }
     }
 
+    public bool IsOpen => _core != 0;
+
     public Task<ApiResponseDto> CallAsync(string method, JsonElement paramsElement)
     {
+        // A call before lna_open finished (or after close) must fail cleanly instead of passing a null handle to the core.
+        if (_core == 0)
+        {
+            return Task.FromResult(new ApiResponseDto
+            {
+                Id = string.Empty,
+                Error = new ApiErrorDto { Code = "NOT_READY", Message = "核心尚未就绪，请稍候再试" }
+            });
+        }
+
         var id = Guid.NewGuid().ToString("N");
         var tcs = new TaskCompletionSource<ApiResponseDto>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[id] = tcs;

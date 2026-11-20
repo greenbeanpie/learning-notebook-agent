@@ -30,6 +30,7 @@ pub struct CoreRuntime {
     pub agent: AgentService,
     pub studio: StudioService,
     pub events: broadcast::Sender<ApiEvent>,
+    seq: Arc<AtomicU64>,
     shutdown: CancellationToken,
     rt: tokio::runtime::Runtime,
 }
@@ -71,7 +72,7 @@ impl CoreRuntime {
             llm.clone(),
             retrieval.clone(),
             events.clone(),
-            seq,
+            seq.clone(),
         );
 
         let core = Arc::new(Self {
@@ -85,12 +86,46 @@ impl CoreRuntime {
             agent,
             studio,
             events,
+            seq,
             shutdown: CancellationToken::new(),
             rt,
         });
 
         core.spawn_background_loops();
         Ok(core)
+    }
+
+    fn emit(&self, topic: &str, event: &str, data: Value) {
+        let s = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let _ = self.events.send(ApiEvent {
+            seq: s,
+            topic: topic.to_string(),
+            event: event.to_string(),
+            data,
+        });
+    }
+
+    /// `has_secret` must reflect whether a key is actually stored, not merely
+    /// whether the profile carries a keychain reference (B-25).
+    fn refresh_has_secret(&self, prof: &mut ModelProfile) {
+        prof.has_secret = match prof.keychain_ref.as_deref() {
+            Some(kref) => self.secrets.exists(kref).unwrap_or(false),
+            None => false,
+        };
+    }
+
+    /// Tell clients that a notebook's sources changed state (QUEUED → PROCESSING → READY/FAILED),
+    /// so they can refresh without polling.
+    fn emit_source_status(&self, job: &lna_jobs::JobRecord) {
+        if job.kind != "ingest_source" {
+            return;
+        }
+        let nid = job.notebook_id.clone().unwrap_or_default();
+        self.emit(
+            &format!("sources:{nid}"),
+            "source.status",
+            json!({ "notebook_id": nid, "source_id": job.subject_id }),
+        );
     }
 
     fn spawn_background_loops(self: &Arc<Self>) {
@@ -111,6 +146,7 @@ impl CoreRuntime {
                 tick += 1;
                 if let Ok(Some(job)) = core.jobs.claim_next(&["ingest_source", "refresh_summary"]) {
                     let _tok = core.jobs.register_token(&job.id);
+                    core.emit_source_status(&job);
                     let res = match job.kind.as_str() {
                         "ingest_source" => core.ingest.process_ingest_job(&job.subject_id).await,
                         "refresh_summary" => {
@@ -131,6 +167,7 @@ impl CoreRuntime {
                             );
                         }
                     }
+                    core.emit_source_status(&job);
                 } else {
                     tokio::select! {
                         _ = core.shutdown.cancelled() => break,
@@ -360,11 +397,18 @@ impl CoreRuntime {
             }
 
             // --- Profile & Secrets ---
-            "profile.list" => Ok(json!({ "profiles": lna_storage::list_profiles(&self.db)? })),
+            "profile.list" => {
+                let mut profiles = lna_storage::list_profiles(&self.db)?;
+                for prof in profiles.iter_mut() {
+                    self.refresh_has_secret(prof);
+                }
+                Ok(json!({ "profiles": profiles }))
+            }
             "profile.upsert" => {
                 let params_in: ProfileUpsertParams = serde_json::from_value(p.clone())
                     .map_err(|e| LnaError::invalid(e.to_string()))?;
-                let prof = lna_storage::upsert_profile(&self.db, &params_in)?;
+                let mut prof = lna_storage::upsert_profile(&self.db, &params_in)?;
+                self.refresh_has_secret(&mut prof);
                 Ok(serde_json::to_value(prof).unwrap())
             }
             "profile.activate" => {
