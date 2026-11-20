@@ -4,10 +4,10 @@
 
 ## 工程结构
 - `crates/`：14 个 Rust workspace crates（存储、密钥、任务、四协议 LLM、嵌入、摄取、检索、Agent、Studio 7 模态、TTS、API、C ABI、DevTools）。
-- `apps/windows/LocalNotebook/`：.NET 10 NativeAOT + WinUI 3 三栏桌面客户端（含 `app.manifest` 与按需加载/闲置 60s 释放的 `WebContentHost`）。
+- `apps/windows/LocalNotebook/`：.NET 10 NativeAOT + WinUI 3 三栏桌面客户端（含 `app.manifest`；`WebContentHost` 仅为骨架，尚未接入界面）。
 - `migrations/`、`schemas/`、`prompts/`：SQLite 初始化脚本、Studio 7 模态 JSON Schema、版本化提示词模板。
-- `frontend-demo/`：独立演示与 DevTools 联调页（通过 `api.js` 在 `?ws=...&token=...` 时连接真实 Core；视频概览与 Fast/Deep Research 入口尚未移除，见计划 H3、H4）。
-- `tests/e2e/`：端到端冒烟测试套件（`mock_llm.py` + `smoke.mjs` + `run-smoke.ps1`）。
+- `frontend-demo/`：独立演示与 DevTools 联调页（通过 `api.js` 在 `?ws=...&token=...` 时连接真实 Core；视频概览与搜索/Research 入口已按范围移除）。
+- `tests/e2e/`：端到端冒烟测试套件（`mock_llm.py` + `smoke.mjs` + `extended.mjs` + `run-smoke.ps1`）。
 
 > 范围说明：按 2026-11-20 范围调整，已取消 Studio **视频概览**，并暂缓网页/本地搜索（`research.*` 返回 `CAPABILITY_MISSING`）。
 

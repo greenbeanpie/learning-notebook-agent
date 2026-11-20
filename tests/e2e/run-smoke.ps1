@@ -24,6 +24,9 @@ try {
     if (-not $url) { throw "Dev server did not start; see $work/serve.err" }
     node "$here/smoke.mjs" $url 18555
     $failed = $LASTEXITCODE -ne 0
+    New-Item -ItemType Directory -Force "$work/scratch" | Out-Null
+    node "$here/extended.mjs" $url 18555 "$work/scratch"
+    if ($LASTEXITCODE -ne 0) { $failed = $true }
     if ($Pdf) {
         $pdfDll = Join-Path $root 'target/debug/pdfium.dll'
         if (-not (Test-Path $pdfDll)) {
