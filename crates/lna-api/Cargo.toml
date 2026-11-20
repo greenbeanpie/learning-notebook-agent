@@ -1,0 +1,25 @@
+[package]
+name = "lna-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lna-types = { path = "../lna-types" }
+lna-storage = { path = "../lna-storage" }
+lna-secrets = { path = "../lna-secrets" }
+lna-jobs = { path = "../lna-jobs" }
+lna-llm = { path = "../lna-llm" }
+lna-embedding = { path = "../lna-embedding" }
+lna-ingest = { path = "../lna-ingest" }
+lna-retrieval = { path = "../lna-retrieval" }
+lna-agent = { path = "../lna-agent" }
+lna-studio = { path = "../lna-studio" }
+rusqlite.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+zip.workspace = true

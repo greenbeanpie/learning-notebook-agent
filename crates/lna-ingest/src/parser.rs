@@ -1,0 +1,430 @@
+use lna_types::{ErrorCode, LnaError, LnaResult};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+use scraper::{Html, Selector};
+use std::collections::HashMap;
+use std::ops::Range;
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub enum BlockKind {
+    Heading { level: u8 },
+    Paragraph,
+    ListItem,
+    Table,
+    Code,
+    Formula,
+}
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub kind: BlockKind,
+    pub text: String,
+    pub page: Option<u32>,
+    pub section_path: Vec<String>,
+    pub char_range: Range<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedDoc {
+    pub title: Option<String>,
+    pub language: Option<String>,
+    pub page_count: Option<i64>,
+    pub blocks: Vec<Block>,
+}
+
+pub fn decode_text_bytes(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    let mut det = chardetng::EncodingDetector::new();
+    det.feed(bytes, true);
+    let enc = det.guess(None, true);
+    let (cow, _, _) = enc.decode(bytes);
+    cow.into_owned()
+}
+
+pub fn parse_markdown(text: &str) -> ParsedDoc {
+    let mut blocks = Vec::new();
+    let mut section_stack: Vec<(u8, String)> = Vec::new();
+    let mut cursor = 0usize;
+    let mut cur_text = String::new();
+    let mut cur_kind: Option<BlockKind> = None;
+    let mut title = None;
+
+    let parser = Parser::new(text);
+    for ev in parser {
+        match ev {
+            Event::Start(Tag::Heading { level, .. }) => {
+                cur_text.clear();
+                let lvl = match level {
+                    HeadingLevel::H1 => 1,
+                    HeadingLevel::H2 => 2,
+                    HeadingLevel::H3 => 3,
+                    HeadingLevel::H4 => 4,
+                    HeadingLevel::H5 => 5,
+                    HeadingLevel::H6 => 6,
+                };
+                cur_kind = Some(BlockKind::Heading { level: lvl });
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(BlockKind::Heading { level }) = cur_kind.take() {
+                    let t = cur_text.trim().to_string();
+                    if !t.is_empty() {
+                        if title.is_none() && level == 1 {
+                            title = Some(t.clone());
+                        }
+                        while section_stack
+                            .last()
+                            .map(|(l, _)| *l >= level)
+                            .unwrap_or(false)
+                        {
+                            section_stack.pop();
+                        }
+                        section_stack.push((level, t.clone()));
+                        let start = cursor;
+                        cursor += t.len();
+                        blocks.push(Block {
+                            kind: BlockKind::Heading { level },
+                            text: t,
+                            page: None,
+                            section_path: section_stack.iter().map(|(_, s)| s.clone()).collect(),
+                            char_range: start..cursor,
+                        });
+                    }
+                    cur_text.clear();
+                }
+            }
+            Event::Start(Tag::CodeBlock(_)) => {
+                cur_text.clear();
+                cur_kind = Some(BlockKind::Code);
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                let t = cur_text.trim().to_string();
+                if !t.is_empty() {
+                    let start = cursor;
+                    cursor += t.len();
+                    blocks.push(Block {
+                        kind: BlockKind::Code,
+                        text: t,
+                        page: None,
+                        section_path: section_stack.iter().map(|(_, s)| s.clone()).collect(),
+                        char_range: start..cursor,
+                    });
+                }
+                cur_text.clear();
+                cur_kind = None;
+            }
+            Event::Start(Tag::Paragraph) => {
+                cur_text.clear();
+                cur_kind = Some(BlockKind::Paragraph);
+            }
+            Event::End(TagEnd::Paragraph) => {
+                let t = cur_text.trim().to_string();
+                if !t.is_empty() {
+                    let start = cursor;
+                    cursor += t.len();
+                    let kind = if t.starts_with("$$") && t.ends_with("$$") {
+                        BlockKind::Formula
+                    } else {
+                        BlockKind::Paragraph
+                    };
+                    blocks.push(Block {
+                        kind,
+                        text: t,
+                        page: None,
+                        section_path: section_stack.iter().map(|(_, s)| s.clone()).collect(),
+                        char_range: start..cursor,
+                    });
+                }
+                cur_text.clear();
+                cur_kind = None;
+            }
+            Event::Start(Tag::Item) => {
+                cur_text.clear();
+                cur_kind = Some(BlockKind::ListItem);
+            }
+            Event::End(TagEnd::Item) => {
+                let t = cur_text.trim().to_string();
+                if !t.is_empty() {
+                    let start = cursor;
+                    cursor += t.len();
+                    blocks.push(Block {
+                        kind: BlockKind::ListItem,
+                        text: t,
+                        page: None,
+                        section_path: section_stack.iter().map(|(_, s)| s.clone()).collect(),
+                        char_range: start..cursor,
+                    });
+                }
+                cur_text.clear();
+                cur_kind = None;
+            }
+            Event::Text(t) | Event::Code(t) => {
+                cur_text.push_str(&t);
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                cur_text.push(' ');
+            }
+            _ => {}
+        }
+    }
+
+    let lang = detect_language(text);
+    ParsedDoc {
+        title,
+        language: Some(lang),
+        page_count: None,
+        blocks,
+    }
+}
+
+pub fn parse_plain_text(text: &str) -> ParsedDoc {
+    let mut blocks = Vec::new();
+    let mut section_path = Vec::new();
+    let mut cursor = 0usize;
+    for raw_para in text.split("\n\n") {
+        let trimmed = raw_para.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let is_heading = trimmed.lines().count() == 1
+            && (trimmed.starts_with("第") && (trimmed.contains('章') || trimmed.contains('节'))
+                || trimmed
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+                    && trimmed.contains('.'));
+        let kind = if is_heading {
+            section_path = vec![trimmed.to_string()];
+            BlockKind::Heading { level: 1 }
+        } else {
+            BlockKind::Paragraph
+        };
+        let start = cursor;
+        cursor += trimmed.len();
+        blocks.push(Block {
+            kind,
+            text: trimmed.to_string(),
+            page: None,
+            section_path: section_path.clone(),
+            char_range: start..cursor,
+        });
+    }
+    ParsedDoc {
+        title: None,
+        language: Some(detect_language(text)),
+        page_count: None,
+        blocks,
+    }
+}
+
+pub fn parse_html(html: &str) -> ParsedDoc {
+    let doc = Html::parse_document(html);
+    let title = Selector::parse("title")
+        .ok()
+        .and_then(|sel| doc.select(&sel).next())
+        .map(|el| el.text().collect::<String>().trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let mut blocks = Vec::new();
+    let mut section_stack: Vec<(u8, String)> = Vec::new();
+    let mut cursor = 0usize;
+
+    if let Ok(sel) = Selector::parse("h1,h2,h3,h4,p,li,pre") {
+        for el in doc.select(&sel) {
+            let tag = el.value().name();
+            let text = el.text().collect::<Vec<_>>().join(" ").trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            let kind = match tag {
+                "h1" | "h2" | "h3" | "h4" => {
+                    let lvl = tag[1..].parse::<u8>().unwrap_or(1);
+                    while section_stack
+                        .last()
+                        .map(|(l, _)| *l >= lvl)
+                        .unwrap_or(false)
+                    {
+                        section_stack.pop();
+                    }
+                    section_stack.push((lvl, text.clone()));
+                    BlockKind::Heading { level: lvl }
+                }
+                "pre" => BlockKind::Code,
+                "li" => BlockKind::ListItem,
+                _ => BlockKind::Paragraph,
+            };
+            let start = cursor;
+            cursor += text.len();
+            blocks.push(Block {
+                kind,
+                text,
+                page: None,
+                section_path: section_stack.iter().map(|(_, s)| s.clone()).collect(),
+                char_range: start..cursor,
+            });
+        }
+    }
+
+    let sample: String = blocks
+        .iter()
+        .take(5)
+        .map(|b| b.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    ParsedDoc {
+        title,
+        language: Some(detect_language(&sample)),
+        page_count: None,
+        blocks,
+    }
+}
+
+pub fn parse_pdf(path: &Path) -> LnaResult<ParsedDoc> {
+    use pdfium_render::prelude::*;
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let bindings = exe_dir
+        .as_deref()
+        .ok_or(pdfium_render::prelude::PdfiumError::PdfiumLibraryInternalError(
+            pdfium_render::prelude::PdfiumInternalError::Unknown
+        ))
+        .and_then(|d| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(d)))
+        .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
+        .or_else(|_| Pdfium::bind_to_system_library())
+        .map_err(|e| LnaError::new(
+            ErrorCode::CapabilityMissing,
+            format!("PDFium library not found (place pdfium.dll / libpdfium.so next to binary): {e}"),
+        ))?;
+    let pdfium = Pdfium::new(bindings);
+    let doc = pdfium.load_pdf_from_file(path, None).map_err(|e| {
+        let msg = e.to_string();
+        if msg.to_lowercase().contains("password") || msg.to_lowercase().contains("encrypt") {
+            LnaError::new(ErrorCode::SourceEncrypted, "PDF is password-protected")
+        } else {
+            LnaError::new(
+                ErrorCode::SourceUnsupported,
+                format!("Failed to open PDF: {msg}"),
+            )
+        }
+    })?;
+
+    let page_count = doc.pages().len() as usize;
+    if page_count > 3000 {
+        return Err(LnaError::new(
+            ErrorCode::SourceTooLarge,
+            format!("PDF page count {page_count} exceeds 3000 limit"),
+        ));
+    }
+
+    let mut page_lines: Vec<Vec<String>> = Vec::with_capacity(page_count);
+    let mut line_freq: HashMap<String, usize> = HashMap::new();
+    let mut sparse_pages = 0usize;
+
+    for page in doc.pages().iter() {
+        let text = page.text().map(|t| t.all()).unwrap_or_default();
+        if text.trim().chars().count() < 20 {
+            sparse_pages += 1;
+        }
+        let lines: Vec<String> = text
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if let Some(first) = lines.first() {
+            *line_freq.entry(first.clone()).or_insert(0) += 1;
+        }
+        if let Some(last) = lines.last() {
+            *line_freq.entry(last.clone()).or_insert(0) += 1;
+        }
+        page_lines.push(lines);
+    }
+
+    if page_count > 0 && sparse_pages * 2 > page_count {
+        return Err(LnaError::new(
+            ErrorCode::SourceNeedsOcr,
+            "More than half of PDF pages lack selectable text (OCR required)",
+        ));
+    }
+
+    let header_footer_threshold = (page_count / 3).max(3);
+    let mut blocks = Vec::new();
+    let mut cursor = 0usize;
+
+    for (idx, lines) in page_lines.into_iter().enumerate() {
+        let page_no = (idx + 1) as u32;
+        let filtered: Vec<String> = lines
+            .into_iter()
+            .filter(|l| line_freq.get(l).copied().unwrap_or(0) < header_footer_threshold)
+            .collect();
+
+        // Fix line-end hyphenation and group into paragraphs
+        let mut joined = String::new();
+        for l in filtered {
+            if joined.ends_with('-')
+                && l.chars()
+                    .next()
+                    .map(|c| c.is_ascii_alphabetic())
+                    .unwrap_or(false)
+            {
+                joined.pop();
+                joined.push_str(&l);
+            } else {
+                if !joined.is_empty() {
+                    joined.push(' ');
+                }
+                joined.push_str(&l);
+            }
+        }
+        if !joined.is_empty() {
+            let start = cursor;
+            cursor += joined.len();
+            blocks.push(Block {
+                kind: BlockKind::Paragraph,
+                text: joined,
+                page: Some(page_no),
+                section_path: vec![],
+                char_range: start..cursor,
+            });
+        }
+    }
+
+    let sample: String = blocks
+        .iter()
+        .take(5)
+        .map(|b| b.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(ParsedDoc {
+        title: None,
+        language: Some(detect_language(&sample)),
+        page_count: Some(page_count as i64),
+        blocks,
+    })
+}
+
+pub fn detect_language(sample: &str) -> String {
+    let cjk = sample
+        .chars()
+        .filter(|&c| ('\u{4E00}'..='\u{9FFF}').contains(&c))
+        .count();
+    let total = sample.chars().count().max(1);
+    if cjk * 5 > total {
+        "zh".to_string()
+    } else {
+        "en".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn missing_pdf_returns_err_without_panic() {
+        let res = parse_pdf(Path::new("/nonexistent_lna_test.pdf"));
+        assert!(res.is_err());
+    }
+}

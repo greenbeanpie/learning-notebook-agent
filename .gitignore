@@ -1,0 +1,43 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# .NET / Windows client
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.binlog
+AppPackages/
+BundleArtifacts/
+
+# Node / frontend demo
+node_modules/
+
+# Packaged deliverables
+/dist/
+*.zip
+
+# Runtime data and local databases
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.log
+
+# Native runtime libraries placed next to binaries for local runs
+pdfium.dll
+libpdfium.so
+libpdfium.dylib
+
+# Python
+__pycache__/
+*.pyc
+
+# Editors / OS
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

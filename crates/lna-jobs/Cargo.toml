@@ -1,0 +1,13 @@
+[package]
+name = "lna-jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lna-types = { path = "../lna-types" }
+lna-storage = { path = "../lna-storage" }
+rusqlite.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true

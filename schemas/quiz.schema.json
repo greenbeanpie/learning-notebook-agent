@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "QuizPayload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "questions"],
+  "properties": {
+    "title": { "type": "string" },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "difficulty", "prompt", "options", "answer_indices", "accepted_answers", "rubric", "explanation", "citations"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string", "enum": ["single", "multi", "fill", "short"] },
+          "difficulty": { "type": "string", "enum": ["easy", "medium", "hard"] },
+          "prompt": { "type": "string" },
+          "options": { "type": "array", "items": { "type": "string" } },
+          "answer_indices": { "type": "array", "items": { "type": "integer" } },
+          "accepted_answers": { "type": "array", "items": { "type": "string" } },
+          "rubric": { "type": "string" },
+          "explanation": { "type": "string" },
+          "citations": { "type": "array", "items": { "type": "integer" } }
+        }
+      }
+    }
+  }
+}

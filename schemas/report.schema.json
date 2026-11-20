@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReportPayload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "format", "sections", "citations"],
+  "properties": {
+    "title": { "type": "string" },
+    "format": { "type": "string", "enum": ["interactive", "document"] },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["heading", "body_md", "key_takeaways"],
+        "properties": {
+          "heading": { "type": "string" },
+          "body_md": { "type": "string" },
+          "key_takeaways": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "citations": { "type": "array", "items": { "type": "integer" } }
+  }
+}

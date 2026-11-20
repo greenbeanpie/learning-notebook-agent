@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SlidesPayload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "slides"],
+  "properties": {
+    "title": { "type": "string" },
+    "slides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["layout", "title", "bullets", "speaker_notes", "citations"],
+        "properties": {
+          "layout": { "type": "string", "enum": ["title", "section", "bullets", "two_column", "quote", "formula"] },
+          "title": { "type": "string" },
+          "bullets": { "type": "array", "items": { "type": "string" } },
+          "speaker_notes": { "type": "string" },
+          "citations": { "type": "array", "items": { "type": "integer" } }
+        }
+      }
+    }
+  }
+}

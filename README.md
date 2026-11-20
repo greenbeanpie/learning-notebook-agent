@@ -1,29 +1,34 @@
-# Local Notebook Agent — 设计与架构产出包
+# Local Notebook Agent
 
-本压缩包包含一个对齐 Google Gemini Notebook (NotebookLM) 界面的本地自定义模型笔记本 Agent 的前端 HTML Demo、跨平台低占用后端架构设计文档，以及四大模型协议（Chat Completion / Responses / Anthropic / Gemini）的后端适配器参考骨架代码。
+基于 Rust Core (`crates/lna-*`) + Windows WinUI 3 (.NET 10 NativeAOT) + SQLite WAL / FTS5 / `sqlite-vec` 构建的本地自定义模型笔记本 Agent，支持 Chat Completions、Responses、Anthropic Messages、Google Gemini 四大模型协议。
 
-## 目录结构
+## 工程结构
+- `crates/`：14 个 Rust workspace crates（存储、密钥、任务、四协议 LLM、嵌入、摄取、检索、Agent、Studio 7 模态、TTS、API、C ABI、DevTools）。
+- `apps/windows/LocalNotebook/`：.NET 10 NativeAOT + WinUI 3 三栏桌面客户端（含 `app.manifest` 与按需加载/闲置 60s 释放的 `WebContentHost`）。
+- `migrations/`、`schemas/`、`prompts/`：SQLite 初始化脚本、Studio 7 模态 JSON Schema、版本化提示词模板。
+- `frontend-demo/`：独立演示与 DevTools 联调页（通过 `api.js` 在 `?ws=...&token=...` 时连接真实 Core；视频概览与 Fast/Deep Research 入口尚未移除，见计划 H3、H4）。
+- `tests/e2e/`：端到端冒烟测试套件（`mock_llm.py` + `smoke.mjs` + `run-smoke.ps1`）。
 
-```text
-local-notebook-agent/
-├── README.md                                  # 本说明文件
-├── frontend-demo/
-│   └── index.html                             # 独立可运行的 HTML Demo（直接用浏览器打开即可）
-├── docs/
-│   ├── ARCHITECTURE.md                        # 跨平台低内存后端架构设计（Rust Core + WinUI 3 / SwiftUI / .NET NativeAOT）
-│   └── PROTOCOL_ADAPTERS.md                   # 四大模型协议报文映射与 SSE 流式事件归一化规范
-└── backend-skeleton/
-    ├── csharp/
-    │   └── ProtocolAdapters.cs                # .NET 8 / C# (NativeAOT 兼容) 四协议适配器骨架
-    ├── rust/
-    │   └── protocol_adapter.rs                # Rust 轻量核心四协议 Trait 与流式事件定义
-    └── sql/
-        └── schema.sql                         # SQLite + FTS5 + sqlite-vec 本地知识库与笔记 Schema
-```
+> 范围说明：按 2026-11-20 范围调整，已取消 Studio **视频概览**，并暂缓网页/本地搜索（`research.*` 返回 `CAPABILITY_MISSING`）。
 
-## 快速体验前端 Demo
-
-直接双击打开 `frontend-demo/index.html`（无需 Node.js 或本地服务器）：
-- **三栏布局**：左侧 `来源`（支持勾选过滤、添加本地来源）、中间对话区（含可折叠 `Thoughts` 推理链与角标引用 `[1]`）、右侧 `Studio`（8 宫格功能卡片 + 生成列表）。
-- **测验 (Quiz) 弹窗**：点击右侧 Studio 的 `测验` 卡片，可体验与原版一致的参数配置弹窗并生成可交互测验题。
-- **4 协议模型配置**：点击顶部模型徽章或右上角设置齿轮 `⚙️`，可切换 `Chat Completion`、`Responses API`、`Anthropic`、`Gemini` 四种协议并实时预览请求报文映射。
+## 构建与验收运行
+1. **构建与单测（Rust）**（`ort` 已锁定 `=2.0.0-rc.10` 并附带 `Cargo.lock`；离线环境可通过设置 `ORT_LIB_LOCATION` 指向本地 ONNX Runtime 动态库目录跳过构建期下载）：
+   ```bash
+   cargo build --workspace --all-targets
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace
+   ```
+2. **运行端到端冒烟测试**（需 Python 3.10+ 与 Node 22+）：
+   ```powershell
+   pwsh tests/e2e/run-smoke.ps1
+   ```
+3. **启动联调页**：
+   ```bash
+   cargo run -p lna-devtools -- serve
+   ```
+   使用终端输出的带 `token` URL 打开 `frontend-demo/index.html` 即可联调。
+4. **构建 Windows 客户端**（需 .NET 10 SDK 与 Windows App SDK，AOT 发布需将 `vswhere.exe` 加入 PATH）：
+   ```powershell
+   dotnet build apps/windows/LocalNotebook/LocalNotebook.csproj -p:Platform=x64
+   dotnet publish apps/windows/LocalNotebook/LocalNotebook.csproj -c Release -r win-x64
+   ```

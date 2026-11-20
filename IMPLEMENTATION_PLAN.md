@@ -1,12 +1,12 @@
 # Local Notebook Agent 实施计划
 
-> 版本：v1.0（2026-11-18）
-> 依据：`README.md`、`docs/ARCHITECTURE.md`、`docs/PROTOCOL_ADAPTERS.md`、`backend-skeleton/`、`frontend-demo/index.html`
-> 用途：把现有的设计产出包落成可开工的工程计划。本文与旧文档冲突时，以本文为准，并在 M0 同步修订旧文档。
+> 版本：v2.2（2026-11-20，合入 v2.2 代码包并完成验收；v2.1 为合入 v2 代码包后的版本，v2.0 为同日的基线版，v1.0 为 2026-11-18 初版）
+> 依据：v1.0 计划、`crates/`、`apps/windows/`、`frontend-demo/`，以及 2026-11-20 对 v2、v2.2 代码包的构建、单元测试、端到端测试和专项探测结果
+> 用途：作为后续开发的唯一计划。第 1 节给出当前基线、缺陷状态和代码交付要求，第 17 节给出每项功能的状态、验收标准和里程碑。本文与其他文档冲突时，以本文为准。
 
 ## 目录
 
-1. 现状与结论
+1. 当前基线（2026-11-20）
 2. 关键技术决策
 3. 总体架构
 4. 工程目录与依赖
@@ -22,69 +22,122 @@
 14. 生命周期、错误与资源治理
 15. 安全与隐私
 16. 测试与质量门槛
-17. 里程碑
+17. 功能清单、验收标准与里程碑
 18. 风险清单
-19. 第一周行动清单
+19. 下一步行动清单（M0）
 
 ---
 
-## 1. 现状与结论
+## 1. 当前基线（2026-11-20）
 
-### 1.1 项目现状
+### 1.1 范围调整
 
-项目目前是**设计产出包**，还没有可运行的后端。
-
-| 资产 | 实际状态 | 后续处理 |
+| 功能 | 决定 | 影响 |
 | :--- | :--- | :--- |
-| `frontend-demo/index.html`（约 2200 行） | 交互完整的纯前端原型，所有数据和生成结果都是写死或 `setTimeout` 模拟 | 作为 UI 规格，并改造成开发联调页 |
-| `docs/ARCHITECTURE.md` | 业务链路清楚，但 UI 和 Core 的技术路线留了多个备选 | 按第 2 节收敛 |
-| `docs/PROTOCOL_ADAPTERS.md` | 四协议映射表，部分字段已过时 | 按第 10 节重写 |
-| `backend-skeleton/rust/protocol_adapter.rs` | 只有类型、trait 和 URL 拼接，没有适配器实现 | 迁入 `crates/llm` 后重写 |
-| `backend-skeleton/csharp/ProtocolAdapters.cs` | 四个适配器的流式示例，只覆盖正常路径 | 仅作参考，Core 定为 Rust 后删除 |
-| `backend-skeleton/sql/schema.sql` | 基础表结构，缺多张业务表 | 由第 6 节的迁移脚本取代 |
+| Studio 视频概览 | **取消** | 删除原 M9 及 FFmpeg 相关设计；Core 和 Windows 客户端已不提供，联调页的入口待清理 |
+| 网页/本地搜索、Fast/Deep Research | **暂缓** | 原 M8 中的搜索部分移出 V1；`research.*` 保持返回 `CAPABILITY_MISSING`；URL 作为来源导入仍在范围内 |
 
-项目还不是 git 仓库，本机尚未安装 Rust 工具链（已有 .NET SDK 10.0.402、Node 24、Python 3.14）。
+### 1.2 构建与测试现状
 
-### 1.2 必须先修正的问题
+按 2026-11-20 合入 v2.2 代码包后的工作区实测。
 
-这些问题如果带入开发，会造成返工或线上故障。
+**v2.2 包验收结论：原包不合格，修正后合入。** 原包违反 1.4 节第 1、5 条：
 
-**数据与检索**
+- 原样无法构建，有两处错误：
+  - `lna-ingest/src/parser.rs` 引用了 pdfium-render 0.8.37 中不存在的 `PdfiumError::PdfiumLibraryBindingsError`。
+  - 新增的 `lna-ffi/tests/ffi_smoke.rs` 无法链接，因为 `lna-ffi` 只声明了 `cdylib`。
+- 未附交付说明。
+- 包内新增的 CI 本身无法通过：`cargo fmt --check` 有 130 处差异，clippy 有 19 条告警。
+- README 声称联调页“已移除视频与搜索入口”，与实际不符。
 
-| # | 位置 | 问题 | 处理 |
-| :-- | :--- | :--- | :--- |
-| 1 | `schema.sql:35-40` | `unicode61` 不切分中文，连续汉字成为一个词，中文查询基本命中不了 | 应用层用 jieba 分词后写入 FTS（8.2 节） |
-| 2 | `schema.sql:35-40` | FTS 外部内容表没有同步触发器，删除来源后索引残留 | 改为 `contentless_delete` 表 + 删除触发器 |
-| 3 | `schema.sql:43-46` | 向量维度写死 512，而架构允许用户自配 Embedding 服务 | 按嵌入模型建表（6.3 节） |
-| 4 | `schema.sql:74` | 状态缺 `DRAFT_REVIEW`，与两阶段审核冲突 | 重新定义状态机（11.2 节） |
-| 5 | `schema.sql:72` | 产物类型缺 `video`、`infographic`，也没有笔记表 | 补齐 |
-| 6 | `schema.sql:3` | `foreign_keys` 只对当前连接生效，写在脚本里不够 | 每条连接打开时设置 |
-| 7 | 架构文档 A.5 | `bge-small-zh-v1.5` 面向中文，而 Demo 场景是中文提问英文教材 | M0 用双语评测集选型（8.4 节） |
+合入时验收方做了以下修正：
 
-**协议适配**
+- 修复上述两处编译错误：改用 `PdfiumLibraryInternalError`；`lna-ffi` 的 crate-type 增加 `rlib`。
+- 执行 `cargo fmt`。
+- 清零编译与 clippy 告警：
+  - 补充 FFI 函数的 `# Safety` 文档。
+  - 删除未使用的 `CoreRuntime.seq`。
+  - 为 `transmute` 加类型标注。
+  - 两个 9 参数函数加局部 `allow`。
+  - 钥匙串回退时记录错误原因。
+- 补强 B-07 单测，断言任务保持 `CANCELLED` 且不会再被领取。
+- 更正 README。
 
-| # | 位置 | 问题 | 处理 |
-| :-- | :--- | :--- | :--- |
-| 8 | `ProtocolAdapters.cs:237`、`index.html:1774`、`PROTOCOL_ADAPTERS.md:13` | `thinking.budget_tokens` 在当前 Claude 模型上返回 400 | 改用 adaptive + effort（10.5 节） |
-| 9 | `ProtocolAdapters.cs:134` 等 | 匿名对象 + 反射序列化与 NativeAOT 不兼容，README 的“NativeAOT 兼容”不成立 | Core 改 Rust；C# 侧只用源生成序列化 |
-| 10 | `ProtocolAdapters.cs` 全文 | 四个适配器都没发出 `UsageReported`，“AI 用量”没有数据来源 | 统一解析用量 |
-| 11 | `ProtocolAdapters.cs:151-167`、`202-214`、`251-267` | 连接中断时流静默结束，截断的回答会被当成完整回答 | 没有收到终止事件一律判为错误 |
-| 12 | `ProtocolAdapters.cs:316`、`329` | Gemini 无 `content` 的帧会抛异常；被拦截或截断时仍报完成 | 映射 `finishReason` |
-| 13 | `ProtocolAdapters.cs:202-214`、`251-267` | 未处理 `response.failed`、`response.incomplete`、Anthropic `error` 事件 | 全部纳入终止状态 |
-| 14 | 两份骨架 | 请求类型没有工具和结构化输出，事件没有 `ToolCallDelta`，而 Agent 和 Studio 都依赖它们 | 重新定义统一类型（10.1 节） |
-| 15 | `protocol_adapter.rs:17-23` | `api_key` 位于可 `Debug`、可 `Serialize` 的结构体，容易进日志 | 用 `SecretString`，配置与密钥分离 |
+| 项目 | 基线（v2.0） | v2.1 | 当前（v2.2） | 说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| Rust 工作区构建 | ❌ 4 个编译错误 | ✅ 8 条告警 | ✅ 无告警 | `cargo build --workspace --all-targets`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --check` 均通过（B-23 关闭） |
+| Windows 客户端构建 | ❌ 缺 `app.manifest` | ✅ | ✅ | AOT 发布成功；项目代码的 IL2026/IL3050 已消除。剩余 3 条告警均来自依赖：NU1903（B-18），以及 WebView2 程序集自身的 IL2104/IL3053。AOT 发布要求 `vswhere.exe` 在 PATH 中 |
+| 自动化测试 | ❌ 0 个 | ⚠️ 1 个 | ⚠️ 8 个 | 单测覆盖 B-02、B-06、B-07、B-09（2 个）、B-21；集成测试覆盖 FFI 的 open/call/close（B-04）。`eval/`、`tests/fixtures/` 仍为空 |
+| 端到端冒烟 | ⚠️ 19/21 | ⚠️ 20/21 | ✅ 22/22 | 新增 B-14 检查；“failed generation”在 B-22 修复后通过 |
+| PDF 导入 | ❌ panic | ⚠️ 正确失败 | ⚠️ 正确失败 | 已改为先在可执行文件目录查找 PDFium；包内仍未附带 PDFium（B-06） |
+| CLI `call` | ❌ panic | ✅ | ✅ | — |
+| Studio 失败与取消 | ❌ 停在 `RUNNING` | ⚠️ 约 58 秒失败 | ✅ | 不可达模型时数秒内进入 `FAILED`；取消后保持 `CANCELLED` |
+| 音频概览 | ❌ 静音 WAV | ❌ 文件头错误 | ⚠️ | WAV 按 RIFF 块解析并统一重采样到 22050 Hz（B-21 关闭）；未用真实系统语音端到端生成验证；E8 其余要求见 B-08 |
+| 规模 | — | 约 7,700 行 Rust | 约 8,000 行 Rust | C# 约 600 行；迁移、提示词、Schema 齐备 |
 
-**前端与依赖**
+v1.0 列出的 22 项设计问题中，后端相关项（#1–#6、#8–#15、#22）已在代码中处理，其中协议相关项只有 Chat Completions 经过运行验证；#7 嵌入选型未做；前端相关项（#16–#21）未处理。
 
-| # | 位置 | 问题 | 处理 |
-| :-- | :--- | :--- | :--- |
-| 16 | `index.html:2185` | API Key 明文写入 `localStorage` | 改为一次性提交给 Core |
-| 17 | `index.html:1384、1466、1733、1751` | 用户文本和来源标题未转义就写入 `innerHTML`，接入真实数据后是 XSS | 联调页统一转义 |
-| 18 | `index.html:2034` | 引用 `[n]` 被当作来源下标，语义错误 | 改为按消息的引用表解析 |
-| 19 | `index.html:1729-1749` | 测验只能展示单选，而弹窗允许四种题型 | 按 11.5 节重写 |
-| 20 | `index.html:7-10` | 依赖 Tailwind CDN 和 Google Fonts，离线时样式失效 | 联调页可接受，产品 UI 不引入 |
-| 21 | `index.html:1029-1043` | 预设模型已过时 | 不内置模型名，从 `/models` 拉取或由用户填写 |
-| 22 | README、架构文档 | .NET 8/9 已于 2026-11-10 结束支持 | 统一使用 .NET 10 LTS |
+### 1.3 缺陷清单
+
+每个缺陷修复时必须附带回归测试，验收以测试通过为准。“状态”一栏为 v2.2 代码包（含验收修正）的验收结论：✅ 已关闭；⚠️ 代码已改，但验收标准未全部满足（多为缺回归测试）；❌ 未修复。未关闭项的具体剩余要求见 1.5 节。
+
+| ID | 级别 | 状态 | 位置 | 问题 | 验收标准 |
+| :-- | :-- | :-- | :--- | :--- | :--- |
+| B-01 | 阻断 | ✅ | `Cargo.toml` | `ort = "2.0.0-rc.9"` 被解析为 rc.15，代码按 rc.10 的 API 编写 | 写死 `=2.0.0-rc.10` 并提交 `Cargo.lock`；干净环境可构建 |
+| B-02 | 阻断 | ⚠️ | `lna-studio/src/render.rs:146,159` | 原始字符串 `r#"` 被 `"#e3e3e3"` 截断 | 编译通过；信息图 SVG 通过 XML 解析校验 |
+| B-03 | 阻断 | ✅ | `lna-devtools/Cargo.toml` | 缺少 `serde` 依赖 | 编译通过 |
+| B-04 | 阻断 | ✅ | `lna-ffi/src/lib.rs` | `catch_unwind` 闭包未用 `AssertUnwindSafe` | 编译通过；FFI 冒烟可调用 `app.info` |
+| B-05 | 阻断 | ✅ | `apps/windows/LocalNotebook` | 缺少 `app.manifest` | `dotnet build` 与 AOT `publish` 成功 |
+| B-06 | 严重 | ⚠️ | `lna-ingest/src/parser.rs:270`、`lib.rs:189` | `Pdfium::default()` 找不到库时 panic；`spawn_blocking` 出错后来源不会被标记失败 | 随包附带 PDFium；任何解析异常都使来源进入 `FAILED` 并带错误码 |
+| B-07 | 严重 | ✅ | `lna-api/src/lib.rs:131`、`lna-jobs/src/lib.rs:123`、`lna-studio` | Studio 失败后产物一直显示 `RUNNING`；取消后任务被失败重试改回 `QUEUED` 并再次执行 | 冒烟“failed generation surfaces FAILED status”通过；取消后任务和产物均为 `CANCELLED` 且不再执行 |
+| B-08 | 严重 | ❌ | `lna-tts/src/lib.rs:65` | TTS 只写静音 WAV，分段未合并，双人共用一个音色 | 见 E8；另见 B-21 |
+| B-09 | 中 | ✅ | `lna-agent/src/citations.rs` | `[1,2]` 等数学写法被改成引用角标；无效编号未删除 | 冒烟“math interval”通过；单测覆盖区间、链接、无效编号 |
+| B-10 | 中 | ⚠️ | `lna-agent/src/lib.rs:314-528` | 工具调用满 3 轮后直接返回，消息停留在 `STREAMING` | 单测：任何退出路径下消息都不是 `STREAMING` |
+| B-11 | 中 | ⚠️ | `lna-types/src/api.rs:49`、`profile.test` | 能力字段无法设置也不会探测，结构化输出总是走纯文本兜底，工具总是关闭 | 见 D5 |
+| B-12 | 中 | ✅ | `lna-devtools/src/main.rs:79` | `call` 子命令在异步 `main` 中 `block_on`，启动即 panic | `lna-devtools call app.info` 输出 JSON 并以 0 退出 |
+| B-13 | 中 | ⚠️ | `lna-agent/src/lib.rs:531` | 摘要只依据来源标题；导入时未配置模型则以后不再生成 | 见 B10 |
+| B-14 | 中 | ✅ | `lna-api/src/lib.rs:96-142` | 后台只有一个串行任务循环，Studio 生成期间来源导入停滞 | Studio 运行中新增来源 30 秒内进入 `READY` |
+| B-15 | 中 | ❌ | `lna-embedding` | 默认没有嵌入模型，语义检索不生效且无提示 | 见 B8 |
+| B-16 | 中 | ⚠️ | `lna-ffi/src/lib.rs:115` | `lna_close` 可能在异步任务中析构运行时（会 panic），或等待事件线程时挂起（代码审查发现，未复现） | FFI 测试：请求进行中调用 `lna_close`，2 秒内返回且无 panic |
+| B-17 | 低 | ⚠️ | `README.md`、`frontend-demo/` | README 描述与实际不符；`api.js` 不存在；视频和搜索入口仍在 | 见 A5、H3、H4 |
+| B-18 | 低 | ❌ | Windows 依赖 | `Microsoft.DotNet.ILCompiler` 10.0.13 有高危漏洞告警 | 还原时无 NU1903 告警 |
+| B-19 | 低 | ⚠️ | `lna-agent` | 工具循环只记录最后一轮用量 | 多轮用量累加，单测覆盖 |
+| B-20 | 低 | ⚠️ | `lna-retrieval` | 向量查询错误被 `unwrap_or_default` 吞掉 | 错误写入日志并在 `thought_step` 中提示降级为关键词检索 |
+| B-21 | 严重 | ✅ | `lna-tts/src/lib.rs` `concat_wavs`、`synthesize` | v2 新引入。合并时固定按 44 字节截取 WAV 头，但 Windows 系统语音输出 22050 Hz、`fmt` 块 18 字节（头 46 字节），合并结果文件头错误；系统语音与 16 kHz 兜底分段混合时采样率错乱；第二主持人取本机第 2 个语音，可能是英文语音（实测为 Zira en-US） | 按 RIFF 块解析而非固定偏移；合并前统一重采样到同一格式；按文本语言选择语音，双人使用同语言的两种音色（不足两种时用语速或音高区分）；单测覆盖 44 与 46 字节两种文件头、混合采样率输入，输出可被标准 WAV 解析器读取且时长等于各段之和 |
+| B-22 | 中 | ✅ | `lna-llm/src/client.rs:65`、`lna-api/src/lib.rs:142` | v2 验收发现。模型地址不可达（连接被拒绝）时，客户端重试 3 次、任务再重试 3 轮，约 58 秒后才进入 `FAILED`，导致冒烟“failed generation”超时 | 连接被拒绝、DNS 失败、401/403/404 视为不可重试，直接失败；仅超时、429、5xx 重试；不可达地址下 Studio 15 秒内进入 `FAILED`；冒烟 21/21 |
+| B-23 | 低 | ✅ | 全工作区 | 8 条编译告警、19 条 clippy 告警 | `cargo build` 无告警；`cargo clippy --workspace --all-targets -- -D warnings` 通过（A3 的前提） |
+
+### 1.4 代码交付要求
+
+v2 代码包出现了“改了开头没改结尾”的编译错误，且修复多数没有附带测试。今后每次交付（代码包或 PR）必须满足以下要求，不满足的直接退回：
+
+1. **可构建**：在干净目录中 `cargo build --workspace --all-targets` 与 `dotnet build` 均通过，不依赖交付说明之外的手工修改。
+2. **零告警**：B-23 已于 v2.2 关闭，`cargo build` 无告警，`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all -- --check` 必须通过；项目代码不得新增 .NET 裁剪或 AOT 告警。
+3. **有回归测试**：每个声称已修复的缺陷或功能，至少附带一个能在修复前失败、修复后通过的测试（单元、回放或冒烟）；测试名或注释引用缺陷 ID。
+4. **冒烟不回退**：`pwsh tests/e2e/run-smoke.ps1 -Pdf` 通过项不得少于上一版；交付说明附运行输出。
+5. **交付说明**：列出修改的文件、对应的缺陷或功能 ID、新增的测试、已知未完成项；不得把“代码已写”表述为“已修复”。
+6. **不夹带范围外内容**：不得恢复视频概览，不得实现搜索与 Research（见 1.1）。
+7. **打包规范**：顶层目录为 `learning-notebook-agent/`；包含 `Cargo.lock`；不包含 `target/`、`bin/`、`obj/`、`dist/`、数据库与日志（与 `.gitignore` 一致）。
+8. **CI 自洽**：`.github/workflows/ci.yml` 中的每一步须在交付前本地跑通；不得提交自身无法通过的 CI 配置（v2.2 曾出现）。
+9. **测试须能失败**：回归测试必须断言缺陷对应的状态或输出，不能只调用被测函数而不检查结果（v2.2 的 B-07 测试曾出现，已由验收方补强）。
+
+### 1.5 未关闭缺陷的剩余要求
+
+| ID | 已完成（截至 v2.2） | 剩余要求 |
+| :-- | :--- | :--- |
+| B-02 | 已修复转义；单测用含 `&`、`<`、`"` 的数据渲染信息图并检查转义结果 | 单测改为用 XML 解析器（如 `roxmltree`，作为 dev-dependency）解析输出 |
+| B-06 | 解析异常进入 `FAILED`；缺库时返回 `CAPABILITY_MISSING`；先在可执行文件目录查找 PDFium，再试 `./` 与系统库 | 随包附带 PDFium；冒烟 `-Pdf` 用例进入 `READY` 且分块带页码；现有单测只覆盖“文件不存在”，需补充缺库时返回 `CAPABILITY_MISSING` 的断言 |
+| B-08 | 调用系统语音；按文本语言选音色，同语言不足两种时用语速区分；合并为 `overview.wav`，时长取自实际音频 | 语音合成需响应取消；E8 的“失败句可单独重试”未做；用真实系统语音端到端生成中英文双人音频并人工试听 |
+| B-10 | 第 3 轮后禁用工具强制作答；任何退出路径写入终态 | 增加单测（可用模拟模型连续返回工具调用），断言第 4 次请求不带工具、消息终态不是 `STREAMING` |
+| B-11 | `profile.upsert` 可写能力；`profile.test` 写入 `streaming/stream_usage` | `profile.test` 实际探测工具调用与 JSON Schema 支持并写入；开启后结构化输出走原生 JSON Schema（D5） |
+| B-13 | 摘要使用每个来源前 2 个分块；激活模型时为无摘要的笔记本补生成 | 增加测试：先导入后配置模型，摘要自动生成且包含来源内容；来源指纹不变时不重复调用（B10） |
+| B-16 | `lna_close` 在独立线程关闭运行时，最多等待 2 秒；FFI 集成测试覆盖空闲时关闭 | 测试补充：**请求进行中**调用 `lna_close`，2 秒内返回且无 panic；说明超时后后台线程的处置 |
+| B-17 | README 已按工程结构重写；`frontend-demo/api.js` 已提供并接入 | 联调页仍有视频概览卡片与 Fast/Deep Research 入口（H4）；`docs/` 与 `backend-skeleton/` 旧材料未归档（A5） |
+| B-19 | 用量改为累加 | 增加单测覆盖多轮累加 |
+| B-20 | 错误写入日志；`thought_step` 增加“已降级为关键词检索” | 增加测试：向量表缺失时对话仍完成，并出现降级步骤 |
+| B-15、B-18 | 未处理 | 按 1.3 节验收标准完成 |
+
+v2.2 已关闭：B-01（`Cargo.lock` 随本次提交入库；README 写明 `ORT_LIB_LOCATION` 离线方案）、B-04（FFI 集成测试）、B-07（冒烟与单测）、B-09（单测覆盖链接、跨块括号、长方括号文本）、B-14（冒烟检查）、B-21（RIFF 块解析、重采样，单测覆盖 44/46 字节头与混合采样率）、B-22（连接失败与 401/403/404 不重试，冒烟数秒内 `FAILED`）、B-23。
 
 ---
 
@@ -98,13 +151,15 @@
 | D4 | **同一套 API 提供仅开发用的本地 WebSocket 入口**，让 Demo 成为联调页 | 后端不必等 WinUI 完成就能端到端验证 | 等原生 UI 完成再联调 |
 | D5 | **常规界面全原生；公式和富内容按需启动一个 WebView2，闲置后释放** | 原生控件难以渲染 LaTeX 和互动报告；按需加载才能守住空闲内存目标 | 全 WebView（失去低内存优势）、自研公式排版 |
 | D6 | **对话采用“先检索、再按需调用工具”** | 每次回答都有依据；不支持工具的本地模型也能用 | 完全由模型决定是否检索 |
-| D7 | **Studio 分批交付**：文本类 → 幻灯片/信息图 → 音频 → 视频 | 后两类依赖 TTS 和视频合成，风险最高 | 8 种同时开发 |
+| D7 | **Studio 分批交付**：文本类 → 幻灯片/信息图 → 音频 | 音频依赖 TTS，风险最高 | 7 种同时开发 |
 | D8 | **每个笔记本一条对话** | 与 Demo 一致，模型简单；表结构不阻碍以后扩展 | 多会话 |
 | D9 | **Responses 用 `store:false`，Gemini 默认 `generateContent`** | 不把对话状态存到服务商，符合本地优先 | `previous_response_id`、Interactions 默认存储 |
+| D10 | **取消视频概览**（2026-11-20） | 范围调整 | — |
+| D11 | **暂缓网页/本地搜索与 Research**（2026-11-20），URL 来源导入保留 | 范围调整 | — |
 
 **需要你确认的三项**（未回复则按默认值执行）：
 
-1. **平台顺序**：默认 Windows 优先。若 macOS 同样紧急，M4 之后并行启动 M10。
+1. **平台顺序**：默认 Windows 优先。若 macOS 同样紧急，M4 之后并行启动 M9。
 2. **“包含图片”选项**：默认 V1 置灰。四种协议的对话接口都不保证具备生图能力，后续优先使用来源中的原图。
 3. **发布范围**：默认个人或内部使用。若公开发布，需在发布前替换与 NotebookLM 过于接近的界面文案和视觉（18 节）。
 
@@ -115,14 +170,14 @@
 ```text
 ┌────────────────────────────────────────────────────────────────────┐
 │ UI 壳层                                                             │
-│  WinUI 3 (M4)   SwiftUI (M10)   GTK4 (M11)   Demo 联调页 (仅开发)    │
+│  WinUI 3 (M4)   SwiftUI (M9)    GTK4 (M10)   Demo 联调页 (仅开发)    │
 └───────┬───────────────┬──────────────┬───────────────┬─────────────┘
         │ C ABI + JSON  │              │               │ WS 127.0.0.1
 ┌───────▼───────────────▼──────────────▼───────────────▼─────────────┐
 │ api：方法分发 · 事件总线 · 取消令牌 · 错误映射                       │
 ├────────────────────────────────────────────────────────────────────┤
 │ 业务层                                                              │
-│  notebook   ingest   retrieval   agent   studio   notes   research  │
+│  notebook   ingest   retrieval   agent   studio   notes             │
 ├────────────────────────────────────────────────────────────────────┤
 │ 能力层                                                              │
 │  llm(4 协议)  embedding(ONNX/远程)  tts  render  secrets  jobs       │
@@ -165,8 +220,8 @@ learning-notebook-agent/
 │   └── lna-devtools/             # CLI、WS 联调服务、评测（不进发行包）
 ├── apps/
 │   ├── windows/LocalNotebook/    # WinUI 3
-│   ├── macos/                    # M10
-│   └── linux/                    # M11
+│   ├── macos/                    # M9
+│   └── linux/                    # M10
 ├── migrations/                   # 0001_init.sql ...
 ├── schemas/                      # Studio JSON Schema
 ├── prompts/                      # 版本化提示词模板
@@ -245,7 +300,7 @@ void    lna_string_free(char* s);
 | 嵌入 | `embedding.status / configure / rebuild` |
 | Studio | `studio.list / estimate / create / get / cancel / retry / delete / rename / approve_draft / save_progress / grade_answer / export / set_feedback` |
 | 笔记 | `note.list / get / save / delete / from_message / from_summary / to_source` |
-| 研究 | `research.search / import_results / start_deep / cancel` |
+| 研究（⏸ 暂缓） | 均返回 `CAPABILITY_MISSING`；恢复时按原设计实现 `research.search / import_results / start_deep / cancel` |
 | 系统 | `app.info / settings.get / settings.set / usage.summary / diagnostics.export` |
 
 `secret.*` 只写不读：没有任何方法返回 API Key。
@@ -281,7 +336,7 @@ void    lna_string_free(char* s);
 <AppData>/LocalNotebook/
 ├── notebook.db  (+ -wal, -shm)
 ├── blobs/<notebook_id>/<source_id>/original.<ext>
-├── artifacts/<artifact_id>/...        # 音频、PPTX、SVG、视频
+├── artifacts/<artifact_id>/...        # 音频、PPTX、SVG
 ├── models/                            # 嵌入与 TTS 模型，按需下载
 └── logs/                              # 滚动日志，不含正文和密钥
 ```
@@ -474,7 +529,7 @@ CREATE TABLE studio_artifacts (
     id              TEXT PRIMARY KEY,
     notebook_id     TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
     artifact_type   TEXT NOT NULL CHECK (artifact_type IN
-                    ('audio','slides','video','mindmap','report','flashcards','quiz','infographic')),
+                    ('audio','slides','mindmap','report','flashcards','quiz','infographic')),
     title           TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN
                     ('PENDING','RUNNING','DRAFT_REVIEW','READY','FAILED','CANCELLED')),
@@ -516,7 +571,7 @@ CREATE TABLE artifact_progress (
 CREATE TABLE jobs (
     id              TEXT PRIMARY KEY,
     kind            TEXT NOT NULL CHECK (kind IN
-                    ('ingest_source','embed_source','refresh_summary','studio_generate','deep_research')),
+                    ('ingest_source','embed_source','refresh_summary','studio_generate')),
     notebook_id     TEXT REFERENCES notebooks(id) ON DELETE CASCADE,
     subject_id      TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'QUEUED'
@@ -630,7 +685,7 @@ pub struct Block {
 | 类型 | 规则 |
 | :--- | :--- |
 | PDF | PDFium 按页取文本；跨页统计重复行以去除页眉页脚；修复行尾连字符；按行距和字号识别段落与标题；优先读取书签构建 `section_path` |
-| 扫描版 PDF | 超过一半页面少于 20 个字符时判定，V1 返回 `SOURCE_NEEDS_OCR`，M12 接系统 OCR |
+| 扫描版 PDF | 超过一半页面少于 20 个字符时判定，V1 返回 `SOURCE_NEEDS_OCR`，M11 接系统 OCR |
 | 加密 PDF | 返回 `SOURCE_ENCRYPTED` |
 | Markdown | 用 `pulldown-cmark` 解析，保留标题层级、代码块、表格和 `$...$` 公式 |
 | TXT | 先判编码（UTF-8、GBK 等），按空行分段，识别“第 X 章”、`1.2` 等标题 |
@@ -986,7 +1041,7 @@ GENERATE  分段生成结构化内容 ←─────────────
    ▼
 VALIDATE  Schema + 业务规则 + 引用校验，必要时修复
    ▼
-RENDER    合成文件（SVG / PPTX / 音频 / 视频）
+RENDER    合成文件（SVG / PPTX / 音频）
    ▼
 READY → studio.status + 可选系统通知
 ```
@@ -1006,7 +1061,7 @@ READY → studio.status + 可选系统通知
 | `FAILED / CANCELLED` | 用户重试 | `PENDING` |
 | `RUNNING` | 应用重启 | `PENDING` |
 
-并发：文本生成全局最多 2 个，同一 profile 1 个；音频和视频渲染全局 1 个；前台对话优先，后台任务遇到 429 时退让。
+并发：文本生成全局最多 2 个，同一 profile 1 个；音频渲染全局 1 个；前台对话优先，后台任务遇到 429 时退让。
 
 ### 11.3 证据收集
 
@@ -1047,7 +1102,6 @@ READY → studio.status + 可选系统通知
 | 幻灯片 | 大纲（可审核）→ 页面内容 | 页面 JSON + PPTX | 翻页预览 | PPTX / PDF | M6 |
 | 信息图 | 版面规划 → 模板渲染 | 布局 JSON + SVG | SVG 预览 | SVG / PNG | M6 |
 | 音频 | 脚本（可选审核）→ TTS → 拼接 | 脚本 JSON + 音频 | 播放器 + 同步字幕 | M4A / WAV / 文字稿 | M7 |
-| 视频 | 备注（可审核）→ 幻灯片 + TTS → 合成 | 分镜 JSON + MP4 | 播放器 | MP4 / 字幕 | M9 |
 
 **Schema 示例**
 
@@ -1089,7 +1143,7 @@ READY → studio.status + 可选系统通知
 
 **信息图风格说明**：`可爱 / 泥塑 / 动漫` 在无生图模型时用配色、字体、圆角和图标模板近似，界面文案不承诺插画效果。
 
-### 11.6 TTS 与视频
+### 11.6 TTS
 
 ```rust
 #[async_trait]
@@ -1100,8 +1154,6 @@ pub trait TtsProvider {
 ```
 
 优先级：系统语音（无需下载）→ `sherpa-onnx` 本地模型（可选下载，需逐一核对模型许可证）→ 用户配置的远程 TTS。按句合成并缓存，失败只重试该句。
-
-视频由幻灯片图片、TTS 音频和字幕合成。FFmpeg 不打包进主程序，首次使用时提示下载或指定路径，构建选择 LGPL 配置并核对编码器授权。
 
 ### 11.7 来源变化
 
@@ -1146,7 +1198,7 @@ apps/windows/LocalNotebook/
 | Demo 区域 | 原生实现 | 对应 API |
 | :--- | :--- | :--- |
 | 左栏来源、勾选、右键菜单 | `SourcesPane` | `source.*` |
-| 来源搜索、Fast/Deep Research | `ResearchFlyout` | `research.*` |
+| 来源搜索、Fast/Deep Research | ⏸ 暂缓，V1 不提供入口 | — |
 | 中间摘要卡片、建议问题 | `NotebookHeader` | `notebook.get` |
 | 消息流、Thoughts、引用悬浮卡 | `MessageView`、`ThoughtsView`、`CitationChip` | `chat.*` |
 | 8 宫格和配置弹窗 | `StudioPane` + 配置驱动的表单 | `studio.estimate / create` |
@@ -1244,7 +1296,7 @@ WinUI 3 的实际内存占用没有可靠的公开数据，文档中的 45–65 
 | :--- | :--- |
 | 文档中的提示注入 | 来源放入专用标签并声明为资料；工具均为只读且限定在已选来源；模型输出不能触发写操作或网络访问 |
 | URL 抓取的 SSRF | 仅 http/https；解析后拒绝回环、内网、链路本地和元数据地址；**每次跳转重新校验**；连接时固定已校验的 IP |
-| 恶意文件 | 大小和页数限制；解析超时；PDF 解析在受限线程内并捕获崩溃，M12 评估子进程隔离 |
+| 恶意文件 | 大小和页数限制；解析超时；PDF 解析在受限线程内并捕获崩溃，M11 评估子进程隔离 |
 | Markdown/HTML 注入 | 模型输出净化后渲染，禁止脚本、事件属性和外部资源；WebView 设置严格 CSP，拦截导航 |
 | ZIP 导入 | 防路径穿越和压缩炸弹 |
 
@@ -1275,33 +1327,165 @@ WinUI 3 的实际内存占用没有可靠的公开数据，文档中的 45–65 
 
 ---
 
-## 17. 里程碑
+## 17. 功能清单、验收标准与里程碑
 
-工期按 **1 名熟悉 Rust 和 C# 的全职工程师**粗估，技术验证后复核。M4 可由第二人与 M2、M3 并行。
+### 17.1 状态与验收规则
 
-| 里程碑 | 内容 | 工期 | 退出标准 |
+| 标记 | 含义 |
+| :-- | :--- |
+| ✅ | 已实现并经运行验证（冒烟或手工） |
+| ⚠️ | 已有代码，但未验证或存在缺陷 |
+| ❌ | 缺失或不可用 |
+| ⏸ | 暂缓，不在 V1 |
+| ✖ | 已取消 |
+
+验收规则：
+
+1. 功能只有在“验收标准”全部满足后才能标为 ✅。
+2. 能自动化的标准必须有自动化测试，并进入 CI；只能手工验证的，需在 PR 中附截图或日志。
+3. PR 标题或描述引用功能 ID（如 `C3`）或缺陷 ID（如 `B-09`）。
+4. 已标 ✅ 的功能出现回归，立即降回 ⚠️。
+
+### 17.2 功能清单
+
+**A. 构建与工程**
+
+| ID | 功能 | 状态 | 验收标准 | 里程碑 |
+| :-- | :--- | :-- | :--- | :-- |
+| A1 | Rust 工作区可构建 | ✅ | 干净环境 `cargo build --workspace --all-targets` 通过；`Cargo.lock` 已提交；构建期下载 ONNX Runtime 的离线替代方案写入文档 | M0 |
+| A2 | Windows 客户端可构建 | ⚠️ | `dotnet build -p:Platform=x64` 与 `dotnet publish -r win-x64`（AOT）成功，无裁剪告警（v2.2：项目代码的告警已清零，剩 WebView2 的 IL2104/IL3053 与 NU1903） | M0 |
+| A3 | CI | ⚠️ | 每次推送运行 `fmt --check`、`clippy -D warnings`、`cargo test`、`tests/e2e` 冒烟、Windows 构建（v2.2 已加 `.github/workflows/ci.yml`，各步骤本地已跑通；仓库尚无远端，未在 GitHub 上运行；冒烟步骤未带 `-Pdf`，Windows 作业未处理 `vswhere`） | M0 |
+| A4 | 自动化测试 | ⚠️ | 第 16 节单元与回放测试逐步补齐；每个已修缺陷有回归测试 | M0 起 |
+| A5 | 文档与实现一致 | ⚠️ | README 只描述已验收功能；`docs/` 与 `backend-skeleton/` 旧材料归档 | M0 |
+
+**B. 来源与检索**
+
+| ID | 功能 | 状态 | 验收标准 | 里程碑 |
+| :-- | :--- | :-- | :--- | :-- |
+| B1 | Markdown/TXT 导入 | ✅ | 30 秒内 `READY`；重复内容返回 `duplicate=true`；补充 GBK 编码 TXT 用例 | 已达成 |
+| B2 | PDF 导入 | ❌ | 随包附带 PDFium；文本型 PDF 进入 `READY` 且分块带页码；加密、扫描、损坏 PDF 分别返回 `SOURCE_ENCRYPTED / SOURCE_NEEDS_OCR / SOURCE_UNSUPPORTED`，无 panic | M1 |
+| B3 | URL 导入 | ⚠️ | SSRF 用例（回环、内网、元数据地址、跳转到内网）全部拒绝；正常网页提取正文后 `READY` | M8 |
+| B4 | 粘贴文本、笔记转来源 | ⚠️ | 两种方式都能进入 `READY`；笔记回写 `converted_source_id` | M1 |
+| B5 | 来源状态与重试 | ⚠️ | 任何失败都写入 `FAILED` 和错误码；`source.retry / get / preview` 可用（v2 已加 `get`、`retry`，`retry` 未重置来源状态；`preview` 未做） | M1 |
+| B6 | 删除来源 | ✅ | 自动化断言删除后 FTS、向量表、blob 均无残留 | 补测试 |
+| B7 | 中文全文检索 | ✅ | 两字中文词可命中；含 `"`、`*`、`NEAR`、`OR` 的输入不报错 | 补测试 |
+| B8 | 语义检索 | ⚠️ | 首次启动引导配置嵌入模型；配置后已有来源自动补向量；双语评测集 Recall@8 ≥ 0.80 | M1 |
+| B9 | 无依据判定 | ⚠️ | 查询过滤停用词；无依据问题集正确拒答率 ≥ 85% | M3 |
+| B10 | 笔记本摘要 | ⚠️ | 基于来源内容（章节摘要）生成；激活模型后自动补生成；来源指纹不变时不重复调用 | M3 |
+
+**C. 对话**
+
+| ID | 功能 | 状态 | 验收标准 | 里程碑 |
+| :-- | :--- | :-- | :--- | :-- |
+| C1 | 流式问答与引用 | ✅ | 事件顺序为 `started → thought_step → text_delta → citation → usage → finished`；引用全部指向本轮证据 | 已达成 |
+| C2 | 前置检查 | ✅ | 未选来源返回固定提示；未配置模型返回 `MODEL_NOT_CONFIGURED`；两者都不调用模型 | 已达成 |
+| C3 | 引用规范化 | ⚠️ | 只有编号都在证据范围内才转换为角标；`[1,2]` 等其他文本保持原样；无效编号被删除 | M3 |
+| C4 | 工具调用循环 | ⚠️ | 第 3 轮后禁用工具强制作答；任何退出路径下消息都不是 `STREAMING`；多轮用量累加 | M3 |
+| C5 | 查询改写 | ❌ | 指代和跨语言问题触发改写；3 秒超时回退原问题；跨语言评测子集 Recall@8 较未改写提升 | M3 |
+| C6 | 追问建议 | ❌ | 回答完成后异步生成 3 条，失败不影响回答状态 | M3 |
+| C7 | 历史预算与压缩 | ❌ | 按 9.4 节分配；超限写入 `conversation_summaries`；上下文超限时证据减半重试一次 | M3 |
+| C8 | 取消、重新生成、反馈、清空 | ⚠️ | 取消后为 `CANCELLED` 并保留内容；`regenerate / set_feedback / clear / citation_detail` 可用 | M3 |
+| C9 | 崩溃恢复 | ⚠️ | 流式中强杀进程，重启后消息为 `INCOMPLETE` 且保留已生成内容（需按 9.1 节增量落盘） | M3 |
+
+**D. 模型协议**
+
+| ID | 功能 | 状态 | 验收标准 | 里程碑 |
+| :-- | :--- | :-- | :--- | :-- |
+| D1 | Chat Completions | ✅ | 在冒烟基础上补回放夹具：推理、工具调用、截断、断流、无用量帧 | M2 |
+| D2 | Responses | ⚠️ | 回放夹具同 D1，另含 reasoning 项回放与 `response.failed / incomplete` | M2 |
+| D3 | Anthropic | ⚠️ | 回放夹具同 D1，另含 thinking 签名回放、`refusal`、`error` 事件 | M2 |
+| D4 | Gemini | ⚠️ | 回放夹具同 D1，另含 `finishReason`、`blockReason`；字段名已对照官方文档确认 | M2 |
+| D5 | 能力探测与配置 | ⚠️ | `profile.test` 写入能力；`profile.upsert` 可手动覆盖；开启后结构化输出走原生 JSON Schema，工具调用生效 | M2 |
+| D6 | 密钥安全 | ⚠️ | Key 只存系统凭据库；自动化扫描响应、事件、日志、数据库，均不含测试 Key | M2 |
+| D7 | 真实接口冒烟 | ❌ | 四种协议各选一个模型，手动或夜间运行通过 | M2 |
+
+**E. Studio（7 种产物）**
+
+| ID | 功能 | 状态 | 验收标准 | 里程碑 |
+| :-- | :--- | :-- | :--- | :-- |
+| E1 | 任务管线与状态 | ⚠️ | 失败为 `FAILED` 并带错误码；取消为 `CANCELLED` 且不再执行；重启后从检查点继续；Studio 不阻塞来源导入 | M5 |
+| E2 | 测验 | ⚠️ | 生成可用（冒烟）；通过 11.5 节业务校验；客户端可作答评分；导出 Markdown/JSON | M5 |
+| E3 | 抽认卡 | ⚠️ | 生成、去重；翻卡查看；导出 CSV | M5 |
+| E4 | 思维导图 | ⚠️ | 生成可用（冒烟）；深度 ≤ 5、子节点 ≤ 8；画布查看；导出 SVG/PNG | M5 |
+| E5 | 报告 | ⚠️ | 分节生成；文档查看；导出 Markdown/HTML | M5 |
+| E6 | 幻灯片 | ⚠️ | 大纲审核流程可用；PPTX 能被 PowerPoint 打开，页数符合配置 | M6 |
+| E7 | 信息图 | ⚠️ | SVG 通过 XML 校验，特殊字符已转义；可导出 PNG | M6 |
+| E8 | 音频概览 | ⚠️ | 使用真实语音（系统 TTS 起步）；双人格式使用两种同语言音色；合成为单个可播放的音频文件（B-21）；失败句可单独重试 | M7 |
+| E9 | 用量预估与确认 | ⚠️ | 按 11.3、11.4 节估算；预计输入超过 20 万 tokens 时要求确认 | M5 |
+| E10 | 证据覆盖策略 | ❌ | 超预算时走章节摘要 map-reduce；摘要缓存可复用 | M5 |
+| E11 | 产物管理 | ⚠️ | `retry / delete / rename / export / set_feedback / grade_answer` 可用（v2 已加 `retry / delete / rename / set_feedback`，未测试；`export`、`grade_answer` 未做） | M5 |
+
+**F. 笔记与导入导出**
+
+| ID | 功能 | 状态 | 验收标准 | 里程碑 |
+| :-- | :--- | :-- | :--- | :-- |
+| F1 | 笔记 | ⚠️ | `note.get / from_message / from_summary` 补齐；保存回答时带引用快照 | M5 |
+| F2 | `.lna` 导入导出 | ❌ | 导出不含密钥和向量；导入后重建索引；路径穿越和压缩炸弹用例被拒 | M6 |
+| F3 | Markdown 导出 | ❌ | 引用转为脚注 | M6 |
+
+**G. Windows 客户端**
+
+| ID | 功能 | 状态 | 验收标准 | 里程碑 |
+| :-- | :--- | :-- | :--- | :-- |
+| G1 | 三栏主界面 | ⚠️ | 来源列表显示状态、勾选、右键菜单；消息按事件流式渲染；笔记本切换 | M4 |
+| G2 | 模型设置 | ❌ | 新增、编辑、测试、激活 profile；Key 只写不读 | M4 |
+| G3 | 引用与 Thoughts | ❌ | 角标悬浮显示原文；点击跳转来源预览；Thoughts 可折叠 | M4 |
+| G4 | Studio 表单与查看器 | ❌ | 7 种配置表单与 Demo 一致；各产物有查看器 | M4–M7 |
+| G5 | 引导与错误状态 | ❌ | 覆盖 13.3 节列出的全部状态 | M4 |
+| G6 | 公式渲染 | ❌ | WebView2 按需创建、闲置 60 秒释放（`WebContentHost` 已有骨架） | M4 |
+| G7 | 性能 | ❌ | 14.3 节指标实测达标并记录到 `docs/benchmarks.md` | M4 |
+
+**H. 联调页与开发工具**
+
+| ID | 功能 | 状态 | 验收标准 | 里程碑 |
+| :-- | :--- | :-- | :--- | :-- |
+| H1 | WS 联调服务 | ✅ | 校验 token；仅绑定 127.0.0.1 | 已达成 |
+| H2 | CLI `call` | ✅ | `lna-devtools call app.info` 输出 JSON 并以 0 退出 | M0 |
+| H3 | 联调页接入 Core | ⚠️ | 新增 `api.js`，带 `ws` 参数时走真实 Core；修复转义；不再在 `localStorage` 存 Key（v2.2 已加 `api.js` 并接入；转义与 Key 存储未验收） | M8 |
+| H4 | 联调页范围清理 | ❌ | 移除视频卡片和搜索入口 | M8 |
+
+**I. 范围外**
+
+| ID | 功能 | 状态 | 验收标准 |
+| :-- | :--- | :-- | :--- |
+| I1 | 视频概览 | ✖ 已取消 | Core 拒绝 `video`（已满足）；所有界面无入口 |
+| I2 | 网页/本地搜索、Fast/Deep Research | ⏸ 暂缓 | `research.*` 返回 `CAPABILITY_MISSING`（已满足）；界面不显示入口；重新排期时恢复第 5.3 节方法和原 M8 设计 |
+
+### 17.3 里程碑
+
+工期按 1 名全职工程师从当前代码继续开发估算。M4 可由第二人与 M1–M3 并行。
+
+| 里程碑 | 范围（功能/缺陷 ID） | 工期 | 退出标准 |
 | :--- | :--- | :--- | :--- |
-| **M0 基建与验证** | git、工作区、CI；安装 Rust；WinUI AOT 空壳测内存；C ABI 打通；sqlite-vec 10 万分块压测；嵌入选型；修订旧文档 | 1.5 周 | 第 14.3 节内存有实测数；嵌入模型选定 |
-| **M1 存储与摄取** | 迁移、仓储、任务系统、PDF/MD/TXT、分块、FTS、嵌入 | 3 周 | CLI 可导入样例，中英文都能检索，删除无残留，中断可续传 |
-| **M2 协议层** | SSE、4 个适配器、能力探测、密钥、结构化输出兜底 | 2.5 周 | 回放全绿；4 协议真实冒烟通过 |
-| **M3 对话闭环** | 混合检索、Agent、上下文预算、引用、摘要、联调页接入 | 3 周 | 在联调页完成带真实引用的问答；评测集达标 |
-| **M4 Windows 客户端** | 三栏 UI、来源、对话、设置、笔记本列表、引导、公式 | 4 周 | 不依赖联调页可完成主流程；达到内存目标 |
-| **M5 Studio 文本类（Alpha）** | 任务管线、测验、抽认卡、思维导图、报告、笔记 | 3 周 | 4 种产物可生成、预览、导出、恢复；**内部 Alpha** |
-| **M6 幻灯片与信息图** | 大纲审核、PPTX、SVG 模板、导入导出 `.lna` | 3 周 | PPTX 能被 PowerPoint 打开；审核流程可用 |
-| **M7 音频概览** | TTS 抽象、脚本、拼接、播放器 | 2 周 | 中英文音频可生成，失败句可重试 |
-| **M8 研究与网页来源** | URL 抓取、搜索提供方、Fast/Deep Research | 2 周 | SSRF 测试通过；搜索结果经确认后导入；**V1 Beta** |
-| **M9 视频概览** | 备注审核、分镜、FFmpeg 合成 | 2 周 | 可生成带字幕的 MP4 |
-| **M10 macOS** | SwiftUI 壳、Keychain、打包 | 5 周 | 主流程通过，内存目标实测 |
-| **M11 Linux** | GTK4 壳、Secret Service | 3 周 | 主流程通过 |
-| **M12 加固** | OCR、解析隔离、自动更新、签名、无障碍 | 3 周 | 发布检查清单完成 |
+| **M0 构建恢复与测试基线** | A1–A5；B-01、B-02、B-04、B-18、B-22、B-23（H2、B-03、B-05、B-12 已在 v2 关闭） | 1 周 | 两端构建无告警；CI 运行；冒烟 21/21；v2 已改缺陷的回归测试补齐 |
+| **M1 导入与检索补全** | B2、B4、B5、B8，B6/B7 补测试；B-06、B-15、B-20 | 1.5 周 | PDF 导入可用；语义检索可配置并达到评测线 |
+| **M2 协议层验证** | D1–D7；B-11 | 1.5 周 | 四协议回放全绿；真实接口冒烟通过 |
+| **M3 对话完善** | B9、B10、C3–C9；B-09、B-10、B-13、B-19 | 2 周 | 冒烟全部通过；检索与拒答评测达标 |
+| **M4 Windows 客户端** | G1–G3、G5–G7，G4 的表单部分；B-16 | 4 周 | 不依赖联调页完成主流程；性能指标达标 |
+| **M5 Studio 文本类与任务可靠性** | E1–E5、E9–E11、F1；B-07、B-14 | 2.5 周 | **Windows 内部 Alpha**（见 17.4） |
+| **M6 幻灯片、信息图与导出** | E6、E7、F2、F3 | 2 周 | PPTX、SVG 验收通过 |
+| **M7 音频概览** | E8；B-08、B-21 | 2 周 | 中英文双人音频可生成并播放 |
+| **M8 网页来源与联调页** | B3、H3、H4；B-17 | 1 周 | **V1 Beta**（见 17.4） |
+| **M9 macOS** | SwiftUI 壳、Keychain、打包 | 5 周 | 主流程通过，内存目标实测 |
+| **M10 Linux** | GTK4 壳、Secret Service | 3 周 | 主流程通过 |
+| **M11 加固** | OCR、解析隔离、自动更新、签名、无障碍 | 3 周 | 发布检查清单完成 |
 
-**节点**：M0–M5 约 17 周到 Windows 内部 Alpha；到 M8 约 24 周到 Beta；全平台约 37 周。
+**节点**：单人顺序开发约 12.5 周到 Windows 内部 Alpha，约 17.5 周到 V1 Beta，约 28.5 周完成全平台。M4 由第二人并行时，Alpha 约提前 4 周。
 
-**研究功能规格（M8）**
+### 17.4 阶段验收门槛
 
-- 搜索范围：`Web` 使用可配置的 `SearchProvider`（用户自备 Key 或自建 SearXNG）；`Local` 检索其他笔记本的来源。
-- Fast Research：一次搜索，返回候选列表，**用户勾选后才导入**（Demo 是直接加入，需改）。
-- Deep Research：规划子问题 → 多轮搜索和抓取 → 生成带链接的研究报告 → 用户选择是否存为来源。以后台任务运行，限制轮数和抓取数量。
+**Windows 内部 Alpha（M5 结束）**
+
+- 功能：A1–A5、B1、B2、B4–B10、C1–C9、D1、D5、D6、E1–E5、E9–E11、F1、G1–G3、G5–G7 全部 ✅，G4 完成 E1–E5 对应的表单和查看器。
+- 缺陷：所有“阻断”和“严重”级缺陷关闭（B-08、B-21 除外，随 M7 关闭）。
+- 交付：自 v2.1 起的每次交付均满足 1.4 节代码交付要求。
+- 质量：第 16 节 V1 门槛中的检索 Recall@8、引用有效率与支撑率、拒答率、崩溃恢复、密钥扫描全部达标。
+
+**V1 Beta（M8 结束）**
+
+- 在 Alpha 基础上：B3、D2–D4、D7、E6–E8、F2、F3、G4、H3、H4 全部 ✅。
+- 缺陷清单中无未关闭的“中”级及以上缺陷。
+- 四协议回放与真实接口冒烟全部通过；14.3 节性能指标在发布构建上复测通过。
 
 ---
 
@@ -1316,6 +1500,22 @@ WinUI 3 的实际内存占用没有可靠的公开数据，文档中的 45–65 
 | 兼容网关行为各异 | 自定义模型体验不稳定 | 可选参数自动降级；能力可手动覆盖；`profile.test` 给出明确诊断 |
 | 小上下文本地模型 | Studio 难以完成 | 按预算缩减 Top-K，走 map-reduce；生成前提示 |
 | 大文档 Studio 成本高 | 用户意外支出 | 生成前预估，超阈值确认，摘要缓存复用 |
-| 音视频依赖的许可证和体积 | 发布受阻 | 可选下载，发布前逐项审查 |
+| TTS 模型的许可证和体积 | 发布受阻 | 可选下载，发布前逐项审查 |
 | UI 与 NotebookLM 高度相似（README 明确要求对齐） | 公开发布时存在商业外观和品牌风险 | 公开发布前调整视觉和文案，不使用其名称和标识 |
 | 单人开发范围过大 | 延期 | 严格按里程碑，M5 后依据使用反馈再决定后续优先级 |
+
+---
+
+## 19. 下一步行动清单（M0）
+
+v2.2 代码包已合入并作为基线提交入库；B-01、B-04、B-07、B-09、B-14、B-21、B-22、B-23 已关闭。M0 剩余任务按顺序如下，全部交付须满足 1.4 节要求：
+
+1. 补齐剩余回归测试：B-02（XML 解析）、B-06（缺库断言）、B-10、B-13、B-16（请求进行中关闭）、B-19、B-20（具体见 1.5 节）。
+2. 升级 .NET SDK（或显式引用无漏洞的 `Microsoft.DotNet.ILCompiler`），消除 NU1903（B-18）；评估 WebView2 的 IL2104/IL3053 能否通过升级或裁剪配置消除（A2）。
+3. 配置远端仓库并让 CI 在 GitHub 上跑通：
+   - 冒烟步骤改为 `-Pdf`。
+   - Windows 作业处理 `vswhere.exe` 的 PATH。
+   - 视需要为 ONNX Runtime 设置 `ORT_LIB_LOCATION` 缓存（A3）。
+4. 清理联调页的视频卡片与搜索入口（H4）；归档 `docs/ARCHITECTURE.md`、`docs/PROTOCOL_ADAPTERS.md` 和 `backend-skeleton/`（A5、B-17）。
+5. 随包附带 PDFium，使冒烟 `-Pdf` 用例进入 `READY`（B-06，M1 前完成）。
+6. 为 1.3 节每个未关闭缺陷建立工单，标题引用缺陷 ID。
