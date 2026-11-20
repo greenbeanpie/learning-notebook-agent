@@ -1,0 +1,2196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Linear Algebra - Local Notebook Agent</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-canvas: #131314;
+      --bg-panel: #1e1f20;
+      --bg-elevated: #282a2c;
+      --bg-hover: #333537;
+      --border-subtle: #2e3032;
+      --border-strong: #3c4043;
+      --text-primary: #e3e3e3;
+      --text-secondary: #c4c7c5;
+      --text-muted: #8e918f;
+      --accent-blue: #a8c7fa;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background-color: var(--bg-canvas);
+      color: var(--text-primary);
+      font-family: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #3c4043; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #5f6368; }
+
+    .panel-card {
+      background-color: var(--bg-panel);
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      transition: width 0.22s cubic-bezier(0.2, 0, 0, 1);
+    }
+
+    /* Material 3 Button & Pill Micro-interactions */
+    .m3-btn {
+      position: relative;
+      overflow: hidden;
+      transition: background-color 0.16s ease, transform 0.12s cubic-bezier(0.2, 0, 0, 1), border-color 0.16s ease, color 0.16s ease;
+    }
+    .m3-btn:active:not(:disabled) {
+      transform: scale(0.97);
+    }
+
+    .elevated-pill {
+      background-color: var(--bg-elevated);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      transition: background-color 0.16s ease, transform 0.12s cubic-bezier(0.2, 0, 0, 1);
+    }
+    .elevated-pill:hover { background-color: var(--bg-hover); }
+    .elevated-pill:active { transform: scale(0.97); }
+
+    /* Studio Tile matching Gemini Notebook.html (.create-artifact-button-container) */
+    @property --nb-aurora-angle {
+      syntax: "<angle>";
+      inherits: false;
+      initial-value: 0turn;
+    }
+    @keyframes nbAuroraOrbit {
+      to { --nb-aurora-angle: 1turn; }
+    }
+
+    .studio-tile {
+      position: relative;
+      isolation: isolate;
+      background-color: var(--bg-elevated);
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      transform: scale(1);
+      transition: transform 0.2s cubic-bezier(0.05, 0.7, 0.1, 1), background-color 0.15s ease, border-color 0.15s ease;
+      overflow: hidden;
+    }
+    .studio-tile:hover {
+      background-color: #2f3134;
+      border-color: rgba(255, 255, 255, 0.12);
+      transform: scale(0.985);
+    }
+    .studio-tile:active {
+      transform: scale(0.965);
+      transition: transform 0.1s cubic-bezier(0.3, 0, 0.8, 1);
+    }
+    .studio-tile .tile-chevron {
+      opacity: 0;
+      transform: translateX(-3px);
+      transition: opacity 0.16s ease, transform 0.16s ease;
+    }
+    .studio-tile:hover .tile-chevron {
+      opacity: 0.75;
+      transform: translateX(0);
+    }
+    .studio-tile.is-creating::before {
+      content: "";
+      position: absolute;
+      inset: -2px;
+      z-index: -2;
+      background: conic-gradient(from var(--nb-aurora-angle), #2e64de, #3c8fe3, #7e8fe6, #987be9, #2e64de);
+      animation: nbAuroraOrbit 2.2s linear infinite;
+    }
+    .studio-tile.is-creating::after {
+      content: "";
+      position: absolute;
+      inset: 2px;
+      z-index: -1;
+      border-radius: 12px;
+      background-color: var(--bg-elevated);
+    }
+
+    .new-badge {
+      background: linear-gradient(90deg, #3c264a, #2d2c4d);
+      color: #e9b9ff;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(233, 185, 255, 0.25);
+      white-space: nowrap;
+      line-height: 1.4;
+    }
+    .beta-badge {
+      font-size: 9px;
+      font-weight: 600;
+      padding: 0 5px;
+      border-radius: 999px;
+      border: 1px solid #5f6368;
+      color: #c4c7c5;
+      margin-left: 4px;
+    }
+
+    /* Atomic Joined Segmented Pill Group */
+    .seg-group {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid #3c4043;
+      background-color: #1b1c1d;
+      overflow: hidden;
+    }
+    .seg-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 13px;
+      font-size: 12px;
+      color: #c4c7c5;
+      background: transparent;
+      border-right: 1px solid #3c4043;
+      transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .seg-item:last-child { border-right: none; }
+    .seg-item:hover { background-color: #282a2c; color: #e3e3e3; }
+    .seg-item:active { transform: scale(0.96); }
+    .seg-item.active {
+      background-color: #32363d;
+      color: #e3e3e3;
+      font-weight: 500;
+    }
+
+    .multi-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 14px;
+      font-size: 12px;
+      border-radius: 999px;
+      border: 1px solid #3c4043;
+      background-color: #1b1c1d;
+      color: #c4c7c5;
+      transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+      cursor: pointer;
+    }
+    .multi-pill:hover { background-color: #282a2c; color: #e3e3e3; }
+    .multi-pill:active { transform: scale(0.96); }
+    .multi-pill.active {
+      background-color: #32363d;
+      color: #e3e3e3;
+      border-color: #5f6368;
+    }
+
+    .option-card {
+      position: relative;
+      background-color: #232528;
+      border: 1px solid #3c4043;
+      border-radius: 14px;
+      padding: 14px;
+      text-align: left;
+      transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+      cursor: pointer;
+    }
+    .option-card:hover { background-color: #2a2c30; }
+    .option-card:active { transform: scale(0.985); }
+    .option-card.active {
+      background-color: #1e3162;
+      border-color: #3b5ba5;
+    }
+    .option-card .card-radio {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      border: 1.5px solid #5f6368;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+    .option-card.active .card-radio {
+      background-color: #a8c7fa;
+      border-color: #a8c7fa;
+      color: #131314;
+    }
+
+    .toggle-switch {
+      width: 40px;
+      height: 22px;
+      border-radius: 999px;
+      background-color: #3c4043;
+      position: relative;
+      transition: background-color 0.2s ease;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      background-color: #9aa0a6;
+      transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), background-color 0.2s ease;
+    }
+    .toggle-switch.on { background-color: #a8c7fa; }
+    .toggle-switch.on::after {
+      transform: translateX(18px);
+      background-color: #131314;
+    }
+
+    .citation-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      margin: 0 2px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #d3e3fd;
+      background-color: #2f3b4e;
+      border-radius: 999px;
+      cursor: pointer;
+      vertical-align: middle;
+      transition: background-color 0.15s ease, transform 0.1s ease;
+    }
+    .citation-chip:hover { background-color: #425573; }
+    .citation-chip:active { transform: scale(0.92); }
+
+    .thought-line {
+      position: relative;
+      padding-left: 20px;
+    }
+    .thought-line::before {
+      content: '';
+      position: absolute;
+      left: 6px;
+      top: 6px;
+      bottom: 6px;
+      width: 1px;
+      background-color: #3c4043;
+    }
+
+    /* Popup Menu & Modal Animations (_mat-menu-enter from Gemini Notebook.html) */
+    @keyframes matMenuEnter {
+      from { opacity: 0; transform: scale(0.88) translateY(-4px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .popup-menu {
+      animation: matMenuEnter 130ms cubic-bezier(0, 0, 0.2, 1) forwards;
+      transform-origin: top left;
+    }
+
+    @keyframes modalEnter {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .modal-card-anim {
+      animation: modalEnter 160ms cubic-bezier(0, 0, 0.2, 1) forwards;
+    }
+
+    .modal-backdrop {
+      background-color: rgba(0, 0, 0, 0.68);
+      backdrop-filter: blur(4px);
+    }
+
+    .style-thumb { width: 116px; flex-shrink: 0; cursor: pointer; }
+    .style-thumb-box {
+      height: 78px;
+      border-radius: 12px;
+      border: 2px solid transparent;
+      overflow: hidden;
+      position: relative;
+      transition: border-color 0.15s ease, transform 0.12s ease;
+    }
+    .style-thumb:hover .style-thumb-box { transform: scale(0.97); }
+    .style-thumb.active .style-thumb-box { border-color: #a8c7fa; }
+    .style-thumb-check {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background-color: #131314;
+      color: #a8c7fa;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .style-thumb.active .style-thumb-check { display: flex; }
+
+    .mm-node { cursor: pointer; transition: filter 0.15s ease; }
+    .mm-node:hover { filter: brightness(1.18); }
+    .mm-toggle-btn { cursor: pointer; }
+    .mm-toggle-btn:hover circle { fill: #4c566a; }
+
+    @keyframes pulseDot {
+      0%, 100% { opacity: 0.35; }
+      50% { opacity: 1; }
+    }
+    .thinking-dot { animation: pulseDot 1.2s infinite ease-in-out; }
+  </style>
+</head>
+<body class="h-screen flex flex-col select-none sm:select-auto">
+
+  <!-- Top Navigation Bar -->
+  <header class="h-14 px-4 flex items-center justify-between shrink-0 bg-[#131314]">
+    <div class="flex items-center gap-3 min-w-0">
+      <button id="btnLogoHome" class="m3-btn w-9 h-9 rounded-full flex items-center justify-center hover:bg-[#282a2c] shrink-0" title="Local Notebook Agent">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M4 17C4 11.477 8.477 7 14 7C17.5 7 20.5 8.8 22 11.5" stroke="#e3e3e3" stroke-width="2" stroke-linecap="round"/>
+          <path d="M7.5 17C7.5 13.41 10.41 10.5 14 10.5C16.2 10.5 18.1 11.6 19.2 13.3" stroke="#e3e3e3" stroke-width="2" stroke-linecap="round"/>
+          <path d="M11 17C11 15.343 12.343 14 14 14C15.1 14 16 14.6 16.5 15.4" stroke="#e3e3e3" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <div class="flex items-center gap-2.5 min-w-0">
+        <!-- Inline Editable Title (from Gemini Notebook.html) -->
+        <input id="notebookTitleInput" type="text" value="Linear Algebra" class="bg-transparent text-[18px] font-medium text-[#e3e3e3] px-1.5 py-0.5 rounded border border-transparent hover:border-[#444746] focus:border-[#a8c7fa] focus:outline-none w-36 sm:w-44 truncate transition-colors" />
+        <button id="btnOpenProtocolModalTop" class="m3-btn hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1e1f20] hover:bg-[#282a2c] border border-[#333537] text-xs text-[#c4c7c5]" title="切换模型协议">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span id="topProtocolLabel">Chat Completion · gpt-4o</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
+      <div class="flex lg:hidden items-center bg-[#1e1f20] rounded-full p-0.5 border border-[#2e3032] mr-1">
+        <button data-mobile-tab="sources" class="mobile-tab-btn px-2.5 py-1 text-xs rounded-full text-[#c4c7c5]">来源</button>
+        <button data-mobile-tab="chat" class="mobile-tab-btn px-2.5 py-1 text-xs rounded-full bg-[#394457] text-[#d3e3fd]">对话</button>
+        <button data-mobile-tab="studio" class="mobile-tab-btn px-2.5 py-1 text-xs rounded-full text-[#c4c7c5]">Studio</button>
+      </div>
+
+      <button id="btnNewNotebook" class="m3-btn hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1e1f20] hover:bg-[#282a2c] text-xs font-medium text-[#e3e3e3] border border-[#2e3032]">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        <span>创建笔记本</span>
+      </button>
+
+      <button id="btnShare" class="m3-btn hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-[#282a2c] text-xs font-medium text-[#c4c7c5]">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        <span>分享</span>
+      </button>
+
+      <button id="btnOpenSettings" class="m3-btn w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#282a2c] text-[#c4c7c5]" title="模型协议与本地后端设置">
+        <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+
+      <span class="hidden sm:inline-flex items-center px-2 py-0.5 rounded-md bg-[#282a2c] border border-[#3c4043] text-[10px] font-bold tracking-wider text-[#e3e3e3]">LOCAL</span>
+
+      <button id="btnAvatar" class="m3-btn w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 via-purple-500 to-amber-500 p-[2px] ml-1 shrink-0" title="本地工作区账户">
+        <div class="w-full h-full rounded-full bg-[#1e1f20] flex items-center justify-center text-xs font-semibold text-[#e3e3e3]">LA</div>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main 3-Column Workspace -->
+  <main class="flex-1 min-h-0 px-3 pb-3 flex gap-3 overflow-hidden">
+
+    <!-- LEFT PANEL: 来源 -->
+    <aside id="panelSources" class="panel-card w-full lg:w-[295px] xl:w-[315px] shrink-0 flex flex-col overflow-hidden">
+      <div class="h-12 px-4 flex items-center justify-between border-b border-white/[0.04] shrink-0">
+        <span id="sourcesHeaderTitle" class="text-sm font-medium text-[#e3e3e3]">来源</span>
+        <button id="btnCollapseSources" class="m3-btn w-7 h-7 rounded-lg hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-[#e3e3e3]" title="展开/收起来源面板">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
+        </button>
+      </div>
+
+      <!-- Expanded Sources Body -->
+      <div id="sourcesExpandedBody" class="flex-1 overflow-y-auto p-3 space-y-3">
+        <div id="sourcesPromoBanner" class="rounded-xl bg-[#1f2437] border border-[#313956] p-3 relative">
+          <button id="btnCloseSourcesBanner" class="m3-btn absolute top-2.5 right-2.5 text-[#8e918f] hover:text-[#e3e3e3] p-0.5 rounded" title="关闭">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+          <div class="flex items-start gap-2.5 pr-4">
+            <svg class="w-4 h-4 text-[#a8c7fa] mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <div class="space-y-1">
+              <div class="text-xs font-medium text-[#e3e3e3]">全新笔记功能上线！</div>
+              <p class="text-[11px] leading-relaxed text-[#c4c7c5]">笔记现已与本地来源整合。您可以针对来源进行对话、引用来源内容或基于自定义协议生成内容</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <button id="btnAddSource" class="elevated-pill h-9 rounded-full flex items-center justify-center gap-1.5 text-xs font-medium text-[#e3e3e3]">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            <span>添加来源</span>
+          </button>
+          <button id="btnCreateNote" class="elevated-pill h-9 rounded-full flex items-center justify-center gap-1.5 text-xs font-medium text-[#e3e3e3]">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            <span>创建笔记</span>
+          </button>
+        </div>
+
+        <!-- Source Search Box with Real Animated Dropdowns -->
+        <div class="rounded-2xl bg-[#282a2c] border border-white/[0.06] p-3 space-y-2.5 relative">
+          <input id="sourceSearchInput" type="text" placeholder="在网络中搜索新来源" class="w-full bg-transparent text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none" />
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-1.5 relative">
+              <!-- Web / Corpus Dropdown Trigger -->
+              <div class="relative">
+                <button id="btnSearchScope" type="button" class="m3-btn px-2.5 py-1 rounded-full bg-[#1e1f20] hover:bg-[#333537] text-[11px] text-[#c4c7c5] flex items-center gap-1.5 border border-white/[0.06]">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  <span id="searchScopeLabel">Web</span>
+                  <svg class="w-3 h-3 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div id="menuSearchScope" class="popup-menu hidden absolute left-0 top-full mt-1.5 w-48 rounded-xl bg-[#25272a] border border-[#3c4043] shadow-2xl p-1.5 z-40">
+                  <button type="button" data-set-scope="Web" class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-[#333537] text-xs text-[#e3e3e3] text-left">
+                    <span class="flex items-center gap-2">
+                      <svg class="w-3.5 h-3.5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                      <span>Web</span>
+                    </span>
+                    <svg class="scope-check w-3.5 h-3.5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                  <button type="button" data-set-scope="Local" class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-[#333537] text-xs text-[#e3e3e3] text-left">
+                    <span class="flex items-center gap-2">
+                      <svg class="w-3.5 h-3.5 text-[#c4c7c5]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                      <span>本地知识库</span>
+                    </span>
+                    <svg class="scope-check hidden w-3.5 h-3.5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Research Mode Dropdown Trigger -->
+              <div class="relative">
+                <button id="btnResearchMode" type="button" class="m3-btn px-2.5 py-1 rounded-full bg-[#1e1f20] hover:bg-[#333537] text-[11px] text-[#c4c7c5] flex items-center gap-1.5 border border-white/[0.06]">
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <span id="researchModeLabel">Fast Research</span>
+                  <svg class="w-3 h-3 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div id="menuResearchMode" class="popup-menu hidden absolute left-0 top-full mt-1.5 w-52 rounded-xl bg-[#25272a] border border-[#3c4043] shadow-2xl p-1.5 z-40">
+                  <button type="button" data-set-rmode="Fast Research" class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-[#333537] text-left">
+                    <div>
+                      <div class="text-xs font-medium text-[#e3e3e3]">Fast Research</div>
+                      <div class="text-[10px] text-[#8e918f]">快速检索并提取核心来源</div>
+                    </div>
+                    <svg class="rmode-check w-3.5 h-3.5 text-[#a8c7fa] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                  <button type="button" data-set-rmode="Deep Research" class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-[#333537] text-left">
+                    <div>
+                      <div class="text-xs font-medium text-[#e3e3e3]">Deep Research</div>
+                      <div class="text-[10px] text-[#8e918f]">多轮深度挖掘与结构化综述</div>
+                    </div>
+                    <svg class="rmode-check hidden w-3.5 h-3.5 text-[#a8c7fa] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <button id="btnRunSourceSearch" class="m3-btn w-7 h-7 rounded-full hover:bg-[#333537] flex items-center justify-center text-[#c4c7c5]" title="搜索来源">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between px-1 pt-1">
+          <button id="btnFilterSources" class="m3-btn text-[#8e918f] hover:text-[#e3e3e3] p-1 rounded" title="筛选来源">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="6" x2="20" y2="6"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="10" y1="18" x2="14" y2="18"/></svg>
+          </button>
+          <label class="flex items-center gap-2 text-xs text-[#c4c7c5] cursor-pointer">
+            <span>全选</span>
+            <input id="selectAllSources" type="checkbox" checked class="w-4 h-4 rounded accent-[#a8c7fa] cursor-pointer" />
+          </label>
+        </div>
+
+        <div id="sourcesList" class="space-y-1"></div>
+      </div>
+
+      <!-- Collapsed Sources Mini-Strip -->
+      <div id="sourcesCollapsedBody" class="hidden flex-1 flex-col items-center py-3 gap-3">
+        <button id="btnMiniAddSource" class="m3-btn w-9 h-9 rounded-full bg-[#282a2c] hover:bg-[#333537] flex items-center justify-center text-[#e3e3e3]" title="添加来源">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <div id="sourcesMiniIcons" class="flex flex-col items-center gap-2.5"></div>
+      </div>
+    </aside>
+
+    <!-- CENTER PANEL: Chat & Notebook Workspace -->
+    <section id="panelChat" class="panel-card flex-1 min-w-0 flex flex-col overflow-hidden relative">
+      <!-- Top Fade -->
+      <div class="pointer-events-none absolute top-0 inset-x-0 h-6 bg-gradient-to-b from-[#1e1f20] to-transparent z-10"></div>
+
+      <div id="chatScrollArea" class="flex-1 overflow-y-auto px-4 sm:px-8 lg:px-12 pt-8 pb-36">
+        <div class="max-w-3xl mx-auto space-y-6">
+          <div class="space-y-3">
+            <!-- Monochrome Book SVG Icon -->
+            <div class="w-11 h-11 rounded-xl bg-[#282a2c] border border-white/[0.06] flex items-center justify-center text-[#a8c7fa]">
+              <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            </div>
+            <div>
+              <h2 id="heroNotebookTitle" class="text-[28px] font-semibold text-[#e3e3e3] tracking-tight">Linear Algebra</h2>
+              <p class="text-xs text-[#8e918f] mt-1"><span id="heroSourceCount">2</span>个来源 · 2026年11月15日</p>
+            </div>
+            <p class="text-[14px] leading-[1.7] text-[#e3e3e3]/95 pt-2">
+              这篇来自线性代数教材的选段系统地探讨了矩阵计算的核心理论及其在科学和工程中的广泛应用。书中首先讲解了差分矩阵、图的邻接矩阵以及高斯消元法等基础运算规则，深入剖析了向量空间和子空间的概念。接着，内容进一步延伸至特征值与特征向量、奇异值分解 (SVD) 以及主成分分析 (PCA)，展示了矩阵在数据压缩、几何变换和模式识别中的强大威力。此外，文本还将线性代数与经济学中的消耗矩阵、密码学以及物理网络中的基尔霍夫定律相结合，体现了数学工具的跨学科价值。最后，材料探讨了大型系统的数值计算效率、迭代法与预条件子，并涉及了概率论中的协方差矩阵与联合概率分布。
+            </p>
+            <div class="flex items-center gap-2 pt-1">
+              <button id="btnSaveSummaryToNote" class="m3-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#282a2c] hover:bg-[#333537] text-xs text-[#e3e3e3] border border-white/[0.06]">
+                <svg class="w-3.5 h-3.5 text-[#c4c7c5]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>
+                <span>保存到笔记</span>
+              </button>
+              <button id="btnCopySummary" class="m3-btn w-8 h-8 rounded-full hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-[#e3e3e3]" title="复制摘要">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+              <button class="feedback-btn m3-btn w-8 h-8 rounded-full hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-[#e3e3e3]" title="有帮助">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
+              </button>
+              <button class="feedback-btn m3-btn w-8 h-8 rounded-full hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-[#e3e3e3]" title="无帮助">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div id="chatMessages" class="space-y-5 pt-2"></div>
+        </div>
+      </div>
+
+      <!-- Jump-to-bottom Floating Button (from Gemini Notebook.html) -->
+      <button id="btnJumpBottom" class="m3-btn hidden absolute bottom-24 left-1/2 -translate-x-1/2 z-20 w-8 h-8 rounded-full bg-[#282a2c] hover:bg-[#333537] border border-[#444746] shadow-lg flex items-center justify-center text-[#e3e3e3]" title="跳转到底部">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+
+      <!-- Bottom Floating Input Area -->
+      <div class="absolute bottom-0 inset-x-0 bg-gradient-to-t from-[#1e1f20] via-[#1e1f20]/95 to-transparent pt-6 pb-3 px-4 sm:px-8 lg:px-12 pointer-events-none z-10">
+        <div class="max-w-3xl mx-auto pointer-events-auto">
+          <div class="flex items-center gap-2 bg-[#282a2c] border border-[#3c4043] focus-within:border-[#a8c7fa]/60 rounded-[28px] px-3 py-2 shadow-xl transition-colors">
+            <button id="btnInputProtocol" class="m3-btn w-9 h-9 rounded-full hover:bg-[#333537] flex items-center justify-center text-[#c4c7c5] shrink-0" title="模型协议与推理配置">
+              <svg class="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+            </button>
+            <input id="chatInput" type="text" placeholder="提问或创作内容" class="flex-1 bg-transparent text-sm text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none min-w-0" />
+            <span id="inputSourceBadge" class="text-xs text-[#8e918f] whitespace-nowrap px-2">2个来源</span>
+            <button id="btnSendChat" class="m3-btn w-9 h-9 rounded-full bg-[#3c4043] hover:bg-[#a8c7fa] hover:text-[#131314] text-[#e3e3e3] flex items-center justify-center shrink-0" title="发送">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
+          <p class="text-center text-[11px] text-[#8e918f] mt-2">Local Notebook Agent 可能会出错，请核查本地来源。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: Studio -->
+    <aside id="panelStudio" class="panel-card w-full lg:w-[310px] xl:w-[335px] shrink-0 hidden lg:flex flex-col overflow-hidden">
+
+      <!-- View 1: Studio Home Grid -->
+      <div id="studioHomeView" class="flex-1 flex flex-col min-h-0">
+        <div class="h-12 px-4 flex items-center justify-between border-b border-white/[0.04] shrink-0">
+          <span class="text-sm font-medium text-[#e3e3e3]">Studio</span>
+          <button id="btnCollapseStudio" class="m3-btn w-7 h-7 rounded-lg hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-[#e3e3e3]" title="展开/收起 Studio">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
+          </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-3 space-y-3">
+          <div id="studioNotifyBanner" class="rounded-xl bg-[#1f2437] border border-[#313956] p-3 space-y-2">
+            <div class="flex items-start gap-2.5">
+              <svg class="w-4 h-4 text-[#a8c7fa] mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <div>
+                <div class="text-xs font-medium text-[#e3e3e3]">准备就绪时收到通知</div>
+                <p class="text-[11px] text-[#c4c7c5] mt-0.5 leading-relaxed">开启本地通知，以便在 Studio 内容生成完成时查看提醒。</p>
+              </div>
+            </div>
+            <div class="flex items-center justify-end gap-2">
+              <button id="btnDismissNotify" class="m3-btn text-[11px] text-[#c4c7c5] hover:text-[#e3e3e3] px-2 py-1 rounded-full">以后再说</button>
+              <button id="btnEnableNotify" class="m3-btn text-[11px] font-medium bg-[#0b57d0] hover:bg-[#1a73e8] text-white px-3 py-1 rounded-full">开启通知</button>
+            </div>
+          </div>
+
+          <!-- 2x4 Studio Grid with Monochrome SVGs + Accent Colors + Hover Chevron -->
+          <div class="grid grid-cols-2 gap-2">
+            <button data-studio-open="audio" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <svg class="w-4 h-4 text-[#76a0ff] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+                <span class="text-xs font-medium text-[#e3e3e3] truncate">音频概览</span>
+              </div>
+              <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+
+            <button data-studio-open="slides" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <svg class="w-4 h-4 text-[#f872b9] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                <span class="text-xs font-medium text-[#e3e3e3] truncate">演示文稿</span>
+              </div>
+              <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+
+            <button data-studio-open="video" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <svg class="w-4 h-4 text-[#3fdda0] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                <span class="text-xs font-medium text-[#e3e3e3] truncate">视频概览</span>
+              </div>
+              <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+
+            <button data-studio-open="mindmap" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <svg class="w-4 h-4 text-[#a47dff] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 11l7-4M8.5 13l7 4"/></svg>
+                <span class="text-xs font-medium text-[#e3e3e3] truncate">思维导图</span>
+              </div>
+              <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+
+            <button data-studio-open="report" class="studio-tile p-3 flex items-center justify-between gap-1 text-left">
+              <div class="flex items-center gap-2 min-w-0">
+                <svg class="w-4 h-4 text-[#f872b9] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                <span class="text-xs font-medium text-[#e3e3e3] truncate">报告</span>
+              </div>
+              <span class="new-badge">新功能!</span>
+            </button>
+
+            <button data-studio-open="flashcards" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <svg class="w-4 h-4 text-[#ecdf77] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                <span class="text-xs font-medium text-[#e3e3e3] truncate">闪卡</span>
+              </div>
+              <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+
+            <button data-studio-open="quiz" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <svg class="w-4 h-4 text-[#4dd2e1] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <span class="text-xs font-medium text-[#e3e3e3] truncate">测验</span>
+              </div>
+              <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+
+            <button data-studio-open="infographic" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <svg class="w-4 h-4 text-[#ecdf77] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                <span class="text-xs font-medium text-[#e3e3e3] truncate">信息图</span>
+              </div>
+              <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          </div>
+
+          <div class="pt-2 space-y-1.5" id="studioArtifactsList"></div>
+        </div>
+      </div>
+
+      <!-- View 2: In-Panel Mind Map App View (Studio > 应用) -->
+      <div id="studioMindMapView" class="hidden flex-1 flex-col min-h-0">
+        <div class="h-12 px-4 flex items-center justify-between border-b border-white/[0.04] shrink-0">
+          <div class="flex items-center gap-1.5 text-xs">
+            <button id="btnMindMapBack" class="text-[#8e918f] hover:text-[#e3e3e3] transition-colors">Studio</button>
+            <svg class="w-3 h-3 text-[#8e918f]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            <span class="text-[#e3e3e3] font-medium">应用</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <button id="btnMindMapExpand" class="m3-btn w-7 h-7 rounded-lg hover:bg-[#282a2c] flex items-center justify-center text-[#c4c7c5]" title="展开/还原宽度">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+            </button>
+            <button id="btnMindMapClose" class="m3-btn w-7 h-7 rounded-lg hover:bg-[#282a2c] flex items-center justify-center text-[#c4c7c5]" title="返回 Studio">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="px-4 py-3 flex items-start justify-between gap-2 border-b border-white/[0.04] shrink-0">
+          <div>
+            <h3 id="mmDocTitle" class="text-base font-medium text-[#e3e3e3]">线性代数思维导图</h3>
+            <p class="text-[11px] text-[#8e918f] mt-0.5">查看所选的<span id="mmSourceCount">2</span>个来源 · 点击任意节点可向主对话提问</p>
+          </div>
+          <div class="flex items-center gap-1 text-[#c4c7c5]">
+            <button id="btnMmShare" class="m3-btn w-7 h-7 rounded-full hover:bg-[#282a2c] flex items-center justify-center" title="分享导图">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            </button>
+            <button id="btnMmFullscreen" class="m3-btn w-7 h-7 rounded-full hover:bg-[#282a2c] flex items-center justify-center" title="展开画布">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="mmCanvasWrap" class="flex-1 relative overflow-auto bg-[#161718]">
+          <div class="sticky top-3 left-3 z-10 inline-flex flex-col bg-[#282a2c]/95 border border-[#3c4043] rounded-2xl p-1 gap-0.5 shadow-lg ml-3 mt-3">
+            <button id="btnMmReset" class="m3-btn w-7 h-7 rounded-xl hover:bg-[#3c4043] flex items-center justify-center text-[#e3e3e3]" title="重置视图">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+            </button>
+            <button id="btnMmZoomIn" class="m3-btn w-7 h-7 rounded-xl hover:bg-[#3c4043] flex items-center justify-center text-[#e3e3e3]" title="放大">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <button id="btnMmZoomOut" class="m3-btn w-7 h-7 rounded-xl hover:bg-[#3c4043] flex items-center justify-center text-[#e3e3e3]" title="缩小">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+            </button>
+            <button id="btnMmDownload" class="m3-btn w-7 h-7 rounded-xl hover:bg-[#3c4043] flex items-center justify-center text-[#e3e3e3]" title="导出 SVG">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
+          </div>
+          <svg id="mindMapSvg" class="block -mt-32" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+
+        <div class="px-4 py-2.5 border-t border-white/[0.04] flex items-center gap-2 bg-[#1a1b1c] shrink-0">
+          <button id="btnMmGood" class="m3-btn inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#282a2c] hover:bg-[#333537] text-[11px] text-[#c4c7c5] border border-white/[0.06]">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
+            <span>优质内容</span>
+          </button>
+          <button id="btnMmBad" class="m3-btn inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#282a2c] hover:bg-[#333537] text-[11px] text-[#c4c7c5] border border-white/[0.06]">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>
+            <span>劣质内容</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- View 3: In-Panel Note Editor (Studio > 笔记) -->
+      <div id="studioNoteView" class="hidden flex-1 flex-col min-h-0">
+        <div class="h-12 px-4 flex items-center justify-between border-b border-white/[0.04] shrink-0">
+          <div class="flex items-center gap-1.5 text-xs">
+            <button id="btnNoteBack" class="text-[#8e918f] hover:text-[#e3e3e3]">Studio</button>
+            <svg class="w-3 h-3 text-[#8e918f]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            <span class="text-[#e3e3e3] font-medium">笔记</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <button id="btnNoteDelete" class="m3-btn w-7 h-7 rounded-lg hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-rose-400" title="删除笔记">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+            <button id="btnNoteClose" class="m3-btn w-7 h-7 rounded-lg hover:bg-[#282a2c] flex items-center justify-center text-[#c4c7c5]">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="p-4 flex-1 flex flex-col gap-3 min-h-0">
+          <input id="noteTitleInput" type="text" value="新笔记" class="w-full bg-transparent text-base font-medium text-[#e3e3e3] focus:outline-none border-b border-transparent focus:border-[#3c4043] pb-1" />
+          <div class="flex items-center gap-1 pb-2 border-b border-white/[0.06] text-xs text-[#c4c7c5]">
+            <button type="button" data-fmt="**" class="m3-btn px-2 py-1 rounded hover:bg-[#282a2c] font-bold" title="加粗">B</button>
+            <button type="button" data-fmt="*" class="m3-btn px-2 py-1 rounded hover:bg-[#282a2c] italic" title="斜体">I</button>
+            <button type="button" data-fmt="# " class="m3-btn px-2 py-1 rounded hover:bg-[#282a2c]" title="标题">T</button>
+            <button type="button" data-fmt="- " class="m3-btn px-2 py-1 rounded hover:bg-[#282a2c]" title="列表">•</button>
+            <button type="button" data-fmt="1. " class="m3-btn px-2 py-1 rounded hover:bg-[#282a2c]" title="编号">1.</button>
+          </div>
+          <textarea id="noteBodyInput" placeholder="在此处输入内容或粘贴文本" class="flex-1 w-full bg-transparent text-xs leading-relaxed text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none"></textarea>
+          <div class="flex items-center justify-between pt-2 border-t border-white/[0.06]">
+            <button id="btnNoteConvertSource" class="m3-btn px-3 py-1.5 rounded-full bg-[#282a2c] hover:bg-[#333537] text-[11px] text-[#c4c7c5] border border-white/[0.06]">转换为来源</button>
+            <button id="btnNoteSave" class="m3-btn px-4 py-1.5 rounded-full bg-[#0b57d0] hover:bg-[#1a73e8] text-xs font-medium text-white">保存笔记</button>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+  </main>
+
+  <!-- Shared Context Popup Menu (for Source Item ⋮ or Studio Artifact ⋮) -->
+  <div id="contextPopupMenu" class="popup-menu fixed z-50 hidden w-44 rounded-xl bg-[#25272a] border border-[#3c4043] shadow-2xl p-1.5 space-y-0.5"></div>
+
+  <!-- Floating Citation Hover Card -->
+  <div id="citationHoverCard" class="fixed z-50 hidden w-80 p-3.5 rounded-xl bg-[#25272b] border border-[#444746] shadow-2xl pointer-events-none space-y-2">
+    <div id="citeCardHeader" class="flex items-center gap-2 text-xs font-medium text-[#a8c7fa]"></div>
+    <p id="citeCardExcerpt" class="text-[11px] leading-relaxed text-[#e3e3e3] bg-[#1b2436] border-l-2 border-[#a8c7fa] p-2 rounded"></p>
+  </div>
+
+  <!-- UNIFIED DYNAMIC STUDIO MODAL -->
+  <div id="studioModal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-backdrop">
+    <div id="studioModalCard" class="modal-card-anim w-full max-w-[720px] rounded-[24px] bg-[#202124] border border-[#3c4043] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="px-6 pt-5 pb-3 flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <span id="studioModalIcon" class="flex items-center justify-center"></span>
+          <h3 id="studioModalTitle" class="text-[16px] font-medium text-[#e3e3e3]"></h3>
+        </div>
+        <button data-close-modal="studioModal" class="m3-btn w-8 h-8 rounded-full bg-[#2b2d30] hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5]">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div id="studioModalBody" class="px-6 pb-5 pt-2 space-y-5 overflow-y-auto"></div>
+      <div class="px-6 py-4 border-t border-white/[0.06] flex items-center justify-between gap-4 bg-[#1d1e20]">
+        <div class="flex items-center gap-3 min-w-0">
+          <span class="text-xs text-[#c4c7c5] shrink-0">AI 用量</span>
+          <div class="space-y-1">
+            <div class="w-28 h-1.5 rounded-full bg-[#2d2f33] overflow-hidden flex">
+              <div class="w-1/4 bg-[#4285f4]"></div>
+              <div class="w-1/5 bg-[#78d9ec]"></div>
+            </div>
+            <div class="flex items-center gap-2.5 text-[10px] text-[#8e918f]">
+              <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-[#4285f4]"></span>已使用</span>
+              <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-[#78d9ec]"></span>估算用量</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button data-close-modal="studioModal" class="m3-btn px-4 py-2 rounded-full hover:bg-[#2b2d30] text-xs font-medium text-[#e3e3e3]">稍后生成</button>
+          <button id="btnStudioGenerate" class="m3-btn px-5 py-2 rounded-full bg-[#2c2e33] hover:bg-[#a8c7fa] hover:text-[#131314] text-xs font-medium text-[#e3e3e3] border border-[#3c4043]">立即生成</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: Custom Model & 4-Protocol Adapter Settings -->
+  <div id="protocolModal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-backdrop">
+    <div class="modal-card-anim w-full max-w-[780px] rounded-[24px] bg-[#202124] border border-[#3c4043] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="px-6 py-4 flex items-center justify-between border-b border-white/[0.06]">
+        <div>
+          <h3 class="text-base font-medium text-[#e3e3e3]">自定义模型与协议适配器 (4-Protocol Engine)</h3>
+          <p class="text-[11px] text-[#8e918f] mt-0.5">支持 Chat Completion、Responses、Anthropic Messages 与 Gemini GenerateContent 协议</p>
+        </div>
+        <button data-close-modal="protocolModal" class="m3-btn w-8 h-8 rounded-full bg-[#2b2d30] hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5]">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="p-6 overflow-y-auto space-y-5">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <button data-proto="chat_completion" class="proto-tab option-card p-2.5">
+            <div class="text-xs font-semibold text-[#e3e3e3]">Chat Completion</div>
+            <div class="text-[10px] text-[#c4c7c5] opacity-75 truncate">/v1/chat/completions</div>
+          </button>
+          <button data-proto="responses" class="proto-tab option-card p-2.5">
+            <div class="text-xs font-semibold text-[#e3e3e3]">Responses API</div>
+            <div class="text-[10px] text-[#c4c7c5] opacity-75 truncate">/v1/responses</div>
+          </button>
+          <button data-proto="anthropic" class="proto-tab option-card p-2.5">
+            <div class="text-xs font-semibold text-[#e3e3e3]">Anthropic</div>
+            <div class="text-[10px] text-[#c4c7c5] opacity-75 truncate">/v1/messages</div>
+          </button>
+          <button data-proto="gemini" class="proto-tab option-card p-2.5">
+            <div class="text-xs font-semibold text-[#e3e3e3]">Gemini</div>
+            <div class="text-[10px] text-[#c4c7c5] opacity-75 truncate">:streamGenerateContent</div>
+          </button>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div class="space-y-1.5">
+            <label class="block text-xs text-[#c4c7c5]">Endpoint Base URL</label>
+            <input id="protoBaseUrl" type="text" class="w-full h-9 px-3 rounded-xl bg-[#131314] border border-[#3c4043] text-xs text-[#e3e3e3] focus:outline-none focus:border-[#a8c7fa]" />
+          </div>
+          <div class="space-y-1.5">
+            <label class="block text-xs text-[#c4c7c5]">Model ID</label>
+            <input id="protoModelId" type="text" class="w-full h-9 px-3 rounded-xl bg-[#131314] border border-[#3c4043] text-xs text-[#e3e3e3] focus:outline-none focus:border-[#a8c7fa]" />
+          </div>
+          <div class="space-y-1.5">
+            <label class="block text-xs text-[#c4c7c5]">API Key (仅保存在本地加密存储)</label>
+            <input id="protoApiKey" type="password" placeholder="sk-••••••••••••••••" class="w-full h-9 px-3 rounded-xl bg-[#131314] border border-[#3c4043] text-xs text-[#e3e3e3] focus:outline-none focus:border-[#a8c7fa]" />
+          </div>
+          <div class="space-y-1.5">
+            <label class="block text-xs text-[#c4c7c5]">推理 / Thinking 模式</label>
+            <div class="h-9 flex items-center justify-between px-3 rounded-xl bg-[#131314] border border-[#3c4043]">
+              <span class="text-xs text-[#e3e3e3]">启用 Thoughts 过程输出</span>
+              <input id="protoThinkingToggle" type="checkbox" checked class="w-4 h-4 accent-[#a8c7fa] cursor-pointer" />
+            </div>
+          </div>
+        </div>
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-[#c4c7c5]">协议请求报文实时映射预览 (Adapter Output)</span>
+            <span id="protoAuthHeaderHint" class="text-[11px] text-[#7fcfff]">Authorization: Bearer ***</span>
+          </div>
+          <pre id="protoPayloadPreview" class="p-3.5 rounded-xl bg-[#131314] border border-[#2e3032] text-[11px] leading-relaxed text-[#a8c7fa] overflow-x-auto font-mono"></pre>
+        </div>
+      </div>
+      <div class="px-6 py-4 border-t border-white/[0.06] flex items-center justify-between bg-[#1d1e20]">
+        <span class="text-[11px] text-[#8e918f]">Demo 模式默认使用本地模拟流式响应</span>
+        <div class="flex items-center gap-2">
+          <button data-close-modal="protocolModal" class="m3-btn px-4 py-2 rounded-full hover:bg-[#282a2c] text-xs text-[#c4c7c5]">取消</button>
+          <button id="btnSaveProtocol" class="m3-btn px-5 py-2 rounded-full bg-[#0b57d0] hover:bg-[#1a73e8] text-xs font-medium text-white">保存并设为当前模型</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: Add Source Modal -->
+  <div id="addSourceModal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-backdrop">
+    <div class="modal-card-anim w-full max-w-[660px] rounded-[24px] bg-[#202124] border border-[#3c4043] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="px-6 pt-5 pb-3 flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <svg class="w-5 h-5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <h3 class="text-base font-medium text-[#e3e3e3]">从您的所有来源生成音频和视频概览</h3>
+        </div>
+        <button data-close-modal="addSourceModal" class="m3-btn w-8 h-8 rounded-full bg-[#2b2d30] hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5]">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="px-6 pb-6 space-y-4 overflow-y-auto">
+        <div class="rounded-2xl bg-[#191a1c] border border-[#3c4043] p-3.5 space-y-2.5">
+          <input id="modalSourceSearch" type="text" placeholder="在网络中搜索新来源" class="w-full bg-transparent text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none" />
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="px-2.5 py-1 rounded-full bg-[#282a2c] text-[11px] text-[#c4c7c5] inline-flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+                <span>Web</span>
+              </span>
+              <span class="px-2.5 py-1 rounded-full bg-[#282a2c] text-[11px] text-[#c4c7c5] inline-flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <span>Fast Research</span>
+              </span>
+            </div>
+            <button id="btnModalSearchSource" class="m3-btn w-7 h-7 rounded-full bg-[#282a2c] hover:bg-[#3c4043] flex items-center justify-center text-[#e3e3e3]">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="rounded-2xl border border-dashed border-[#3c4043] bg-[#1a1b1d] p-5 space-y-4 text-center">
+          <p class="text-xs text-[#8e918f]">拖放本地文件，或选择下方方式添加来源</p>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <label class="elevated-pill py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs text-[#e3e3e3] cursor-pointer">
+              <svg class="w-3.5 h-3.5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <span>上传文件</span>
+              <input id="newSourceFilePicker" type="file" accept=".md,.txt,.pdf,.csv,.docx" class="hidden" />
+            </label>
+            <button id="btnAddWebUrl" type="button" class="elevated-pill py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs text-[#e3e3e3]">
+              <svg class="w-3.5 h-3.5 text-[#c4c7c5]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              <span>网站</span>
+            </button>
+            <button id="btnAddLocalFolder" type="button" class="elevated-pill py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs text-[#e3e3e3]">
+              <svg class="w-3.5 h-3.5 text-[#c4c7c5]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span>本地目录</span>
+            </button>
+            <button id="btnAddPasteMode" type="button" class="elevated-pill py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs text-[#e3e3e3]">
+              <svg class="w-3.5 h-3.5 text-[#c4c7c5]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
+              <span>复制的文字</span>
+            </button>
+          </div>
+
+          <div class="text-left space-y-2 pt-2 border-t border-white/[0.04]">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <input id="newSourceTitle" type="text" placeholder="来源名称 (如：矩阵分解笔记.md)" class="sm:col-span-2 h-9 px-3 rounded-xl bg-[#131314] border border-[#3c4043] text-xs text-[#e3e3e3] focus:outline-none focus:border-[#a8c7fa]" />
+              <select id="newSourceType" class="h-9 px-3 rounded-xl bg-[#131314] border border-[#3c4043] text-xs text-[#e3e3e3]">
+                <option value="md">Markdown (.md)</option>
+                <option value="pdf">PDF (.pdf)</option>
+                <option value="txt">文本 (.txt)</option>
+              </select>
+            </div>
+            <textarea id="newSourceContent" rows="2" placeholder="粘贴文本内容或摘要（将自动建立 SQLite FTS5 + 向量索引）" class="w-full p-3 rounded-xl bg-[#131314] border border-[#3c4043] text-xs text-[#e3e3e3] focus:outline-none focus:border-[#a8c7fa] resize-none"></textarea>
+          </div>
+          <p class="text-[11px] text-[#8e918f]">支持的文件类型：PDF、.txt、Markdown、音频 (例如 mp3)、.docx 等</p>
+        </div>
+
+        <div class="flex items-center justify-between gap-4 pt-1">
+          <div class="flex items-center gap-3 flex-1">
+            <span class="text-xs text-[#c4c7c5]">来源上限</span>
+            <div class="flex-1 max-w-xs h-1.5 rounded-full bg-[#282a2c] overflow-hidden">
+              <div id="sourceQuotaBar" class="h-full bg-[#a8c7fa]" style="width: 2%"></div>
+            </div>
+            <span id="sourceQuotaText" class="text-xs text-[#8e918f]">2 / 300</span>
+          </div>
+          <button id="btnConfirmAddSource" class="m3-btn px-5 py-2 rounded-full bg-[#0b57d0] hover:bg-[#1a73e8] text-xs font-medium text-white">添加到笔记本</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 4: Studio Artifact Viewer -->
+  <div id="artifactModal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-backdrop">
+    <div class="modal-card-anim w-full max-w-[640px] rounded-[24px] bg-[#202124] border border-[#3c4043] shadow-2xl overflow-hidden flex flex-col max-h-[88vh]">
+      <div class="px-6 py-4 flex items-center justify-between border-b border-white/[0.06]">
+        <h3 id="artifactModalTitle" class="text-base font-medium text-[#e3e3e3] flex items-center gap-2"></h3>
+        <button data-close-modal="artifactModal" class="m3-btn w-8 h-8 rounded-full bg-[#2b2d30] hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5]">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div id="artifactModalBody" class="p-6 overflow-y-auto text-sm text-[#e3e3e3] space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toastBanner" class="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 hidden px-4 py-2 rounded-full bg-[#282a2c] border border-[#a8c7fa]/40 text-xs text-[#e3e3e3] shadow-lg"></div>
+
+  <script>
+    function safeGet(key, fallback) {
+      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+      catch (_) { return fallback; }
+    }
+    function safeSet(key, val) {
+      try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) {}
+    }
+
+    // Monochrome Single-Color SVG Icon Registry
+    const ICONS = {
+      check: '<svg class="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><polyline points="20 6 9 17 4 12"/></svg>',
+      spark: '<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z"/></svg>',
+      doc: '<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+      pencil: '<svg class="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+      pin: '<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>',
+      copy: '<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+      thumbUp: '<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>',
+      thumbDown: '<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>',
+      pdf: '<svg class="w-4 h-4 text-[#f28b82] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15h6"/></svg>',
+      md: '<svg class="w-4 h-4 text-[#8ab4f8] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 15V9l2.5 3L12 9v6"/><path d="M16 9v6m-2-2l2 2 2-2"/></svg>',
+      audio: '<svg class="w-4 h-4 text-[#76a0ff] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>',
+      slides: '<svg class="w-4 h-4 text-[#f872b9] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+      video: '<svg class="w-4 h-4 text-[#3fdda0] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>',
+      mindmap: '<svg class="w-4 h-4 text-[#a47dff] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 11l7-4M8.5 13l7 4"/></svg>',
+      report: '<svg class="w-4 h-4 text-[#f872b9] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+      flashcards: '<svg class="w-4 h-4 text-[#ecdf77] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+      quiz: '<svg class="w-4 h-4 text-[#4dd2e1] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+      infographic: '<svg class="w-4 h-4 text-[#ecdf77] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+      note: '<svg class="w-4 h-4 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+      more: '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>'
+    };
+
+    const PROTOCOL_PRESETS = {
+      chat_completion: { name: 'Chat Completion', baseUrl: 'https://api.openai.com/v1', endpoint: '/chat/completions', model: 'gpt-4o', authHint: 'Authorization: Bearer <API_KEY>' },
+      responses: { name: 'Responses API', baseUrl: 'https://api.openai.com/v1', endpoint: '/responses', model: 'o3-mini', authHint: 'Authorization: Bearer <API_KEY>' },
+      anthropic: { name: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', endpoint: '/messages', model: 'claude-3-7-sonnet-20250219', authHint: 'x-api-key: <API_KEY> | anthropic-version: 2023-06-01' },
+      gemini: { name: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', endpoint: '/models/{model}:streamGenerateContent', model: 'gemini-2.5-pro', authHint: 'x-goog-api-key: <API_KEY>' }
+    };
+
+    const state = {
+      sourcesCollapsed: false,
+      studioExpanded: false,
+      activeProtocol: 'chat_completion',
+      protocolConfigs: safeGet('lna_proto_configs', {
+        chat_completion: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: '', thinking: true },
+        responses: { baseUrl: 'https://api.openai.com/v1', model: 'o3-mini', apiKey: '', thinking: true },
+        anthropic: { baseUrl: 'https://api.anthropic.com/v1', model: 'claude-3-7-sonnet-20250219', apiKey: '', thinking: true },
+        gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-pro', apiKey: '', thinking: true }
+      }),
+      editingProtocol: 'chat_completion',
+      currentStudioType: 'quiz',
+      editingNoteId: null,
+      mmZoom: 1,
+      mindMapTree: {
+        id: 'mm-root',
+        title: '向量空间与子空间 (第 3 章)',
+        expanded: true,
+        children: [
+          {
+            id: 'mm-vs',
+            title: '向量空间',
+            expanded: false,
+            children: [
+              { id: 'mm-vs-1', title: '特殊空间与元素', expanded: true, children: [
+                { id: 'mm-vs-1a', title: '向量形式：可为矩阵或函数' },
+                { id: 'mm-vs-1b', title: 'R^2 空间：由 xy 平面表示' }
+              ]},
+              { id: 'mm-vs-2', title: '向量空间要求', expanded: false, children: [
+                { id: 'mm-vs-2a', title: '加法与数乘封闭性' },
+                { id: 'mm-vs-2b', title: '存在唯一零向量' }
+              ]}
+            ]
+          },
+          {
+            id: 'mm-sub',
+            title: '子空间',
+            expanded: true,
+            children: [
+              { id: 'mm-sub-1', title: '子空间定义', expanded: true, children: [
+                { id: 'mm-sub-1a', title: 'R^n 内的向量空间' },
+                { id: 'mm-sub-1b', title: '包含零向量 (0, 0, 0)' },
+                { id: 'mm-sub-1c', title: '对线性组合保持封闭' }
+              ]},
+              { id: 'mm-sub-2', title: '列空间 C(A)', expanded: false, children: [
+                { id: 'mm-sub-2a', title: '由矩阵 A 的主元列张成' }
+              ]}
+            ]
+          },
+          {
+            id: 'mm-basis',
+            title: '线性无关与基',
+            expanded: true,
+            children: [
+              { id: 'mm-basis-1', title: '线性无关性', expanded: false, children: [
+                { id: 'mm-basis-1a', title: '零空间仅含零向量' }
+              ]},
+              { id: 'mm-basis-2', title: '基与维数', expanded: true, children: [
+                { id: 'mm-basis-2a', title: '基的定义：独立并生成空间的向量' },
+                { id: 'mm-basis-2b', title: '维数：由基向量的个数决定' },
+                { id: 'mm-basis-2c', title: '矩阵秩：行秩与列秩相等' }
+              ]}
+            ]
+          }
+        ]
+      },
+      studioConfig: {
+        audio: { format: 'deep', duration: 'default', lang: 'zh-CN', prompt: '' },
+        slides: { format: 'detailed', duration: 'default', lang: 'zh-CN', reviewOutline: false, prompt: '' },
+        video: { format: 'brief', lang: 'zh-CN', focus: '卡尔曼滤波如何更新估算值', reviewNotes: false, prompt: '' },
+        mindmap: { lang: 'zh-CN', prompt: '' },
+        report: { format: 'interactive', template: 'study_guide' },
+        flashcards: { count: 'standard', difficulty: 'medium', images: 'include', lang: 'zh-CN', prompt: '' },
+        quiz: { count: 'standard', difficulty: 'medium', images: 'include', types: new Set(['single', 'multi', 'fill', 'short']), lang: 'zh-CN', prompt: '' },
+        infographic: { lang: 'zh-CN', orientation: 'landscape', style: 'auto', detail: 'standard', prompt: '' }
+      },
+      sources: [
+        {
+          id: 'src-1',
+          title: 'Gilbert Strang - Introduction to Linear Algebra.pdf',
+          type: 'pdf',
+          checked: true,
+          excerpt: 'Section 3.5 (Dimensions of the Four Subspaces): A basis for a vector space is a sequence of vectors that are linearly independent and span the space. Every basis for V has the exact same number of vectors.'
+        },
+        {
+          id: 'src-2',
+          title: '线性代数导论-第五版.md',
+          type: 'md',
+          checked: true,
+          excerpt: '维数定理（Dimension Theorem）：若向量空间 V 存在一组由 n 个向量组成的基，则 V 中任意一组基都恰好包含 n 个向量；矩阵的行秩与列秩严格相等，记为秩 r。'
+        }
+      ],
+      messages: [
+        { id: 'msg-1', role: 'user', time: '今天 · 11:45', text: '在“线性无关与基”的更大背景下，讨论这些来源对“基与维数”的看法。' },
+        {
+          id: 'msg-2',
+          role: 'assistant',
+          thoughtsExpanded: true,
+          thoughts: [
+            { title: 'Analyzing Perspectives', body: "I'm examining the sources to understand their perspectives on \"basis and dimension\" within the broader context of linear independence.", icon: ICONS.spark },
+            { title: '已搜索您的来源', body: '检索到 2 个相关片段 (SQLite FTS5 + 向量混合召回)', icon: ICONS.doc },
+            { title: 'Analyzing Perspectives', body: "I'm examining the sources to compare their perspectives on bases within the framework of linear independence.", icon: ICONS.spark }
+          ],
+          text: '综合所选两份线性代数文献，在“线性无关与基”的框架下，**基（Basis）**与**维数（Dimension）**的核心关系可归纳为以下两点：\n\n1. **极小生成集与极大无关组的统一**：《Introduction to Linear Algebra》指出，一组向量构成空间的基，当且仅当它既线性无关（无冗余向量）又张成整个空间（无缺失方向）[1]。\n2. **维数的不变性（维数定理）**：文献中给出了这一核心结论（维数定理）的严格代数证明——同一向量空间的任意两组基必然包含相同数量的向量，这一不变量即为空间的维数，从而确立了线性无关组长度的严格上界 [2]。',
+          followUps: [
+            '四个基本子空间是如何构成的？',
+            '什么是左零空间？',
+            '能讲讲行空间和零空间的正交性吗？'
+          ]
+        }
+      ],
+      studioItems: [
+        { id: 'st-1', type: 'mindmap', title: '线性代数思维导图', meta: '2个来源 · 33分钟前' }
+      ]
+    };
+
+    let toastTimer = null;
+    function showToast(msg) {
+      const el = document.getElementById('toastBanner');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+    }
+
+    function openModal(id) {
+      const m = document.getElementById(id);
+      m.classList.remove('hidden');
+      m.classList.add('flex');
+    }
+    function closeModal(id) {
+      const m = document.getElementById(id);
+      m.classList.add('hidden');
+      m.classList.remove('flex');
+    }
+
+    function selectedSourcesCount() {
+      return state.sources.filter(s => s.checked).length;
+    }
+
+    // Context Popup Menu Helper
+    function openContextMenu(anchorEl, items) {
+      const menu = document.getElementById('contextPopupMenu');
+      menu.innerHTML = '';
+      items.forEach(it => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `w-full flex items-center gap-2 px-2.5 py-2 rounded-lg hover:bg-[#333537] text-xs text-left ${it.danger ? 'text-rose-400' : 'text-[#e3e3e3]'}`;
+        btn.innerHTML = `${it.icon || ''}<span>${it.label}</span>`;
+        btn.addEventListener('click', () => {
+          menu.classList.add('hidden');
+          it.onClick();
+        });
+        menu.appendChild(btn);
+      });
+      const r = anchorEl.getBoundingClientRect();
+      menu.style.left = `${Math.min(window.innerWidth - 186, Math.max(8, r.right - 176))}px`;
+      menu.style.top = `${r.bottom + 6}px`;
+      menu.classList.remove('hidden');
+    }
+
+    function switchStudioView(viewName) {
+      document.getElementById('studioHomeView').classList.toggle('hidden', viewName !== 'home');
+      document.getElementById('studioMindMapView').classList.toggle('hidden', viewName !== 'mindmap');
+      document.getElementById('studioMindMapView').classList.toggle('flex', viewName === 'mindmap');
+      document.getElementById('studioNoteView').classList.toggle('hidden', viewName !== 'note');
+      document.getElementById('studioNoteView').classList.toggle('flex', viewName === 'note');
+      if (viewName !== 'mindmap' && state.studioExpanded) setStudioExpanded(false);
+      if (viewName === 'mindmap') {
+        document.getElementById('mmSourceCount').textContent = selectedSourcesCount();
+        renderMindMap();
+      }
+    }
+
+    function setStudioExpanded(expanded) {
+      state.studioExpanded = expanded;
+      const panel = document.getElementById('panelStudio');
+      if (expanded) {
+        panel.classList.remove('lg:w-[310px]', 'xl:w-[335px]');
+        panel.classList.add('lg:w-[46%]', 'xl:w-[48%]');
+      } else {
+        panel.classList.remove('lg:w-[46%]', 'xl:w-[48%]');
+        panel.classList.add('lg:w-[310px]', 'xl:w-[335px]');
+      }
+    }
+
+    function renderMindMap() {
+      const svg = document.getElementById('mindMapSvg');
+      const nodeH = 34;
+      const vGap = 14;
+      const colGap = 210;
+
+      function measure(node) {
+        if (!node.children || !node.expanded || node.children.length === 0) {
+          node._h = nodeH;
+          return node._h;
+        }
+        let sum = 0;
+        node.children.forEach((c, idx) => {
+          sum += measure(c);
+          if (idx > 0) sum += vGap;
+        });
+        node._h = Math.max(nodeH, sum);
+        return node._h;
+      }
+
+      const totalH = measure(state.mindMapTree) + 80;
+      const placed = [];
+      const edges = [];
+      let maxX = 400;
+
+      function layout(node, depth, topY, parentNode) {
+        const x = 32 + depth * colGap;
+        const y = topY + node._h / 2 - nodeH / 2;
+        const hasKids = node.children && node.children.length > 0;
+        const w = Math.min(205, Math.max(115, node.title.length * 12 + (hasKids ? 38 : 24)));
+        maxX = Math.max(maxX, x + w + 60);
+        const info = { node, depth, x, y, w, h: nodeH, parent: parentNode };
+        placed.push(info);
+        if (parentNode) edges.push({ from: parentNode, to: info });
+        if (hasKids && node.expanded) {
+          let curY = topY;
+          node.children.forEach(c => { layout(c, depth + 1, curY, info); curY += c._h + vGap; });
+        }
+      }
+
+      layout(state.mindMapTree, 0, 40, null);
+      const scale = state.mmZoom;
+      svg.setAttribute('width', Math.round(maxX * scale));
+      svg.setAttribute('height', Math.round(totalH * scale));
+      svg.setAttribute('viewBox', `0 0 ${maxX} ${totalH}`);
+
+      let out = '';
+      edges.forEach(({ from, to }) => {
+        const x1 = from.x + from.w, y1 = from.y + from.h / 2;
+        const x2 = to.x, y2 = to.y + to.h / 2;
+        const cx = (x1 + x2) / 2;
+        out += `<path d="M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}" fill="none" stroke="#4f5666" stroke-width="1.5" />`;
+      });
+
+      placed.forEach(({ node, depth, x, y, w, h, parent }) => {
+        const hasKids = node.children && node.children.length > 0;
+        const fill = depth === 0 ? '#2b3245' : depth >= 2 && !hasKids ? '#223639' : '#2c3442';
+        const stroke = depth === 0 ? '#445275' : depth >= 2 && !hasKids ? '#345459' : '#3e485c';
+        const parentTitle = parent ? parent.node.title : state.mindMapTree.title;
+
+        out += `<g class="mm-node-group">`;
+        out += `<g class="mm-node" data-mm-ask="${node.title}" data-mm-parent="${parentTitle}">`;
+        out += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="${fill}" stroke="${stroke}" stroke-width="1" />`;
+        const label = node.title.length > 16 ? node.title.slice(0, 15) + '…' : node.title;
+        out += `<text x="${x + 12}" y="${y + 21}" fill="#e3e3e3" font-size="11.5" font-family="Inter, Noto Sans SC, sans-serif">${label}</text>`;
+        out += `</g>`;
+        if (hasKids) {
+          const bx = x + w - 14, by = y + h / 2;
+          out += `<g class="mm-toggle-btn" data-mm-toggle="${node.id}">`;
+          out += `<circle cx="${bx}" cy="${by}" r="9" fill="#3a4354" />`;
+          out += `<text x="${bx}" y="${by + 3.5}" text-anchor="middle" fill="#e3e3e3" font-size="10" font-weight="bold">${node.expanded ? '‹' : '›'}</text>`;
+          out += `</g>`;
+        }
+        out += `</g>`;
+      });
+
+      svg.innerHTML = out;
+    }
+
+    function toggleMindMapNode(node, targetId) {
+      if (node.id === targetId) { node.expanded = !node.expanded; return true; }
+      if (node.children) for (const c of node.children) if (toggleMindMapNode(c, targetId)) return true;
+      return false;
+    }
+
+    function renderSources() {
+      const list = document.getElementById('sourcesList');
+      const mini = document.getElementById('sourcesMiniIcons');
+      list.innerHTML = '';
+      mini.innerHTML = '';
+
+      state.sources.forEach((src) => {
+        const iconSvg = src.type === 'pdf' ? ICONS.pdf : ICONS.md;
+        const row = document.createElement('div');
+        row.className = 'group flex items-center justify-between gap-1.5 px-2.5 py-2 rounded-xl hover:bg-[#282a2c] transition-colors cursor-pointer';
+        row.innerHTML = `
+          <div class="flex items-center gap-2.5 min-w-0 flex-1" data-inspect-source="${src.id}">
+            ${iconSvg}
+            <span class="text-xs text-[#e3e3e3] truncate" title="${src.title}">${src.title}</span>
+          </div>
+          <button type="button" data-source-more="${src.id}" class="opacity-0 group-hover:opacity-100 w-6 h-6 rounded-full hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5] shrink-0 transition-opacity" title="更多">${ICONS.more}</button>
+          <input type="checkbox" ${src.checked ? 'checked' : ''} data-toggle-source="${src.id}" class="w-4 h-4 rounded accent-[#a8c7fa] cursor-pointer shrink-0" />
+        `;
+        list.appendChild(row);
+
+        const miniBtn = document.createElement('button');
+        miniBtn.className = 'm3-btn w-8 h-8 rounded-lg hover:bg-[#282a2c] flex items-center justify-center';
+        miniBtn.title = src.title;
+        miniBtn.innerHTML = iconSvg;
+        miniBtn.addEventListener('click', () => { if (state.sourcesCollapsed) toggleSourcesCollapse(); });
+        mini.appendChild(miniBtn);
+      });
+
+      const cnt = selectedSourcesCount();
+      document.getElementById('heroSourceCount').textContent = cnt;
+      document.getElementById('inputSourceBadge').textContent = `${cnt}个来源`;
+      document.getElementById('selectAllSources').checked = state.sources.length > 0 && cnt === state.sources.length;
+      document.getElementById('sourceQuotaText').textContent = `${state.sources.length} / 300`;
+      document.getElementById('sourceQuotaBar').style.width = `${Math.min(100, Math.max(2, (state.sources.length / 300) * 100))}%`;
+    }
+
+    function toggleSourcesCollapse() {
+      state.sourcesCollapsed = !state.sourcesCollapsed;
+      const el = document.getElementById('panelSources');
+      const title = document.getElementById('sourcesHeaderTitle');
+      const exp = document.getElementById('sourcesExpandedBody');
+      const col = document.getElementById('sourcesCollapsedBody');
+      if (state.sourcesCollapsed) {
+        el.classList.remove('lg:w-[295px]', 'xl:w-[315px]');
+        el.classList.add('lg:w-14');
+        title.classList.add('hidden');
+        exp.classList.add('hidden');
+        col.classList.remove('hidden');
+        col.classList.add('flex');
+      } else {
+        el.classList.remove('lg:w-14');
+        el.classList.add('lg:w-[295px]', 'xl:w-[315px]');
+        title.classList.remove('hidden');
+        exp.classList.remove('hidden');
+        col.classList.add('hidden');
+        col.classList.remove('flex');
+      }
+    }
+
+    function formatAssistantText(raw) {
+      return raw
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-white">$1</strong>')
+        .replace(/\[(\d+)\]/g, '<span class="citation-chip" data-cite="$1">$1</span>')
+        .replace(/\n/g, '<br/>');
+    }
+
+    function renderMessages() {
+      const container = document.getElementById('chatMessages');
+      container.innerHTML = '';
+
+      state.messages.forEach((msg) => {
+        if (msg.role === 'user') {
+          const wrap = document.createElement('div');
+          wrap.className = 'space-y-3';
+          if (msg.time) wrap.innerHTML += `<div class="text-center text-[11px] text-[#8e918f]">${msg.time}</div>`;
+          const bubble = document.createElement('div');
+          bubble.className = 'flex justify-end';
+          bubble.innerHTML = `<div class="max-w-[82%] px-4 py-3 rounded-2xl bg-[#282a2c] text-sm text-[#e3e3e3] leading-relaxed">${msg.text}</div>`;
+          wrap.appendChild(bubble);
+          container.appendChild(wrap);
+        } else {
+          const wrap = document.createElement('div');
+          wrap.className = 'space-y-3';
+          if (msg.thoughts && msg.thoughts.length > 0) {
+            const thoughtBox = document.createElement('div');
+            thoughtBox.className = 'space-y-2';
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'm3-btn inline-flex items-center gap-1.5 text-xs font-medium text-[#e3e3e3] hover:text-[#a8c7fa] px-1.5 py-1 rounded-lg hover:bg-[#282a2c]';
+            toggleBtn.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#e3e3e3]"></span><span>Thoughts</span><svg class="w-3.5 h-3.5 transition-transform ${msg.thoughtsExpanded ? 'rotate-180' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`;
+            toggleBtn.addEventListener('click', () => { msg.thoughtsExpanded = !msg.thoughtsExpanded; renderMessages(); });
+            thoughtBox.appendChild(toggleBtn);
+
+            if (msg.thoughtsExpanded) {
+              const steps = document.createElement('div');
+              steps.className = 'thought-line space-y-2.5 ml-1 pt-1';
+              msg.thoughts.forEach((t) => {
+                const item = document.createElement('div');
+                item.className = 'space-y-0.5';
+                item.innerHTML = `<div class="flex items-center gap-2 text-xs font-medium text-[#c4c7c5]">${t.icon}<span>${t.title}</span></div>${t.body ? `<p class="text-xs text-[#8e918f] pl-5 leading-relaxed">${t.body}</p>` : ''}`;
+                steps.appendChild(item);
+              });
+              thoughtBox.appendChild(steps);
+            }
+            wrap.appendChild(thoughtBox);
+          }
+
+          if (msg.loading) {
+            const loader = document.createElement('div');
+            loader.className = 'flex items-center gap-2 text-xs text-[#a8c7fa] py-1';
+            loader.innerHTML = `<span class="w-2 h-2 rounded-full bg-[#a8c7fa] thinking-dot"></span><span>正在寻找相关观点 (${PROTOCOL_PRESETS[state.activeProtocol].name})...</span>`;
+            wrap.appendChild(loader);
+          } else if (msg.text) {
+            const body = document.createElement('div');
+            body.className = 'text-[14px] leading-[1.75] text-[#e3e3e3]/95';
+            body.innerHTML = formatAssistantText(msg.text);
+            wrap.appendChild(body);
+
+            // Per-Message Action Bar (from Gemini Notebook.html)
+            const actBar = document.createElement('div');
+            actBar.className = 'flex items-center gap-1 pt-1';
+            actBar.innerHTML = `
+              <button type="button" data-save-msg="${msg.id}" class="m3-btn inline-flex items-center gap-1.5 px-3 py-1 rounded-full hover:bg-[#282a2c] text-xs text-[#c4c7c5]">${ICONS.pin}<span>保存到笔记</span></button>
+              <button type="button" data-copy-msg="${msg.id}" class="m3-btn w-7 h-7 rounded-full hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-[#e3e3e3]" title="复制">${ICONS.copy}</button>
+              <button type="button" class="m3-btn w-7 h-7 rounded-full hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-[#e3e3e3]" title="有帮助">${ICONS.thumbUp}</button>
+              <button type="button" class="m3-btn w-7 h-7 rounded-full hover:bg-[#282a2c] flex items-center justify-center text-[#8e918f] hover:text-[#e3e3e3]" title="无帮助">${ICONS.thumbDown}</button>
+            `;
+            wrap.appendChild(actBar);
+
+            // Follow-up Suggestion Chips (Screencast 12-44-36.mp4 + Gemini Notebook.html)
+            if (msg.followUps && msg.followUps.length > 0) {
+              const fuGrid = document.createElement('div');
+              fuGrid.className = 'grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2';
+              msg.followUps.forEach(q => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'm3-btn p-3.5 rounded-2xl bg-[#282a2c] hover:bg-[#333537] text-left text-xs text-[#e3e3e3] leading-relaxed border border-white/[0.04]';
+                chip.textContent = q;
+                chip.addEventListener('click', () => sendPromptToChat(q));
+                fuGrid.appendChild(chip);
+              });
+              wrap.appendChild(fuGrid);
+            }
+          }
+          container.appendChild(wrap);
+        }
+      });
+    }
+
+    function renderStudioItems() {
+      const list = document.getElementById('studioArtifactsList');
+      list.innerHTML = '';
+      state.studioItems.forEach((item) => {
+        const iconSvg = ICONS[item.type] || ICONS.note;
+        const el = document.createElement('div');
+        el.className = 'flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl hover:bg-[#282a2c] transition-colors cursor-pointer group';
+        el.innerHTML = `
+          <div class="flex items-center gap-3 min-w-0 flex-1">
+            ${iconSvg}
+            <div class="min-w-0">
+              <div class="text-xs font-medium text-[#e3e3e3] truncate">${item.title}</div>
+              <div class="text-[11px] text-[#8e918f] truncate">${item.meta}</div>
+            </div>
+          </div>
+          <button type="button" data-artifact-more="${item.id}" class="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-full hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5] shrink-0 transition-opacity" title="更多">${ICONS.more}</button>
+        `;
+        el.addEventListener('click', (e) => {
+          const moreBtn = e.target.closest('[data-artifact-more]');
+          if (moreBtn) {
+            e.stopPropagation();
+            openContextMenu(moreBtn, [
+              { label: '打开查看', icon: ICONS.doc, onClick: () => openStudioArtifact(item) },
+              { label: '删除', icon: '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>', danger: true, onClick: () => {
+                state.studioItems = state.studioItems.filter(i => i.id !== item.id);
+                renderStudioItems();
+                showToast('已删除制品');
+              }}
+            ]);
+            return;
+          }
+          openStudioArtifact(item);
+        });
+        list.appendChild(el);
+      });
+    }
+
+    function openStudioArtifact(item) {
+      if (item.type === 'mindmap') {
+        document.getElementById('mmDocTitle').textContent = item.title;
+        switchStudioView('mindmap');
+      } else if (item.type === 'note') {
+        openNoteEditor(item);
+      } else {
+        openArtifactViewer(item);
+      }
+    }
+
+    function openNoteEditor(noteItem = null) {
+      state.editingNoteId = noteItem ? noteItem.id : null;
+      document.getElementById('noteTitleInput').value = noteItem ? noteItem.title : '新笔记';
+      document.getElementById('noteBodyInput').value = noteItem ? (noteItem.content?.text || '') : '';
+      switchStudioView('note');
+    }
+
+    function langSourceRowHTML(langVal, showDuration = false, durationVal = 'default', durationKey = '') {
+      const cnt = selectedSourcesCount();
+      return `
+        <div class="grid grid-cols-1 ${showDuration ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-4 items-end">
+          <div class="space-y-1.5">
+            <label class="block text-xs text-[#c4c7c5]">选择语言</label>
+            <select data-field="lang" class="studio-field w-full h-10 px-3 rounded-xl bg-[#232528] border border-[#3c4043] text-xs text-[#e3e3e3] focus:outline-none focus:border-[#a8c7fa]">
+              <option value="zh-CN" ${langVal === 'zh-CN' ? 'selected' : ''}>中文 (简体)</option>
+              <option value="en-US" ${langVal === 'en-US' ? 'selected' : ''}>English</option>
+              <option value="ja-JP" ${langVal === 'ja-JP' ? 'selected' : ''}>日本語</option>
+            </select>
+          </div>
+          ${showDuration ? `
+          <div class="space-y-1.5">
+            <label class="block text-xs text-[#c4c7c5]">时长</label>
+            <div class="seg-group">
+              <button type="button" data-seg="${durationKey}:short" class="seg-item ${durationVal === 'short' ? 'active' : ''}">${durationVal === 'short' ? ICONS.check : ''}<span>短</span></button>
+              <button type="button" data-seg="${durationKey}:default" class="seg-item ${durationVal === 'default' ? 'active' : ''}">${durationVal === 'default' ? ICONS.check : ''}<span>默认</span></button>
+            </div>
+          </div>` : ''}
+          <div class="space-y-1.5">
+            <label class="block text-xs text-[#c4c7c5]">来源</label>
+            <select class="w-full h-10 px-3 rounded-xl bg-[#232528] border border-[#3c4043] text-xs text-[#e3e3e3] focus:outline-none">
+              <option>${cnt}个来源</option>
+              <option>全部来源 (${state.sources.length}个)</option>
+            </select>
+          </div>
+        </div>
+      `;
+    }
+
+    function openStudioModal(type) {
+      state.currentStudioType = type;
+      const iconEl = document.getElementById('studioModalIcon');
+      const titleEl = document.getElementById('studioModalTitle');
+      const bodyEl = document.getElementById('studioModalBody');
+      const cardEl = document.getElementById('studioModalCard');
+      cardEl.className = 'modal-card-anim w-full rounded-[24px] bg-[#202124] border border-[#3c4043] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ' +
+        (type === 'audio' || type === 'infographic' ? 'max-w-[760px]' : type === 'mindmap' ? 'max-w-[640px]' : 'max-w-[700px]');
+
+      const cfg = state.studioConfig[type];
+      let html = '';
+
+      if (type === 'audio') {
+        iconEl.innerHTML = ICONS.audio;
+        titleEl.textContent = '自定义音频概览';
+        const cards = [
+          { id: 'deep', title: '深入探究', desc: '两位主持人之间生动有趣的对话，旨在解读和关联来源中的主题' },
+          { id: 'summary', title: '摘要', desc: '简短概要，旨在帮助您快速了解来源的核心思想' },
+          { id: 'review', title: '评论', desc: '对来源的专家评价，旨在提供建设性反馈，帮助您改进内容' },
+          { id: 'debate', title: '辩论', desc: '两位主持人之间思维缜密的辩论，旨在阐明对来源的不同观点' }
+        ];
+        html = `
+          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">格式</div><div class="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+          ${cards.map(c => `<button type="button" data-card="format:${c.id}" class="option-card ${cfg.format === c.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><span class="text-xs font-medium text-[#e3e3e3]">${c.title}</span><span class="card-radio">${cfg.format === c.id ? ICONS.check : ''}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${c.desc}</p></button>`).join('')}
+          </div></div>
+          ${langSourceRowHTML(cfg.lang, true, cfg.duration, 'duration')}
+          <div class="space-y-2"><label class="block text-xs text-[#c4c7c5]">AI 主持人在本集节目中应着重于哪些方面？</label>
+          <textarea data-field="prompt" rows="4" placeholder="提示示例&#10;  • 专注于特定来源（“仅介绍关于矩阵分解的章节”）&#10;  • 专注于特定主题（“仅讨论奇异值分解的应用”）" class="studio-field w-full p-3.5 rounded-xl bg-[#191a1c] border border-[#3c4043] focus:border-[#a8c7fa] text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none leading-relaxed">${cfg.prompt}</textarea></div>
+        `;
+      } else if (type === 'slides') {
+        iconEl.innerHTML = ICONS.slides;
+        titleEl.textContent = '自定义演示文稿';
+        const cards = [
+          { id: 'detailed', title: '详细演示文稿', desc: '一整套包含全文和详情的演示文稿，非常适合通过邮件发送或单独阅读。' },
+          { id: 'presenter', title: '演示用幻灯片', desc: '简洁直观的幻灯片，附带要介绍的重点，为您的演讲提供全程支持。' }
+        ];
+        html = `
+          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">格式</div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          ${cards.map(c => `<button type="button" data-card="format:${c.id}" class="option-card ${cfg.format === c.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><span class="text-xs font-medium text-[#e3e3e3]">${c.title}</span><span class="card-radio">${cfg.format === c.id ? ICONS.check : ''}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${c.desc}</p></button>`).join('')}
+          </div></div>
+          ${langSourceRowHTML(cfg.lang, true, cfg.duration, 'duration')}
+          <div class="space-y-2"><label class="block text-xs text-[#c4c7c5]">请描述您要创建的演示文稿</label>
+          <textarea data-field="prompt" rows="3" placeholder="添加一份概略提纲，或指定受众、风格和重点：“为新手用户创建一套演示文稿，采用大胆活泼的风格，注重分步说明。”" class="studio-field w-full p-3.5 rounded-xl bg-[#191a1c] border border-[#3c4043] focus:border-[#a8c7fa] text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none leading-relaxed">${cfg.prompt}</textarea></div>
+          <div class="flex items-center justify-between gap-4 pt-1"><div><div class="text-xs font-medium text-[#e3e3e3]">检查幻灯片大纲</div><p class="text-[11px] text-[#8e918f] mt-0.5">在创建演示文稿之前，请先预览并修改大纲。大纲草稿将在几分钟后准备就绪并显示在 Studio 中。</p></div><button type="button" data-toggle="reviewOutline" class="toggle-switch ${cfg.reviewOutline ? 'on' : ''}"></button></div>
+        `;
+      } else if (type === 'video') {
+        iconEl.innerHTML = ICONS.video;
+        titleEl.textContent = '自定义视频概览';
+        const cards = [
+          { id: 'brief', title: '简洁版', badge: '新功能!', desc: '一份简短概览，可帮助您快速掌握来源的核心思想' },
+          { id: 'explainer', title: '说明视频', desc: '一份结构清晰、内容详尽的概览，可将来源中的各个要点串联起来。' }
+        ];
+        const focuses = ['卡尔曼滤波如何更新估算值', '特征脸如何识别面部特征', '蒙特卡洛算法如何提升精度'];
+        html = `
+          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">格式</div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          ${cards.map(c => `<button type="button" data-card="format:${c.id}" class="option-card ${cfg.format === c.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><div class="flex items-center gap-2"><span class="text-xs font-medium text-[#e3e3e3]">${c.title}</span>${c.badge ? `<span class="new-badge">${c.badge}</span>` : ''}</div><span class="card-radio">${cfg.format === c.id ? ICONS.check : ''}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${c.desc}</p></button>`).join('')}
+          </div></div>
+          ${langSourceRowHTML(cfg.lang, false)}
+          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">视频应侧重于哪些方面？</div><div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          ${focuses.map(f => `<button type="button" data-focus="${f}" class="m3-btn px-3 py-2.5 rounded-xl border text-left text-[11px] flex items-center justify-between gap-1.5 ${cfg.focus === f ? 'bg-[#2a2d34] border-[#5f6368] text-[#e3e3e3]' : 'bg-[#232528] border-[#3c4043] text-[#c4c7c5] hover:bg-[#2b2d30]'}"><span class="flex items-center gap-1.5 truncate">${ICONS.pencil}<span class="truncate">${f}</span></span>${cfg.focus === f ? `<span class="text-[#a8c7fa]">${ICONS.check}</span>` : ''}</button>`).join('')}
+          </div><div class="rounded-xl bg-[#191a1c] border border-[#3c4043] p-3 space-y-1.5"><div class="text-[11px] text-[#c4c7c5] flex items-center gap-1.5">${ICONS.pencil}<span>自定义主题</span></div><textarea data-field="prompt" rows="2" placeholder="描述您自己的主题" class="studio-field w-full bg-transparent text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none">${cfg.prompt}</textarea></div></div>
+          <div class="flex items-center justify-between gap-4 pt-1"><div><div class="text-xs font-medium text-[#e3e3e3]">检查制作者备注</div><p class="text-[11px] text-[#8e918f] mt-0.5">在创建视频之前，请先预览并修改制作者备注。草稿备注将在几分钟后准备就绪并显示在 Studio 中。</p></div><button type="button" data-toggle="reviewNotes" class="toggle-switch ${cfg.reviewNotes ? 'on' : ''}"></button></div>
+        `;
+      } else if (type === 'mindmap') {
+        iconEl.innerHTML = ICONS.mindmap;
+        titleEl.textContent = '思维导图';
+        html = `
+          ${langSourceRowHTML(cfg.lang, false)}
+          <div class="space-y-2"><label class="block text-xs text-[#c4c7c5]">主题应该是什么？</label>
+          <textarea data-field="prompt" rows="4" placeholder="示例提示&#10;  • 思维导图必须仅限于一个特定来源（例如“线性代数导论-第五版.md”）&#10;  • 思维导图必须仅围绕重要的子空间与秩概念展开" class="studio-field w-full p-3.5 rounded-xl bg-[#191a1c] border border-[#3c4043] focus:border-[#a8c7fa] text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none leading-relaxed">${cfg.prompt}</textarea></div>
+        `;
+      } else if (type === 'report') {
+        iconEl.innerHTML = ICONS.report;
+        titleEl.textContent = '创建报告';
+        const cards = [
+          { id: 'interactive', title: '互动式', badge: '新功能!', desc: '包含嵌入式“Studio”内容的互动式报告' },
+          { id: 'document', title: '文档', desc: '结构化纯文本文档' }
+        ];
+        const templates = [
+          { id: 'study_guide', title: '学习概览', desc: '结合 Studio 内容总结关键概念，帮助您学习' },
+          { id: 'briefing', title: '执行简报', desc: '提炼核心结论、公式推导与跨学科应用场景' }
+        ];
+        html = `
+          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">格式</div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          ${cards.map(c => `<button type="button" data-card="format:${c.id}" class="option-card ${cfg.format === c.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><div class="flex items-center gap-2"><span class="text-xs font-medium text-[#e3e3e3]">${c.title}</span>${c.badge ? `<span class="new-badge">${c.badge}</span>` : ''}</div><span class="card-radio">${cfg.format === c.id ? ICONS.check : ''}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${c.desc}</p></button>`).join('')}
+          </div></div>
+          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">模板</div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          ${templates.map(t => `<button type="button" data-card="template:${t.id}" class="option-card ${cfg.template === t.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><span class="text-xs font-medium text-[#e3e3e3]">${t.title}</span><span class="w-6 h-6 rounded-full bg-[#334475] text-[#d3e3fd] flex items-center justify-center">${ICONS.pencil}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${t.desc}</p></button>`).join('')}
+          </div></div>
+        `;
+      } else if (type === 'flashcards') {
+        iconEl.innerHTML = ICONS.flashcards;
+        titleEl.textContent = '抽认卡';
+        html = `
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">卡片数量</div><div class="seg-group">
+              <button type="button" data-seg="count:fewer" class="seg-item ${cfg.count === 'fewer' ? 'active' : ''}">${cfg.count === 'fewer' ? ICONS.check : ''}<span>较少</span></button>
+              <button type="button" data-seg="count:standard" class="seg-item ${cfg.count === 'standard' ? 'active' : ''}">${cfg.count === 'standard' ? ICONS.check : ''}<span>标准 (默认)</span></button>
+              <button type="button" data-seg="count:more" class="seg-item ${cfg.count === 'more' ? 'active' : ''}">${cfg.count === 'more' ? ICONS.check : ''}<span>更多</span></button>
+            </div></div>
+            <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">难度等级</div><div class="seg-group">
+              <button type="button" data-seg="difficulty:easy" class="seg-item ${cfg.difficulty === 'easy' ? 'active' : ''}">${cfg.difficulty === 'easy' ? ICONS.check : ''}<span>简单</span></button>
+              <button type="button" data-seg="difficulty:medium" class="seg-item ${cfg.difficulty === 'medium' ? 'active' : ''}">${cfg.difficulty === 'medium' ? ICONS.check : ''}<span>中等 (默认)</span></button>
+              <button type="button" data-seg="difficulty:hard" class="seg-item ${cfg.difficulty === 'hard' ? 'active' : ''}">${cfg.difficulty === 'hard' ? ICONS.check : ''}<span>困难</span></button>
+            </div></div>
+            <div class="space-y-2"><div class="flex items-center gap-2"><span class="text-xs text-[#c4c7c5]">包含图片</span><span class="new-badge">新功能!</span></div><div class="seg-group">
+              <button type="button" data-seg="images:include" class="seg-item ${cfg.images === 'include' ? 'active' : ''}">${cfg.images === 'include' ? ICONS.check : ''}<span>包含 (默认)</span></button>
+              <button type="button" data-seg="images:text" class="seg-item ${cfg.images === 'text' ? 'active' : ''}">${cfg.images === 'text' ? ICONS.check : ''}<span>仅文本</span></button>
+            </div></div>
+          </div>
+          ${langSourceRowHTML(cfg.lang, false)}
+          <div class="space-y-2"><label class="block text-xs text-[#c4c7c5]">主题应该是什么？</label>
+          <textarea data-field="prompt" rows="4" placeholder="示例提示&#10;  • 抽认卡必须仅限于一个特定来源&#10;  • 卡片正面内容必须简短易记 (1-5 个字词)" class="studio-field w-full p-3.5 rounded-xl bg-[#191a1c] border border-[#3c4043] focus:border-[#a8c7fa] text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none leading-relaxed">${cfg.prompt}</textarea></div>
+        `;
+      } else if (type === 'quiz') {
+        iconEl.innerHTML = ICONS.quiz;
+        titleEl.textContent = '测验';
+        const qTypes = [{ id: 'single', label: '单选题' }, { id: 'multi', label: '多选题' }, { id: 'fill', label: '填空题' }, { id: 'short', label: '简答题' }];
+        html = `
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">问题数量</div><div class="seg-group">
+              <button type="button" data-seg="count:fewer" class="seg-item ${cfg.count === 'fewer' ? 'active' : ''}">${cfg.count === 'fewer' ? ICONS.check : ''}<span>较少</span></button>
+              <button type="button" data-seg="count:standard" class="seg-item ${cfg.count === 'standard' ? 'active' : ''}">${cfg.count === 'standard' ? ICONS.check : ''}<span>标准 (默认)</span></button>
+              <button type="button" data-seg="count:more" class="seg-item ${cfg.count === 'more' ? 'active' : ''}">${cfg.count === 'more' ? ICONS.check : ''}<span>更多</span></button>
+            </div></div>
+            <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">难度等级</div><div class="seg-group">
+              <button type="button" data-seg="difficulty:easy" class="seg-item ${cfg.difficulty === 'easy' ? 'active' : ''}">${cfg.difficulty === 'easy' ? ICONS.check : ''}<span>简单</span></button>
+              <button type="button" data-seg="difficulty:medium" class="seg-item ${cfg.difficulty === 'medium' ? 'active' : ''}">${cfg.difficulty === 'medium' ? ICONS.check : ''}<span>中等 (默认)</span></button>
+              <button type="button" data-seg="difficulty:hard" class="seg-item ${cfg.difficulty === 'hard' ? 'active' : ''}">${cfg.difficulty === 'hard' ? ICONS.check : ''}<span>困难</span></button>
+            </div></div>
+            <div class="space-y-2"><div class="flex items-center gap-2"><span class="text-xs text-[#c4c7c5]">包含图片</span><span class="new-badge">新功能!</span></div><div class="seg-group">
+              <button type="button" data-seg="images:include" class="seg-item ${cfg.images === 'include' ? 'active' : ''}">${cfg.images === 'include' ? ICONS.check : ''}<span>包含 (默认)</span></button>
+              <button type="button" data-seg="images:text" class="seg-item ${cfg.images === 'text' ? 'active' : ''}">${cfg.images === 'text' ? ICONS.check : ''}<span>仅文本</span></button>
+            </div></div>
+          </div>
+          <div class="space-y-2"><div class="flex items-center gap-2"><span class="text-xs text-[#c4c7c5]">问题类型</span><span class="new-badge">新功能!</span></div>
+          <div class="flex items-center gap-2 flex-wrap">${qTypes.map(qt => `<button type="button" data-qtype="${qt.id}" class="multi-pill ${cfg.types.has(qt.id) ? 'active' : ''}">${cfg.types.has(qt.id) ? ICONS.check : ''}<span>${qt.label}</span></button>`).join('')}</div></div>
+          ${langSourceRowHTML(cfg.lang, false)}
+          <div class="space-y-2"><label class="block text-xs text-[#c4c7c5]">主题应该是什么？</label>
+          <div class="relative"><textarea id="quizPromptArea" data-field="prompt" rows="3" placeholder="创建5道关于卡尔曼滤波动态最小二乘法应用的选择题。" class="studio-field w-full p-3.5 rounded-xl bg-[#191a1c] border border-[#3c4043] focus:border-[#a8c7fa] text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none">${cfg.prompt}</textarea><span class="absolute right-3 bottom-3 px-1.5 py-0.5 rounded bg-[#282a2c] border border-[#3c4043] text-[10px] text-[#8e918f]">Tab →</span></div>
+          <div class="flex items-center gap-2 flex-wrap"><button type="button" data-chip="卡尔曼滤波测试" class="m3-btn px-3 py-1 rounded-full bg-[#282a2c] hover:bg-[#333537] text-[11px] text-[#c4c7c5] border border-white/[0.06]">+ 卡尔曼滤波测试</button><button type="button" data-chip="矩阵分解考点" class="m3-btn px-3 py-1 rounded-full bg-[#282a2c] hover:bg-[#333537] text-[11px] text-[#c4c7c5] border border-white/[0.06]">+ 矩阵分解考点</button><button type="button" data-chip="蒙特卡洛评估" class="m3-btn px-3 py-1 rounded-full bg-[#282a2c] hover:bg-[#333537] text-[11px] text-[#c4c7c5] border border-white/[0.06]">+ 蒙特卡洛评估</button></div></div>
+        `;
+      } else if (type === 'infographic') {
+        iconEl.innerHTML = ICONS.infographic;
+        titleEl.textContent = '自定义信息图';
+        // Monochrome Single-Color SVG Thumbnails (No Emojis!)
+        const styles = [
+          { id: 'auto', label: '自动选择', bg: 'bg-[#f1f3f4]', svg: '<svg class="w-7 h-7 text-[#1a73e8]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>' },
+          { id: 'cute', label: '可爱', bg: 'bg-[#e9d8fd]', svg: '<svg class="w-8 h-8 text-[#553c9a]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>' },
+          { id: 'clay', label: '泥塑风', bg: 'bg-[#57534e]', svg: '<svg class="w-8 h-8 text-[#f5f5f4]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>' },
+          { id: 'sketch', label: '手绘笔记', bg: 'bg-[#fafafa]', svg: '<svg class="w-8 h-8 text-[#202124]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>' },
+          { id: 'anime', label: '动漫', bg: 'bg-[#1e3a8a]', svg: '<svg class="w-8 h-8 text-[#93c5fd]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>' },
+          { id: 'minimal', label: '极简科技', bg: 'bg-[#1e293b]', svg: '<svg class="w-8 h-8 text-[#38bdf8]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>' }
+        ];
+        html = `
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+            <div class="space-y-1.5"><label class="block text-xs text-[#c4c7c5]">选择语言</label><select data-field="lang" class="studio-field w-full h-10 px-3 rounded-xl bg-[#232528] border border-[#3c4043] text-xs text-[#e3e3e3]"><option value="zh-CN">中文 (简体)</option><option value="en-US">English</option></select></div>
+            <div class="space-y-1.5"><label class="block text-xs text-[#c4c7c5]">选择屏幕方向</label><div class="seg-group">
+              <button type="button" data-seg="orientation:landscape" class="seg-item ${cfg.orientation === 'landscape' ? 'active' : ''}">${cfg.orientation === 'landscape' ? ICONS.check : ''}<span>横向</span></button>
+              <button type="button" data-seg="orientation:portrait" class="seg-item ${cfg.orientation === 'portrait' ? 'active' : ''}">${cfg.orientation === 'portrait' ? ICONS.check : ''}<span>纵向</span></button>
+              <button type="button" data-seg="orientation:square" class="seg-item ${cfg.orientation === 'square' ? 'active' : ''}">${cfg.orientation === 'square' ? ICONS.check : ''}<span>方形</span></button>
+            </div></div>
+          </div>
+          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">选择视觉风格</div><div class="flex items-start gap-3 overflow-x-auto pb-2">
+          ${styles.map(s => `<div data-style="${s.id}" class="style-thumb ${cfg.style === s.id ? 'active' : ''}"><div class="style-thumb-box ${s.bg} flex items-center justify-center">${s.svg}<span class="style-thumb-check">${ICONS.check}</span></div><div class="text-[11px] text-[#c4c7c5] mt-1.5 truncate">${s.label}</div></div>`).join('')}
+          </div></div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+            <div class="space-y-1.5"><label class="block text-xs text-[#c4c7c5]">详细程度</label><div class="seg-group">
+              <button type="button" data-seg="detail:brief" class="seg-item ${cfg.detail === 'brief' ? 'active' : ''}">${cfg.detail === 'brief' ? ICONS.check : ''}<span>简短</span></button>
+              <button type="button" data-seg="detail:standard" class="seg-item ${cfg.detail === 'standard' ? 'active' : ''}">${cfg.detail === 'standard' ? ICONS.check : ''}<span>标准</span></button>
+              <button type="button" data-seg="detail:detailed" class="seg-item ${cfg.detail === 'detailed' ? 'active' : ''}">${cfg.detail === 'detailed' ? ICONS.check : ''}<span>详细<span class="beta-badge">BETA版</span></span></button>
+            </div></div>
+            <div class="space-y-1.5"><label class="block text-xs text-[#c4c7c5]">来源</label><select class="w-full h-10 px-3 rounded-xl bg-[#232528] border border-[#3c4043] text-xs text-[#e3e3e3]"><option>${selectedSourcesCount()}个来源</option></select></div>
+          </div>
+          <div class="space-y-2"><label class="block text-xs text-[#c4c7c5]">描述您要创建的信息图</label><textarea data-field="prompt" rows="2" placeholder="指定风格、颜色或侧重点：“使用蓝色主题，并强调 3 个关键统计数据。”" class="studio-field w-full p-3.5 rounded-xl bg-[#191a1c] border border-[#3c4043] focus:border-[#a8c7fa] text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none">${cfg.prompt}</textarea></div>
+        `;
+      }
+
+      bodyEl.innerHTML = html;
+      openModal('studioModal');
+    }
+
+    function openArtifactViewer(item) {
+      const titleEl = document.getElementById('artifactModalTitle');
+      const bodyEl = document.getElementById('artifactModalBody');
+      titleEl.innerHTML = `${ICONS[item.type] || ICONS.note}<span>${item.title}</span>`;
+      bodyEl.innerHTML = '';
+
+      if (item.type === 'quiz') {
+        item.content.questions.forEach((q, idx) => {
+          const qCard = document.createElement('div');
+          qCard.className = 'p-4 rounded-xl bg-[#282a2c] border border-white/[0.06] space-y-2.5';
+          qCard.innerHTML = `<div class="text-xs font-medium text-[#e3e3e3]">${idx + 1}. ${q.prompt}</div>`;
+          const opts = document.createElement('div');
+          opts.className = 'space-y-1.5';
+          q.options.forEach((opt, oi) => {
+            const btn = document.createElement('button');
+            btn.className = 'm3-btn w-full text-left px-3 py-2 rounded-lg bg-[#1e1f20] hover:bg-[#333537] text-xs text-[#c4c7c5] border border-white/[0.04]';
+            btn.textContent = opt;
+            btn.addEventListener('click', () => {
+              const correct = oi === q.answer;
+              btn.className = `m3-btn w-full text-left px-3 py-2 rounded-lg text-xs border ${correct ? 'bg-emerald-950/60 border-emerald-500/60 text-emerald-200' : 'bg-rose-950/60 border-rose-500/60 text-rose-200'}`;
+              showToast(correct ? '回答正确！' : `参考答案：${q.options[q.answer]}`);
+            });
+            opts.appendChild(btn);
+          });
+          qCard.appendChild(opts);
+          bodyEl.appendChild(qCard);
+        });
+      } else {
+        bodyEl.innerHTML = `<div class="p-4 rounded-xl bg-[#282a2c] text-xs leading-relaxed whitespace-pre-wrap text-[#e3e3e3]">${item.content?.text || ''}</div>`;
+      }
+      openModal('artifactModal');
+    }
+
+    function updateProtocolModalUI() {
+      const p = state.editingProtocol;
+      const preset = PROTOCOL_PRESETS[p];
+      const cfg = state.protocolConfigs[p];
+      document.querySelectorAll('.proto-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.proto === p));
+      document.getElementById('protoBaseUrl').value = cfg.baseUrl;
+      document.getElementById('protoModelId').value = cfg.model;
+      document.getElementById('protoApiKey').value = cfg.apiKey || '';
+      document.getElementById('protoThinkingToggle').checked = !!cfg.thinking;
+      document.getElementById('protoAuthHeaderHint').textContent = preset.authHint;
+
+      const sampleQuery = '在“线性无关与基”的更大背景下，讨论基与维数。';
+      let payload = {};
+      if (p === 'chat_completion') {
+        payload = { model: cfg.model, stream: true, messages: [{ role: 'system', content: 'You are a grounded Local Notebook Agent.' }, { role: 'user', content: sampleQuery }] };
+      } else if (p === 'responses') {
+        payload = { model: cfg.model, stream: true, reasoning: cfg.thinking ? { effort: 'medium', summary: 'auto' } : undefined, input: [{ role: 'user', content: sampleQuery }] };
+      } else if (p === 'anthropic') {
+        payload = { model: cfg.model, max_tokens: 4096, stream: true, thinking: cfg.thinking ? { type: 'enabled', budget_tokens: 2048 } : undefined, messages: [{ role: 'user', content: sampleQuery }] };
+      } else if (p === 'gemini') {
+        payload = { contents: [{ role: 'user', parts: [{ text: sampleQuery }] }], generationConfig: cfg.thinking ? { thinkingConfig: { includeThoughts: true } } : {} };
+      }
+      document.getElementById('protoPayloadPreview').textContent = `POST ${cfg.baseUrl}${preset.endpoint.replace('{model}', cfg.model)}\n` + JSON.stringify(payload, null, 2);
+    }
+
+    function updateTopProtocolBadge() {
+      const preset = PROTOCOL_PRESETS[state.activeProtocol];
+      const cfg = state.protocolConfigs[state.activeProtocol];
+      document.getElementById('topProtocolLabel').textContent = `${preset.name} · ${cfg.model}`;
+    }
+
+    function sendPromptToChat(text) {
+      const selected = state.sources.filter(s => s.checked);
+      state.messages.push({ id: 'u-' + Date.now(), role: 'user', text });
+
+      const assistantId = 'a-' + Date.now();
+      state.messages.push({
+        id: assistantId, role: 'assistant', loading: true, thoughtsExpanded: true,
+        thoughts: [
+          { title: 'Analyzing Perspectives', body: `Routing via ${PROTOCOL_PRESETS[state.activeProtocol].name} (${state.protocolConfigs[state.activeProtocol].model})`, icon: ICONS.spark },
+          { title: '已搜索您的来源', body: `检索 ${selected.length} 个已选本地来源的 SQLite FTS5 + 向量切片`, icon: ICONS.doc }
+        ],
+        text: ''
+      });
+      renderMessages();
+      const scrollArea = document.getElementById('chatScrollArea');
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+
+      setTimeout(() => {
+        const target = state.messages.find(m => m.id === assistantId);
+        if (!target) return;
+        target.loading = false;
+        target.text = selected.length === 0
+          ? '当前未勾选任何本地来源。请在左侧 **来源** 面板中勾选至少一个文档，或点击 **+ 添加来源** 后再提问。'
+          : `综合所选 **${selected.length} 个来源**（通过 **${PROTOCOL_PRESETS[state.activeProtocol].name}** 协议推理）：\n\n在所探讨的理论框架下，**“${text.replace(/.*“([^”]+)”的看法。/, '$1')}”** 体现了线性空间结构的核心约束 [1]。通过矩阵的初等变换与行/列空间分解，可以将抽象的几何封闭性转化为可计算的代数判据，并进一步保证基向量的唯一维数不变性 [2]。`;
+        target.followUps = ['如何证明行秩等于列秩？', '能举例说明基变换矩阵吗？', '零空间的维数如何影响解的个数？'];
+        renderMessages();
+        scrollArea.scrollTop = scrollArea.scrollHeight;
+      }, 650);
+    }
+
+    function handleSendChat() {
+      const input = document.getElementById('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+      sendPromptToChat(text);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      renderSources();
+      renderMessages();
+      renderStudioItems();
+      updateTopProtocolBadge();
+
+      // Global click-outside closer for all popup menus
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('#btnSearchScope') && !e.target.closest('#menuSearchScope')) {
+          document.getElementById('menuSearchScope').classList.add('hidden');
+        }
+        if (!e.target.closest('#btnResearchMode') && !e.target.closest('#menuResearchMode')) {
+          document.getElementById('menuResearchMode').classList.add('hidden');
+        }
+        if (!e.target.closest('#contextPopupMenu') && !e.target.closest('[data-source-more]') && !e.target.closest('[data-artifact-more]')) {
+          document.getElementById('contextPopupMenu').classList.add('hidden');
+        }
+      });
+
+      // Inline Editable Title sync
+      const titleInput = document.getElementById('notebookTitleInput');
+      titleInput.addEventListener('input', () => {
+        document.getElementById('heroNotebookTitle').textContent = titleInput.value.trim() || 'Untitled Notebook';
+      });
+
+      // Scroll Jump-to-Bottom Button
+      const chatScroll = document.getElementById('chatScrollArea');
+      const jumpBtn = document.getElementById('btnJumpBottom');
+      chatScroll.addEventListener('scroll', () => {
+        const distFromBottom = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight;
+        jumpBtn.classList.toggle('hidden', distFromBottom < 120);
+      });
+      jumpBtn.addEventListener('click', () => {
+        chatScroll.scrollTo({ top: chatScroll.scrollHeight, behavior: 'smooth' });
+      });
+
+      // Dropdowns: Search Scope & Research Mode
+      document.getElementById('btnSearchScope').addEventListener('click', () => {
+        document.getElementById('menuResearchMode').classList.add('hidden');
+        document.getElementById('menuSearchScope').classList.toggle('hidden');
+      });
+      document.querySelectorAll('[data-set-scope]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const val = btn.dataset.setScope;
+          document.getElementById('searchScopeLabel').textContent = val === 'Local' ? '本地库' : 'Web';
+          document.querySelectorAll('[data-set-scope]').forEach(b => b.querySelector('.scope-check').classList.toggle('hidden', b !== btn));
+          document.getElementById('menuSearchScope').classList.add('hidden');
+        });
+      });
+
+      document.getElementById('btnResearchMode').addEventListener('click', () => {
+        document.getElementById('menuSearchScope').classList.add('hidden');
+        document.getElementById('menuResearchMode').classList.toggle('hidden');
+      });
+      document.querySelectorAll('[data-set-rmode]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const val = btn.dataset.setRmode;
+          document.getElementById('researchModeLabel').textContent = val;
+          document.querySelectorAll('[data-set-rmode]').forEach(b => b.querySelector('.rmode-check').classList.toggle('hidden', b !== btn));
+          document.getElementById('menuResearchMode').classList.add('hidden');
+        });
+      });
+
+      document.querySelectorAll('[data-close-modal]').forEach(btn => {
+        btn.addEventListener('click', () => closeModal(btn.dataset.closeModal));
+      });
+      document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+        backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeModal(backdrop.id); });
+      });
+
+      document.querySelectorAll('[data-studio-open]').forEach(btn => {
+        btn.addEventListener('click', () => openStudioModal(btn.dataset.studioOpen));
+      });
+
+      // Mind Map interactions
+      document.getElementById('mindMapSvg').addEventListener('click', (e) => {
+        const toggleBtn = e.target.closest('[data-mm-toggle]');
+        if (toggleBtn) { toggleMindMapNode(state.mindMapTree, toggleBtn.dataset.mmToggle); renderMindMap(); return; }
+        const nodeEl = e.target.closest('[data-mm-ask]');
+        if (nodeEl) sendPromptToChat(`在“${nodeEl.dataset.mmParent}”的更大背景下，讨论这些来源对“${nodeEl.dataset.mmAsk}”的看法。`);
+      });
+
+      document.getElementById('btnMindMapBack').addEventListener('click', () => switchStudioView('home'));
+      document.getElementById('btnMindMapClose').addEventListener('click', () => switchStudioView('home'));
+      document.getElementById('btnMindMapExpand').addEventListener('click', () => setStudioExpanded(!state.studioExpanded));
+      document.getElementById('btnMmFullscreen').addEventListener('click', () => setStudioExpanded(!state.studioExpanded));
+      document.getElementById('btnMmZoomIn').addEventListener('click', () => { state.mmZoom = Math.min(1.8, +(state.mmZoom + 0.15).toFixed(2)); renderMindMap(); });
+      document.getElementById('btnMmZoomOut').addEventListener('click', () => { state.mmZoom = Math.max(0.6, +(state.mmZoom - 0.15).toFixed(2)); renderMindMap(); });
+      document.getElementById('btnMmReset').addEventListener('click', () => { state.mmZoom = 1; renderMindMap(); });
+      document.getElementById('btnMmDownload').addEventListener('click', () => showToast('已导出思维导图 SVG'));
+      document.getElementById('btnMmGood').addEventListener('click', () => showToast('感谢反馈：已记录为优质思维导图'));
+      document.getElementById('btnMmBad').addEventListener('click', () => showToast('已记录反馈，可用于优化提示词'));
+
+      // Studio Note Editor
+      document.getElementById('btnCreateNote').addEventListener('click', () => openNoteEditor(null));
+      document.getElementById('btnNoteBack').addEventListener('click', () => switchStudioView('home'));
+      document.getElementById('btnNoteClose').addEventListener('click', () => switchStudioView('home'));
+      document.getElementById('btnNoteSave').addEventListener('click', () => {
+        const title = document.getElementById('noteTitleInput').value.trim() || '新笔记';
+        const text = document.getElementById('noteBodyInput').value;
+        if (state.editingNoteId) {
+          const existing = state.studioItems.find(i => i.id === state.editingNoteId);
+          if (existing) { existing.title = title; existing.content = { text }; }
+        } else {
+          state.studioItems.unshift({ id: 'note-' + Date.now(), type: 'note', title, meta: '刚刚 · 本地笔记', content: { text } });
+        }
+        renderStudioItems();
+        switchStudioView('home');
+        showToast(`已保存笔记：${title}`);
+      });
+      document.getElementById('btnNoteDelete').addEventListener('click', () => {
+        if (state.editingNoteId) { state.studioItems = state.studioItems.filter(i => i.id !== state.editingNoteId); renderStudioItems(); }
+        switchStudioView('home');
+        showToast('已删除笔记');
+      });
+      document.getElementById('btnNoteConvertSource').addEventListener('click', () => {
+        const title = (document.getElementById('noteTitleInput').value.trim() || '新笔记') + '.md';
+        const text = document.getElementById('noteBodyInput').value.trim() || '笔记内容';
+        state.sources.push({ id: 'src-' + Date.now(), title, type: 'md', checked: true, excerpt: text });
+        renderSources();
+        switchStudioView('home');
+        showToast(`已将笔记转换为来源：${title}`);
+      });
+
+      // Delegated interactive handlers inside dynamic Studio Modal
+      const studioBody = document.getElementById('studioModalBody');
+      studioBody.addEventListener('click', (e) => {
+        const cfg = state.studioConfig[state.currentStudioType];
+        const cardBtn = e.target.closest('[data-card]');
+        if (cardBtn) { const [key, val] = cardBtn.dataset.card.split(':'); cfg[key] = val; openStudioModal(state.currentStudioType); return; }
+        const segBtn = e.target.closest('[data-seg]');
+        if (segBtn) { const [key, val] = segBtn.dataset.seg.split(':'); cfg[key] = val; openStudioModal(state.currentStudioType); return; }
+        const toggleBtn = e.target.closest('[data-toggle]');
+        if (toggleBtn) { const key = toggleBtn.dataset.toggle; cfg[key] = !cfg[key]; openStudioModal(state.currentStudioType); return; }
+        const qtypeBtn = e.target.closest('[data-qtype]');
+        if (qtypeBtn) { const t = qtypeBtn.dataset.qtype; if (cfg.types.has(t) && cfg.types.size > 1) cfg.types.delete(t); else cfg.types.add(t); openStudioModal('quiz'); return; }
+        const focusBtn = e.target.closest('[data-focus]');
+        if (focusBtn) { cfg.focus = focusBtn.dataset.focus; openStudioModal('video'); return; }
+        const styleThumb = e.target.closest('[data-style]');
+        if (styleThumb) { cfg.style = styleThumb.dataset.style; openStudioModal('infographic'); return; }
+        const chipBtn = e.target.closest('[data-chip]');
+        if (chipBtn) { cfg.prompt = `围绕“${chipBtn.dataset.chip}”生成一套综合测验题目。`; openStudioModal('quiz'); }
+      });
+
+      studioBody.addEventListener('input', (e) => {
+        if (e.target.classList.contains('studio-field')) state.studioConfig[state.currentStudioType][e.target.dataset.field] = e.target.value;
+      });
+      studioBody.addEventListener('keydown', (e) => {
+        if (e.target.id === 'quizPromptArea' && e.key === 'Tab' && !e.target.value.trim()) {
+          e.preventDefault(); e.target.value = e.target.placeholder; state.studioConfig.quiz.prompt = e.target.value;
+        }
+      });
+
+      // Studio Generate with Aurora Conic-Gradient Tile Animation
+      document.getElementById('btnStudioGenerate').addEventListener('click', () => {
+        const type = state.currentStudioType;
+        const cfg = state.studioConfig[type];
+        const titles = {
+          audio: '线性代数音频概览',
+          slides: cfg.reviewOutline ? '幻灯片大纲草稿' : '线性代数演示文稿',
+          video: cfg.reviewNotes ? '视频制作者备注草稿' : '线性代数视频概览',
+          mindmap: '线性代数思维导图',
+          report: cfg.format === 'interactive' ? '互动式学习报告' : '线性代数结构化报告',
+          flashcards: '线性代数抽认卡',
+          quiz: `测验：${(cfg.prompt || '基与维数综合测验').slice(0, 12)}`,
+          infographic: `信息图 (${cfg.orientation === 'landscape' ? '横向' : cfg.orientation === 'portrait' ? '纵向' : '方形'})`
+        };
+        const title = titles[type];
+        closeModal('studioModal');
+
+        const tileBtn = document.querySelector(`[data-studio-open="${type}"]`);
+        if (tileBtn) tileBtn.classList.add('is-creating');
+        showToast(`正在生成：${title}...`);
+
+        setTimeout(() => {
+          if (tileBtn) tileBtn.classList.remove('is-creating');
+          if (type === 'mindmap') {
+            state.studioItems.unshift({ id: 'st-' + Date.now(), type: 'mindmap', title, meta: `${selectedSourcesCount()}个来源 · 刚刚` });
+            renderStudioItems();
+            document.getElementById('mmDocTitle').textContent = title;
+            switchStudioView('mindmap');
+          } else if (type === 'quiz') {
+            state.studioItems.unshift({
+              id: 'st-' + Date.now(), type: 'quiz', title, meta: `${selectedSourcesCount()}个来源 · 刚刚`,
+              content: {
+                questions: [
+                  { prompt: '若向量空间 V 的维数为 n，则关于 V 中任意 n+1 个向量的说法正确的是？', options: ['A. 必然线性相关', 'B. 必然线性无关', 'C. 必然构成 V 的一组基', 'D. 无法确定'], answer: 0 },
+                  { prompt: '在卡尔曼滤波与动态最小二乘法中，状态更新的核心矩阵运算依赖于？', options: ['A. 奇异值与协方差矩阵更新', 'B. 仅使用标量除法', 'C. 随机梯度丢弃', 'D. 非线性哈希映射'], answer: 0 }
+                ]
+              }
+            });
+            renderStudioItems();
+          } else {
+            state.studioItems.unshift({
+              id: 'st-' + Date.now(), type, title, meta: `${selectedSourcesCount()}个来源 · 刚刚`,
+              content: { text: `已通过 ${PROTOCOL_PRESETS[state.activeProtocol].name} 协议生成《${title}》。\n\n配置参数：\n${JSON.stringify(cfg, (k, v) => v instanceof Set ? [...v] : v, 2)}` }
+            });
+            renderStudioItems();
+          }
+          showToast(`生成完成：${title}`);
+        }, 900);
+      });
+
+      // Chat message actions & Citation Hover Card
+      const hoverCard = document.getElementById('citationHoverCard');
+      document.getElementById('chatMessages').addEventListener('mouseover', (e) => {
+        const chip = e.target.closest('.citation-chip');
+        if (!chip) return;
+        const idx = parseInt(chip.dataset.cite, 10) - 1;
+        const src = state.sources[idx] || state.sources[0];
+        if (!src) return;
+        document.getElementById('citeCardHeader').innerHTML = `${src.type === 'pdf' ? ICONS.pdf : ICONS.md}<span class="truncate">${src.title}</span>`;
+        document.getElementById('citeCardExcerpt').textContent = src.excerpt;
+        const rect = chip.getBoundingClientRect();
+        hoverCard.style.left = `${Math.min(window.innerWidth - 336, Math.max(12, rect.left - 80))}px`;
+        hoverCard.style.top = `${Math.max(12, rect.top - 125)}px`;
+        hoverCard.classList.remove('hidden');
+      });
+      document.getElementById('chatMessages').addEventListener('mouseout', (e) => {
+        if (e.target.closest('.citation-chip')) hoverCard.classList.add('hidden');
+      });
+      document.getElementById('chatMessages').addEventListener('click', (e) => {
+        const saveBtn = e.target.closest('[data-save-msg]');
+        if (saveBtn) {
+          const msg = state.messages.find(m => m.id === saveBtn.dataset.saveMsg);
+          if (msg) {
+            state.studioItems.unshift({ id: 'note-' + Date.now(), type: 'note', title: '对话摘录笔记', meta: '刚刚 · 已保存', content: { text: msg.text } });
+            renderStudioItems();
+            showToast('已将该回答保存到 Studio 笔记');
+          }
+          return;
+        }
+        const copyBtn = e.target.closest('[data-copy-msg]');
+        if (copyBtn) {
+          const msg = state.messages.find(m => m.id === copyBtn.dataset.copyMsg);
+          try { if (navigator.clipboard && msg) navigator.clipboard.writeText(msg.text); } catch (_) {}
+          showToast('已复制回答内容');
+        }
+      });
+
+      // Mobile tabs
+      document.querySelectorAll('.mobile-tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.mobileTab;
+          document.querySelectorAll('.mobile-tab-btn').forEach(b => {
+            b.className = 'mobile-tab-btn px-2.5 py-1 text-xs rounded-full ' + (b.dataset.mobileTab === tab ? 'bg-[#394457] text-[#d3e3fd]' : 'text-[#c4c7c5]');
+          });
+          document.getElementById('panelSources').classList.toggle('hidden', tab !== 'sources');
+          document.getElementById('panelChat').classList.toggle('hidden', tab !== 'chat');
+          const st = document.getElementById('panelStudio');
+          st.classList.toggle('hidden', tab !== 'studio');
+          if (tab === 'studio') st.classList.add('flex');
+        });
+      });
+
+      document.getElementById('btnCollapseSources').addEventListener('click', toggleSourcesCollapse);
+      document.getElementById('btnCollapseStudio').addEventListener('click', () => setStudioExpanded(!state.studioExpanded));
+      document.getElementById('btnCloseSourcesBanner').addEventListener('click', () => document.getElementById('sourcesPromoBanner').classList.add('hidden'));
+      document.getElementById('btnDismissNotify').addEventListener('click', () => document.getElementById('studioNotifyBanner').classList.add('hidden'));
+      document.getElementById('btnEnableNotify').addEventListener('click', () => { document.getElementById('studioNotifyBanner').classList.add('hidden'); showToast('已开启本地生成完成提醒'); });
+
+      // Sources interactions + Source More Menu
+      document.getElementById('sourcesList').addEventListener('change', (e) => {
+        const id = e.target.dataset.toggleSource;
+        if (!id) return;
+        const src = state.sources.find(s => s.id === id);
+        if (src) src.checked = e.target.checked;
+        renderSources();
+      });
+      document.getElementById('sourcesList').addEventListener('click', (e) => {
+        const moreBtn = e.target.closest('[data-source-more]');
+        if (moreBtn) {
+          e.stopPropagation();
+          const src = state.sources.find(s => s.id === moreBtn.dataset.sourceMore);
+          if (!src) return;
+          openContextMenu(moreBtn, [
+            { label: '查看索引摘要', icon: ICONS.doc, onClick: () => openArtifactViewer({ type: 'note', title: src.title, content: { text: src.excerpt } }) },
+            { label: '移除来源', icon: '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>', danger: true, onClick: () => {
+              state.sources = state.sources.filter(s => s.id !== src.id);
+              renderSources();
+              showToast(`已移除：${src.title}`);
+            }}
+          ]);
+          return;
+        }
+        const target = e.target.closest('[data-inspect-source]');
+        if (!target) return;
+        const src = state.sources.find(s => s.id === target.dataset.inspectSource);
+        if (src) openArtifactViewer({ type: 'note', title: src.title, content: { text: `【本地索引摘要】\n\n${src.excerpt}` } });
+      });
+      document.getElementById('selectAllSources').addEventListener('change', (e) => {
+        state.sources.forEach(s => s.checked = e.target.checked);
+        renderSources();
+      });
+
+      const openAddSource = () => openModal('addSourceModal');
+      document.getElementById('btnAddSource').addEventListener('click', openAddSource);
+      document.getElementById('btnMiniAddSource').addEventListener('click', openAddSource);
+      document.getElementById('newSourceFilePicker').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        document.getElementById('newSourceTitle').value = file.name;
+        const ext = file.name.split('.').pop().toLowerCase();
+        if (['md', 'pdf', 'txt'].includes(ext)) document.getElementById('newSourceType').value = ext;
+      });
+      document.getElementById('btnConfirmAddSource').addEventListener('click', () => {
+        const title = document.getElementById('newSourceTitle').value.trim();
+        if (!title) { showToast('请输入来源文件名'); return; }
+        const type = document.getElementById('newSourceType').value;
+        const content = document.getElementById('newSourceContent').value.trim() || '已导入本地文档，等待向量化分块。';
+        state.sources.push({ id: 'src-' + Date.now(), title, type, checked: true, excerpt: content });
+        document.getElementById('newSourceTitle').value = '';
+        document.getElementById('newSourceContent').value = '';
+        closeModal('addSourceModal');
+        renderSources();
+        showToast(`已添加来源：${title}`);
+      });
+
+      document.getElementById('btnSaveSummaryToNote').addEventListener('click', () => {
+        state.studioItems.unshift({ id: 'note-' + Date.now(), type: 'note', title: 'Linear Algebra 来源摘要', meta: '刚刚 · 已保存', content: { text: '矩阵计算核心理论：差分矩阵、邻接矩阵、高斯消元、SVD 与 PCA 应用概览。' } });
+        renderStudioItems();
+        showToast('已保存到 Studio 笔记');
+      });
+      document.getElementById('btnCopySummary').addEventListener('click', () => {
+        try { if (navigator.clipboard) navigator.clipboard.writeText('Linear Algebra 摘要'); } catch (_) {}
+        showToast('已复制摘要内容');
+      });
+
+      document.getElementById('btnRunSourceSearch').addEventListener('click', () => {
+        const q = document.getElementById('sourceSearchInput').value.trim();
+        if (!q) { showToast('请输入检索关键词'); return; }
+        state.sources.push({ id: 'src-' + Date.now(), title: `${q} - 检索来源.md`, type: 'md', checked: true, excerpt: `通过 ${document.getElementById('searchScopeLabel').textContent} (${document.getElementById('researchModeLabel').textContent}) 检索到的关于“${q}”的资料摘要。` });
+        document.getElementById('sourceSearchInput').value = '';
+        renderSources();
+        showToast('已将检索结果加入来源列表');
+      });
+
+      document.getElementById('btnSendChat').addEventListener('click', handleSendChat);
+      document.getElementById('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') handleSendChat(); });
+
+      const openProto = () => { state.editingProtocol = state.activeProtocol; updateProtocolModalUI(); openModal('protocolModal'); };
+      document.getElementById('btnOpenSettings').addEventListener('click', openProto);
+      document.getElementById('btnOpenProtocolModalTop').addEventListener('click', openProto);
+      document.getElementById('btnInputProtocol').addEventListener('click', openProto);
+
+      document.querySelectorAll('.proto-tab').forEach(btn => {
+        btn.addEventListener('click', () => { state.editingProtocol = btn.dataset.proto; updateProtocolModalUI(); });
+      });
+      ['protoBaseUrl', 'protoModelId', 'protoApiKey', 'protoThinkingToggle'].forEach(id => {
+        document.getElementById(id).addEventListener('input', () => {
+          const cfg = state.protocolConfigs[state.editingProtocol];
+          cfg.baseUrl = document.getElementById('protoBaseUrl').value.trim();
+          cfg.model = document.getElementById('protoModelId').value.trim();
+          cfg.apiKey = document.getElementById('protoApiKey').value;
+          cfg.thinking = document.getElementById('protoThinkingToggle').checked;
+          updateProtocolModalUI();
+        });
+      });
+      document.getElementById('btnSaveProtocol').addEventListener('click', () => {
+        state.activeProtocol = state.editingProtocol;
+        safeSet('lna_proto_configs', state.protocolConfigs);
+        updateTopProtocolBadge();
+        closeModal('protocolModal');
+        showToast(`已切换至 ${PROTOCOL_PRESETS[state.activeProtocol].name} (${state.protocolConfigs[state.activeProtocol].model})`);
+      });
+
+      document.getElementById('btnNewNotebook').addEventListener('click', () => showToast('Demo 模式：当前工作区为 Linear Algebra'));
+      document.getElementById('btnShare').addEventListener('click', () => showToast('本地笔记本支持导出为 .lna / Markdown 包'));
+    });
+  </script>
+</body>
+</html>
