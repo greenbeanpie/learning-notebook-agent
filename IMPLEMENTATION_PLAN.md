@@ -105,6 +105,7 @@ v1.0 列出的 22 项设计问题中，后端相关项（#1–#6、#8–#15、#2
 | B-20 | 低 | ⚠️ | `lna-retrieval` | 向量查询错误被 `unwrap_or_default` 吞掉 | 错误写入日志并在 `thought_step` 中提示降级为关键词检索 |
 | B-21 | 严重 | ✅ | `lna-tts/src/lib.rs` `concat_wavs`、`synthesize` | v2 新引入。合并时固定按 44 字节截取 WAV 头，但 Windows 系统语音输出 22050 Hz、`fmt` 块 18 字节（头 46 字节），合并结果文件头错误；系统语音与 16 kHz 兜底分段混合时采样率错乱；第二主持人取本机第 2 个语音，可能是英文语音（实测为 Zira en-US） | 按 RIFF 块解析而非固定偏移；合并前统一重采样到同一格式；按文本语言选择语音，双人使用同语言的两种音色（不足两种时用语速或音高区分）；单测覆盖 44 与 46 字节两种文件头、混合采样率输入，输出可被标准 WAV 解析器读取且时长等于各段之和 |
 | B-22 | 中 | ✅ | `lna-llm/src/client.rs:65`、`lna-api/src/lib.rs:142` | v2 验收发现。模型地址不可达（连接被拒绝）时，客户端重试 3 次、任务再重试 3 轮，约 58 秒后才进入 `FAILED`，导致冒烟“failed generation”超时 | 连接被拒绝、DNS 失败、401/403/404 视为不可重试，直接失败；仅超时、429、5xx 重试；不可达地址下 Studio 15 秒内进入 `FAILED`；冒烟 21/21 |
+| B-24 | 严重 | ✅ | `Cargo.toml` 的 `keyring` 依赖 | 2026-11-20 构建测试客户端时发现。`keyring` 3.x 未开启平台特性，默认使用 mock 存储，API Key 从未写入系统凭据库；进程内靠内存缓存可用，重启后丢失，模型调用以未认证失败 | 开启 `windows-native / apple-native / linux-native`；单测（Windows）验证新的存储实例能读回已写入的 Key |
 | B-23 | 低 | ✅ | 全工作区 | 8 条编译告警、19 条 clippy 告警 | `cargo build` 无告警；`cargo clippy --workspace --all-targets -- -D warnings` 通过（A3 的前提） |
 
 ### 1.4 代码交付要求
@@ -137,7 +138,9 @@ v2 代码包出现了“改了开头没改结尾”的编译错误，且修复�
 | B-20 | 错误写入日志；`thought_step` 增加“已降级为关键词检索” | 增加测试：向量表缺失时对话仍完成，并出现降级步骤 |
 | B-15、B-18 | 未处理 | 按 1.3 节验收标准完成 |
 
-v2.2 已关闭：B-01（`Cargo.lock` 随本次提交入库；README 写明 `ORT_LIB_LOCATION` 离线方案）、B-04（FFI 集成测试）、B-07（冒烟与单测）、B-09（单测覆盖链接、跨块括号、长方括号文本）、B-14（冒烟检查）、B-21（RIFF 块解析、重采样，单测覆盖 44/46 字节头与混合采样率）、B-22（连接失败与 401/403/404 不重试，冒烟数秒内 `FAILED`）、B-23。
+v2.2 已关闭：B-01（`Cargo.lock` 随本次提交入库；README 写明 `ORT_LIB_LOCATION` 离线方案）、B-04（FFI 集成测试）、B-07（冒烟与单测）、B-09（单测覆盖链接、跨块括号、长方括号文本）、B-14（冒烟检查）、B-21（RIFF 块解析、重采样，单测覆盖 44/46 字节头与混合采样率）、B-22（连接失败与 401/403/404 不重试，冒烟数秒内 `FAILED`）、B-23。合入后又发现并关闭 B-24（API Key 未持久化）。
+
+测试客户端的发布方式：`dotnet publish ... -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true`，再把 `lna_ffi.dll` 复制到输出目录。在 G2（模型设置界面）完成前，用 `lna-devtools` 写入同一数据目录（`%LOCALAPPDATA%\LocalNotebook`）配置模型。
 
 ---
 
@@ -1354,7 +1357,7 @@ WinUI 3 的实际内存占用没有可靠的公开数据，文档中的 45–65 
 | :-- | :--- | :-- | :--- | :-- |
 | A1 | Rust 工作区可构建 | ✅ | 干净环境 `cargo build --workspace --all-targets` 通过；`Cargo.lock` 已提交；构建期下载 ONNX Runtime 的离线替代方案写入文档 | M0 |
 | A2 | Windows 客户端可构建 | ⚠️ | `dotnet build -p:Platform=x64` 与 `dotnet publish -r win-x64`（AOT）成功，无裁剪告警（v2.2：项目代码的告警已清零，剩 WebView2 的 IL2104/IL3053 与 NU1903） | M0 |
-| A3 | CI | ⚠️ | 每次推送运行 `fmt --check`、`clippy -D warnings`、`cargo test`、`tests/e2e` 冒烟、Windows 构建（v2.2 已加 `.github/workflows/ci.yml`，各步骤本地已跑通；仓库尚无远端，未在 GitHub 上运行；冒烟步骤未带 `-Pdf`，Windows 作业未处理 `vswhere`） | M0 |
+| A3 | CI | ⚠️ | 每次推送运行 `fmt --check`、`clippy -D warnings`、`cargo test`、`tests/e2e` 冒烟、Windows 构建（v2.2 已加 `.github/workflows/ci.yml`，各步骤本地已跑通；远端 `origin` 已配置，但尚未推送，未在 GitHub 上运行；冒烟步骤未带 `-Pdf`，Windows 作业未处理 `vswhere`） | M0 |
 | A4 | 自动化测试 | ⚠️ | 第 16 节单元与回放测试逐步补齐；每个已修缺陷有回归测试 | M0 起 |
 | A5 | 文档与实现一致 | ⚠️ | README 只描述已验收功能；`docs/` 与 `backend-skeleton/` 旧材料归档 | M0 |
 

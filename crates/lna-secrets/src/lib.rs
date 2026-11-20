@@ -117,3 +117,29 @@ impl SecretStore for KeyringSecretStore {
         Ok(self.get(key_ref)?.is_some())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::ExposeSecret;
+
+    /// B-24: secrets must persist in the OS credential store, so a fresh store
+    /// instance (as after an app restart) can read them back.
+    #[cfg(windows)]
+    #[test]
+    fn secret_persists_across_store_instances() {
+        let key_ref = format!("lna_test_{}", lna_types::new_ulid());
+        KeyringSecretStore::new(false)
+            .set(&key_ref, SecretString::from("persist-check".to_string()))
+            .unwrap();
+
+        let fresh = KeyringSecretStore::new(false);
+        let got = fresh.get(&key_ref).unwrap();
+        fresh.clear(&key_ref).unwrap();
+        assert_eq!(
+            got.map(|s| s.expose_secret().to_string()).as_deref(),
+            Some("persist-check")
+        );
+        assert!(!KeyringSecretStore::new(false).exists(&key_ref).unwrap());
+    }
+}
