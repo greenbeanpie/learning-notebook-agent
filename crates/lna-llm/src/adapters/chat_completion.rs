@@ -378,6 +378,12 @@ impl StreamDecoder for ChatCompletionDecoder {
         Ok(out)
     }
 
+    fn flush(&mut self) -> Vec<LlmEvent> {
+        let mut out = Vec::new();
+        self.flush_pending(&mut out);
+        out
+    }
+
     fn on_eof(&mut self) -> LnaResult<Vec<LlmEvent>> {
         if !self.finished {
             return Err(LnaError::new(

@@ -163,6 +163,11 @@ pub struct SseFrame {
 pub trait StreamDecoder: Send {
     fn on_frame(&mut self, frame: SseFrame) -> LnaResult<Vec<LlmEvent>>;
     fn on_eof(&mut self) -> LnaResult<Vec<LlmEvent>>;
+    /// Text the decoder is still holding back (e.g. a possible `<think>` tag prefix). Called when
+    /// the stream breaks so already-received text is not lost.
+    fn flush(&mut self) -> Vec<LlmEvent> {
+        Vec::new()
+    }
 }
 
 #[async_trait]

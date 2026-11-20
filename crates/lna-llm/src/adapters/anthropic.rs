@@ -7,6 +7,16 @@ use std::collections::HashMap;
 
 pub struct AnthropicAdapter;
 
+/// `anthropic-version` comes from the profile's extra headers when set, else the built-in default.
+fn anthropic_version(profile: &ResolvedProfile) -> String {
+    profile
+        .extra_headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("anthropic-version"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| profile.anthropic_version.clone())
+}
+
 #[async_trait]
 impl ProtocolAdapter for AnthropicAdapter {
     fn build(
@@ -144,7 +154,7 @@ impl ProtocolAdapter for AnthropicAdapter {
 
         let mut builder = client
             .post(url)
-            .header("anthropic-version", &profile.anthropic_version)
+            .header("anthropic-version", anthropic_version(profile))
             .json(&body);
         if let Some(ref key) = profile.api_key {
             let s = key.expose_secret();
@@ -153,6 +163,9 @@ impl ProtocolAdapter for AnthropicAdapter {
             }
         }
         for (k, v) in &profile.extra_headers {
+            if k.eq_ignore_ascii_case("anthropic-version") {
+                continue; // already applied above
+            }
             builder = builder.header(k, v);
         }
         builder
@@ -175,7 +188,7 @@ impl ProtocolAdapter for AnthropicAdapter {
         let url = format!("{}/models", profile.trimmed_base());
         let mut req = client
             .get(url)
-            .header("anthropic-version", &profile.anthropic_version);
+            .header("anthropic-version", anthropic_version(profile));
         if let Some(ref key) = profile.api_key {
             let s = key.expose_secret();
             if !s.is_empty() {

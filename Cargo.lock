@@ -1561,6 +1561,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 name = "lna-agent"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "lna-llm",
  "lna-retrieval",
  "lna-secrets",
@@ -1569,6 +1570,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-util",
  "tracing",

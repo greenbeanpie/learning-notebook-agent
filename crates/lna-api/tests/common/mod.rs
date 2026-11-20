@@ -1,0 +1,559 @@
+//! Shared test harness: a scriptable OpenAI-compatible mock server and a Core wrapper.
+#![allow(dead_code)]
+
+use lna_api::CoreRuntime;
+use serde_json::{json, Value};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// What the pipeline is asking the model for, derived from the system prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Rewrite,
+    Followups,
+    HistorySummary,
+    NotebookSummary,
+    Digest,
+    Reduce,
+    Plan,
+    Studio,
+    Chat,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct Req {
+    pub kind: Kind,
+    pub body: Value,
+    pub system: String,
+    pub auth: Option<String>,
+    /// How many requests of the same kind came before this one.
+    pub nth: usize,
+}
+
+impl Req {
+    pub fn has_tools(&self) -> bool {
+        self.body
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .is_some_and(|a| !a.is_empty())
+    }
+    /// All message contents joined (system excluded).
+    pub fn user_text(&self) -> String {
+        self.body["messages"]
+            .as_array()
+            .map(|m| {
+                m.iter()
+                    .filter(|x| x["role"] != json!("system"))
+                    .map(|x| x["content"].as_str().unwrap_or("").to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    }
+}
+
+pub enum Reply {
+    /// Normal streamed answer.
+    Text(String),
+    /// Streamed answer with a pause between 7-char chunks.
+    SlowText(String, u64),
+    /// Text, then an abrupt close with no finish frame (stream interruption).
+    Truncated(String),
+    /// A single tool call, finish_reason=tool_calls.
+    Tool {
+        id: String,
+        name: String,
+        args: Value,
+    },
+    /// HTTP error with a body.
+    Status(u16, String),
+    /// 302 redirect to another URL.
+    Redirect(String),
+    /// Raw SSE frames (each a full `data: ...` payload string without the prefix).
+    Frames(Vec<String>),
+}
+
+pub fn classify(system: &str, body: &Value) -> Kind {
+    if system.contains("\"standalone\"") {
+        Kind::Rewrite
+    } else if system.contains("\"questions\"") && system.contains("追问") {
+        Kind::Followups
+    } else if system.contains("不超过 300 字") {
+        Kind::HistorySummary
+    } else if system.contains("title_suggestion") || system.contains("summary_md") {
+        Kind::NotebookSummary
+    } else if system.contains("章节摘要助手") {
+        Kind::Digest
+    } else if system.contains("资料结构整理助手") {
+        Kind::Reduce
+    } else if system.contains("内容大纲规划助手") {
+        Kind::Plan
+    } else if system.contains("Studio 生成器") {
+        Kind::Studio
+    } else if system.contains("<sources>")
+        || system.contains("来源")
+        || body["tools"].as_array().is_some_and(|a| !a.is_empty())
+    {
+        Kind::Chat
+    } else {
+        Kind::Other
+    }
+}
+
+type Handler = dyn Fn(&Req) -> Reply + Send + Sync;
+
+pub struct MockLlm {
+    pub port: u16,
+    pub requests: Arc<Mutex<Vec<Req>>>,
+    tracker: Arc<Tracker>,
+    stop: Arc<AtomicBool>,
+}
+
+impl MockLlm {
+    pub fn start(handler: impl Fn(&Req) -> Reply + Send + Sync + 'static) -> MockLlm {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests: Arc<Mutex<Vec<Req>>> = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let handler: Arc<Handler> = Arc::new(handler);
+        let tracker = Arc::new(Tracker::default());
+        let tracker_out = tracker.clone();
+        let counts: Arc<Mutex<Vec<(Kind, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let requests = requests.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            let h = handler.clone();
+                            let requests = requests.clone();
+                            let counts = counts.clone();
+                            let tracker = tracker.clone();
+                            std::thread::spawn(move || {
+                                let _ = serve(stream, h, requests, counts, tracker);
+                            });
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                    }
+                }
+            });
+        }
+        MockLlm {
+            port,
+            requests,
+            tracker: tracker_out,
+            stop,
+        }
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}/v1", self.port)
+    }
+
+    pub fn of_kind(&self, k: Kind) -> Vec<Req> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.kind == k)
+            .cloned()
+            .collect()
+    }
+
+    pub fn total(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+}
+
+/// Tracks how many requests of each kind are being served at once.
+#[derive(Default)]
+pub struct Tracker {
+    inner: Mutex<Vec<(Kind, usize, usize)>>,
+}
+
+pub struct InflightGuard<'a> {
+    tracker: &'a Tracker,
+    kind: Kind,
+}
+
+impl Tracker {
+    fn enter(&self, kind: Kind) -> InflightGuard<'_> {
+        let mut g = self.inner.lock().unwrap();
+        match g.iter_mut().find(|(k, _, _)| *k == kind) {
+            Some((_, cur, max)) => {
+                *cur += 1;
+                *max = (*max).max(*cur);
+            }
+            None => g.push((kind, 1, 1)),
+        }
+        InflightGuard {
+            tracker: self,
+            kind,
+        }
+    }
+}
+
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        let mut g = self.tracker.inner.lock().unwrap();
+        if let Some((_, cur, _)) = g.iter_mut().find(|(k, _, _)| *k == self.kind) {
+            *cur -= 1;
+        }
+    }
+}
+
+impl MockLlm {
+    /// Highest number of simultaneously served requests of this kind.
+    pub fn max_inflight_of(&self, kind: Kind) -> usize {
+        self.tracker
+            .inner
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(k, _, _)| *k == kind)
+            .map(|(_, _, m)| *m)
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for MockLlm {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn serve(
+    mut stream: TcpStream,
+    handler: Arc<Handler>,
+    requests: Arc<Mutex<Vec<Req>>>,
+    counts: Arc<Mutex<Vec<(Kind, usize)>>>,
+    tracker: Arc<Tracker>,
+) -> std::io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    let header_end;
+    loop {
+        let n = stream.read(&mut tmp)?;
+        if n == 0 {
+            return Ok(());
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            header_end = p + 4;
+            break;
+        }
+    }
+    let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+    let mut content_length = 0usize;
+    let mut auth = None;
+    for line in head.lines() {
+        let lower = line.to_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
+            content_length = v.trim().parse().unwrap_or(0);
+        }
+        if lower.starts_with("authorization:") {
+            auth = Some(line[14..].trim().to_string());
+        }
+    }
+    let path = head
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    while buf.len() < header_end + content_length {
+        let n = stream.read(&mut tmp)?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+    }
+    let body: Value = serde_json::from_slice(&buf[header_end..]).unwrap_or(json!({}));
+
+    if path.ends_with("/models") {
+        let b = json!({"data":[{"id":"mock-model"}]}).to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            b.len(),
+            b
+        )?;
+        return Ok(());
+    }
+
+    let system: String = body["messages"]
+        .as_array()
+        .map(|m| {
+            m.iter()
+                .filter(|x| x["role"] == json!("system"))
+                .map(|x| x["content"].as_str().unwrap_or("").to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let kind = classify(&system, &body);
+    let guard = tracker.enter(kind);
+    let nth = {
+        let mut c = counts.lock().unwrap();
+        match c.iter_mut().find(|(k, _)| *k == kind) {
+            Some((_, n)) => {
+                let cur = *n;
+                *n += 1;
+                cur
+            }
+            None => {
+                c.push((kind, 1));
+                0
+            }
+        }
+    };
+    let req = Req {
+        kind,
+        body,
+        system,
+        auth,
+        nth,
+    };
+    requests.lock().unwrap().push(req.clone());
+    let reply = handler(&req);
+
+    let sse_head =
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+    let frame = |v: Value| format!("data: {v}\n\n");
+    let text_chunks = |text: &str| -> Vec<String> {
+        let chars: Vec<char> = text.chars().collect();
+        chars
+            .chunks(7)
+            .map(|c| {
+                frame(json!({"choices":[{"index":0,"delta":{"content":c.iter().collect::<String>()},"finish_reason":null}]}))
+            })
+            .collect()
+    };
+    let usage = frame(json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20}}));
+    match reply {
+        Reply::Text(t) => {
+            stream.write_all(sse_head.as_bytes())?;
+            for c in text_chunks(&t) {
+                stream.write_all(c.as_bytes())?;
+            }
+            stream.write_all(
+                frame(json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}))
+                    .as_bytes(),
+            )?;
+            stream.write_all(usage.as_bytes())?;
+            stream.write_all(b"data: [DONE]\n\n")?;
+        }
+        Reply::SlowText(t, ms) => {
+            stream.write_all(sse_head.as_bytes())?;
+            for c in text_chunks(&t) {
+                stream.write_all(c.as_bytes())?;
+                stream.flush()?;
+                std::thread::sleep(Duration::from_millis(ms));
+            }
+            stream.write_all(
+                frame(json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}))
+                    .as_bytes(),
+            )?;
+            stream.write_all(usage.as_bytes())?;
+            stream.write_all(b"data: [DONE]\n\n")?;
+        }
+        Reply::Truncated(t) => {
+            stream.write_all(sse_head.as_bytes())?;
+            for c in text_chunks(&t) {
+                stream.write_all(c.as_bytes())?;
+            }
+        }
+        Reply::Tool { id, name, args } => {
+            stream.write_all(sse_head.as_bytes())?;
+            stream.write_all(
+                frame(json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":id,"function":{"name":name,"arguments":args.to_string()}}]},"finish_reason":null}]}))
+                    .as_bytes(),
+            )?;
+            stream.write_all(
+                frame(json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}))
+                    .as_bytes(),
+            )?;
+            stream.write_all(usage.as_bytes())?;
+            stream.write_all(b"data: [DONE]\n\n")?;
+        }
+        Reply::Status(code, body) => {
+            write!(
+                stream,
+                "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )?;
+        }
+        Reply::Redirect(url) => {
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {url}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            )?;
+        }
+        Reply::Frames(frames) => {
+            stream.write_all(sse_head.as_bytes())?;
+            for f in frames {
+                stream.write_all(format!("data: {f}\n\n").as_bytes())?;
+            }
+        }
+    }
+    stream.flush()?;
+    drop(guard);
+    // Close gracefully so buffered data is not discarded by a TCP reset on Windows.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    std::thread::sleep(Duration::from_millis(100));
+    Ok(())
+}
+
+pub fn temp_dir(tag: &str) -> std::path::PathBuf {
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "lna_{tag}_{}_{nanos}_{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+pub struct Env {
+    pub core: Arc<CoreRuntime>,
+    pub dir: std::path::PathBuf,
+}
+
+impl Env {
+    pub fn new(tag: &str) -> Env {
+        let dir = temp_dir(tag);
+        let core = CoreRuntime::open(dir.clone(), true).unwrap();
+        Env { core, dir }
+    }
+
+    pub fn raw(&self, method: &str, params: Value) -> Value {
+        let req = json!({ "id": "t", "method": method, "params": params }).to_string();
+        serde_json::from_str(&self.core.handle_json(&req)).expect("core returned invalid JSON")
+    }
+
+    /// Calls a method and returns `result`, panicking with the full response on error.
+    pub fn ok(&self, method: &str, params: Value) -> Value {
+        let r = self.raw(method, params);
+        assert!(
+            r.get("error").is_none_or(|e| e.is_null()),
+            "{method} failed: {r}"
+        );
+        r["result"].clone()
+    }
+
+    /// Calls a method expecting an error and returns its code.
+    pub fn err(&self, method: &str, params: Value) -> String {
+        let r = self.raw(method, params);
+        r["error"]["code"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{method} unexpectedly succeeded: {r}"))
+            .to_string()
+    }
+
+    pub fn notebook(&self) -> String {
+        self.ok("notebook.create", json!({ "title": "t" }))["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    pub fn add_text(&self, nid: &str, title: &str, text: &str) -> String {
+        let r = self.ok(
+            "source.add_text",
+            json!({ "notebook_id": nid, "title": title, "text": text }),
+        );
+        r["source"]["id"].as_str().unwrap().to_string()
+    }
+
+    pub fn wait_sources_ready(&self, nid: &str, n: usize) {
+        self.wait(30, || {
+            let l = self.ok("source.list", json!({ "notebook_id": nid }));
+            let s = l["sources"].as_array().unwrap();
+            s.len() >= n && s.iter().all(|x| x["status"] == json!("READY"))
+        });
+    }
+
+    pub fn wait(&self, secs: u64, mut f: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < end {
+            if f() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("condition not met within {secs}s");
+    }
+
+    /// Creates and activates a chat_completion profile that points at the mock.
+    pub fn profile(&self, mock: &MockLlm, ctx: u32, tools: bool) -> Value {
+        self.ok(
+            "profile.upsert",
+            json!({
+                "display_name": "mock", "protocol": "chat_completion",
+                "base_url": mock.base_url(), "model_id": "mock-model", "activate": true,
+                "context_window": ctx, "max_output_tokens": 1000,
+                "capabilities": { "streaming": true, "tools": tools, "stream_usage": true }
+            }),
+        )
+    }
+
+    pub fn history(&self, nid: &str) -> Vec<Value> {
+        self.ok("chat.history", json!({ "notebook_id": nid }))["messages"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    pub fn query<T>(&self, f: impl FnOnce(&rusqlite::Connection) -> T) -> T {
+        let mut out = None;
+        let mut f = Some(f);
+        let _ = self.core.db.read(|c| {
+            out = Some((f.take().unwrap())(c));
+            Ok(())
+        });
+        out.unwrap()
+    }
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+pub const ZH_DOC: &str = "# 第三章 向量空间\n\n## 3.5 基与维数\n\n向量空间的一组基是线性无关且张成整个空间的向量组。维数定理：同一向量空间的任意两组基包含相同数量的向量，这个数称为维数。\n\n矩阵的行秩与列秩相等，称为秩。";
+
+/// Valid payloads for every Studio modality, chosen from the system prompt.
+pub fn studio_reply(r: &Req) -> Reply {
+    let s = &r.system;
+    let json = if s.contains("生成 quiz") {
+        json!({"title":"测验","questions":[
+            {"id":"q1","type":"single","difficulty":"medium","prompt":"n+1 个向量必然？","options":["线性相关","线性无关"],"answer_indices":[0],"accepted_answers":[],"rubric":"","explanation":"维数定理","citations":[1]}]})
+    } else if s.contains("生成 flashcards") {
+        json!({"title":"闪卡","cards":[{"id":"c1","front":"基是什么","back":"线性无关的生成组","hint":"","citations":[1]}]})
+    } else if s.contains("生成 mindmap") {
+        json!({"title":"导图","nodes":[{"id":"n1","parent_id":null,"label":"根","citations":[1]},{"id":"n2","parent_id":"n1","label":"枝","citations":[1]}]})
+    } else if s.contains("生成 report") {
+        json!({"title":"报告","format":"document","sections":[{"heading":"概述","body_md":"基与维数[1]","key_takeaways":["要点"]}],"citations":[1]})
+    } else if s.contains("生成 slides") {
+        json!({"title":"幻灯片","slides":[{"layout":"title","title":"封面","bullets":[],"speaker_notes":"","citations":[]},{"layout":"bullets","title":"基","bullets":["线性无关"],"speaker_notes":"讲稿","citations":[1]}]})
+    } else if s.contains("生成 infographic") {
+        json!({"title":"信息图","subtitle":"副标题","orientation":"landscape","style":"clean","blocks":[{"heading":"维数","metric":"3","summary":"基的个数","citations":[1]}]})
+    } else if s.contains("生成 audio") {
+        json!({"title":"音频","speakers":[{"id":"A","role":"host"},{"id":"B","role":"guest"}],"turns":[{"speaker":"A","text":"今天聊基与维数。","citations":[1]},{"speaker":"B","text":"好的。","citations":[]}]})
+    } else {
+        return Reply::Text("{}".into());
+    };
+    Reply::Text(json.to_string())
+}

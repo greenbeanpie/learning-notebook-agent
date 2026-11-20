@@ -1,105 +1,55 @@
 {
-  "version": 1,
+  "version": 2,
   "min_refusal_rate": 0.85,
   "items": [
     {
       "id": "u01",
-      "query": "与线性代数无关的虚构问题 1",
+      "query": "埃菲尔铁塔是哪一年建成的",
       "expect_refusal": true
     },
     {
       "id": "u02",
-      "query": "与线性代数无关的虚构问题 2",
+      "query": "如何制作酸面包",
       "expect_refusal": true
     },
     {
       "id": "u03",
-      "query": "与线性代数无关的虚构问题 3",
+      "query": "世界杯决赛的比分是多少",
       "expect_refusal": true
     },
     {
       "id": "u04",
-      "query": "与线性代数无关的虚构问题 4",
+      "query": "How tall is Mount Everest",
       "expect_refusal": true
     },
     {
       "id": "u05",
-      "query": "与线性代数无关的虚构问题 5",
+      "query": "Who painted the Mona Lisa",
       "expect_refusal": true
     },
     {
       "id": "u06",
-      "query": "与线性代数无关的虚构问题 6",
+      "query": "京都有哪些著名的寺庙",
       "expect_refusal": true
     },
     {
       "id": "u07",
-      "query": "与线性代数无关的虚构问题 7",
+      "query": "What is the capital of Australia",
       "expect_refusal": true
     },
     {
       "id": "u08",
-      "query": "与线性代数无关的虚构问题 8",
+      "query": "请推荐一部科幻电影",
       "expect_refusal": true
     },
     {
       "id": "u09",
-      "query": "与线性代数无关的虚构问题 9",
+      "query": "咖啡因的半衰期有多长",
       "expect_refusal": true
     },
     {
       "id": "u10",
-      "query": "与线性代数无关的虚构问题 10",
-      "expect_refusal": true
-    },
-    {
-      "id": "u11",
-      "query": "与线性代数无关的虚构问题 11",
-      "expect_refusal": true
-    },
-    {
-      "id": "u12",
-      "query": "与线性代数无关的虚构问题 12",
-      "expect_refusal": true
-    },
-    {
-      "id": "u13",
-      "query": "与线性代数无关的虚构问题 13",
-      "expect_refusal": true
-    },
-    {
-      "id": "u14",
-      "query": "与线性代数无关的虚构问题 14",
-      "expect_refusal": true
-    },
-    {
-      "id": "u15",
-      "query": "与线性代数无关的虚构问题 15",
-      "expect_refusal": true
-    },
-    {
-      "id": "u16",
-      "query": "与线性代数无关的虚构问题 16",
-      "expect_refusal": true
-    },
-    {
-      "id": "u17",
-      "query": "与线性代数无关的虚构问题 17",
-      "expect_refusal": true
-    },
-    {
-      "id": "u18",
-      "query": "与线性代数无关的虚构问题 18",
-      "expect_refusal": true
-    },
-    {
-      "id": "u19",
-      "query": "与线性代数无关的虚构问题 19",
-      "expect_refusal": true
-    },
-    {
-      "id": "u20",
-      "query": "与线性代数无关的虚构问题 20",
+      "query": "How do vaccines trigger immunity",
       "expect_refusal": true
     }
   ]

@@ -210,6 +210,222 @@ fn io_err(e: std::io::Error) -> LnaError {
     LnaError::internal(format!("IO error: {e}"))
 }
 
+/// Renders an artifact payload as readable Markdown (E2-E7 export, F3 notebook export).
+pub fn artifact_markdown(artifact_type: &str, title: &str, payload: &Value) -> String {
+    let s = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let cites = |v: &Value| -> String {
+        let nums: Vec<String> = v
+            .get("citations")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|n| n.as_u64())
+                    .map(|n| format!("[{n}]"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if nums.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", nums.join(""))
+        }
+    };
+    let mut md = format!("# {title}\n\n");
+    match artifact_type {
+        "report" => {
+            for sec in payload
+                .get("sections")
+                .and_then(|x| x.as_array())
+                .into_iter()
+                .flatten()
+            {
+                md.push_str(&format!(
+                    "## {}\n\n{}\n\n",
+                    s(sec, "heading"),
+                    s(sec, "body_md")
+                ));
+                let kt: Vec<String> = sec
+                    .get("key_takeaways")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !kt.is_empty() {
+                    md.push_str("**要点**\n\n");
+                    for k in kt {
+                        md.push_str(&format!("- {k}\n"));
+                    }
+                    md.push('\n');
+                }
+            }
+        }
+        "quiz" => {
+            for (i, q) in payload
+                .get("questions")
+                .and_then(|x| x.as_array())
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                md.push_str(&format!("## {}. {}{}\n\n", i + 1, s(q, "prompt"), cites(q)));
+                let opts: Vec<&str> = q
+                    .get("options")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                for (j, o) in opts.iter().enumerate() {
+                    md.push_str(&format!("{}. {o}\n", (b'A' + j as u8) as char));
+                }
+                if !opts.is_empty() {
+                    md.push('\n');
+                }
+                let answers: Vec<String> = q
+                    .get("answer_indices")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_u64())
+                            .map(|n| ((b'A' + n as u8) as char).to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !answers.is_empty() {
+                    md.push_str(&format!("**答案**：{}\n\n", answers.join("、")));
+                }
+                let accepted: Vec<String> = q
+                    .get("accepted_answers")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !accepted.is_empty() {
+                    md.push_str(&format!("**参考答案**：{}\n\n", accepted.join(" / ")));
+                }
+                if !s(q, "rubric").is_empty() {
+                    md.push_str(&format!("**评分要点**：{}\n\n", s(q, "rubric")));
+                }
+                if !s(q, "explanation").is_empty() {
+                    md.push_str(&format!("**解析**：{}\n\n", s(q, "explanation")));
+                }
+            }
+        }
+        "flashcards" => {
+            for (i, c) in payload
+                .get("cards")
+                .and_then(|x| x.as_array())
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                md.push_str(&format!(
+                    "## 卡片 {}\n\n**正面**：{}\n\n**背面**：{}{}\n\n",
+                    i + 1,
+                    s(c, "front"),
+                    s(c, "back"),
+                    cites(c)
+                ));
+                if !s(c, "hint").is_empty() {
+                    md.push_str(&format!("**提示**：{}\n\n", s(c, "hint")));
+                }
+            }
+        }
+        "mindmap" => {
+            let nodes: Vec<Value> = payload
+                .get("nodes")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            fn walk(nodes: &[Value], parent: Option<&str>, depth: usize, out: &mut String) {
+                for n in nodes {
+                    let pid = n.get("parent_id").and_then(|x| x.as_str());
+                    if pid == parent {
+                        let label = n.get("label").and_then(|x| x.as_str()).unwrap_or("");
+                        out.push_str(&format!("{}- {label}\n", "  ".repeat(depth)));
+                        if let Some(id) = n.get("id").and_then(|x| x.as_str()) {
+                            walk(nodes, Some(id), depth + 1, out);
+                        }
+                    }
+                }
+            }
+            walk(&nodes, None, 0, &mut md);
+            md.push('\n');
+        }
+        "slides" => {
+            for (i, sl) in payload
+                .get("slides")
+                .and_then(|x| x.as_array())
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                md.push_str(&format!("## {}. {}\n\n", i + 1, s(sl, "title")));
+                for b in sl
+                    .get("bullets")
+                    .and_then(|x| x.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                {
+                    md.push_str(&format!("- {b}\n"));
+                }
+                if !s(sl, "speaker_notes").is_empty() {
+                    md.push_str(&format!("\n> 讲稿：{}\n", s(sl, "speaker_notes")));
+                }
+                md.push('\n');
+            }
+        }
+        "infographic" => {
+            if !s(payload, "subtitle").is_empty() {
+                md.push_str(&format!("_{}_\n\n", s(payload, "subtitle")));
+            }
+            for b in payload
+                .get("blocks")
+                .and_then(|x| x.as_array())
+                .into_iter()
+                .flatten()
+            {
+                md.push_str(&format!(
+                    "## {}\n\n**{}**\n\n{}{}\n\n",
+                    s(b, "heading"),
+                    s(b, "metric"),
+                    s(b, "summary"),
+                    cites(b)
+                ));
+            }
+        }
+        "audio" => {
+            for turn in payload
+                .get("turns")
+                .and_then(|x| x.as_array())
+                .into_iter()
+                .flatten()
+            {
+                md.push_str(&format!(
+                    "**{}**：{}{}\n\n",
+                    s(turn, "speaker"),
+                    s(turn, "text"),
+                    cites(turn)
+                ));
+            }
+        }
+        _ => {
+            md.push_str(&format!(
+                "```json\n{}\n```\n",
+                serde_json::to_string_pretty(payload).unwrap_or_default()
+            ));
+        }
+    }
+    md
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

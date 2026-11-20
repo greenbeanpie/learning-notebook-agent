@@ -443,6 +443,15 @@ impl StudioService {
                 (generated, usage)
             };
 
+        // Evidence numbers are only stable on the direct path (all chunks numbered 1..n).
+        let max_evidence = validate::max_evidence_no(&evidence_txt);
+        let evidence_cap =
+            (max_evidence > 0 && evidence_txt.starts_with("[1] ")).then_some(max_evidence);
+        if let Some(max) = evidence_cap {
+            if art.artifact_type != ArtifactType::Quiz {
+                validate::sanitize_citations(&mut payload, max);
+            }
+        }
         match art.artifact_type {
             ArtifactType::Quiz => {
                 let allowed_types: Vec<&str> = art
@@ -451,7 +460,7 @@ impl StudioService {
                     .and_then(|v| v.as_array())
                     .map(|items| items.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
-                validate::validate_quiz(&payload, &allowed_types)?;
+                validate::validate_quiz_with(&payload, &allowed_types, evidence_cap)?;
             }
             ArtifactType::Flashcards => validate::dedup_flashcards(&mut payload),
             ArtifactType::Mindmap => validate::enforce_mindmap_limits(&mut payload),
@@ -750,11 +759,8 @@ impl StudioService {
             "svg" => render::render_infographic_svg(&payload, out_path),
             "pptx" => render::render_pptx(&payload, out_path),
             _ => {
-                let md = format!(
-                    "# {}\n\n```json\n{}\n```\n",
-                    art.title,
-                    serde_json::to_string_pretty(&payload).unwrap()
-                );
+                let md =
+                    render::artifact_markdown(art.artifact_type.as_str(), &art.title, &payload);
                 std::fs::write(out_path, md).map_err(|e| LnaError::internal(e.to_string()))
             }
         }

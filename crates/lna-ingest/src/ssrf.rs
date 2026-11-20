@@ -77,8 +77,32 @@ pub fn is_private_or_reserved(ip: IpAddr) -> bool {
 /// Fetch URL with manual redirect validation (max 5 redirects, 10 MB body limit, 15s timeout)
 /// and pinned DNS resolution per hop to prevent DNS rebinding (B3).
 pub async fn safe_fetch_url(raw_url: &str) -> LnaResult<(String, Vec<u8>)> {
-    let mut current = validate_public_url(raw_url)?;
+    fetch_inner(raw_url, false).await
+}
+
+/// Test hook: like `safe_fetch_url`, but the starting origin may be a local test server.
+/// Redirects to any other origin are still validated strictly.
+#[doc(hidden)]
+pub async fn safe_fetch_url_allowing_local_start(raw_url: &str) -> LnaResult<(String, Vec<u8>)> {
+    fetch_inner(raw_url, true).await
+}
+
+async fn fetch_inner(raw_url: &str, allow_local_start: bool) -> LnaResult<(String, Vec<u8>)> {
+    let mut current = if allow_local_start {
+        Url::parse(raw_url).map_err(|e| LnaError::invalid(format!("Invalid URL: {e}")))?
+    } else {
+        validate_public_url(raw_url)?
+    };
+    let start_origin = (
+        current.host_str().map(str::to_string),
+        current.port_or_known_default(),
+    );
     for _ in 0..=5 {
+        let skip_checks = allow_local_start
+            && (
+                current.host_str().map(str::to_string),
+                current.port_or_known_default(),
+            ) == start_origin;
         let raw_host = current
             .host_str()
             .ok_or_else(|| LnaError::new(ErrorCode::UrlBlocked, "Missing host"))?;
@@ -98,7 +122,7 @@ pub async fn safe_fetch_url(raw_url: &str) -> LnaResult<(String, Vec<u8>)> {
             ));
         }
         for addr in &addrs {
-            if is_private_or_reserved(addr.ip()) {
+            if !skip_checks && is_private_or_reserved(addr.ip()) {
                 return Err(LnaError::new(
                     ErrorCode::UrlBlocked,
                     format!("Resolved IP {} is blocked", addr.ip()),
@@ -135,7 +159,16 @@ pub async fn safe_fetch_url(raw_url: &str) -> LnaResult<(String, Vec<u8>)> {
             let next = current
                 .join(loc)
                 .map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?;
-            current = validate_public_url(next.as_str())?;
+            let same_origin = allow_local_start
+                && (
+                    next.host_str().map(str::to_string),
+                    next.port_or_known_default(),
+                ) == start_origin;
+            current = if same_origin {
+                next
+            } else {
+                validate_public_url(next.as_str())?
+            };
             continue;
         }
 

@@ -5,6 +5,60 @@ use unicode_normalization::UnicodeNormalization;
 
 /// E2: Validate quiz payload business rules.
 pub fn validate_quiz(payload: &Value, allowed_types: &[&str]) -> LnaResult<()> {
+    validate_quiz_with(payload, allowed_types, None)
+}
+
+fn invalid(msg: &str) -> LnaError {
+    LnaError::new(ErrorCode::OutputInvalid, msg)
+}
+
+/// Highest evidence number `[n]` present in an evidence block (lines look like `[3] (title) ...`).
+pub fn max_evidence_no(evidence: &str) -> usize {
+    evidence
+        .split("\n\n")
+        .filter_map(|block| {
+            let rest = block.trim_start().strip_prefix('[')?;
+            let (num, _) = rest.split_once(']')?;
+            num.parse::<usize>().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Removes citation numbers that do not refer to real evidence (`1..=max`) from every
+/// `citations` array in the payload. Returns how many were removed.
+pub fn sanitize_citations(payload: &mut Value, max: usize) -> usize {
+    let mut removed = 0;
+    match payload {
+        Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if k == "citations" {
+                    if let Value::Array(items) = v {
+                        let before = items.len();
+                        items.retain(|n| n.as_u64().is_some_and(|n| n >= 1 && n as usize <= max));
+                        removed += before - items.len();
+                        continue;
+                    }
+                }
+                removed += sanitize_citations(v, max);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                removed += sanitize_citations(v, max);
+            }
+        }
+        _ => {}
+    }
+    removed
+}
+
+/// Like `validate_quiz`, additionally rejecting citations outside `1..=max_citation`.
+pub fn validate_quiz_with(
+    payload: &Value,
+    allowed_types: &[&str],
+    max_citation: Option<usize>,
+) -> LnaResult<()> {
     let qs = payload
         .get("questions")
         .and_then(|x| x.as_array())
@@ -58,6 +112,53 @@ pub fn validate_quiz(payload: &Value, allowed_types: &[&str]) -> LnaResult<()> {
                     ErrorCode::OutputInvalid,
                     "Answer index out of bounds",
                 ));
+            }
+        }
+        let distinct_answers: HashSet<u64> = ans.iter().filter_map(|v| v.as_u64()).collect();
+        if distinct_answers.len() != ans.len() {
+            return Err(invalid("Duplicate answer index"));
+        }
+        if qtype == "single" || qtype == "multi" {
+            if opts.len() < 2 {
+                return Err(invalid("Choice questions need at least 2 options"));
+            }
+            let mut seen_opts = HashSet::new();
+            for o in &opts {
+                let text = o.as_str().unwrap_or("").trim().to_lowercase();
+                if text.is_empty() || !seen_opts.insert(text) {
+                    return Err(invalid("Empty or duplicate option"));
+                }
+            }
+        }
+        if qtype == "fill" {
+            let has_answer = q
+                .get("accepted_answers")
+                .and_then(|x| x.as_array())
+                .is_some_and(|a| {
+                    a.iter()
+                        .any(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+                });
+            if !has_answer {
+                return Err(invalid("Fill-in question needs accepted_answers"));
+            }
+        }
+        if qtype == "short"
+            && q.get("rubric")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+        {
+            return Err(invalid("Short-answer question needs a rubric"));
+        }
+        if let (Some(max), Some(cites)) =
+            (max_citation, q.get("citations").and_then(|x| x.as_array()))
+        {
+            if cites
+                .iter()
+                .any(|c| !c.as_u64().is_some_and(|n| n >= 1 && n as usize <= max))
+            {
+                return Err(invalid("Citation does not refer to real evidence"));
             }
         }
     }
@@ -188,6 +289,141 @@ mod tests {
         validate_quiz(&q, &["single", "fill"]).unwrap();
         let res = grade_quiz_answer(&q["questions"][0], &json!("  row   rank "));
         assert_eq!(res["correct"], true);
+    }
+
+    fn q(extra: Value) -> Value {
+        let mut base = json!({
+            "id": "q1", "type": "single", "difficulty": "easy", "prompt": "题干一",
+            "options": ["甲", "乙"], "answer_indices": [0], "accepted_answers": [],
+            "rubric": "", "explanation": "", "citations": [1]
+        });
+        if let (Some(b), Some(e)) = (base.as_object_mut(), extra.as_object()) {
+            for (k, v) in e {
+                b.insert(k.clone(), v.clone());
+            }
+        }
+        json!({ "title": "t", "questions": [base] })
+    }
+
+    fn rejects(payload: Value, allowed: &[&str], why: &str) {
+        let e = validate_quiz_with(&payload, allowed, Some(3)).unwrap_err();
+        assert_eq!(e.code, ErrorCode::OutputInvalid, "{why}");
+        assert!(
+            e.message.to_lowercase().contains(&why.to_lowercase()),
+            "{why}: {}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn e2_each_business_rule_rejects_its_violation() {
+        validate_quiz_with(&q(json!({})), &["single"], Some(3)).unwrap();
+        rejects(q(json!({ "answer_indices": [0, 1] })), &[], "1 answer");
+        rejects(
+            q(json!({ "type": "multi", "answer_indices": [0] })),
+            &[],
+            ">= 2",
+        );
+        rejects(q(json!({ "answer_indices": [5] })), &[], "out of bounds");
+        rejects(
+            q(json!({ "options": ["甲", "甲"] })),
+            &[],
+            "duplicate option",
+        );
+        rejects(
+            q(json!({ "options": ["甲", " "] })),
+            &[],
+            "duplicate option",
+        );
+        rejects(
+            q(json!({ "options": ["甲"], "answer_indices": [0] })),
+            &[],
+            "at least 2 options",
+        );
+        rejects(
+            q(json!({ "type": "multi", "answer_indices": [0, 0] })),
+            &[],
+            "duplicate answer",
+        );
+        rejects(q(json!({})), &["fill"], "disallowed question type");
+        rejects(
+            q(json!({ "prompt": "  " })),
+            &[],
+            "empty or duplicate question prompt",
+        );
+        rejects(
+            q(
+                json!({ "type": "fill", "options": [], "answer_indices": [], "accepted_answers": [] }),
+            ),
+            &[],
+            "accepted_answers",
+        );
+        rejects(
+            q(json!({ "type": "short", "options": [], "answer_indices": [], "rubric": " " })),
+            &[],
+            "rubric",
+        );
+        rejects(q(json!({ "citations": [9] })), &[], "citation");
+        rejects(q(json!({ "citations": [0] })), &[], "citation");
+    }
+
+    #[test]
+    fn e2_duplicate_prompts_across_questions_are_rejected() {
+        let mut p = q(json!({}));
+        let first = p["questions"][0].clone();
+        p["questions"].as_array_mut().unwrap().push(first);
+        assert!(validate_quiz(&p, &[]).is_err());
+    }
+
+    #[test]
+    fn grading_covers_single_multi_fill_and_short() {
+        let single = json!({"type":"single","answer_indices":[1]});
+        assert_eq!(grade_quiz_answer(&single, &json!([1]))["correct"], true);
+        assert_eq!(grade_quiz_answer(&single, &json!(1))["correct"], true);
+        assert_eq!(grade_quiz_answer(&single, &json!([0]))["correct"], false);
+        let multi = json!({"type":"multi","answer_indices":[0,2]});
+        assert_eq!(grade_quiz_answer(&multi, &json!([2, 0]))["correct"], true);
+        assert_eq!(grade_quiz_answer(&multi, &json!([0]))["correct"], false);
+        assert_eq!(
+            grade_quiz_answer(&multi, &json!([0, 1, 2]))["correct"],
+            false
+        );
+        let fill = json!({"type":"fill","accepted_answers":["ＡＢＣ","第一"]});
+        assert_eq!(grade_quiz_answer(&fill, &json!(" abc "))["correct"], true);
+        assert_eq!(grade_quiz_answer(&fill, &json!("第 一"))["correct"], false);
+        let short = json!({"type":"short","rubric":"需要提到线性无关"});
+        let g = grade_quiz_answer(&short, &json!("随便"));
+        assert_eq!(g["self_eval"], true);
+        assert_eq!(g["rubric"], "需要提到线性无关");
+    }
+
+    #[test]
+    fn citations_outside_the_evidence_are_removed_and_counted() {
+        let mut p = json!({"cards":[{"citations":[1,7,0]},{"citations":[2]}],"citations":[9]});
+        assert_eq!(sanitize_citations(&mut p, 3), 3);
+        assert_eq!(p["cards"][0]["citations"], json!([1]));
+        assert_eq!(p["citations"], json!([]));
+        assert_eq!(max_evidence_no("[1] (a) x\n\n[2] (b) y\n\n[12] (c) z"), 12);
+        assert_eq!(max_evidence_no("无编号"), 0);
+    }
+
+    #[test]
+    fn flashcards_are_deduplicated_by_normalised_front() {
+        let mut p = json!({"cards":[
+            {"front":"What is X?","back":"a"},{"front":" what is x? ","back":"b"},{"front":"","back":"c"},{"front":"Y","back":"d"}]});
+        dedup_flashcards(&mut p);
+        assert_eq!(p["cards"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn mindmap_depth_is_limited_to_five_levels() {
+        let mut nodes = vec![json!({"id":"n0","parent_id":null,"label":"r","citations":[]})];
+        for i in 1..8 {
+            nodes.push(json!({"id":format!("n{i}"),"parent_id":format!("n{}", i-1),"label":"x","citations":[]}));
+        }
+        let mut mm = json!({"title":"m","nodes":nodes});
+        enforce_mindmap_limits(&mut mm);
+        assert_eq!(mm["nodes"].as_array().unwrap().len(), 5);
     }
 
     #[test]

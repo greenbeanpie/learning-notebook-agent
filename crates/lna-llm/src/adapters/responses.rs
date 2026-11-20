@@ -92,6 +92,8 @@ impl ProtocolAdapter for ResponsesAdapter {
                 r["summary"] = json!("auto");
             }
             body["reasoning"] = r;
+            // With store:false the reasoning item can only be replayed from its encrypted content.
+            body["include"] = json!(["reasoning.encrypted_content"]);
         }
 
         if !req.tools.is_empty() && req.tool_mode == ToolMode::Auto {

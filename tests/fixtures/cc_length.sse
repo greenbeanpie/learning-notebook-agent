@@ -1,0 +1,6 @@
+data: {"choices":[{"index":0,"delta":{"content":"被截断的回答"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":50,"completion_tokens":1000,"prompt_tokens_details":{"cached_tokens":20}}}
+
+data: [DONE]
+

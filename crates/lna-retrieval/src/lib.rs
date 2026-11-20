@@ -40,6 +40,16 @@ const STOP_WORDS: &[&str] = &[
     "为什么",
     "吗",
     "呢",
+    "有",
+    "哪些",
+    "哪个",
+    "哪",
+    "多长",
+    "多少",
+    "怎样",
+    "怎么",
+    "能否",
+    "可以",
     "the",
     "is",
     "are",
@@ -50,18 +60,37 @@ const STOP_WORDS: &[&str] = &[
     "in",
     "a",
     "an",
+    "what",
+    "how",
+    "does",
+    "do",
+    "when",
+    "who",
+    "which",
+    "for",
+    "on",
+    "with",
 ];
 
 pub fn build_fts_query(query: &str) -> String {
     let norm: String = query.nfkc().collect::<String>().to_lowercase();
-    let tokens: Vec<String> = jieba()
+    let mut words: Vec<&str> = jieba()
         .cut_for_search(&norm, false)
         .into_iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty() && !STOP_WORDS.contains(s))
-        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect();
-    tokens.join(" OR ")
+    // A lone CJK character ("有", "多") matches almost every Chinese chunk; it only counts when the
+    // question has no longer term at all.
+    let is_lone_cjk = |s: &str| s.chars().count() == 1 && !s.is_ascii();
+    if words.iter().any(|w| !is_lone_cjk(w)) {
+        words.retain(|w| !is_lone_cjk(w));
+    }
+    words
+        .into_iter()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

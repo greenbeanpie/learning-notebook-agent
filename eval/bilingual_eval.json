@@ -1,506 +1,339 @@
 {
-  "version": 1,
-  "min_recall_at_8": 0.8,
+  "version": 2,
+  "corpus": "eval/corpus",
+  "k": 8,
+  "min_recall_at_8": 0.9,
+  "min_recall_at_8_cross_language_with_rewrite": 0.8,
+  "min_rewrite_gain": 0.2,
+  "min_evidence_support_rate": 0.9,
+  "max_regression_points": 3,
   "items": [
     {
       "id": "q01",
       "mode": "zh-zh",
-      "query": "向量空间的基与维数 (1)",
+      "query": "什么是向量空间的基与维数",
+      "expected_source": "向量空间与基.md",
       "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
-      ],
-      "grounded": true
+        "线性无关",
+        "张成"
+      ]
     },
     {
       "id": "q02",
-      "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (2)",
+      "mode": "zh-zh",
+      "query": "同一向量空间的两组基为什么含有相同数量的向量",
+      "expected_source": "向量空间与基.md",
       "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
-      ],
-      "grounded": true
+        "维数定理"
+      ]
     },
     {
       "id": "q03",
-      "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (3)",
+      "mode": "zh-zh",
+      "query": "换基以后向量的坐标会怎样变化",
+      "expected_source": "向量空间与基.md",
       "expected_keywords": [
-        "奇异值分解",
-        "singular"
-      ],
-      "grounded": true
+        "坐标"
+      ]
     },
     {
       "id": "q04",
-      "mode": "zh-en",
-      "query": "特征值与特征向量 (4)",
+      "mode": "zh-zh",
+      "query": "矩阵的行秩和列秩有什么关系",
+      "expected_source": "矩阵的秩.md",
       "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
-      ],
-      "grounded": true
+        "行秩",
+        "列秩"
+      ]
     },
     {
       "id": "q05",
       "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (5)",
+      "query": "秩零度定理是怎么说的",
+      "expected_source": "矩阵的秩.md",
       "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
-      ],
-      "grounded": true
+        "零空间的维数"
+      ]
     },
     {
       "id": "q06",
       "mode": "zh-zh",
-      "query": "向量空间的基与维数 (6)",
+      "query": "满秩方阵是否可逆",
+      "expected_source": "矩阵的秩.md",
       "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
-      ],
-      "grounded": true
+        "可逆"
+      ]
     },
     {
       "id": "q07",
-      "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (7)",
+      "mode": "zh-zh",
+      "query": "零空间是由哪些解构成的",
+      "expected_source": "零空间与列空间.md",
       "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
-      ],
-      "grounded": true
+        "齐次方程组"
+      ]
     },
     {
       "id": "q08",
-      "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (8)",
+      "mode": "zh-zh",
+      "query": "方程 Ax=b 什么时候有解",
+      "expected_source": "零空间与列空间.md",
       "expected_keywords": [
-        "奇异值分解",
-        "singular"
-      ],
-      "grounded": true
+        "列空间"
+      ]
     },
     {
       "id": "q09",
-      "mode": "zh-en",
-      "query": "特征值与特征向量 (9)",
+      "mode": "zh-zh",
+      "query": "四个基本子空间分别是什么",
+      "expected_source": "零空间与列空间.md",
       "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
-      ],
-      "grounded": true
+        "左零空间"
+      ]
     },
     {
       "id": "q10",
       "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (10)",
+      "query": "交换两行以后行列式怎么变",
+      "expected_source": "行列式.md",
       "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
-      ],
-      "grounded": true
+        "变号"
+      ]
     },
     {
       "id": "q11",
       "mode": "zh-zh",
-      "query": "向量空间的基与维数 (11)",
+      "query": "行列式为零说明矩阵有什么性质",
+      "expected_source": "行列式.md",
       "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
-      ],
-      "grounded": true
+        "不可逆"
+      ]
     },
     {
       "id": "q12",
-      "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (12)",
+      "mode": "zh-zh",
+      "query": "向量在子空间上的正交投影有什么特点",
+      "expected_source": "正交与投影.md",
       "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
-      ],
-      "grounded": true
+        "距离"
+      ]
     },
     {
       "id": "q13",
-      "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (13)",
+      "mode": "zh-zh",
+      "query": "投影矩阵满足哪些性质",
+      "expected_source": "正交与投影.md",
       "expected_keywords": [
-        "奇异值分解",
-        "singular"
-      ],
-      "grounded": true
+        "对称"
+      ]
     },
     {
       "id": "q14",
       "mode": "zh-en",
-      "query": "特征值与特征向量 (14)",
+      "query": "特征值和特征向量是什么意思",
+      "expected_source": "eigenvalues.md",
       "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
+        "eigenvalue"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "eigenvalue eigenvector",
+        "characteristic polynomial"
+      ]
     },
     {
       "id": "q15",
-      "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (15)",
+      "mode": "zh-en",
+      "query": "矩阵什么时候可以对角化",
+      "expected_source": "eigenvalues.md",
       "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
+        "diagonalized"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "diagonalized matrix",
+        "independent eigenvectors"
+      ]
     },
     {
       "id": "q16",
-      "mode": "zh-zh",
-      "query": "向量空间的基与维数 (16)",
+      "mode": "zh-en",
+      "query": "奇异值分解是怎样分解矩阵的",
+      "expected_source": "svd_pca.md",
       "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
+        "singular"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "singular value decomposition",
+        "U Sigma V"
+      ]
     },
     {
       "id": "q17",
       "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (17)",
+      "query": "主成分分析为什么用奇异值分解",
+      "expected_source": "svd_pca.md",
       "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
+        "variance"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "principal component analysis",
+        "maximum variance"
+      ]
     },
     {
       "id": "q18",
-      "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (18)",
+      "mode": "zh-en",
+      "query": "最小二乘解满足什么方程",
+      "expected_source": "least_squares.md",
       "expected_keywords": [
-        "奇异值分解",
-        "singular"
+        "normal equations"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "least squares",
+        "normal equations"
+      ]
     },
     {
       "id": "q19",
       "mode": "zh-en",
-      "query": "特征值与特征向量 (19)",
+      "query": "最小二乘的几何意义是什么",
+      "expected_source": "least_squares.md",
       "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
+        "projected"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "least squares residual",
+        "projected column space"
+      ]
     },
     {
       "id": "q20",
-      "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (20)",
+      "mode": "zh-en",
+      "query": "格拉姆施密特方法有什么用",
+      "expected_source": "gram_schmidt.md",
       "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
+        "orthonormal"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "Gram-Schmidt",
+        "orthonormal basis"
+      ]
     },
     {
       "id": "q21",
-      "mode": "zh-zh",
-      "query": "向量空间的基与维数 (21)",
+      "mode": "zh-en",
+      "query": "怎样得到矩阵的 QR 分解",
+      "expected_source": "gram_schmidt.md",
       "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
+        "QR"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "QR factorization",
+        "Gram-Schmidt"
+      ]
     },
     {
       "id": "q22",
       "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (22)",
+      "query": "马尔可夫矩阵的稳态是什么",
+      "expected_source": "markov.md",
       "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
+        "steady state"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "Markov matrix",
+        "steady state eigenvalue"
+      ]
     },
     {
       "id": "q23",
-      "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (23)",
+      "mode": "zh-en",
+      "query": "马尔可夫矩阵每一列的和是多少",
+      "expected_source": "markov.md",
       "expected_keywords": [
-        "奇异值分解",
-        "singular"
+        "sums to one"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "Markov matrix column sums",
+        "eigenvalue one"
+      ]
     },
     {
       "id": "q24",
-      "mode": "zh-en",
-      "query": "特征值与特征向量 (24)",
+      "mode": "en-zh",
+      "query": "What is the rank of a matrix",
+      "expected_source": "矩阵的秩.md",
       "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
+        "列空间"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "矩阵的秩",
+        "行秩 列秩"
+      ]
     },
     {
       "id": "q25",
-      "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (25)",
+      "mode": "en-zh",
+      "query": "What is the null space",
+      "expected_source": "零空间与列空间.md",
       "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
+        "齐次方程组"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "零空间",
+        "齐次方程组"
+      ]
     },
     {
       "id": "q26",
-      "mode": "zh-zh",
-      "query": "向量空间的基与维数 (26)",
+      "mode": "en-zh",
+      "query": "How does the determinant change when two rows are swapped",
+      "expected_source": "行列式.md",
       "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
+        "变号"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "行列式 交换两行",
+        "变号"
+      ]
     },
     {
       "id": "q27",
-      "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (27)",
+      "mode": "en-zh",
+      "query": "What do basis and dimension mean",
+      "expected_source": "向量空间与基.md",
       "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
+        "线性无关"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "基 维数",
+        "线性无关 张成"
+      ]
     },
     {
       "id": "q28",
       "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (28)",
+      "query": "Explain orthogonal projection onto a subspace",
+      "expected_source": "正交与投影.md",
       "expected_keywords": [
-        "奇异值分解",
-        "singular"
+        "距离"
       ],
-      "grounded": true
+      "rewritten_queries": [
+        "正交投影 子空间",
+        "投影矩阵"
+      ]
     },
     {
       "id": "q29",
-      "mode": "zh-en",
-      "query": "特征值与特征向量 (29)",
-      "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q30",
-      "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (30)",
-      "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q31",
-      "mode": "zh-zh",
-      "query": "向量空间的基与维数 (31)",
-      "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q32",
-      "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (32)",
-      "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q33",
       "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (33)",
+      "query": "When does Ax = b have a solution",
+      "expected_source": "零空间与列空间.md",
       "expected_keywords": [
-        "奇异值分解",
-        "singular"
+        "列空间"
       ],
-      "grounded": true
-    },
-    {
-      "id": "q34",
-      "mode": "zh-en",
-      "query": "特征值与特征向量 (34)",
-      "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q35",
-      "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (35)",
-      "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q36",
-      "mode": "zh-zh",
-      "query": "向量空间的基与维数 (36)",
-      "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q37",
-      "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (37)",
-      "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q38",
-      "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (38)",
-      "expected_keywords": [
-        "奇异值分解",
-        "singular"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q39",
-      "mode": "zh-en",
-      "query": "特征值与特征向量 (39)",
-      "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q40",
-      "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (40)",
-      "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q41",
-      "mode": "zh-zh",
-      "query": "向量空间的基与维数 (41)",
-      "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q42",
-      "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (42)",
-      "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q43",
-      "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (43)",
-      "expected_keywords": [
-        "奇异值分解",
-        "singular"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q44",
-      "mode": "zh-en",
-      "query": "特征值与特征向量 (44)",
-      "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q45",
-      "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (45)",
-      "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q46",
-      "mode": "zh-zh",
-      "query": "向量空间的基与维数 (46)",
-      "expected_keywords": [
-        "向量空间的基与维数",
-        "basis"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q47",
-      "mode": "zh-en",
-      "query": "矩阵的秩与四个基本子空间 (47)",
-      "expected_keywords": [
-        "矩阵的秩与四个基本子空间",
-        "rank"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q48",
-      "mode": "en-zh",
-      "query": "Explain singular value decomposition and PCA (48)",
-      "expected_keywords": [
-        "奇异值分解",
-        "singular"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q49",
-      "mode": "zh-en",
-      "query": "特征值与特征向量 (49)",
-      "expected_keywords": [
-        "特征值与特征向量",
-        "eigenvalues"
-      ],
-      "grounded": true
-    },
-    {
-      "id": "q50",
-      "mode": "zh-zh",
-      "query": "正交投影与最小二乘法 (50)",
-      "expected_keywords": [
-        "正交投影与最小二乘法",
-        "orthogonal"
-      ],
-      "grounded": true
+      "rewritten_queries": [
+        "方程有解",
+        "列空间"
+      ]
     }
   ]
 }

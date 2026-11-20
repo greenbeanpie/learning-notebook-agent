@@ -2,16 +2,20 @@ use crate::adapters::adapter_for;
 use crate::sse::SseParser;
 use crate::types::*;
 use futures_util::StreamExt;
-use lna_types::{ErrorCode, LnaError, LnaResult};
+use lna_types::{ErrorCode, LnaError, LnaResult, ModelCapabilities};
 use rand::Rng;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
+type CapabilitySink = std::sync::Arc<dyn Fn(&str, &ModelCapabilities) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
+    /// Called when a request had to drop an unsupported parameter, so the profile can be updated (D5).
+    sink: std::sync::Arc<std::sync::Mutex<Option<CapabilitySink>>>,
 }
 
 impl Default for LlmClient {
@@ -27,7 +31,20 @@ impl LlmClient {
             .connect_timeout(Duration::from_secs(15))
             .build()
             .expect("reqwest client");
-        Self { http }
+        Self {
+            http,
+            sink: Default::default(),
+        }
+    }
+
+    /// Registers a callback that persists capability changes learned from 400 responses.
+    pub fn set_capability_sink(
+        &self,
+        f: impl Fn(&str, &ModelCapabilities) + Send + Sync + 'static,
+    ) {
+        if let Ok(mut g) = self.sink.lock() {
+            *g = Some(std::sync::Arc::new(f));
+        }
     }
 
     pub async fn discover_models(&self, profile: &ResolvedProfile) -> LnaResult<Vec<ModelInfo>> {
@@ -41,13 +58,46 @@ impl LlmClient {
         profile: &ResolvedProfile,
         req: &LlmRequest,
         cancel: CancellationToken,
+        on_event: F,
+    ) -> LnaResult<StopReason>
+    where
+        F: FnMut(LlmEvent),
+    {
+        self.stream_with(profile, req, cancel, on_event, true).await
+    }
+
+    /// Like `stream`, but a rejected parameter is reported instead of being silently dropped.
+    /// Used by capability probes, which must see the real answer.
+    pub async fn stream_strict<F>(
+        &self,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        cancel: CancellationToken,
+        on_event: F,
+    ) -> LnaResult<StopReason>
+    where
+        F: FnMut(LlmEvent),
+    {
+        self.stream_with(profile, req, cancel, on_event, false)
+            .await
+    }
+
+    async fn stream_with<F>(
+        &self,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        cancel: CancellationToken,
         mut on_event: F,
+        allow_relax: bool,
     ) -> LnaResult<StopReason>
     where
         F: FnMut(LlmEvent),
     {
         let adapter = adapter_for(profile.protocol);
         let mut attempt = 0u32;
+        let mut profile = profile.clone();
+        let mut req = req.clone();
+        let mut relaxed = !allow_relax;
 
         loop {
             if cancel.is_cancelled() {
@@ -57,7 +107,7 @@ impl LlmClient {
                 ));
             }
 
-            let http_req = adapter.build(&self.http, profile, req)?;
+            let http_req = adapter.build(&self.http, &profile, &req)?;
             let resp_res = tokio::select! {
                 _ = cancel.cancelled() => return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled")),
                 r = self.http.execute(http_req) => r,
@@ -87,6 +137,14 @@ impl LlmClient {
                     .and_then(|s| s.parse::<u64>().ok());
                 let body = resp.text().await.unwrap_or_default();
                 let err = map_http_status(status, &body);
+                // D5: an "unsupported parameter" 400 -> drop that parameter and retry once.
+                if status.as_u16() == 400
+                    && !relaxed
+                    && relax_for_error(&body, &mut profile, &mut req)
+                {
+                    relaxed = true;
+                    continue;
+                }
                 if (status.as_u16() == 429 || status.is_server_error()) && attempt < 3 {
                     attempt += 1;
                     sleep_backoff(attempt, retry_after, &cancel).await?;
@@ -123,6 +181,9 @@ impl LlmClient {
                         }
                     }
                     Some(Err(e)) => {
+                        for ev in decoder.flush() {
+                            on_event(ev);
+                        }
                         return Err(LnaError::new(
                             ErrorCode::ModelStreamInterrupted,
                             e.to_string(),
@@ -137,6 +198,9 @@ impl LlmClient {
                                 on_event(ev);
                             }
                         }
+                        for ev in decoder.flush() {
+                            on_event(ev);
+                        }
                         for ev in decoder.on_eof()? {
                             if let LlmEvent::Finished { ref reason } = ev {
                                 stop_reason = Some(reason.clone());
@@ -148,8 +212,31 @@ impl LlmClient {
                 }
             }
 
+            if relaxed && allow_relax {
+                let sink = self.sink.lock().ok().and_then(|g| g.clone());
+                if let Some(f) = sink {
+                    f(&profile.id, &profile.capabilities);
+                }
+            }
             return Ok(stop_reason.unwrap_or(StopReason::EndTurn));
         }
+    }
+
+    pub async fn complete_text_strict(
+        &self,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        cancel: CancellationToken,
+    ) -> LnaResult<(String, Usage)> {
+        let mut text = String::new();
+        let mut usage = Usage::default();
+        self.stream_strict(profile, req, cancel, |ev| match ev {
+            LlmEvent::TextDelta(t) => text.push_str(&t),
+            LlmEvent::Usage(u) => usage = u,
+            _ => {}
+        })
+        .await?;
+        Ok((text, usage))
     }
 
     pub async fn complete_text(
@@ -242,6 +329,66 @@ impl LlmClient {
             "Structured output failed schema validation after 2 repair attempts",
         ))
     }
+}
+
+/// Looks at a 400 body for a rejected request parameter and removes it from the request/profile.
+/// Returns true when something was changed (so a retry makes sense).
+pub fn relax_for_error(body: &str, profile: &mut ResolvedProfile, req: &mut LlmRequest) -> bool {
+    let lower = body.to_lowercase();
+    let rejected = [
+        "unsupported",
+        "unknown parameter",
+        "unrecognized",
+        "not supported",
+        "extra inputs",
+        "invalid parameter",
+        "does not support",
+    ]
+    .iter()
+    .any(|k| lower.contains(k));
+    if !rejected {
+        return false;
+    }
+    if lower.contains("stream_options") && profile.capabilities.stream_usage {
+        profile.capabilities.stream_usage = false;
+        return true;
+    }
+    if lower.contains("max_completion_tokens")
+        && profile.capabilities.max_tokens_field.as_deref() != Some("max_tokens")
+    {
+        profile.capabilities.max_tokens_field = Some("max_tokens".into());
+        return true;
+    }
+    if lower.contains("max_tokens")
+        && profile.capabilities.max_tokens_field.as_deref() == Some("max_tokens")
+    {
+        profile.capabilities.max_tokens_field = Some("max_completion_tokens".into());
+        return true;
+    }
+    if lower.contains("response_format") || lower.contains("json_schema") {
+        match req.output {
+            OutputMode::JsonSchema { .. } => {
+                profile.capabilities.json_schema = false;
+                req.output = OutputMode::JsonObject;
+                return true;
+            }
+            OutputMode::JsonObject => {
+                profile.capabilities.json_mode = false;
+                req.output = OutputMode::Text;
+                return true;
+            }
+            OutputMode::Text => {}
+        }
+    }
+    if (lower.contains("tools") || lower.contains("tool_choice") || lower.contains("function"))
+        && !req.tools.is_empty()
+    {
+        profile.capabilities.tools = false;
+        req.tools.clear();
+        req.tool_mode = ToolMode::None;
+        return true;
+    }
+    false
 }
 
 fn add_usage(dst: &mut Usage, src: &Usage) {

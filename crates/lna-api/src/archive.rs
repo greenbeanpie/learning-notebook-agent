@@ -91,9 +91,18 @@ pub fn export_notebook_lna(db: &Database, notebook_id: &str, out_zip: &Path) -> 
     zip.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes())
         .map_err(io_err)?;
 
+    // Absolute local paths are machine-specific (and reveal the user name); blobs travel inside the ZIP.
+    let mut sources_json = serde_json::to_value(&sources).unwrap_or_else(|_| json!([]));
+    if let Some(items) = sources_json.as_array_mut() {
+        for item in items {
+            if let Some(obj) = item.as_object_mut() {
+                obj.remove("blob_path");
+            }
+        }
+    }
     let bundle = json!({
         "notebook": nb,
-        "sources": sources,
+        "sources": sources_json,
         "notes": notes,
         "artifacts": artifacts,
     });
@@ -149,10 +158,40 @@ pub fn export_notebook_lna(db: &Database, notebook_id: &str, out_zip: &Path) -> 
 
 /// Import .lna ZIP with path-traversal, symlink, and zip-bomb guards (F2).
 pub fn import_notebook_lna(db: &Database, jobs: &JobQueue, in_zip: &Path) -> LnaResult<String> {
+    import_notebook_lna_with_limits(db, jobs, in_zip, MAX_IMPORT_ENTRIES, MAX_IMPORT_BYTES)
+}
+
+/// Same as `import_notebook_lna` with explicit limits (the public entry point uses the defaults).
+/// Anything created before a failure is rolled back so a bad archive leaves no half notebook.
+pub fn import_notebook_lna_with_limits(
+    db: &Database,
+    jobs: &JobQueue,
+    in_zip: &Path,
+    max_entries: usize,
+    max_bytes: u64,
+) -> LnaResult<String> {
+    let created: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    let res = import_inner(db, jobs, in_zip, max_entries, max_bytes, &created);
+    if res.is_err() {
+        if let Some(id) = created.borrow().as_deref() {
+            let _ = lna_storage::delete_notebook(db, id);
+        }
+    }
+    res
+}
+
+fn import_inner(
+    db: &Database,
+    jobs: &JobQueue,
+    in_zip: &Path,
+    max_entries: usize,
+    max_bytes: u64,
+    created: &std::cell::RefCell<Option<String>>,
+) -> LnaResult<String> {
     let f = std::fs::File::open(in_zip).map_err(|e| LnaError::invalid(e.to_string()))?;
     let mut archive = zip::ZipArchive::new(f).map_err(|e| LnaError::invalid(e.to_string()))?;
 
-    if archive.len() > MAX_IMPORT_ENTRIES {
+    if archive.len() > max_entries {
         return Err(LnaError::invalid("ZIP exceeds maximum entry count"));
     }
 
@@ -181,7 +220,7 @@ pub fn import_notebook_lna(db: &Database, jobs: &JobQueue, in_zip: &Path) -> Lna
         if entry.is_dir() {
             continue;
         }
-        let remaining = MAX_IMPORT_BYTES.saturating_sub(total_uncompressed);
+        let remaining = max_bytes.saturating_sub(total_uncompressed);
         if entry.size() > remaining {
             return Err(LnaError::new(
                 ErrorCode::SourceTooLarge,
@@ -192,7 +231,7 @@ pub fn import_notebook_lna(db: &Database, jobs: &JobQueue, in_zip: &Path) -> Lna
         let mut limited = entry.take(remaining + 1);
         limited.read_to_end(&mut buf).map_err(io_err)?;
         total_uncompressed = total_uncompressed.saturating_add(buf.len() as u64);
-        if total_uncompressed > MAX_IMPORT_BYTES {
+        if total_uncompressed > max_bytes {
             return Err(LnaError::new(
                 ErrorCode::SourceTooLarge,
                 "ZIP uncompressed size exceeds limit (zip bomb guard)",
@@ -244,6 +283,7 @@ pub fn import_notebook_lna(db: &Database, jobs: &JobQueue, in_zip: &Path) -> Lna
         .unwrap_or("导入的笔记本");
     let emoji = bundle.pointer("/notebook/emoji").and_then(|x| x.as_str());
     let nb = lna_storage::create_notebook(db, title, emoji)?;
+    *created.borrow_mut() = Some(nb.id.clone());
 
     let mut source_id_map: HashMap<String, String> = HashMap::new();
     let mut queued_source_ids: Vec<String> = Vec::new();
@@ -351,10 +391,12 @@ pub fn import_notebook_lna(db: &Database, jobs: &JobQueue, in_zip: &Path) -> Lna
                 .and_then(|x| x.as_str())
                 .unwrap_or("report");
             let atitle = art.get("title").and_then(|x| x.as_str()).unwrap_or("产物");
-            let status = art
-                .get("status")
-                .and_then(|x| x.as_str())
-                .unwrap_or("READY");
+            // Only finished artifacts keep their status; an in-flight one has no job after import.
+            let status = match art.get("status").and_then(|x| x.as_str()) {
+                Some("READY") => "READY",
+                Some("FAILED") => "FAILED",
+                _ => "CANCELLED",
+            };
             let stage = art.get("stage").and_then(|x| x.as_str());
             let progress = art.get("progress").and_then(|x| x.as_f64()).unwrap_or(1.0);
             let cfg = art
@@ -520,9 +562,15 @@ pub fn export_notebook_markdown(db: &Database, notebook_id: &str, out_md: &Path)
     if !text_artifacts.is_empty() {
         md.push_str("## Studio 产物\n\n");
         for (title, atype, payload_s) in text_artifacts {
-            md.push_str(&format!(
-                "### {title} ({atype})\n\n```json\n{payload_s}\n```\n\n"
-            ));
+            let payload: Value = serde_json::from_str(&payload_s).unwrap_or(Value::Null);
+            let body = lna_studio::render::artifact_markdown(&atype, &title, &payload);
+            // demote the artifact's own "# title" so it nests under "## Studio 产物"
+            let body = body.replacen("# ", "### ", 1).replace(
+                &format!("{nl}## ", nl = char::from(10)),
+                &format!("{nl}#### ", nl = char::from(10)),
+            );
+            md.push_str(&body);
+            md.push('\n');
         }
     }
 
@@ -556,10 +604,51 @@ pub fn export_diagnostics(db: &Database, out_json: &Path) -> LnaResult<()> {
             .map_err(map_sql_err)?;
         Ok(json!({ "notebooks": nb, "sources": src, "messages": msg, "artifacts": art }))
     })?;
+    // Only codes, statuses and capability flags: never titles, text, prompts, answers or URLs.
+    let breakdown = db.read(|conn| {
+        let group = |sql: &str| -> LnaResult<Value> {
+            let mut stmt = conn.prepare(sql).map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(map_sql_err)?;
+            let mut m = serde_json::Map::new();
+            for r in rows {
+                let (k, n) = r.map_err(map_sql_err)?;
+                m.insert(k.unwrap_or_else(|| "none".into()), json!(n));
+            }
+            Ok(Value::Object(m))
+        };
+        Ok(json!({
+            "source_status": group("SELECT status, COUNT(*) FROM sources GROUP BY status")?,
+            "source_errors": group("SELECT error_code, COUNT(*) FROM sources WHERE error_code IS NOT NULL GROUP BY error_code")?,
+            "studio_status": group("SELECT status, COUNT(*) FROM studio_artifacts GROUP BY status")?,
+            "studio_errors": group("SELECT error_code, COUNT(*) FROM studio_artifacts WHERE error_code IS NOT NULL GROUP BY error_code")?,
+            "chat_status": group("SELECT status, COUNT(*) FROM chat_messages GROUP BY status")?,
+            "chat_errors": group("SELECT error_code, COUNT(*) FROM chat_messages WHERE error_code IS NOT NULL GROUP BY error_code")?,
+            "job_status": group("SELECT status, COUNT(*) FROM jobs GROUP BY status")?,
+        }))
+    })?;
+    let profiles: Vec<Value> = lna_storage::list_profiles(db)
+        .unwrap_or_default()
+        .iter()
+        .map(|p| {
+            json!({
+                "protocol": p.protocol.as_str(),
+                "context_window": p.context_window,
+                "max_output_tokens": p.max_output_tokens,
+                "capabilities": p.capabilities,
+                "active": p.is_active,
+            })
+        })
+        .collect();
     let diag = json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
         "exported_at": now_ms(),
         "counts": counts,
+        "breakdown": breakdown,
+        "profiles": profiles,
     });
     if let Some(p) = out_json.parent() {
         std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;

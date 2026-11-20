@@ -54,6 +54,13 @@ impl CoreRuntime {
             Arc::new(KeyringSecretStore::new(allow_memory_secret_fallback));
         let jobs = JobQueue::new(db.clone());
         let llm = LlmClient::new();
+        {
+            // D5: persist capabilities learned from "unsupported parameter" responses.
+            let db = db.clone();
+            llm.set_capability_sink(move |profile_id, caps| {
+                let _ = lna_storage::update_profile_capabilities(&db, profile_id, caps);
+            });
+        }
         let embedding = EmbeddingService::new(db.clone(), secrets.clone());
         let retrieval = Arc::new(RetrievalEngine::new(db.clone(), embedding.clone()));
         let ingest = IngestService::new(db.clone(), jobs.clone(), embedding.clone());
@@ -237,6 +244,19 @@ impl CoreRuntime {
                 }
             }
         });
+    }
+
+    /// Notebooks that already have sources but no summary get one once a model is available (B-13).
+    fn enqueue_missing_summaries(&self) {
+        if let Ok(nbs) = lna_storage::list_notebooks(&self.db) {
+            for nb in nbs {
+                if nb.summary_md.is_none() && nb.source_count > 0 {
+                    let _ = self
+                        .jobs
+                        .enqueue("refresh_summary", Some(&nb.id), &nb.id, 200);
+                }
+            }
+        }
     }
 
     pub fn handle_json(&self, raw_req: &str) -> String {
@@ -456,20 +476,15 @@ impl CoreRuntime {
                 }
                 let mut prof = lna_storage::upsert_profile(&self.db, &params_in)?;
                 self.refresh_has_secret(&mut prof);
+                if params_in.activate {
+                    self.enqueue_missing_summaries();
+                }
                 Ok(serde_json::to_value(prof).unwrap())
             }
             "profile.activate" => {
                 let id = req_str(p, "profile_id")?;
                 lna_storage::activate_profile(&self.db, id)?;
-                if let Ok(nbs) = lna_storage::list_notebooks(&self.db) {
-                    for nb in nbs {
-                        if nb.summary_md.is_none() && nb.source_count > 0 {
-                            let _ = self
-                                .jobs
-                                .enqueue("refresh_summary", Some(&nb.id), &nb.id, 200);
-                        }
-                    }
-                }
+                self.enqueue_missing_summaries();
                 Ok(json!({ "ok": true }))
             }
             "profile.delete" => {
@@ -495,7 +510,7 @@ impl CoreRuntime {
                 };
                 let (txt, ping_usage) = self
                     .llm
-                    .complete_text(&resolved, &req, CancellationToken::new())
+                    .complete_text_strict(&resolved, &req, CancellationToken::new())
                     .await?;
 
                 let mut caps = prof.capabilities.clone();
@@ -526,7 +541,7 @@ impl CoreRuntime {
                 let mut tool_called = false;
                 if self
                     .llm
-                    .stream(&resolved, &tool_req, CancellationToken::new(), |event| {
+                    .stream_strict(&resolved, &tool_req, CancellationToken::new(), |event| {
                         if matches!(event, LlmEvent::ToolCallStart { .. }) {
                             tool_called = true;
                         }
@@ -562,7 +577,7 @@ impl CoreRuntime {
                 };
                 caps.json_schema = self
                     .llm
-                    .complete_text(&resolved, &schema_req, CancellationToken::new())
+                    .complete_text_strict(&resolved, &schema_req, CancellationToken::new())
                     .await
                     .ok()
                     .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
@@ -583,7 +598,7 @@ impl CoreRuntime {
                 };
                 caps.json_mode = self
                     .llm
-                    .complete_text(&resolved, &json_mode_req, CancellationToken::new())
+                    .complete_text_strict(&resolved, &json_mode_req, CancellationToken::new())
                     .await
                     .ok()
                     .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())

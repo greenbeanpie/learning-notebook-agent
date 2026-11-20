@@ -38,10 +38,30 @@ impl ProtocolAdapter for GeminiAdapter {
                 }
                 Role::Assistant => {
                     let mut parts = Vec::new();
+                    // A replayed part that already carries a functionCall (with its thought signature)
+                    // must not be sent a second time as a plain ToolCall.
+                    let mut replayed_calls: Vec<String> = m
+                        .parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            Part::Opaque(op) if op.protocol == ProtocolKind::Gemini => op
+                                .data
+                                .pointer("/functionCall/name")
+                                .and_then(|x| x.as_str())
+                                .map(str::to_string),
+                            _ => None,
+                        })
+                        .collect();
                     for p in &m.parts {
                         match p {
                             Part::Opaque(op) if op.protocol == ProtocolKind::Gemini => {
                                 parts.push(op.data.clone());
+                            }
+                            Part::ToolCall { id, name, .. } if replayed_calls.contains(name) => {
+                                call_names.insert(id.clone(), name.clone());
+                                if let Some(pos) = replayed_calls.iter().position(|n| n == name) {
+                                    replayed_calls.remove(pos);
+                                }
                             }
                             Part::Text(t) if !t.is_empty() => {
                                 parts.push(json!({ "text": t }));
@@ -142,6 +162,7 @@ impl ProtocolAdapter for GeminiAdapter {
             model_id: model_id.to_string(),
             finished: false,
             tool_idx: 0,
+            saw_tool_call: false,
         })
     }
 
@@ -200,6 +221,7 @@ struct GeminiDecoder {
     model_id: String,
     finished: bool,
     tool_idx: u32,
+    saw_tool_call: bool,
 }
 
 impl StreamDecoder for GeminiDecoder {
@@ -271,6 +293,7 @@ impl StreamDecoder for GeminiDecoder {
                         let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
                         let idx = self.tool_idx;
                         self.tool_idx += 1;
+                        self.saw_tool_call = true;
                         out.push(LlmEvent::ToolCallStart {
                             index: idx,
                             id: format!("gemini_call_{idx}"),
@@ -286,6 +309,8 @@ impl StreamDecoder for GeminiDecoder {
             }
             if let Some(fr) = cand.get("finishReason").and_then(|x| x.as_str()) {
                 let reason = match fr {
+                    // Gemini reports STOP even when the turn ended with a function call.
+                    "STOP" if self.saw_tool_call => StopReason::ToolUse,
                     "STOP" => StopReason::EndTurn,
                     "MAX_TOKENS" => StopReason::MaxTokens,
                     "SAFETY" | "RECITATION" | "PROHIBITED_CONTENT" => StopReason::ContentFilter,

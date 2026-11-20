@@ -1167,6 +1167,31 @@ impl AgentService {
             return Ok(());
         }
 
+        // Fingerprint of the ready source set: unchanged sources must not trigger another model call.
+        let fingerprint = {
+            use sha2::{Digest, Sha256};
+            let mut parts: Vec<String> = ready
+                .iter()
+                .map(|s| format!("{}:{}", s.id, s.content_hash))
+                .collect();
+            parts.sort();
+            hex::encode(Sha256::digest(parts.join("|").as_bytes()))
+        };
+        let current: Option<(Option<String>, Option<String>)> = self.db.read(|conn| {
+            conn.query_row(
+                "SELECT summary_fingerprint, summary_md FROM notebooks WHERE id=?1",
+                [notebook_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(map_sql_err)
+        })?;
+        if let Some((Some(fp), Some(md))) = &current {
+            if fp == &fingerprint && !md.is_empty() {
+                return Ok(());
+            }
+        }
+
         let mut excerpts = Vec::new();
         for s in &ready {
             let chunks: Vec<String> = self.db.read(|conn| {
@@ -1213,8 +1238,15 @@ impl AgentService {
                 conn.execute(
                     "UPDATE notebooks SET summary_md=?1, suggested_questions_json=?2,
                      title=CASE WHEN title_user_edited=0 AND ?3 IS NOT NULL THEN ?3 ELSE title END,
-                     updated_at=?4 WHERE id=?5",
-                    params![summary_md, sq, title_sugg, now_ms(), notebook_id],
+                     updated_at=?4, summary_fingerprint=?6 WHERE id=?5",
+                    params![
+                        summary_md,
+                        sq,
+                        title_sugg,
+                        now_ms(),
+                        notebook_id,
+                        fingerprint
+                    ],
                 )
                 .map_err(map_sql_err)?;
                 Ok(())

@@ -223,6 +223,9 @@ fn run_migrations(conn: &Connection, db_path: &Path) -> LnaResult<()> {
 }
 
 pub fn map_sql_err(err: rusqlite::Error) -> LnaError {
+    if matches!(err, rusqlite::Error::QueryReturnedNoRows) {
+        return LnaError::not_found("Record not found");
+    }
     let msg = err.to_string();
     if msg.contains("database or disk is full") {
         LnaError::new(ErrorCode::StorageFull, msg)

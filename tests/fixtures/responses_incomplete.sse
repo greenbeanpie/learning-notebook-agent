@@ -1,0 +1,6 @@
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"未完成"}
+
+event: response.incomplete
+data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}
+

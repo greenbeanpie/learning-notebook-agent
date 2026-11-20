@@ -1,0 +1,10 @@
+data: {"choices":[{"index":0,"delta":{"content":"<thi"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"nk>推理过程</th"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"ink>最终回答[1]"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
