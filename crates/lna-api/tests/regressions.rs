@@ -124,3 +124,71 @@ fn ingest_emits_source_status_events() {
     drop(core);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn source_retry_resets_status_and_errors_and_emits_event() {
+    let dir = temp_dir("retry");
+    let core = CoreRuntime::open(dir.clone(), true).unwrap();
+    let nb = call(&core, "notebook.create", json!({ "title": "t" }));
+    let nid = nb["result"]["id"].as_str().unwrap().to_string();
+
+    let file = dir.join("retry.txt");
+    std::fs::write(&file, "测试重试重置状态。").unwrap();
+    let added = call(
+        &core,
+        "source.add_files",
+        json!({ "notebook_id": nid, "paths": [file.display().to_string()] }),
+    );
+    let sid = added["result"]["items"][0]["source"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Simulate a failed source state
+    core.db
+        .write(|conn| {
+            conn.execute(
+                "UPDATE sources SET status='FAILED', error_code='INTERNAL', error_detail='boom' WHERE id=?1",
+                rusqlite::params![sid],
+            )
+            .map_err(lna_storage::db::map_sql_err)?;
+            Ok(())
+        })
+        .unwrap();
+
+    let mut rx = core.events.subscribe();
+    let retried = call(&core, "source.retry", json!({ "source_id": sid }));
+    assert_eq!(retried["result"]["ok"], json!(true));
+
+    let got_ev = rx.try_recv().ok().map(|e| e.event);
+    assert_eq!(got_ev.as_deref(), Some("source.status"));
+
+    let after = lna_storage::get_source(&core.db, &sid).unwrap();
+    assert_ne!(after.status, lna_types::SourceStatus::Failed);
+    assert_eq!(after.error_code, None);
+    assert_eq!(after.error_detail, None);
+
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn profile_upsert_preserves_capabilities_on_insert() {
+    let dir = temp_dir("caps");
+    let core = CoreRuntime::open(dir.clone(), true).unwrap();
+    let saved = call(
+        &core,
+        "profile.upsert",
+        json!({
+            "display_name": "caps",
+            "protocol": "chat_completion",
+            "base_url": "http://127.0.0.1:1/v1",
+            "model_id": "m",
+            "capabilities": { "streaming": true, "tools": true, "json_schema": true }
+        }),
+    );
+    assert_eq!(saved["result"]["capabilities"]["tools"], json!(true));
+    assert_eq!(saved["result"]["capabilities"]["json_schema"], json!(true));
+    drop(core);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1,9 +1,12 @@
+pub mod archive;
+
 use lna_agent::AgentService;
 use lna_embedding::EmbeddingService;
 use lna_ingest::IngestService;
 use lna_jobs::JobQueue;
 use lna_llm::{
-    LlmClient, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, Role, ToolMode,
+    LlmClient, LlmEvent, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, Role, ToolDef,
+    ToolMode,
 };
 use lna_retrieval::RetrievalEngine;
 use lna_secrets::{KeyringSecretStore, SecretStore};
@@ -129,6 +132,15 @@ impl CoreRuntime {
     }
 
     fn spawn_background_loops(self: &Arc<Self>) {
+        // S3: Delayed 5s orphan file cleanup
+        let weak_clean = Arc::downgrade(self);
+        self.rt.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if let Some(core) = weak_clean.upgrade() {
+                let _ = lna_ingest::IngestService::cleanup_orphan_files(&core.db);
+            }
+        });
+
         // Worker 1: Fast ingest & summary loop (never blocked by Studio, B-14)
         let weak1 = Arc::downgrade(self);
         self.rt.spawn(async move {
@@ -144,13 +156,26 @@ impl CoreRuntime {
                     core.embedding.evict_if_idle();
                 }
                 tick += 1;
-                if let Ok(Some(job)) = core.jobs.claim_next(&["ingest_source", "refresh_summary"]) {
+                if let Ok(Some(job)) =
+                    core.jobs
+                        .claim_next(&["ingest_source", "refresh_summary", "embed_source"])
+                {
                     let _tok = core.jobs.register_token(&job.id);
                     core.emit_source_status(&job);
                     let res = match job.kind.as_str() {
                         "ingest_source" => core.ingest.process_ingest_job(&job.subject_id).await,
                         "refresh_summary" => {
                             core.agent.refresh_notebook_summary(&job.subject_id).await
+                        }
+                        "embed_source" => {
+                            match lna_storage::get_source(&core.db, &job.subject_id) {
+                                Ok(src) => {
+                                    core.ingest
+                                        .embed_source_chunks(&src.id, &src.notebook_id, &src.title)
+                                        .await
+                                }
+                                Err(e) => Err(e),
+                            }
                         }
                         _ => Ok(()),
                     };
@@ -369,6 +394,19 @@ impl CoreRuntime {
             "source.retry" => {
                 let sid = req_str(p, "source_id")?;
                 let src = lna_storage::get_source(&self.db, sid)?;
+                self.db.write(|conn| {
+                    conn.execute(
+                        "UPDATE sources SET status='QUEUED', error_code=NULL, error_detail=NULL, updated_at=?1 WHERE id=?2",
+                        params![now_ms(), sid],
+                    )
+                    .map_err(map_sql_err)?;
+                    Ok(())
+                })?;
+                self.emit(
+                    &format!("sources:{}", src.notebook_id),
+                    "source.status",
+                    json!({ "notebook_id": src.notebook_id, "source_id": sid }),
+                );
                 self.jobs
                     .enqueue("ingest_source", Some(&src.notebook_id), sid, 10)?;
                 Ok(json!({ "ok": true }))
@@ -407,6 +445,15 @@ impl CoreRuntime {
             "profile.upsert" => {
                 let params_in: ProfileUpsertParams = serde_json::from_value(p.clone())
                     .map_err(|e| LnaError::invalid(e.to_string()))?;
+                let allow_insecure_http = p
+                    .get("allow_insecure_http")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if is_non_loopback_http_endpoint(&params_in.base_url) && !allow_insecure_http {
+                    return Err(LnaError::invalid(
+                        "Non-loopback http:// model endpoints transmit credentials in plaintext. Set allow_insecure_http=true to confirm explicitly.",
+                    ));
+                }
                 let mut prof = lna_storage::upsert_profile(&self.db, &params_in)?;
                 self.refresh_has_secret(&mut prof);
                 Ok(serde_json::to_value(prof).unwrap())
@@ -446,14 +493,104 @@ impl CoreRuntime {
                     max_output_tokens: 16,
                     reasoning: ReasoningOptions::default(),
                 };
-                let (txt, _) = self
+                let (txt, ping_usage) = self
                     .llm
                     .complete_text(&resolved, &req, CancellationToken::new())
                     .await?;
+
                 let mut caps = prof.capabilities.clone();
                 caps.streaming = true;
-                caps.stream_usage = true;
-                let _ = lna_storage::update_profile_capabilities(&self.db, id, &caps);
+                caps.stream_usage = ping_usage.input_tokens > 0 || ping_usage.output_tokens > 0;
+
+                let tool_req = LlmRequest {
+                    system: "You must call the lna_capability_probe tool exactly once with {\"ok\":true}. Do not answer in natural language.".into(),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text("Call the capability probe now.".into())],
+                    }],
+                    tools: vec![ToolDef {
+                        name: "lna_capability_probe".into(),
+                        description: "Capability detection probe".into(),
+                        parameters: json!({
+                            "type": "object",
+                            "properties": { "ok": { "type": "boolean" } },
+                            "required": ["ok"],
+                            "additionalProperties": false
+                        }),
+                    }],
+                    tool_mode: ToolMode::Auto,
+                    output: OutputMode::Text,
+                    max_output_tokens: 64,
+                    reasoning: ReasoningOptions::default(),
+                };
+                let mut tool_called = false;
+                if self
+                    .llm
+                    .stream(&resolved, &tool_req, CancellationToken::new(), |event| {
+                        if matches!(event, LlmEvent::ToolCallStart { .. }) {
+                            tool_called = true;
+                        }
+                    })
+                    .await
+                    .is_ok()
+                {
+                    caps.tools = tool_called;
+                } else {
+                    caps.tools = false;
+                }
+
+                let probe_schema = json!({
+                    "type": "object",
+                    "properties": { "ok": { "type": "boolean" } },
+                    "required": ["ok"],
+                    "additionalProperties": false
+                });
+                let schema_req = LlmRequest {
+                    system: "Return only a JSON object with ok set to true.".into(),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text("Return the probe object.".into())],
+                    }],
+                    tools: vec![],
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::JsonSchema {
+                        name: "lna_capability_probe".into(),
+                        schema: probe_schema.clone(),
+                    },
+                    max_output_tokens: 64,
+                    reasoning: ReasoningOptions::default(),
+                };
+                caps.json_schema = self
+                    .llm
+                    .complete_text(&resolved, &schema_req, CancellationToken::new())
+                    .await
+                    .ok()
+                    .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
+                    .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
+                    .unwrap_or(false);
+
+                let json_mode_req = LlmRequest {
+                    system: "Return only a JSON object with ok set to true.".into(),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text("Return the probe object.".into())],
+                    }],
+                    tools: vec![],
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::JsonObject,
+                    max_output_tokens: 64,
+                    reasoning: ReasoningOptions::default(),
+                };
+                caps.json_mode = self
+                    .llm
+                    .complete_text(&resolved, &json_mode_req, CancellationToken::new())
+                    .await
+                    .ok()
+                    .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
+                    .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
+                    .unwrap_or(false);
+
+                lna_storage::update_profile_capabilities(&self.db, id, &caps)?;
                 Ok(json!({ "ok": true, "reply": txt, "capabilities": caps }))
             }
             "profile.discover_models" => {
@@ -659,6 +796,155 @@ impl CoreRuntime {
                 Ok(serde_json::to_value(src).unwrap())
             }
 
+            "notebook.export" => {
+                let id = req_str(p, "notebook_id")?;
+                let fmt = p.get("format").and_then(|x| x.as_str()).unwrap_or("lna");
+                let out_path = std::path::Path::new(req_str(p, "out_path")?);
+                if fmt == "markdown" || fmt == "md" {
+                    archive::export_notebook_markdown(&self.db, id, out_path)?;
+                } else {
+                    archive::export_notebook_lna(&self.db, id, out_path)?;
+                }
+                Ok(json!({ "ok": true }))
+            }
+            "notebook.import" => {
+                let in_path = std::path::Path::new(req_str(p, "in_path")?);
+                let new_id = archive::import_notebook_lna(&self.db, &self.jobs, in_path)?;
+                Ok(json!({ "notebook_id": new_id }))
+            }
+            "source.preview" => {
+                let sid = req_str(p, "source_id")?;
+                let page = p.get("page").and_then(|x| x.as_i64()).map(|n| n as i32);
+                let chunks = self.ingest.source_preview(sid, page)?;
+                Ok(json!({ "chunks": chunks }))
+            }
+            "chat.regenerate" => {
+                let nid = req_str(p, "notebook_id")?;
+                let msg = self.agent.regenerate_last(nid).await?;
+                Ok(serde_json::to_value(msg).unwrap())
+            }
+            "chat.clear" => {
+                let nid = req_str(p, "notebook_id")?;
+                self.agent.clear_history(nid)?;
+                Ok(json!({ "ok": true }))
+            }
+            "chat.set_feedback" => {
+                let mid = req_str(p, "message_id")?;
+                let fb = p.get("feedback").and_then(|x| x.as_i64()).unwrap_or(1) as i32;
+                self.agent.set_feedback(mid, fb)?;
+                Ok(json!({ "ok": true }))
+            }
+            "chat.citation_detail" => {
+                let mid = req_str(p, "message_id")?;
+                let no = p.get("citation_no").and_then(|x| x.as_i64()).unwrap_or(1) as i32;
+                self.agent.citation_detail(mid, no)
+            }
+            "studio.grade_answer" => {
+                let aid = req_str(p, "artifact_id")?;
+                let qid = req_str(p, "question_id")?;
+                let ans = p.get("answer").cloned().unwrap_or(Value::Null);
+                self.studio.grade_answer(aid, qid, &ans)
+            }
+            "studio.export" => {
+                let aid = req_str(p, "artifact_id")?;
+                let fmt = p
+                    .get("format")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("markdown");
+                let out_path = std::path::Path::new(req_str(p, "out_path")?);
+                self.studio.export_artifact(aid, fmt, out_path)?;
+                Ok(json!({ "ok": true }))
+            }
+            "note.get" => {
+                let id = req_str(p, "note_id")?;
+                let note = self.db.read(|conn| {
+                    conn.query_row(
+                        "SELECT id, notebook_id, title, body_md, origin, origin_message_id, citations_json, converted_source_id, created_at, updated_at FROM notes WHERE id=?1",
+                        [id],
+                        |r| Ok(Note {
+                            id: r.get(0)?, notebook_id: r.get(1)?, title: r.get(2)?, body_md: r.get(3)?,
+                            origin: r.get(4)?, origin_message_id: r.get(5)?, citations_json: r.get(6)?,
+                            converted_source_id: r.get(7)?, created_at: r.get(8)?, updated_at: r.get(9)?,
+                        })
+                    ).map_err(map_sql_err)
+                })?;
+                Ok(serde_json::to_value(note).unwrap())
+            }
+            "note.from_message" => {
+                let mid = req_str(p, "message_id")?;
+                let msg = self.agent.get_message(mid)?;
+                let id = new_ulid();
+                let now = now_ms();
+                let cites = serde_json::to_string(&msg.citations).ok();
+                self.db.write(|conn| {
+                    conn.execute(
+                        "INSERT INTO notes (id, notebook_id, title, body_md, origin, origin_message_id, citations_json, created_at, updated_at)
+                         VALUES (?1,?2,'对话摘录',?3,'chat',?4,?5,?6,?7)",
+                        params![id, msg.notebook_id, msg.content, mid, cites, now, now]
+                    ).map_err(map_sql_err)?;
+                    Ok(())
+                })?;
+                Ok(json!({ "id": id }))
+            }
+            "note.from_summary" => {
+                let nid = req_str(p, "notebook_id")?;
+                let nb = lna_storage::get_notebook(&self.db, nid)?;
+                let body = nb.summary_md.unwrap_or_default();
+                let id = new_ulid();
+                let now = now_ms();
+                self.db.write(|conn| {
+                    conn.execute(
+                        "INSERT INTO notes (id, notebook_id, title, body_md, origin, created_at, updated_at)
+                         VALUES (?1,?2,?3,?4,'summary',?5,?6)",
+                        params![id, nid, format!("{} - 摘要", nb.title), body, now, now]
+                    ).map_err(map_sql_err)?;
+                    Ok(())
+                })?;
+                Ok(json!({ "id": id }))
+            }
+            "diagnostics.export" => {
+                let out_path = std::path::Path::new(req_str(p, "out_path")?);
+                archive::export_diagnostics(&self.db, out_path)?;
+                Ok(json!({ "ok": true }))
+            }
+            "embedding.rebuild" => {
+                let model = self.embedding.active_model()?.ok_or_else(|| {
+                    LnaError::new(
+                        ErrorCode::CapabilityMissing,
+                        "No active embedding model configured",
+                    )
+                })?;
+                let force = p.get("force").and_then(|x| x.as_bool()).unwrap_or(false);
+                if force {
+                    self.db.write(|conn| {
+                        conn.execute(
+                            "DELETE FROM chunk_embedding_state WHERE embedding_model_id = ?1",
+                            [&model.id],
+                        )
+                        .map_err(map_sql_err)?;
+                        Ok(())
+                    })?;
+                }
+                let ready_sources: Vec<(String, String)> = self.db.read(|conn| {
+                    let mut stmt = conn
+                        .prepare("SELECT id, notebook_id FROM sources WHERE status = 'READY'")
+                        .map_err(map_sql_err)?;
+                    let rows = stmt
+                        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                        .map_err(map_sql_err)?;
+                    let mut out = Vec::new();
+                    for r in rows {
+                        out.push(r.map_err(map_sql_err)?);
+                    }
+                    Ok(out)
+                })?;
+                let count = ready_sources.len();
+                for (sid, nid) in ready_sources {
+                    self.jobs.enqueue("embed_source", Some(&nid), &sid, 50)?;
+                }
+                Ok(json!({ "ok": true, "queued": count > 0, "sources_queued": count }))
+            }
+
             // --- Search / Research (deferred per user request) ---
             m if m.starts_with("research.") => Err(LnaError::new(
                 ErrorCode::CapabilityMissing,
@@ -673,6 +959,31 @@ impl CoreRuntime {
         self.shutdown.cancel();
         let _ = self.db.checkpoint_truncate();
     }
+}
+
+fn is_non_loopback_http_endpoint(base_url: &str) -> bool {
+    let Some((scheme, rest)) = base_url.trim().split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(stripped) = host_port.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or(stripped)
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    }
+    .trim()
+    .trim_end_matches('.');
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return !ip.is_loopback();
+    }
+    !host.is_empty()
 }
 
 fn req_str<'a>(p: &'a Value, key: &str) -> LnaResult<&'a str> {

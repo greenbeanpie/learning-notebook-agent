@@ -1,6 +1,6 @@
 use lna_types::{ErrorCode, LnaError, LnaResult};
-use std::net::IpAddr;
-use url::Url;
+use std::net::{IpAddr, SocketAddr};
+use url::{Host, Url};
 
 pub fn validate_public_url(raw: &str) -> LnaResult<Url> {
     let url = Url::parse(raw).map_err(|e| LnaError::invalid(format!("Invalid URL: {e}")))?;
@@ -13,21 +13,36 @@ pub fn validate_public_url(raw: &str) -> LnaResult<Url> {
             ))
         }
     }
-    let host = url
-        .host_str()
-        .ok_or_else(|| LnaError::new(ErrorCode::UrlBlocked, "URL missing host"))?;
-    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") {
-        return Err(LnaError::new(
-            ErrorCode::UrlBlocked,
-            "Loopback and local hosts are blocked",
-        ));
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_private_or_reserved(ip) {
-            return Err(LnaError::new(
-                ErrorCode::UrlBlocked,
-                "Private or reserved IP addresses are blocked",
-            ));
+    match url.host() {
+        Some(Host::Domain(host)) => {
+            if host.eq_ignore_ascii_case("localhost")
+                || host.ends_with(".localhost")
+                || host.ends_with(".local")
+            {
+                return Err(LnaError::new(
+                    ErrorCode::UrlBlocked,
+                    "Loopback and local hosts are blocked",
+                ));
+            }
+        }
+        Some(Host::Ipv4(v4)) => {
+            if is_private_or_reserved(IpAddr::V4(v4)) {
+                return Err(LnaError::new(
+                    ErrorCode::UrlBlocked,
+                    "Private or reserved IP addresses are blocked",
+                ));
+            }
+        }
+        Some(Host::Ipv6(v6)) => {
+            if is_private_or_reserved(IpAddr::V6(v6)) {
+                return Err(LnaError::new(
+                    ErrorCode::UrlBlocked,
+                    "Private or reserved IP addresses are blocked",
+                ));
+            }
+        }
+        None => {
+            return Err(LnaError::new(ErrorCode::UrlBlocked, "URL missing host"));
         }
     }
     Ok(url)
@@ -42,35 +57,47 @@ pub fn is_private_or_reserved(ip: IpAddr) -> bool {
                 || v4.is_broadcast()
                 || v4.is_documentation()
                 || v4.is_unspecified()
-                || v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64
+                || v4.is_multicast()
+                || v4.octets()[0] == 0
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64)
         }
         IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_private_or_reserved(IpAddr::V4(mapped));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
+                || v6.is_multicast()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
         }
     }
 }
 
-/// Fetch URL with manual redirect validation (max 5 redirects, 10 MB body limit, 15s timeout).
+/// Fetch URL with manual redirect validation (max 5 redirects, 10 MB body limit, 15s timeout)
+/// and pinned DNS resolution per hop to prevent DNS rebinding (B3).
 pub async fn safe_fetch_url(raw_url: &str) -> LnaResult<(String, Vec<u8>)> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| LnaError::internal(e.to_string()))?;
-
     let mut current = validate_public_url(raw_url)?;
     for _ in 0..=5 {
-        let host = current
+        let raw_host = current
             .host_str()
             .ok_or_else(|| LnaError::new(ErrorCode::UrlBlocked, "Missing host"))?;
+        let lookup_target = raw_host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
         let port = current.port_or_known_default().unwrap_or(80);
-        let addrs = tokio::net::lookup_host((host, port))
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((lookup_target.as_str(), port))
             .await
-            .map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?;
-        for addr in addrs {
+            .map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(LnaError::new(
+                ErrorCode::FetchFailed,
+                "DNS returned no addresses",
+            ));
+        }
+        for addr in &addrs {
             if is_private_or_reserved(addr.ip()) {
                 return Err(LnaError::new(
                     ErrorCode::UrlBlocked,
@@ -78,6 +105,17 @@ pub async fn safe_fetch_url(raw_url: &str) -> LnaResult<(String, Vec<u8>)> {
                 ));
             }
         }
+
+        // Pin the validated IP on this hop's reqwest::Client (B3 anti-DNS-rebinding)
+        let mut client_builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(15));
+        if matches!(current.host(), Some(Host::Domain(_))) {
+            client_builder = client_builder.resolve(&lookup_target, addrs[0]);
+        }
+        let client = client_builder
+            .build()
+            .map_err(|e| LnaError::internal(e.to_string()))?;
 
         let resp = client
             .get(current.clone())
@@ -108,21 +146,64 @@ pub async fn safe_fetch_url(raw_url: &str) -> LnaResult<(String, Vec<u8>)> {
             ));
         }
 
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?;
-        if bytes.len() > 10 * 1024 * 1024 {
-            return Err(LnaError::new(
-                ErrorCode::SourceTooLarge,
-                "URL response exceeded 10 MB limit",
-            ));
+        const MAX_URL_BYTES: usize = 10 * 1024 * 1024;
+        if let Some(cl) = resp.content_length() {
+            if cl > MAX_URL_BYTES as u64 {
+                return Err(LnaError::new(
+                    ErrorCode::SourceTooLarge,
+                    "URL response exceeded 10 MB limit",
+                ));
+            }
         }
-        return Ok((current.to_string(), bytes.to_vec()));
+        let mut resp = resp;
+        let mut buf = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?
+        {
+            if buf.len() + chunk.len() > MAX_URL_BYTES {
+                return Err(LnaError::new(
+                    ErrorCode::SourceTooLarge,
+                    "URL response exceeded 10 MB limit",
+                ));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        return Ok((current.to_string(), buf));
     }
 
     Err(LnaError::new(
         ErrorCode::FetchFailed,
         "Too many redirects (max 5)",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocks_ssrf_urls_and_private_ips() {
+        for bad in [
+            "http://localhost:8080/a",
+            "http://sub.localhost/a",
+            "http://127.0.0.1/admin",
+            "http://0.0.0.0/",
+            "http://10.0.0.1/internal",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "file:///etc/passwd",
+            "ftp://example.com/a",
+            "http://[::1]/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:169.254.169.254]/",
+        ] {
+            assert!(
+                validate_public_url(bad).is_err(),
+                "Expected SSRF block for {bad}"
+            );
+        }
+        assert!(validate_public_url("https://example.com/article").is_ok());
+    }
 }

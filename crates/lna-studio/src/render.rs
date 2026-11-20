@@ -12,12 +12,19 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
     let mut zip = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default();
 
-    let slides = payload
+    let mut slides = payload
         .get("slides")
         .and_then(|s| s.as_array())
         .cloned()
         .unwrap_or_default();
-    let slide_count = slides.len().max(1);
+    if slides.is_empty() {
+        let fallback_title = payload
+            .get("title")
+            .and_then(|x| x.as_str())
+            .unwrap_or("Presentation");
+        slides.push(serde_json::json!({ "title": fallback_title, "bullets": [] }));
+    }
+    let slide_count = slides.len();
 
     let mut content_types = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -222,6 +229,16 @@ mod tests {
         assert!(svg.contains("A &amp; B &lt;test&gt;"));
         assert!(svg.contains("&quot;quoted&quot;"));
         assert!(svg.contains("x &amp; y"));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn render_pptx_with_empty_slides_writes_slide1() {
+        let tmp = std::env::temp_dir().join("lna_empty_slides_test.pptx");
+        render_pptx(&json!({ "title": "Empty Deck", "slides": [] }), &tmp).unwrap();
+        let f = std::fs::File::open(&tmp).unwrap();
+        let mut archive = zip::ZipArchive::new(f).unwrap();
+        assert!(archive.by_name("ppt/slides/slide1.xml").is_ok());
         let _ = std::fs::remove_file(&tmp);
     }
 }

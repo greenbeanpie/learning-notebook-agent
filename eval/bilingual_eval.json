@@ -1,0 +1,506 @@
+{
+  "version": 1,
+  "min_recall_at_8": 0.8,
+  "items": [
+    {
+      "id": "q01",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (1)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q02",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (2)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q03",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (3)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q04",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (4)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q05",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (5)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q06",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (6)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q07",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (7)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q08",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (8)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q09",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (9)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q10",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (10)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q11",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (11)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q12",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (12)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q13",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (13)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q14",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (14)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q15",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (15)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q16",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (16)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q17",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (17)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q18",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (18)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q19",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (19)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q20",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (20)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q21",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (21)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q22",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (22)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q23",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (23)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q24",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (24)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q25",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (25)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q26",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (26)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q27",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (27)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q28",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (28)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q29",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (29)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q30",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (30)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q31",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (31)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q32",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (32)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q33",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (33)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q34",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (34)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q35",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (35)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q36",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (36)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q37",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (37)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q38",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (38)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q39",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (39)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q40",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (40)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q41",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (41)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q42",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (42)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q43",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (43)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q44",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (44)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q45",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (45)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q46",
+      "mode": "zh-zh",
+      "query": "向量空间的基与维数 (46)",
+      "expected_keywords": [
+        "向量空间的基与维数",
+        "basis"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q47",
+      "mode": "zh-en",
+      "query": "矩阵的秩与四个基本子空间 (47)",
+      "expected_keywords": [
+        "矩阵的秩与四个基本子空间",
+        "rank"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q48",
+      "mode": "en-zh",
+      "query": "Explain singular value decomposition and PCA (48)",
+      "expected_keywords": [
+        "奇异值分解",
+        "singular"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q49",
+      "mode": "zh-en",
+      "query": "特征值与特征向量 (49)",
+      "expected_keywords": [
+        "特征值与特征向量",
+        "eigenvalues"
+      ],
+      "grounded": true
+    },
+    {
+      "id": "q50",
+      "mode": "zh-zh",
+      "query": "正交投影与最小二乘法 (50)",
+      "expected_keywords": [
+        "正交投影与最小二乘法",
+        "orthogonal"
+      ],
+      "grounded": true
+    }
+  ]
+}

@@ -438,6 +438,11 @@ public sealed partial class MainWindow : Window
             Header = "API Key",
             PlaceholderText = hasSecret ? "已保存，留空则保持不变" : "输入 API Key（本地模型可留空）",
         };
+        var allowInsecureHttpBox = new CheckBox
+        {
+            Content = "确认允许非回环 HTTP 明文传输（仅用于可信本地网络）",
+            IsChecked = false,
+        };
         var status = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
@@ -451,6 +456,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(urlBox);
         panel.Children.Add(modelBox);
         panel.Children.Add(keyBox);
+        panel.Children.Add(allowInsecureHttpBox);
         panel.Children.Add(status);
 
         var dialog = new ContentDialog
@@ -486,6 +492,7 @@ public sealed partial class MainWindow : Window
                     ("base_url", url),
                     ("model_id", modelId),
                     ("activate", true),
+                    ("allow_insecure_http", allowInsecureHttpBox.IsChecked == true),
                 };
                 if (profileId != null) up.Add(("id", profileId));
                 var saved = await CoreAsync("profile.upsert", Args(up.ToArray()), "保存模型配置");

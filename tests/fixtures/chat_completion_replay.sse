@@ -1,0 +1,9 @@
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"Thinking..."},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"<think>internal</think>Answer [1]"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"tc1","function":{"name":"search_sources","arguments":"{\"query\":\"basis\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}
+
+data: [DONE]

@@ -108,14 +108,18 @@ pub fn rename_notebook(db: &Database, id: &str, title: &str, user_edited: bool) 
 }
 
 pub fn delete_notebook(db: &Database, id: &str) -> LnaResult<()> {
-    let active_vec_table: Option<String> = db.read(|conn| {
-        conn.query_row(
-            "SELECT vec_table FROM embedding_models WHERE is_active = 1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(map_sql_err)
+    let vec_tables: Vec<String> = db.read(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT vec_table FROM embedding_models")
+            .map_err(map_sql_err)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(map_sql_err)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(map_sql_err)?);
+        }
+        Ok(out)
     })?;
 
     let artifact_dirs: Vec<String> = db.read(|conn| {
@@ -134,7 +138,7 @@ pub fn delete_notebook(db: &Database, id: &str) -> LnaResult<()> {
 
     db.write(|conn| {
         let tx = conn.transaction().map_err(map_sql_err)?;
-        if let Some(ref tbl) = active_vec_table {
+        for tbl in &vec_tables {
             let sql = format!(
                 "DELETE FROM {tbl} WHERE chunk_id IN (SELECT id FROM source_chunks WHERE notebook_id = ?1)"
             );
@@ -286,19 +290,23 @@ pub fn rename_source(db: &Database, source_id: &str, title: &str) -> LnaResult<(
 
 pub fn remove_source(db: &Database, source_id: &str) -> LnaResult<()> {
     let src = get_source(db, source_id)?;
-    let active_vec_table: Option<String> = db.read(|conn| {
-        conn.query_row(
-            "SELECT vec_table FROM embedding_models WHERE is_active = 1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(map_sql_err)
+    let vec_tables: Vec<String> = db.read(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT vec_table FROM embedding_models")
+            .map_err(map_sql_err)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(map_sql_err)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(map_sql_err)?);
+        }
+        Ok(out)
     })?;
 
     db.write(|conn| {
         let tx = conn.transaction().map_err(map_sql_err)?;
-        if let Some(ref tbl) = active_vec_table {
+        for tbl in &vec_tables {
             let sql = format!(
                 "DELETE FROM {tbl} WHERE chunk_id IN (SELECT id FROM source_chunks WHERE source_id = ?1)"
             );
@@ -389,7 +397,7 @@ fn map_profile_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelProfile> {
         protocol,
         base_url: r.get(3)?,
         model_id: r.get(4)?,
-        has_secret: keychain_ref.is_some(),
+        has_secret: false,
         keychain_ref,
         show_thinking: r.get::<_, i64>(6)? == 1,
         effort: r.get(7)?,
@@ -456,12 +464,13 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
             )
             .map_err(map_sql_err)?;
         } else {
+            let init_caps = caps_json.as_deref().unwrap_or("{}");
             tx.execute(
                 "INSERT INTO model_profiles
                  (id, display_name, protocol, base_url, model_id, keychain_ref, show_thinking,
-                  effort, context_window, max_output_tokens, extra_headers_json,
+                  effort, context_window, max_output_tokens, capabilities_json, extra_headers_json,
                   input_price_per_m, output_price_per_m, is_active, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
                 params![
                     id,
                     params_in.display_name,
@@ -473,6 +482,7 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                     params_in.effort,
                     params_in.context_window as i64,
                     params_in.max_output_tokens as i64,
+                    init_caps,
                     extra_json,
                     params_in.input_price_per_m,
                     params_in.output_price_per_m,
@@ -578,11 +588,27 @@ pub fn get_usage_summary(db: &Database, notebook_id: Option<&str>) -> LnaResult<
                 )
                 .map_err(map_sql_err)?,
         };
+        let (cost, priced_rows): (f64, i64) = match notebook_id {
+            Some(nid) => conn.query_row(
+                "SELECT COALESCE(SUM((u.input_tokens * p.input_price_per_m + u.output_tokens * p.output_price_per_m) / 1000000.0),0),
+                        COALESCE(SUM(CASE WHEN p.input_price_per_m IS NOT NULL AND p.output_price_per_m IS NOT NULL THEN 1 ELSE 0 END),0)
+                 FROM usage_events u JOIN model_profiles p ON p.id=u.profile_id WHERE u.notebook_id=?1",
+                [nid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).map_err(map_sql_err)?,
+            None => conn.query_row(
+                "SELECT COALESCE(SUM((u.input_tokens * p.input_price_per_m + u.output_tokens * p.output_price_per_m) / 1000000.0),0),
+                        COALESCE(SUM(CASE WHEN p.input_price_per_m IS NOT NULL AND p.output_price_per_m IS NOT NULL THEN 1 ELSE 0 END),0)
+                 FROM usage_events u JOIN model_profiles p ON p.id=u.profile_id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).map_err(map_sql_err)?,
+        };
         Ok(UsageTotals {
             input_tokens: inp,
             output_tokens: out,
             cached_tokens: cached,
-            estimated_cost_usd: None,
+            estimated_cost_usd: if priced_rows > 0 { Some(cost) } else { None },
         })
     })
 }

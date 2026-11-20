@@ -20,6 +20,8 @@ impl ProtocolAdapter for GeminiAdapter {
             profile.model_id
         );
 
+        let mut call_names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut contents = Vec::new();
         for m in &req.messages {
             match m.role {
@@ -45,8 +47,11 @@ impl ProtocolAdapter for GeminiAdapter {
                                 parts.push(json!({ "text": t }));
                             }
                             Part::ToolCall {
-                                name, arguments, ..
+                                id,
+                                name,
+                                arguments,
                             } => {
+                                call_names.insert(id.clone(), name.clone());
                                 parts.push(json!({
                                     "functionCall": { "name": name, "args": arguments }
                                 }));
@@ -63,12 +68,18 @@ impl ProtocolAdapter for GeminiAdapter {
                         .filter_map(|p| match p {
                             Part::ToolResult {
                                 call_id, content, ..
-                            } => Some(json!({
-                                "functionResponse": {
-                                    "name": call_id,
-                                    "response": { "result": content }
-                                }
-                            })),
+                            } => {
+                                let fn_name = call_names
+                                    .get(call_id)
+                                    .map(String::as_str)
+                                    .unwrap_or(call_id.as_str());
+                                Some(json!({
+                                    "functionResponse": {
+                                        "name": fn_name,
+                                        "response": { "result": content }
+                                    }
+                                }))
+                            }
                             _ => None,
                         })
                         .collect();
@@ -295,5 +306,63 @@ impl StreamDecoder for GeminiDecoder {
             ));
         }
         Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemini_build_maps_tool_call_id_to_function_name() {
+        let client = reqwest::Client::new();
+        let profile = ResolvedProfile {
+            id: "p1".into(),
+            display_name: "g".into(),
+            protocol: ProtocolKind::Gemini,
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            model_id: "gemini-2.5-flash".into(),
+            api_key: None,
+            show_thinking: false,
+            effort: None,
+            context_window: 32000,
+            max_output_tokens: 1024,
+            capabilities: Default::default(),
+            extra_headers: Default::default(),
+            anthropic_version: String::new(),
+        };
+        let req = LlmRequest {
+            system: String::new(),
+            messages: vec![
+                LlmMessage {
+                    role: Role::Assistant,
+                    parts: vec![Part::ToolCall {
+                        id: "gemini_call_0".into(),
+                        name: "search_sources".into(),
+                        arguments: json!({ "query": "basis" }),
+                    }],
+                },
+                LlmMessage {
+                    role: Role::Tool,
+                    parts: vec![Part::ToolResult {
+                        call_id: "gemini_call_0".into(),
+                        content: "found".into(),
+                        is_error: false,
+                    }],
+                },
+            ],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            max_output_tokens: 1024,
+            reasoning: ReasoningOptions::default(),
+        };
+        let built = GeminiAdapter.build(&client, &profile, &req).unwrap();
+        let body: Value =
+            serde_json::from_slice(built.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body["contents"][1]["parts"][0]["functionResponse"]["name"],
+            json!("search_sources")
+        );
     }
 }

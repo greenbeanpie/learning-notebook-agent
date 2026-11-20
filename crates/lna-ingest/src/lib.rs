@@ -363,6 +363,66 @@ impl IngestService {
         Ok(())
     }
 
+    /// B5: Return source chunks for preview & citation jump.
+    pub fn source_preview(
+        &self,
+        source_id: &str,
+        page: Option<i32>,
+    ) -> LnaResult<Vec<lna_types::SourceChunk>> {
+        self.db.read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, source_id, notebook_id, chunk_index, section_path, page_start, page_end, char_start, char_end, content, token_count
+                 FROM source_chunks WHERE source_id = ?1 AND (?2 IS NULL OR (page_start <= ?2 AND page_end >= ?2))
+                 ORDER BY chunk_index ASC"
+            ).map_err(map_sql_err)?;
+            let rows = stmt.query_map(params![source_id, page], |r| {
+                Ok(lna_types::SourceChunk {
+                    id: r.get(0)?, source_id: r.get(1)?, notebook_id: r.get(2)?,
+                    chunk_index: r.get(3)?, section_path: r.get(4)?, page_start: r.get(5)?,
+                    page_end: r.get(6)?, char_start: r.get(7)?, char_end: r.get(8)?,
+                    content: r.get(9)?, token_count: r.get(10)?,
+                })
+            }).map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for r in rows { out.push(r.map_err(map_sql_err)?); }
+            Ok(out)
+        })
+    }
+
+    /// B6/S3: Remove orphan blob directories whose source_id no longer exists in DB.
+    pub fn cleanup_orphan_files(db: &Database) -> LnaResult<usize> {
+        let mut removed = 0usize;
+        let blobs_root = &db.paths().blobs_dir;
+        if !blobs_root.exists() {
+            return Ok(0);
+        }
+        if let Ok(nb_dirs) = std::fs::read_dir(blobs_root) {
+            for nb_entry in nb_dirs.flatten() {
+                if let Ok(src_dirs) = std::fs::read_dir(nb_entry.path()) {
+                    for src_entry in src_dirs.flatten() {
+                        let sid = src_entry.file_name().to_string_lossy().to_string();
+                        let exists: bool = db
+                            .read(|conn| {
+                                conn.query_row(
+                                    "SELECT 1 FROM sources WHERE id = ?1",
+                                    [&sid],
+                                    |_| Ok(true),
+                                )
+                                .optional()
+                                .map_err(map_sql_err)
+                            })
+                            .unwrap_or(Some(true))
+                            .unwrap_or(false);
+                        if !exists && std::fs::remove_dir_all(src_entry.path()).is_ok() {
+                            removed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(removed)
+    }
+
     fn update_status(
         &self,
         source_id: &str,

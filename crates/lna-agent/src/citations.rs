@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 /// Streaming citation normalizer (Section 9.6 & C3 / B-09):
 /// - Preserves math intervals like `[1,2]` and markdown links `[text](url)` verbatim.
-/// - Converts single positive integer `[n]` / `【n】` into `[n]` if `n` is in `valid_nos`.
-/// - Deletes invalid single citation numbers (e.g. `[99]`) and logs a warning.
+/// - Converts `[n]`, `【n】`, and ranges such as `[1-3]` to valid `[n]` citation markers.
+/// - Deletes invalid citation numbers and logs a warning.
 pub struct CitationStreamNormalizer {
     buf: String,
     in_bracket: bool,
@@ -77,16 +77,34 @@ impl CitationStreamNormalizer {
             .trim_start_matches(['[', '【'])
             .trim_end_matches([']', '】'])
             .trim();
-        // Only treat a single positive integer as a citation; preserve [1,2] math intervals, [text], etc.
         if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
             if let Ok(n) = inner.parse::<i32>() {
                 if n > 0 {
                     if self.valid_nos.contains(&n) {
                         return (format!("[{n}]"), vec![n]);
-                    } else {
-                        tracing::warn!(citation_no = n, "Dropped out-of-range citation number");
-                        return (String::new(), Vec::new());
                     }
+                    tracing::warn!(citation_no = n, "Dropped out-of-range citation number");
+                    return (String::new(), Vec::new());
+                }
+            }
+        }
+        if let Some((start, end)) = inner.split_once('-') {
+            if let (Ok(first), Ok(last)) = (start.trim().parse::<i32>(), end.trim().parse::<i32>())
+            {
+                if first > 0 && last >= first && last - first <= 50 {
+                    let valid: Vec<i32> = (first..=last)
+                        .filter(|n| self.valid_nos.contains(n))
+                        .collect();
+                    for n in first..=last {
+                        if !self.valid_nos.contains(&n) {
+                            tracing::warn!(
+                                citation_no = n,
+                                "Dropped out-of-range citation number in range"
+                            );
+                        }
+                    }
+                    let normalized = valid.iter().map(|n| format!("[{n}]")).collect::<String>();
+                    return (normalized, valid);
                 }
             }
         }

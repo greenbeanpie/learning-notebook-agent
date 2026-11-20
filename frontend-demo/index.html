@@ -435,68 +435,6 @@
           </button>
         </div>
 
-        <!-- Source Search Box with Real Animated Dropdowns -->
-        <div class="rounded-2xl bg-[#282a2c] border border-white/[0.06] p-3 space-y-2.5 relative">
-          <input id="sourceSearchInput" type="text" placeholder="在网络中搜索新来源" class="w-full bg-transparent text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none" />
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-1.5 relative">
-              <!-- Web / Corpus Dropdown Trigger -->
-              <div class="relative">
-                <button id="btnSearchScope" type="button" class="m3-btn px-2.5 py-1 rounded-full bg-[#1e1f20] hover:bg-[#333537] text-[11px] text-[#c4c7c5] flex items-center gap-1.5 border border-white/[0.06]">
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                  <span id="searchScopeLabel">Web</span>
-                  <svg class="w-3 h-3 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                </button>
-                <div id="menuSearchScope" class="popup-menu hidden absolute left-0 top-full mt-1.5 w-48 rounded-xl bg-[#25272a] border border-[#3c4043] shadow-2xl p-1.5 z-40">
-                  <button type="button" data-set-scope="Web" class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-[#333537] text-xs text-[#e3e3e3] text-left">
-                    <span class="flex items-center gap-2">
-                      <svg class="w-3.5 h-3.5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                      <span>Web</span>
-                    </span>
-                    <svg class="scope-check w-3.5 h-3.5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
-                  </button>
-                  <button type="button" data-set-scope="Local" class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-[#333537] text-xs text-[#e3e3e3] text-left">
-                    <span class="flex items-center gap-2">
-                      <svg class="w-3.5 h-3.5 text-[#c4c7c5]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                      <span>本地知识库</span>
-                    </span>
-                    <svg class="scope-check hidden w-3.5 h-3.5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
-                  </button>
-                </div>
-              </div>
-
-              <!-- Research Mode Dropdown Trigger -->
-              <div class="relative">
-                <button id="btnResearchMode" type="button" class="m3-btn px-2.5 py-1 rounded-full bg-[#1e1f20] hover:bg-[#333537] text-[11px] text-[#c4c7c5] flex items-center gap-1.5 border border-white/[0.06]">
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                  <span id="researchModeLabel">Fast Research</span>
-                  <svg class="w-3 h-3 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                </button>
-                <div id="menuResearchMode" class="popup-menu hidden absolute left-0 top-full mt-1.5 w-52 rounded-xl bg-[#25272a] border border-[#3c4043] shadow-2xl p-1.5 z-40">
-                  <button type="button" data-set-rmode="Fast Research" class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-[#333537] text-left">
-                    <div>
-                      <div class="text-xs font-medium text-[#e3e3e3]">Fast Research</div>
-                      <div class="text-[10px] text-[#8e918f]">快速检索并提取核心来源</div>
-                    </div>
-                    <svg class="rmode-check w-3.5 h-3.5 text-[#a8c7fa] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
-                  </button>
-                  <button type="button" data-set-rmode="Deep Research" class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg hover:bg-[#333537] text-left">
-                    <div>
-                      <div class="text-xs font-medium text-[#e3e3e3]">Deep Research</div>
-                      <div class="text-[10px] text-[#8e918f]">多轮深度挖掘与结构化综述</div>
-                    </div>
-                    <svg class="rmode-check hidden w-3.5 h-3.5 text-[#a8c7fa] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <button id="btnRunSourceSearch" class="m3-btn w-7 h-7 rounded-full hover:bg-[#333537] flex items-center justify-center text-[#c4c7c5]" title="搜索来源">
-              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-            </button>
-          </div>
-        </div>
-
         <div class="flex items-center justify-between px-1 pt-1">
           <button id="btnFilterSources" class="m3-btn text-[#8e918f] hover:text-[#e3e3e3] p-1 rounded" title="筛选来源">
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="6" x2="20" y2="6"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="10" y1="18" x2="14" y2="18"/></svg>
@@ -627,12 +565,6 @@
               <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
 
-            <button data-studio-open="video" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
-              <div class="flex items-center gap-2.5 min-w-0">
-                <svg class="w-4 h-4 text-[#3fdda0] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-                <span class="text-xs font-medium text-[#e3e3e3] truncate">视频概览</span>
-              </div>
-              <svg class="tile-chevron w-3.5 h-3.5 text-[#c4c7c5] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
 
             <button data-studio-open="mindmap" class="studio-tile p-3 flex items-center justify-between gap-2 text-left">
@@ -867,6 +799,7 @@
           <div class="space-y-1.5">
             <label class="block text-xs text-[#c4c7c5]">API Key (仅保存在本地加密存储)</label>
             <input id="protoApiKey" type="password" placeholder="sk-••••••••••••••••" class="w-full h-9 px-3 rounded-xl bg-[#131314] border border-[#3c4043] text-xs text-[#e3e3e3] focus:outline-none focus:border-[#a8c7fa]" />
+            <label class="flex items-start gap-2 text-xs text-[#c4c7c5]"><input id="allowInsecureHttp" type="checkbox" class="mt-0.5" /><span>确认允许非回环 HTTP 明文传输（仅用于可信本地网络）</span></label>
           </div>
           <div class="space-y-1.5">
             <label class="block text-xs text-[#c4c7c5]">推理 / Thinking 模式</label>
@@ -900,32 +833,13 @@
       <div class="px-6 pt-5 pb-3 flex items-center justify-between">
         <div class="flex items-center gap-2.5">
           <svg class="w-5 h-5 text-[#a8c7fa]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-          <h3 class="text-base font-medium text-[#e3e3e3]">从您的所有来源生成音频和视频概览</h3>
+          <h3 class="text-base font-medium text-[#e3e3e3]">添加来源到笔记本</h3>
         </div>
         <button data-close-modal="addSourceModal" class="m3-btn w-8 h-8 rounded-full bg-[#2b2d30] hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5]">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
       </div>
       <div class="px-6 pb-6 space-y-4 overflow-y-auto">
-        <div class="rounded-2xl bg-[#191a1c] border border-[#3c4043] p-3.5 space-y-2.5">
-          <input id="modalSourceSearch" type="text" placeholder="在网络中搜索新来源" class="w-full bg-transparent text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none" />
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <span class="px-2.5 py-1 rounded-full bg-[#282a2c] text-[11px] text-[#c4c7c5] inline-flex items-center gap-1.5">
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
-                <span>Web</span>
-              </span>
-              <span class="px-2.5 py-1 rounded-full bg-[#282a2c] text-[11px] text-[#c4c7c5] inline-flex items-center gap-1.5">
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                <span>Fast Research</span>
-              </span>
-            </div>
-            <button id="btnModalSearchSource" class="m3-btn w-7 h-7 rounded-full bg-[#282a2c] hover:bg-[#3c4043] flex items-center justify-center text-[#e3e3e3]">
-              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-            </button>
-          </div>
-        </div>
-
         <div class="rounded-2xl border border-dashed border-[#3c4043] bg-[#1a1b1d] p-5 space-y-4 text-center">
           <p class="text-xs text-[#8e918f]">拖放本地文件，或选择下方方式添加来源</p>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
@@ -992,13 +906,33 @@
   <!-- Toast -->
   <div id="toastBanner" class="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 hidden px-4 py-2 rounded-full bg-[#282a2c] border border-[#a8c7fa]/40 text-xs text-[#e3e3e3] shadow-lg"></div>
 
+  <script src="api.js"></script>
   <script>
+    function stripSecrets(value) {
+      if (Array.isArray(value)) return value.map(stripSecrets);
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.entries(value)
+        .filter(([key]) => !['apikey', 'api_key', 'secret', 'authorization'].includes(key.toLowerCase()))
+        .map(([key, item]) => [key, stripSecrets(item)]));
+    }
     function safeGet(key, fallback) {
-      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
-      catch (_) { return fallback; }
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return fallback;
+        const parsed = JSON.parse(raw);
+        const sanitized = stripSecrets(parsed);
+        if (key === 'lna_proto_configs' && JSON.stringify(parsed) !== JSON.stringify(sanitized)) {
+          localStorage.setItem(key, JSON.stringify(sanitized));
+        }
+        return sanitized;
+      } catch (_) { return fallback; }
     }
     function safeSet(key, val) {
-      try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) {}
+      try { localStorage.setItem(key, JSON.stringify(stripSecrets(val))); } catch (_) {}
+    }
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     // Monochrome Single-Color SVG Icon Registry
@@ -1015,7 +949,6 @@
       md: '<svg class="w-4 h-4 text-[#8ab4f8] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 15V9l2.5 3L12 9v6"/><path d="M16 9v6m-2-2l2 2 2-2"/></svg>',
       audio: '<svg class="w-4 h-4 text-[#76a0ff] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>',
       slides: '<svg class="w-4 h-4 text-[#f872b9] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
-      video: '<svg class="w-4 h-4 text-[#3fdda0] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>',
       mindmap: '<svg class="w-4 h-4 text-[#a47dff] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 11l7-4M8.5 13l7 4"/></svg>',
       report: '<svg class="w-4 h-4 text-[#f872b9] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
       flashcards: '<svg class="w-4 h-4 text-[#ecdf77] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
@@ -1036,6 +969,10 @@
       sourcesCollapsed: false,
       studioExpanded: false,
       activeProtocol: 'chat_completion',
+      liveMode: false,
+      notebookId: null,
+      profileIds: {},
+      pendingAssistantId: null,
       protocolConfigs: safeGet('lna_proto_configs', {
         chat_completion: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: '', thinking: true },
         responses: { baseUrl: 'https://api.openai.com/v1', model: 'o3-mini', apiKey: '', thinking: true },
@@ -1101,7 +1038,6 @@
       studioConfig: {
         audio: { format: 'deep', duration: 'default', lang: 'zh-CN', prompt: '' },
         slides: { format: 'detailed', duration: 'default', lang: 'zh-CN', reviewOutline: false, prompt: '' },
-        video: { format: 'brief', lang: 'zh-CN', focus: '卡尔曼滤波如何更新估算值', reviewNotes: false, prompt: '' },
         mindmap: { lang: 'zh-CN', prompt: '' },
         report: { format: 'interactive', template: 'study_guide' },
         flashcards: { count: 'standard', difficulty: 'medium', images: 'include', lang: 'zh-CN', prompt: '' },
@@ -1316,7 +1252,7 @@
         row.innerHTML = `
           <div class="flex items-center gap-2.5 min-w-0 flex-1" data-inspect-source="${src.id}">
             ${iconSvg}
-            <span class="text-xs text-[#e3e3e3] truncate" title="${src.title}">${src.title}</span>
+            <span class="text-xs text-[#e3e3e3] truncate" title="${escapeHtml(src.title)}">${escapeHtml(src.title)}</span>
           </div>
           <button type="button" data-source-more="${src.id}" class="opacity-0 group-hover:opacity-100 w-6 h-6 rounded-full hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5] shrink-0 transition-opacity" title="更多">${ICONS.more}</button>
           <input type="checkbox" ${src.checked ? 'checked' : ''} data-toggle-source="${src.id}" class="w-4 h-4 rounded accent-[#a8c7fa] cursor-pointer shrink-0" />
@@ -1364,7 +1300,7 @@
 
     function formatAssistantText(raw) {
       return raw
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;')
         .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-white">$1</strong>')
         .replace(/\[(\d+)\]/g, '<span class="citation-chip" data-cite="$1">$1</span>')
         .replace(/\n/g, '<br/>');
@@ -1378,10 +1314,10 @@
         if (msg.role === 'user') {
           const wrap = document.createElement('div');
           wrap.className = 'space-y-3';
-          if (msg.time) wrap.innerHTML += `<div class="text-center text-[11px] text-[#8e918f]">${msg.time}</div>`;
+          if (msg.time) wrap.innerHTML += `<div class="text-center text-[11px] text-[#8e918f]">${escapeHtml(msg.time)}</div>`;
           const bubble = document.createElement('div');
           bubble.className = 'flex justify-end';
-          bubble.innerHTML = `<div class="max-w-[82%] px-4 py-3 rounded-2xl bg-[#282a2c] text-sm text-[#e3e3e3] leading-relaxed">${msg.text}</div>`;
+          bubble.innerHTML = `<div class="max-w-[82%] px-4 py-3 rounded-2xl bg-[#282a2c] text-sm text-[#e3e3e3] leading-relaxed">${escapeHtml(msg.text)}</div>`;
           wrap.appendChild(bubble);
           container.appendChild(wrap);
         } else {
@@ -1402,7 +1338,7 @@
               msg.thoughts.forEach((t) => {
                 const item = document.createElement('div');
                 item.className = 'space-y-0.5';
-                item.innerHTML = `<div class="flex items-center gap-2 text-xs font-medium text-[#c4c7c5]">${t.icon}<span>${t.title}</span></div>${t.body ? `<p class="text-xs text-[#8e918f] pl-5 leading-relaxed">${t.body}</p>` : ''}`;
+                item.innerHTML = `<div class="flex items-center gap-2 text-xs font-medium text-[#c4c7c5]">${t.icon}<span>${escapeHtml(t.title)}</span></div>${t.body ? `<p class="text-xs text-[#8e918f] pl-5 leading-relaxed">${escapeHtml(t.body)}</p>` : ''}`;
                 steps.appendChild(item);
               });
               thoughtBox.appendChild(steps);
@@ -1463,8 +1399,8 @@
           <div class="flex items-center gap-3 min-w-0 flex-1">
             ${iconSvg}
             <div class="min-w-0">
-              <div class="text-xs font-medium text-[#e3e3e3] truncate">${item.title}</div>
-              <div class="text-[11px] text-[#8e918f] truncate">${item.meta}</div>
+              <div class="text-xs font-medium text-[#e3e3e3] truncate">${escapeHtml(item.title)}</div>
+              <div class="text-[11px] text-[#8e918f] truncate">${escapeHtml(item.meta)}</div>
             </div>
           </div>
           <button type="button" data-artifact-more="${item.id}" class="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-full hover:bg-[#3c4043] flex items-center justify-center text-[#c4c7c5] shrink-0 transition-opacity" title="更多">${ICONS.more}</button>
@@ -1583,25 +1519,7 @@
           <textarea data-field="prompt" rows="3" placeholder="添加一份概略提纲，或指定受众、风格和重点：“为新手用户创建一套演示文稿，采用大胆活泼的风格，注重分步说明。”" class="studio-field w-full p-3.5 rounded-xl bg-[#191a1c] border border-[#3c4043] focus:border-[#a8c7fa] text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none leading-relaxed">${cfg.prompt}</textarea></div>
           <div class="flex items-center justify-between gap-4 pt-1"><div><div class="text-xs font-medium text-[#e3e3e3]">检查幻灯片大纲</div><p class="text-[11px] text-[#8e918f] mt-0.5">在创建演示文稿之前，请先预览并修改大纲。大纲草稿将在几分钟后准备就绪并显示在 Studio 中。</p></div><button type="button" data-toggle="reviewOutline" class="toggle-switch ${cfg.reviewOutline ? 'on' : ''}"></button></div>
         `;
-      } else if (type === 'video') {
-        iconEl.innerHTML = ICONS.video;
-        titleEl.textContent = '自定义视频概览';
-        const cards = [
-          { id: 'brief', title: '简洁版', badge: '新功能!', desc: '一份简短概览，可帮助您快速掌握来源的核心思想' },
-          { id: 'explainer', title: '说明视频', desc: '一份结构清晰、内容详尽的概览，可将来源中的各个要点串联起来。' }
-        ];
-        const focuses = ['卡尔曼滤波如何更新估算值', '特征脸如何识别面部特征', '蒙特卡洛算法如何提升精度'];
-        html = `
-          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">格式</div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          ${cards.map(c => `<button type="button" data-card="format:${c.id}" class="option-card ${cfg.format === c.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><div class="flex items-center gap-2"><span class="text-xs font-medium text-[#e3e3e3]">${c.title}</span>${c.badge ? `<span class="new-badge">${c.badge}</span>` : ''}</div><span class="card-radio">${cfg.format === c.id ? ICONS.check : ''}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${c.desc}</p></button>`).join('')}
-          </div></div>
-          ${langSourceRowHTML(cfg.lang, false)}
-          <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">视频应侧重于哪些方面？</div><div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          ${focuses.map(f => `<button type="button" data-focus="${f}" class="m3-btn px-3 py-2.5 rounded-xl border text-left text-[11px] flex items-center justify-between gap-1.5 ${cfg.focus === f ? 'bg-[#2a2d34] border-[#5f6368] text-[#e3e3e3]' : 'bg-[#232528] border-[#3c4043] text-[#c4c7c5] hover:bg-[#2b2d30]'}"><span class="flex items-center gap-1.5 truncate">${ICONS.pencil}<span class="truncate">${f}</span></span>${cfg.focus === f ? `<span class="text-[#a8c7fa]">${ICONS.check}</span>` : ''}</button>`).join('')}
-          </div><div class="rounded-xl bg-[#191a1c] border border-[#3c4043] p-3 space-y-1.5"><div class="text-[11px] text-[#c4c7c5] flex items-center gap-1.5">${ICONS.pencil}<span>自定义主题</span></div><textarea data-field="prompt" rows="2" placeholder="描述您自己的主题" class="studio-field w-full bg-transparent text-xs text-[#e3e3e3] placeholder-[#8e918f] focus:outline-none resize-none">${cfg.prompt}</textarea></div></div>
-          <div class="flex items-center justify-between gap-4 pt-1"><div><div class="text-xs font-medium text-[#e3e3e3]">检查制作者备注</div><p class="text-[11px] text-[#8e918f] mt-0.5">在创建视频之前，请先预览并修改制作者备注。草稿备注将在几分钟后准备就绪并显示在 Studio 中。</p></div><button type="button" data-toggle="reviewNotes" class="toggle-switch ${cfg.reviewNotes ? 'on' : ''}"></button></div>
-        `;
-      } else if (type === 'mindmap') {
+      } else if (type === 'mindmap') {      } else if (type === 'mindmap') {
         iconEl.innerHTML = ICONS.mindmap;
         titleEl.textContent = '思维导图';
         html = `
@@ -1625,7 +1543,7 @@
           ${cards.map(c => `<button type="button" data-card="format:${c.id}" class="option-card ${cfg.format === c.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><div class="flex items-center gap-2"><span class="text-xs font-medium text-[#e3e3e3]">${c.title}</span>${c.badge ? `<span class="new-badge">${c.badge}</span>` : ''}</div><span class="card-radio">${cfg.format === c.id ? ICONS.check : ''}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${c.desc}</p></button>`).join('')}
           </div></div>
           <div class="space-y-2"><div class="text-xs text-[#c4c7c5]">模板</div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          ${templates.map(t => `<button type="button" data-card="template:${t.id}" class="option-card ${cfg.template === t.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><span class="text-xs font-medium text-[#e3e3e3]">${t.title}</span><span class="w-6 h-6 rounded-full bg-[#334475] text-[#d3e3fd] flex items-center justify-center">${ICONS.pencil}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${t.desc}</p></button>`).join('')}
+          ${templates.map(t => `<button type="button" data-card="template:${t.id}" class="option-card ${cfg.template === t.id ? 'active' : ''}"><div class="flex items-center justify-between mb-1.5"><span class="text-xs font-medium text-[#e3e3e3]">${escapeHtml(t.title)}</span><span class="w-6 h-6 rounded-full bg-[#334475] text-[#d3e3fd] flex items-center justify-center">${ICONS.pencil}</span></div><p class="text-[11px] leading-relaxed text-[#c4c7c5]/90">${t.desc}</p></button>`).join('')}
           </div></div>
         `;
       } else if (type === 'flashcards') {
@@ -1723,14 +1641,14 @@
     function openArtifactViewer(item) {
       const titleEl = document.getElementById('artifactModalTitle');
       const bodyEl = document.getElementById('artifactModalBody');
-      titleEl.innerHTML = `${ICONS[item.type] || ICONS.note}<span>${item.title}</span>`;
+      titleEl.innerHTML = `${ICONS[item.type] || ICONS.note}<span>${escapeHtml(item.title)}</span>`;
       bodyEl.innerHTML = '';
 
       if (item.type === 'quiz') {
         item.content.questions.forEach((q, idx) => {
           const qCard = document.createElement('div');
           qCard.className = 'p-4 rounded-xl bg-[#282a2c] border border-white/[0.06] space-y-2.5';
-          qCard.innerHTML = `<div class="text-xs font-medium text-[#e3e3e3]">${idx + 1}. ${q.prompt}</div>`;
+          qCard.innerHTML = `<div class="text-xs font-medium text-[#e3e3e3]">${idx + 1}. ${escapeHtml(q.prompt)}</div>`;
           const opts = document.createElement('div');
           opts.className = 'space-y-1.5';
           q.options.forEach((opt, oi) => {
@@ -1748,7 +1666,7 @@
           bodyEl.appendChild(qCard);
         });
       } else {
-        bodyEl.innerHTML = `<div class="p-4 rounded-xl bg-[#282a2c] text-xs leading-relaxed whitespace-pre-wrap text-[#e3e3e3]">${item.content?.text || ''}</div>`;
+        bodyEl.innerHTML = `<div class="p-4 rounded-xl bg-[#282a2c] text-xs leading-relaxed whitespace-pre-wrap text-[#e3e3e3]">${escapeHtml(item.content?.text || '')}</div>`;
       }
       openModal('artifactModal');
     }
@@ -1784,6 +1702,163 @@
       document.getElementById('topProtocolLabel').textContent = `${preset.name} · ${cfg.model}`;
     }
 
+    function mapCoreThought(step) {
+      return {
+        title: step.title || step.kind || '处理步骤',
+        body: step.detail || '',
+        icon: step.kind === 'retrieve' ? ICONS.doc : ICONS.spark,
+        state: step.state || 'done'
+      };
+    }
+
+    async function refreshLiveNotebook() {
+      if (!state.liveMode || !state.notebookId) return;
+      const nid = state.notebookId;
+      const [notebook, sources, history, artifacts, notes] = await Promise.all([
+        LnaApi.call('notebook.get', { notebook_id: nid }),
+        LnaApi.call('source.list', { notebook_id: nid }),
+        LnaApi.call('chat.history', { notebook_id: nid }),
+        LnaApi.call('studio.list', { notebook_id: nid }),
+        LnaApi.call('note.list', { notebook_id: nid })
+      ]);
+      state.sources = (sources.sources || []).map(src => ({
+        id: src.id, title: src.title, type: src.kind || 'txt', checked: !!src.is_selected,
+        status: src.status, excerpt: src.error_detail || (src.status === 'READY' ? '已完成索引' : '等待处理'),
+        error: src.error_detail || ''
+      }));
+      state.messages = (history.messages || []).map(msg => ({
+        id: msg.id, role: msg.role, text: msg.content || '', loading: msg.status === 'STREAMING',
+        status: msg.status, thoughtsExpanded: false, thoughts: (msg.thoughts || []).map(mapCoreThought),
+        citations: msg.citations || [], followUps: msg.followups || []
+      }));
+      state.studioItems = (artifacts.artifacts || []).map(item => ({
+        id: item.id, type: item.artifact_type, title: item.title,
+        meta: [item.status, item.stage, `${Math.round(item.progress || 0)}%`].filter(Boolean).join(' · '),
+        content: item.payload || item.draft || { text: item.error_detail || '' },
+        status: item.status, artifact: item
+      })).concat((notes.notes || []).map(note => ({
+        id: note.id, type: 'note', title: note.title, meta: `笔记 · ${note.origin}`,
+        content: { text: note.body_md }, note
+      })));
+      const title = notebook.title || 'Untitled Notebook';
+      document.getElementById('notebookTitleInput').value = title;
+      document.getElementById('heroNotebookTitle').textContent = title;
+      const summary = document.getElementById('notebookSummaryText');
+      if (summary) summary.textContent = notebook.summary_md || '请添加来源以生成笔记本摘要。';
+      renderSources();
+      renderMessages();
+      renderStudioItems();
+    }
+
+    function handleCoreEvent(ev) {
+      if (!state.liveMode || !ev || !ev.topic) return;
+      if (ev.topic === `sources:${state.notebookId}` && ev.event === 'source.status') {
+        refreshLiveNotebook().catch(err => showToast(`刷新来源失败：${err.message || err}`));
+        return;
+      }
+      if (ev.topic === `studio:${state.notebookId}` && ev.event === 'studio.status') {
+        refreshLiveNotebook().catch(err => showToast(`刷新 Studio 失败：${err.message || err}`));
+        return;
+      }
+      if (ev.topic === `notebook:${state.notebookId}` && ev.event === 'notebook.summary_updated') {
+        const summary = document.getElementById('notebookSummaryText');
+        if (summary) summary.textContent = ev.data.summary || '';
+        return;
+      }
+      if (ev.topic !== `chat:${state.notebookId}`) return;
+      const data = ev.data || {};
+      let target = state.messages.find(m => m.id === state.pendingAssistantId) || [...state.messages].reverse().find(m => m.role === 'assistant' && (m.loading || m.status === 'COMPLETE'));
+      if (ev.event === 'chat.started') {
+        if (target && data.message_id) { target.id = data.message_id; state.pendingAssistantId = data.message_id; }
+      } else if (ev.event === 'chat.thought_step') {
+        if (target) target.thoughts.push(mapCoreThought(data));
+      } else if (ev.event === 'chat.thought_delta') {
+        if (target) {
+          let thought = target.thoughts.find(t => t.kind === 'stream');
+          if (!thought) { thought = { kind: 'stream', title: '模型思考摘要', body: '', icon: ICONS.spark }; target.thoughts.push(thought); }
+          thought.body += data.text || '';
+        }
+      } else if (ev.event === 'chat.text_delta') {
+        if (target) { target.loading = false; target.text += data.text || ''; }
+      } else if (ev.event === 'chat.followups') {
+        if (target) target.followUps = data.questions || data.followups || [];
+      } else if (ev.event === 'chat.finished') {
+        if (target) {
+          target.loading = false;
+          target.status = data.status || 'COMPLETE';
+          if (data.error && !target.text) target.text = data.error.message || data.error.code || '生成失败';
+        }
+      }
+      if (target) {
+        renderMessages();
+        const area = document.getElementById('chatScrollArea');
+        area.scrollTop = area.scrollHeight;
+      }
+    }
+
+    async function initializeCoreBridge() {
+      if (!window.LnaApi || !LnaApi.isLive()) return;
+      try {
+        if (!(await LnaApi.connect())) throw new Error('无法连接 DevTools WebSocket');
+        state.liveMode = true;
+        LnaApi.onEvent(handleCoreEvent);
+        const result = await LnaApi.call('notebook.list', {});
+        let notebook = (result.notebooks || [])[0];
+        if (!notebook) notebook = await LnaApi.call('notebook.create', { title: '新建笔记本' });
+        state.notebookId = notebook.id;
+        const profiles = await LnaApi.call('profile.list', {});
+        for (const profile of profiles.profiles || []) {
+          state.profileIds[profile.protocol] = profile.id;
+          const cfg = state.protocolConfigs[profile.protocol];
+          if (cfg) {
+            cfg.baseUrl = profile.base_url;
+            cfg.model = profile.model_id;
+            cfg.thinking = !!profile.show_thinking;
+          }
+          if (profile.is_active) state.activeProtocol = profile.protocol;
+        }
+        await refreshLiveNotebook();
+        updateTopProtocolBadge();
+        showToast('已连接真实 Core');
+      } catch (err) {
+        state.liveMode = false;
+        showToast(`真实 Core 连接失败：${err.message || err}`);
+      }
+    }
+
+    async function saveLiveProfile() {
+      const protocol = state.editingProtocol;
+      const cfg = state.protocolConfigs[protocol];
+      const preset = PROTOCOL_PRESETS[protocol];
+      const profile = await LnaApi.call('profile.upsert', {
+        id: state.profileIds[protocol] || null,
+        display_name: preset.name,
+        protocol,
+        base_url: cfg.baseUrl,
+        model_id: cfg.model,
+        show_thinking: !!cfg.thinking,
+        effort: cfg.thinking ? 'medium' : null,
+        context_window: 32768,
+        max_output_tokens: 8192,
+        extra_headers: {},
+        input_price_per_m: null,
+        output_price_per_m: null,
+        capabilities: null,
+        activate: true,
+        allow_insecure_http: document.getElementById('allowInsecureHttp').checked
+      });
+      state.profileIds[protocol] = profile.id;
+      const keyRef = profile.keychain_ref || `profile_${profile.id}`;
+      if (cfg.apiKey) await LnaApi.call('secret.set', { keychain_ref: keyRef, secret: cfg.apiKey });
+      state.activeProtocol = protocol;
+      cfg.apiKey = '';
+      document.getElementById('protoApiKey').value = '';
+      safeSet('lna_proto_configs', state.protocolConfigs);
+      updateTopProtocolBadge();
+      closeModal('protocolModal');
+      showToast(`已保存并激活 ${preset.name}`);
+    }
+
     function sendPromptToChat(text) {
       const selected = state.sources.filter(s => s.checked);
       state.messages.push({ id: 'u-' + Date.now(), role: 'user', text });
@@ -1800,6 +1875,29 @@
       renderMessages();
       const scrollArea = document.getElementById('chatScrollArea');
       scrollArea.scrollTop = scrollArea.scrollHeight;
+
+      if (state.liveMode && state.notebookId) {
+        state.pendingAssistantId = assistantId;
+        LnaApi.call('chat.send', { notebook_id: state.notebookId, text })
+          .then(msg => {
+            const target = state.messages.find(m => m.id === assistantId || m.id === state.pendingAssistantId);
+            if (!target) return;
+            target.id = msg.id || target.id;
+            target.loading = false;
+            target.status = msg.status;
+            target.text = msg.content || target.text;
+            target.thoughts = (msg.thoughts || target.thoughts).map(mapCoreThought);
+            target.followUps = msg.followups || target.followUps || [];
+            renderMessages();
+            scrollArea.scrollTop = scrollArea.scrollHeight;
+          })
+          .catch(err => {
+            const target = state.messages.find(m => m.id === assistantId || m.id === state.pendingAssistantId);
+            if (target) { target.loading = false; target.status = 'FAILED'; target.text = err.message || err.code || String(err); renderMessages(); }
+          })
+          .finally(() => { state.pendingAssistantId = null; });
+        return;
+      }
 
       setTimeout(() => {
         const target = state.messages.find(m => m.id === assistantId);
@@ -1822,7 +1920,7 @@
       sendPromptToChat(text);
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
       renderSources();
       renderMessages();
       renderStudioItems();
@@ -1830,12 +1928,6 @@
 
       // Global click-outside closer for all popup menus
       document.addEventListener('click', (e) => {
-        if (!e.target.closest('#btnSearchScope') && !e.target.closest('#menuSearchScope')) {
-          document.getElementById('menuSearchScope').classList.add('hidden');
-        }
-        if (!e.target.closest('#btnResearchMode') && !e.target.closest('#menuResearchMode')) {
-          document.getElementById('menuResearchMode').classList.add('hidden');
-        }
         if (!e.target.closest('#contextPopupMenu') && !e.target.closest('[data-source-more]') && !e.target.closest('[data-artifact-more]')) {
           document.getElementById('contextPopupMenu').classList.add('hidden');
         }
@@ -1856,33 +1948,6 @@
       });
       jumpBtn.addEventListener('click', () => {
         chatScroll.scrollTo({ top: chatScroll.scrollHeight, behavior: 'smooth' });
-      });
-
-      // Dropdowns: Search Scope & Research Mode
-      document.getElementById('btnSearchScope').addEventListener('click', () => {
-        document.getElementById('menuResearchMode').classList.add('hidden');
-        document.getElementById('menuSearchScope').classList.toggle('hidden');
-      });
-      document.querySelectorAll('[data-set-scope]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const val = btn.dataset.setScope;
-          document.getElementById('searchScopeLabel').textContent = val === 'Local' ? '本地库' : 'Web';
-          document.querySelectorAll('[data-set-scope]').forEach(b => b.querySelector('.scope-check').classList.toggle('hidden', b !== btn));
-          document.getElementById('menuSearchScope').classList.add('hidden');
-        });
-      });
-
-      document.getElementById('btnResearchMode').addEventListener('click', () => {
-        document.getElementById('menuSearchScope').classList.add('hidden');
-        document.getElementById('menuResearchMode').classList.toggle('hidden');
-      });
-      document.querySelectorAll('[data-set-rmode]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const val = btn.dataset.setRmode;
-          document.getElementById('researchModeLabel').textContent = val;
-          document.querySelectorAll('[data-set-rmode]').forEach(b => b.querySelector('.rmode-check').classList.toggle('hidden', b !== btn));
-          document.getElementById('menuResearchMode').classList.add('hidden');
-        });
       });
 
       document.querySelectorAll('[data-close-modal]').forEach(btn => {
@@ -1958,8 +2023,6 @@
         if (toggleBtn) { const key = toggleBtn.dataset.toggle; cfg[key] = !cfg[key]; openStudioModal(state.currentStudioType); return; }
         const qtypeBtn = e.target.closest('[data-qtype]');
         if (qtypeBtn) { const t = qtypeBtn.dataset.qtype; if (cfg.types.has(t) && cfg.types.size > 1) cfg.types.delete(t); else cfg.types.add(t); openStudioModal('quiz'); return; }
-        const focusBtn = e.target.closest('[data-focus]');
-        if (focusBtn) { cfg.focus = focusBtn.dataset.focus; openStudioModal('video'); return; }
         const styleThumb = e.target.closest('[data-style]');
         if (styleThumb) { cfg.style = styleThumb.dataset.style; openStudioModal('infographic'); return; }
         const chipBtn = e.target.closest('[data-chip]');
@@ -1982,7 +2045,6 @@
         const titles = {
           audio: '线性代数音频概览',
           slides: cfg.reviewOutline ? '幻灯片大纲草稿' : '线性代数演示文稿',
-          video: cfg.reviewNotes ? '视频制作者备注草稿' : '线性代数视频概览',
           mindmap: '线性代数思维导图',
           report: cfg.format === 'interactive' ? '互动式学习报告' : '线性代数结构化报告',
           flashcards: '线性代数抽认卡',
@@ -2033,7 +2095,7 @@
         const idx = parseInt(chip.dataset.cite, 10) - 1;
         const src = state.sources[idx] || state.sources[0];
         if (!src) return;
-        document.getElementById('citeCardHeader').innerHTML = `${src.type === 'pdf' ? ICONS.pdf : ICONS.md}<span class="truncate">${src.title}</span>`;
+        document.getElementById('citeCardHeader').innerHTML = `${src.type === 'pdf' ? ICONS.pdf : ICONS.md}<span class="truncate">${escapeHtml(src.title)}</span>`;
         document.getElementById('citeCardExcerpt').textContent = src.excerpt;
         const rect = chip.getBoundingClientRect();
         hoverCard.style.left = `${Math.min(window.innerWidth - 336, Math.max(12, rect.left - 80))}px`;
@@ -2048,9 +2110,13 @@
         if (saveBtn) {
           const msg = state.messages.find(m => m.id === saveBtn.dataset.saveMsg);
           if (msg) {
-            state.studioItems.unshift({ id: 'note-' + Date.now(), type: 'note', title: '对话摘录笔记', meta: '刚刚 · 已保存', content: { text: msg.text } });
-            renderStudioItems();
-            showToast('已将该回答保存到 Studio 笔记');
+            if (state.liveMode) {
+              LnaApi.call('note.from_message', { message_id: msg.id }).then(refreshLiveNotebook).then(() => showToast('已将该回答保存为笔记')).catch(err => showToast(err.message || String(err)));
+            } else {
+              state.studioItems.unshift({ id: 'note-' + Date.now(), type: 'note', title: '对话摘录笔记', meta: '刚刚 · 已保存', content: { text: msg.text } });
+              renderStudioItems();
+              showToast('已将该回答保存到 Studio 笔记');
+            }
           }
           return;
         }
@@ -2089,6 +2155,7 @@
         if (!id) return;
         const src = state.sources.find(s => s.id === id);
         if (src) src.checked = e.target.checked;
+        if (state.liveMode && src) LnaApi.call('source.set_selected', { source_id: id, selected: !!e.target.checked }).catch(err => showToast(err.message || String(err)));
         renderSources();
       });
       document.getElementById('sourcesList').addEventListener('click', (e) => {
@@ -2100,9 +2167,10 @@
           openContextMenu(moreBtn, [
             { label: '查看索引摘要', icon: ICONS.doc, onClick: () => openArtifactViewer({ type: 'note', title: src.title, content: { text: src.excerpt } }) },
             { label: '移除来源', icon: '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>', danger: true, onClick: () => {
+              if (state.liveMode) LnaApi.call('source.remove', { source_id: src.id }).then(refreshLiveNotebook).catch(err => showToast(err.message || String(err)));
               state.sources = state.sources.filter(s => s.id !== src.id);
               renderSources();
-              showToast(`已移除：${src.title}`);
+              showToast(`已移除：${escapeHtml(src.title)}`);
             }}
           ]);
           return;
@@ -2126,19 +2194,43 @@
         document.getElementById('newSourceTitle').value = file.name;
         const ext = file.name.split('.').pop().toLowerCase();
         if (['md', 'pdf', 'txt'].includes(ext)) document.getElementById('newSourceType').value = ext;
+        if (['md', 'txt'].includes(ext)) { const reader = new FileReader(); reader.onload = () => { document.getElementById('newSourceContent').value = String(reader.result || ''); }; reader.readAsText(file); }
+        else if (ext === 'pdf' && state.liveMode) showToast('浏览器联调页无法读取本地 PDF 路径，请使用 Windows 客户端导入 PDF。');
       });
-      document.getElementById('btnConfirmAddSource').addEventListener('click', () => {
+      document.getElementById('btnConfirmAddSource').addEventListener('click', async () => {
         const title = document.getElementById('newSourceTitle').value.trim();
         if (!title) { showToast('请输入来源文件名'); return; }
         const type = document.getElementById('newSourceType').value;
-        const content = document.getElementById('newSourceContent').value.trim() || '已导入本地文档，等待向量化分块。';
-        state.sources.push({ id: 'src-' + Date.now(), title, type, checked: true, excerpt: content });
+        const content = document.getElementById('newSourceContent').value.trim();
+        if (state.liveMode) {
+          if (!content) { showToast('请粘贴文本或选择 Markdown/TXT 文件内容；PDF 请使用 Windows 客户端导入。'); return; }
+          try {
+            await LnaApi.call('source.add_text', { notebook_id: state.notebookId, title, text: content });
+            document.getElementById('newSourceTitle').value = '';
+            document.getElementById('newSourceContent').value = '';
+            document.getElementById('newSourceFilePicker').value = '';
+            closeModal('addSourceModal');
+            await refreshLiveNotebook();
+            showToast(`已添加来源：${title}`);
+          } catch (err) { showToast(`添加来源失败：${err.message || err}`); }
+          return;
+        }
+        state.sources.push({ id: 'src-' + Date.now(), title, type, checked: true, excerpt: content || '已导入本地文档，等待向量化分块。' });
         document.getElementById('newSourceTitle').value = '';
         document.getElementById('newSourceContent').value = '';
         closeModal('addSourceModal');
         renderSources();
         showToast(`已添加来源：${title}`);
       });
+      document.getElementById('btnAddWebUrl').addEventListener('click', async () => {
+        const url = window.prompt('输入要导入的网站 URL');
+        if (!url) return;
+        if (!state.liveMode) { showToast('网站导入需要连接真实 Core'); return; }
+        try { await LnaApi.call('source.add_url', { notebook_id: state.notebookId, url }); await refreshLiveNotebook(); showToast('已提交网站导入任务'); }
+        catch (err) { showToast(`网站导入失败：${err.message || err}`); }
+      });
+      document.getElementById('btnAddLocalFolder').addEventListener('click', () => showToast('请使用 Windows 客户端的文件选择器导入本地目录或文件。'));
+      document.getElementById('btnAddPasteMode').addEventListener('click', () => document.getElementById('newSourceContent').focus());
 
       document.getElementById('btnSaveSummaryToNote').addEventListener('click', () => {
         state.studioItems.unshift({ id: 'note-' + Date.now(), type: 'note', title: 'Linear Algebra 来源摘要', meta: '刚刚 · 已保存', content: { text: '矩阵计算核心理论：差分矩阵、邻接矩阵、高斯消元、SVD 与 PCA 应用概览。' } });
@@ -2148,15 +2240,6 @@
       document.getElementById('btnCopySummary').addEventListener('click', () => {
         try { if (navigator.clipboard) navigator.clipboard.writeText('Linear Algebra 摘要'); } catch (_) {}
         showToast('已复制摘要内容');
-      });
-
-      document.getElementById('btnRunSourceSearch').addEventListener('click', () => {
-        const q = document.getElementById('sourceSearchInput').value.trim();
-        if (!q) { showToast('请输入检索关键词'); return; }
-        state.sources.push({ id: 'src-' + Date.now(), title: `${q} - 检索来源.md`, type: 'md', checked: true, excerpt: `通过 ${document.getElementById('searchScopeLabel').textContent} (${document.getElementById('researchModeLabel').textContent}) 检索到的关于“${q}”的资料摘要。` });
-        document.getElementById('sourceSearchInput').value = '';
-        renderSources();
-        showToast('已将检索结果加入来源列表');
       });
 
       document.getElementById('btnSendChat').addEventListener('click', handleSendChat);
@@ -2180,7 +2263,8 @@
           updateProtocolModalUI();
         });
       });
-      document.getElementById('btnSaveProtocol').addEventListener('click', () => {
+      document.getElementById('btnSaveProtocol').addEventListener('click', async () => {
+        if (state.liveMode) { try { await saveLiveProfile(); return; } catch (err) { showToast(`保存模型配置失败：${err.message || err}`); return; } }
         state.activeProtocol = state.editingProtocol;
         safeSet('lna_proto_configs', state.protocolConfigs);
         updateTopProtocolBadge();
@@ -2190,8 +2274,8 @@
 
       document.getElementById('btnNewNotebook').addEventListener('click', () => showToast('Demo 模式：当前工作区为 Linear Algebra'));
       document.getElementById('btnShare').addEventListener('click', () => showToast('本地笔记本支持导出为 .lna / Markdown 包'));
+      await initializeCoreBridge();
     });
   </script>
-  <script src="api.js"></script>
 </body>
 </html>

@@ -234,6 +234,16 @@ pub fn parse_html(html: &str) -> ParsedDoc {
     if let Ok(sel) = Selector::parse("h1,h2,h3,h4,p,li,pre") {
         for el in doc.select(&sel) {
             let tag = el.value().name();
+            if tag == "p"
+                && el.ancestors().skip(1).any(|a| {
+                    a.value()
+                        .as_element()
+                        .map(|e| e.name() == "li")
+                        .unwrap_or(false)
+                })
+            {
+                continue;
+            }
             let text = el.text().collect::<Vec<_>>().join(" ").trim().to_string();
             if text.is_empty() {
                 continue;
