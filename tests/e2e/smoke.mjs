@@ -137,6 +137,6 @@ ws.onopen = async () => {
 
   console.log(`\nSUMMARY ${results.filter((r) => r.ok).length}/${results.length} passed`);
   ws.close();
-  process.exit(0);
+  process.exit(results.every((r) => r.ok) ? 0 : 1);
 };
 ws.onerror = (e) => { console.log('WS error', e.message); process.exit(1); };

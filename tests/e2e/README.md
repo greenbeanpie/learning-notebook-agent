@@ -28,6 +28,6 @@ pwsh tests/e2e/run-smoke.ps1 -Pdf   # 额外检查 PDF 导入
 
 | 检查 | 当前结果 | 缺陷 |
 | :--- | :--- | :--- |
-| PDF 导入（`-Pdf`） | 无 PDFium 时 1 秒内 `FAILED/CAPABILITY_MISSING`；附带 PDFium 后应为 `READY` | B-06 |
+| PDF 导入（`-Pdf`） | 已通过：脚本自动获取 PDFium 到 `target/debug`，来源进入 `READY` 且 `page_count=1`；不再是预期失败项 | B-06（已关闭） |
 
 修复对应缺陷后，这些检查应转为通过，并保持为回归测试。通过项数量不得低于上一版（见计划 1.4 节）。

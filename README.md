@@ -18,17 +18,18 @@
    cargo clippy --workspace --all-targets -- -D warnings
    cargo test --workspace
    ```
-2. **运行端到端冒烟测试**（需 Python 3.10+ 与 Node 22+）：
+2. **运行端到端冒烟测试**（需 Python 3.10+ 与 Node 22+；`-Pdf` 会自动获取固定版本的 PDFium 并校验 SHA-256）：
    ```powershell
-   pwsh tests/e2e/run-smoke.ps1
+   pwsh tests/e2e/run-smoke.ps1 -Pdf
    ```
+   PDF 导入依赖 PDFium 动态库（不入库）。运行 PDF 相关单测前执行 `pwsh scripts/fetch-pdfium.ps1 -Dest target/debug`；设置 `LNA_REQUIRE_PDFIUM=1` 可让缺库的单测失败而不是跳过。
 3. **启动联调页**：
    ```bash
    cargo run -p lna-devtools -- serve
    ```
    使用终端输出的带 `token` URL 打开 `frontend-demo/index.html` 即可联调。
-4. **构建 Windows 客户端**（需 .NET 10 SDK 与 Windows App SDK，AOT 发布需将 `vswhere.exe` 加入 PATH）：
+4. **构建可运行的 Windows 客户端**（需 .NET 10 SDK 与 Windows App SDK）。一条命令完成：核心库、NativeAOT 客户端、`lna_ffi.dll`、PDFium、`configure-model.ps1`，输出到 `dist/LocalNotebook-test`：
    ```powershell
-   dotnet build apps/windows/LocalNotebook/LocalNotebook.csproj -p:Platform=x64
-   dotnet publish apps/windows/LocalNotebook/LocalNotebook.csproj -c Release -r win-x64
+   pwsh scripts/package-windows-client.ps1
    ```
+   运行 `dist/LocalNotebook-test/LocalNotebook.exe`，在“模型协议配置”里填写协议、地址、模型和 API Key（Key 保存在 Windows 凭据管理器）。

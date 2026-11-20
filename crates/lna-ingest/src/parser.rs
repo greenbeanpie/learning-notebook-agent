@@ -281,24 +281,65 @@ pub fn parse_html(html: &str) -> ParsedDoc {
     }
 }
 
-pub fn parse_pdf(path: &Path) -> LnaResult<ParsedDoc> {
+/// Directories searched for the PDFium library, in order: `LNA_PDFIUM_DIR`, the executable's
+/// directory, the current directory.
+fn pdfium_search_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(d) = std::env::var_os("LNA_PDFIUM_DIR") {
+        dirs.push(std::path::PathBuf::from(d));
+    }
+    if let Some(d) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        dirs.push(d);
+    }
+    dirs.push(std::path::PathBuf::from("./"));
+    dirs
+}
+
+/// Loads PDFium from the first directory that has it, optionally falling back to the system
+/// library. A missing library is `CAPABILITY_MISSING` with a one-line, actionable message.
+fn bind_pdfium(
+    dirs: &[std::path::PathBuf],
+    allow_system: bool,
+) -> LnaResult<Box<dyn pdfium_render::prelude::PdfiumLibraryBindings>> {
     use pdfium_render::prelude::*;
 
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-    let bindings = exe_dir
-        .as_deref()
-        .ok_or(pdfium_render::prelude::PdfiumError::PdfiumLibraryInternalError(
-            pdfium_render::prelude::PdfiumInternalError::Unknown
-        ))
-        .and_then(|d| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(d)))
-        .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")))
-        .or_else(|_| Pdfium::bind_to_system_library())
-        .map_err(|e| LnaError::new(
-            ErrorCode::CapabilityMissing,
-            format!("PDFium library not found (place pdfium.dll / libpdfium.so next to binary): {e}"),
-        ))?;
+    let mut last_err = None;
+    for d in dirs {
+        match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(d)) {
+            Ok(b) => return Ok(b),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if allow_system {
+        match Pdfium::bind_to_system_library() {
+            Ok(b) => return Ok(b),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    // The loader error is a multi-line Debug dump; keep it in the log and
+    // give the user a one-line, actionable message.
+    tracing::warn!(error = ?last_err, "PDFium library could not be loaded");
+    Err(LnaError::new(
+        ErrorCode::CapabilityMissing,
+        "PDFium library not found: place pdfium.dll (libpdfium.so on Linux) next to the application",
+    ))
+}
+
+pub fn parse_pdf(path: &Path) -> LnaResult<ParsedDoc> {
+    parse_pdf_with(path, &pdfium_search_dirs(), true)
+}
+
+fn parse_pdf_with(
+    path: &Path,
+    lib_dirs: &[std::path::PathBuf],
+    allow_system_lib: bool,
+) -> LnaResult<ParsedDoc> {
+    use pdfium_render::prelude::*;
+
+    let bindings = bind_pdfium(lib_dirs, allow_system_lib)?;
     let pdfium = Pdfium::new(bindings);
     let doc = pdfium.load_pdf_from_file(path, None).map_err(|e| {
         let msg = e.to_string();
@@ -426,5 +467,89 @@ mod tests {
     fn missing_pdf_returns_err_without_panic() {
         let res = parse_pdf(Path::new("/nonexistent_lna_test.pdf"));
         assert!(res.is_err());
+    }
+
+    /// B-06: without the PDFium library the failure must be `CAPABILITY_MISSING`
+    /// with a single-line message (the UI shows it inline).
+    #[test]
+    fn missing_pdfium_library_is_capability_missing() {
+        let nowhere = std::env::temp_dir().join("lna_no_pdfium_here");
+        let err = match bind_pdfium(&[nowhere], false) {
+            Ok(_) => panic!("binding must fail when no library exists"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, ErrorCode::CapabilityMissing);
+        assert!(!err.message.contains('\n'), "message: {}", err.message);
+        assert!(err.message.contains("pdfium"), "message: {}", err.message);
+    }
+
+    fn minimal_pdf(text: &str) -> Vec<u8> {
+        let stream = format!("BT /F1 18 Tf 20 100 Td ({text}) Tj ET");
+        let objs = [
+            "<</Type/Catalog/Pages 2 0 R>>".to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 144]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>".to_string(),
+            format!("<</Length {}>>\nstream\n{stream}\nendstream", stream.len()),
+            "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_string(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes(),
+        );
+        for off in offsets {
+            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<</Size {}/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// B-06: with PDFium available a text PDF parses into page-numbered blocks.
+    /// Needs `pwsh scripts/fetch-pdfium.ps1 -Dest target/debug`; set `LNA_REQUIRE_PDFIUM=1`
+    /// (CI does) to turn a missing library into a failure instead of a skip.
+    #[test]
+    fn parses_text_pdf_into_page_numbered_blocks() {
+        let lib_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug");
+        if !lib_dir.join("pdfium.dll").exists() && !lib_dir.join("libpdfium.so").exists() {
+            assert!(
+                std::env::var_os("LNA_REQUIRE_PDFIUM").is_none(),
+                "LNA_REQUIRE_PDFIUM is set but no PDFium library was found in {}",
+                lib_dir.display()
+            );
+            eprintln!(
+                "skipped: PDFium library not present in {}",
+                lib_dir.display()
+            );
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("lna_pdf_test_{}.pdf", std::process::id()));
+        std::fs::write(
+            &path,
+            minimal_pdf("A basis spans the vector space and is independent."),
+        )
+        .unwrap();
+        let doc = parse_pdf_with(&path, &[lib_dir], false).expect("PDF should parse");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(doc.page_count, Some(1));
+        assert_eq!(doc.blocks.len(), 1);
+        assert_eq!(doc.blocks[0].page, Some(1));
+        assert!(
+            doc.blocks[0].text.contains("basis spans the vector space"),
+            "text: {}",
+            doc.blocks[0].text
+        );
+        assert_eq!(doc.language.as_deref(), Some("en"));
     }
 }

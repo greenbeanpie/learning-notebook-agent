@@ -23,11 +23,18 @@ try {
     }
     if (-not $url) { throw "Dev server did not start; see $work/serve.err" }
     node "$here/smoke.mjs" $url 18555
+    $failed = $LASTEXITCODE -ne 0
     if ($Pdf) {
+        $pdfDll = Join-Path $root 'target/debug/pdfium.dll'
+        if (-not (Test-Path $pdfDll)) {
+            & (Join-Path $root 'scripts/fetch-pdfium.ps1') -Dest (Join-Path $root 'target/debug')
+        }
         python -I "$here/make_pdf.py" "$work/t.pdf"
         node "$here/pdf.mjs" $url "$work/t.pdf"
+        if ($LASTEXITCODE -ne 0) { $failed = $true }
     }
 } finally {
     Stop-Process -Id $serve.Id, $mock.Id -ErrorAction SilentlyContinue
     Write-Host "Logs: $work"
 }
+if ($failed) { exit 1 }

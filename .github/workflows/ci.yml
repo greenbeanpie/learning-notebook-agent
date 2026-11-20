@@ -18,11 +18,16 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Build & Unit Tests
-        run: cargo test --workspace
-      - name: E2E Smoke Test
+      - name: Fetch PDFium (pinned, checksum-verified)
         shell: pwsh
-        run: pwsh tests/e2e/run-smoke.ps1
+        run: pwsh scripts/fetch-pdfium.ps1 -Dest target/debug
+      - name: Build & Unit Tests
+        env:
+          LNA_REQUIRE_PDFIUM: '1'
+        run: cargo test --workspace
+      - name: E2E Smoke Test (including PDF import)
+        shell: pwsh
+        run: pwsh tests/e2e/run-smoke.ps1 -Pdf
 
   windows-client:
     runs-on: windows-latest
@@ -31,7 +36,11 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Build & Publish WinUI 3 AOT
-        run: |
-          dotnet build apps/windows/LocalNotebook/LocalNotebook.csproj -p:Platform=x64
-          dotnet publish apps/windows/LocalNotebook/LocalNotebook.csproj -c Release -r win-x64
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Assemble the runnable client (core + NativeAOT client + PDFium)
+        shell: pwsh
+        run: pwsh scripts/package-windows-client.ps1 -Out dist/LocalNotebook
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalNotebook-win-x64
+          path: dist/LocalNotebook

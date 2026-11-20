@@ -69,7 +69,7 @@
 | Windows 客户端构建 | ❌ 缺 `app.manifest` | ✅ | ✅ | AOT 发布成功；项目代码的 IL2026/IL3050 已消除。剩余 3 条告警均来自依赖：NU1903（B-18），以及 WebView2 程序集自身的 IL2104/IL3053。AOT 发布要求 `vswhere.exe` 在 PATH 中 |
 | 自动化测试 | ❌ 0 个 | ⚠️ 1 个 | ⚠️ 8 个 | 单测覆盖 B-02、B-06、B-07、B-09（2 个）、B-21；集成测试覆盖 FFI 的 open/call/close（B-04）。`eval/`、`tests/fixtures/` 仍为空 |
 | 端到端冒烟 | ⚠️ 19/21 | ⚠️ 20/21 | ✅ 22/22 | 新增 B-14 检查；“failed generation”在 B-22 修复后通过 |
-| PDF 导入 | ❌ panic | ⚠️ 正确失败 | ⚠️ 正确失败 | 已改为先在可执行文件目录查找 PDFium；包内仍未附带 PDFium（B-06） |
+| PDF 导入 | ❌ panic | ⚠️ 正确失败 | ✅ 可用 | `scripts/fetch-pdfium.ps1` 下载固定版本并校验 SHA-256，打包脚本自动附带；文本型 PDF 进入 `READY` 且分块带页码（B-06）。加密、扫描、损坏 PDF 的错误码仍需补测（B2） |
 | CLI `call` | ❌ panic | ✅ | ✅ | — |
 | Studio 失败与取消 | ❌ 停在 `RUNNING` | ⚠️ 约 58 秒失败 | ✅ | 不可达模型时数秒内进入 `FAILED`；取消后保持 `CANCELLED` |
 | 音频概览 | ❌ 静音 WAV | ❌ 文件头错误 | ⚠️ | WAV 按 RIFF 块解析并统一重采样到 22050 Hz（B-21 关闭）；未用真实系统语音端到端生成验证；E8 其余要求见 B-08 |
@@ -88,7 +88,7 @@ v1.0 列出的 22 项设计问题中，后端相关项（#1–#6、#8–#15、#2
 | B-03 | 阻断 | ✅ | `lna-devtools/Cargo.toml` | 缺少 `serde` 依赖 | 编译通过 |
 | B-04 | 阻断 | ✅ | `lna-ffi/src/lib.rs` | `catch_unwind` 闭包未用 `AssertUnwindSafe` | 编译通过；FFI 冒烟可调用 `app.info` |
 | B-05 | 阻断 | ✅ | `apps/windows/LocalNotebook` | 缺少 `app.manifest` | `dotnet build` 与 AOT `publish` 成功 |
-| B-06 | 严重 | ⚠️ | `lna-ingest/src/parser.rs:270`、`lib.rs:189` | `Pdfium::default()` 找不到库时 panic；`spawn_blocking` 出错后来源不会被标记失败 | 随包附带 PDFium；任何解析异常都使来源进入 `FAILED` 并带错误码 |
+| B-06 | 严重 | ✅ | `lna-ingest/src/parser.rs:270`、`lib.rs:189` | `Pdfium::default()` 找不到库时 panic；`spawn_blocking` 出错后来源不会被标记失败 | 随包附带 PDFium；任何解析异常都使来源进入 `FAILED` 并带错误码。已完成：固定 `chromium/8165`，校验 SHA-256；查找顺序为 `LNA_PDFIUM_DIR`、可执行文件目录、当前目录、系统库；单测覆盖缺库与真实解析（页码、语言）；冒烟 `-Pdf` 断言 `READY` 且 `page_count=1`；真实客户端导入成功 |
 | B-07 | 严重 | ✅ | `lna-api/src/lib.rs:131`、`lna-jobs/src/lib.rs:123`、`lna-studio` | Studio 失败后产物一直显示 `RUNNING`；取消后任务被失败重试改回 `QUEUED` 并再次执行 | 冒烟“failed generation surfaces FAILED status”通过；取消后任务和产物均为 `CANCELLED` 且不再执行 |
 | B-08 | 严重 | ❌ | `lna-tts/src/lib.rs:65` | TTS 只写静音 WAV，分段未合并，双人共用一个音色 | 见 E8；另见 B-21 |
 | B-09 | 中 | ✅ | `lna-agent/src/citations.rs` | `[1,2]` 等数学写法被改成引用角标；无效编号未删除 | 冒烟“math interval”通过；单测覆盖区间、链接、无效编号 |
@@ -106,6 +106,10 @@ v1.0 列出的 22 项设计问题中，后端相关项（#1–#6、#8–#15、#2
 | B-21 | 严重 | ✅ | `lna-tts/src/lib.rs` `concat_wavs`、`synthesize` | v2 新引入。合并时固定按 44 字节截取 WAV 头，但 Windows 系统语音输出 22050 Hz、`fmt` 块 18 字节（头 46 字节），合并结果文件头错误；系统语音与 16 kHz 兜底分段混合时采样率错乱；第二主持人取本机第 2 个语音，可能是英文语音（实测为 Zira en-US） | 按 RIFF 块解析而非固定偏移；合并前统一重采样到同一格式；按文本语言选择语音，双人使用同语言的两种音色（不足两种时用语速或音高区分）；单测覆盖 44 与 46 字节两种文件头、混合采样率输入，输出可被标准 WAV 解析器读取且时长等于各段之和 |
 | B-22 | 中 | ✅ | `lna-llm/src/client.rs:65`、`lna-api/src/lib.rs:142` | v2 验收发现。模型地址不可达（连接被拒绝）时，客户端重试 3 次、任务再重试 3 轮，约 58 秒后才进入 `FAILED`，导致冒烟“failed generation”超时 | 连接被拒绝、DNS 失败、401/403/404 视为不可重试，直接失败；仅超时、429、5xx 重试；不可达地址下 Studio 15 秒内进入 `FAILED`；冒烟 21/21 |
 | B-24 | 严重 | ✅ | `Cargo.toml` 的 `keyring` 依赖 | 2026-11-20 构建测试客户端时发现。`keyring` 3.x 未开启平台特性，默认使用 mock 存储，API Key 从未写入系统凭据库；进程内靠内存缓存可用，重启后丢失，模型调用以未认证失败 | 开启 `windows-native / apple-native / linux-native`；单测（Windows）验证新的存储实例能读回已写入的 Key |
+| B-25 | 中 | ✅ | `lna-storage/src/repo.rs:392`、`lna-api` `profile.list` | 2026-11-20 用 UI 自动化测试客户端时发现。`has_secret` 恒等于“配置是否有凭据引用”，未写入任何 Key 的配置也返回 `true`，界面无法区分“已保存”和“未保存” | `profile.list` / `profile.upsert` 返回前向凭据库核实；回归测试 `crates/lna-api/tests/regressions.rs` 覆盖未写入、写入、清除三种状态 |
+| B-26 | 严重 | ✅ | `lna-api` 后台任务循环 | 同上。核心从不发出 `source.status` 事件，而客户端只在收到该事件时刷新；来源在库里已 `READY`，界面一直显示 `[QUEUED]` | 来源任务开始与结束时各发一次 `source.status`（带 `notebook_id`、`source_id`）；回归测试断言至少收到两次事件 |
+| B-27 | 严重 | ✅ | `MainWindow.xaml.cs` | 同上。客户端对所有核心调用丢弃 `error`：未配置模型时点“测验”无任何反馈；“模型协议配置”按钮为空实现，界面无法设置模型与 Key；来源无勾选框，对话提示“请勾选来源”却无处可勾；聊天文字不换行被截断；`Core.Open` 抛异常时窗口静默失效 | 底部 `InfoBar` 展示每个核心错误；实现模型设置窗口（协议、地址、模型、API Key，保存并测试、清除密钥）；来源行带勾选框与“⋯”菜单（重试导入、删除来源）；聊天与产物自动换行；笔记本下拉切换；启动失败与核心未就绪均有提示 |
+| B-28 | 低 | ✅ | `lna-ingest/src/parser.rs` | 同上。缺 PDFium 时错误详情是多行 Rust `Debug` 输出，直接显示在来源行里 | 详情改为一行可操作的说明，原始错误写入日志 |
 | B-23 | 低 | ✅ | 全工作区 | 8 条编译告警、19 条 clippy 告警 | `cargo build` 无告警；`cargo clippy --workspace --all-targets -- -D warnings` 通过（A3 的前提） |
 
 ### 1.4 代码交付要求
@@ -127,7 +131,7 @@ v2 代码包出现了“改了开头没改结尾”的编译错误，且修复�
 | ID | 已完成（截至 v2.2） | 剩余要求 |
 | :-- | :--- | :--- |
 | B-02 | 已修复转义；单测用含 `&`、`<`、`"` 的数据渲染信息图并检查转义结果 | 单测改为用 XML 解析器（如 `roxmltree`，作为 dev-dependency）解析输出 |
-| B-06 | 解析异常进入 `FAILED`；缺库时返回 `CAPABILITY_MISSING`；先在可执行文件目录查找 PDFium，再试 `./` 与系统库 | 随包附带 PDFium；冒烟 `-Pdf` 用例进入 `READY` 且分块带页码；现有单测只覆盖“文件不存在”，需补充缺库时返回 `CAPABILITY_MISSING` 的断言 |
+| B-06 | 已关闭（见 1.3 节） | 无 |
 | B-08 | 调用系统语音；按文本语言选音色，同语言不足两种时用语速区分；合并为 `overview.wav`，时长取自实际音频 | 语音合成需响应取消；E8 的“失败句可单独重试”未做；用真实系统语音端到端生成中英文双人音频并人工试听 |
 | B-10 | 第 3 轮后禁用工具强制作答；任何退出路径写入终态 | 增加单测（可用模拟模型连续返回工具调用），断言第 4 次请求不带工具、消息终态不是 `STREAMING` |
 | B-11 | `profile.upsert` 可写能力；`profile.test` 写入 `streaming/stream_usage` | `profile.test` 实际探测工具调用与 JSON Schema 支持并写入；开启后结构化输出走原生 JSON Schema（D5） |
@@ -140,7 +144,9 @@ v2 代码包出现了“改了开头没改结尾”的编译错误，且修复�
 
 v2.2 已关闭：B-01（`Cargo.lock` 随本次提交入库；README 写明 `ORT_LIB_LOCATION` 离线方案）、B-04（FFI 集成测试）、B-07（冒烟与单测）、B-09（单测覆盖链接、跨块括号、长方括号文本）、B-14（冒烟检查）、B-21（RIFF 块解析、重采样，单测覆盖 44/46 字节头与混合采样率）、B-22（连接失败与 401/403/404 不重试，冒烟数秒内 `FAILED`）、B-23。合入后又发现并关闭 B-24（API Key 未持久化）。
 
-测试客户端的发布方式：`dotnet publish ... -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true`，再把 `lna_ffi.dll` 复制到输出目录。在 G2（模型设置界面）完成前，用 `lna-devtools` 写入同一数据目录（`%LOCALAPPDATA%\LocalNotebook`）配置模型。
+UI 自动化验收（2026-11-20，cua-driver 驱动已发布的客户端）又发现并关闭 B-25～B-28。密钥持久化实测：随机生成密钥，经设置窗口保存，凭据管理器出现 `profile_<id>.LocalNotebookAgent` 条目；正常关闭后重启、强制结束进程后重启，均无需再次输入，发往模型服务的 `Authorization` 与所填随机值一致；点“清除密钥”后条目消失。
+
+测试客户端的发布方式：`dotnet publish ... -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true`，再把 `lna_ffi.dll` 复制到输出目录。模型可直接在客户端“模型协议配置”里设置（B-27）；`configure-model.ps1` 仍可用于脚本化配置。
 
 ---
 
@@ -1430,8 +1436,8 @@ WinUI 3 的实际内存占用没有可靠的公开数据，文档中的 45–65 
 
 | ID | 功能 | 状态 | 验收标准 | 里程碑 |
 | :-- | :--- | :-- | :--- | :-- |
-| G1 | 三栏主界面 | ⚠️ | 来源列表显示状态、勾选、右键菜单；消息按事件流式渲染；笔记本切换 | M4 |
-| G2 | 模型设置 | ❌ | 新增、编辑、测试、激活 profile；Key 只写不读 | M4 |
+| G1 | 三栏主界面 | ⚠️ | 来源列表显示状态、勾选、右键菜单；消息按事件流式渲染；笔记本切换。已完成：来源状态随事件刷新、勾选、“⋯”菜单（重试、删除）、笔记列表、笔记本下拉切换、错误提示栏；未完成：消息流式渲染、来源重命名与预览 | M4 |
+| G2 | 模型设置 | ⚠️ | 新增、编辑、测试、激活 profile；Key 只写不读。已完成：单个配置的保存、测试、激活与清除密钥，重启后保持；未完成：多配置列表与切换、删除配置、模型发现（`profile.discover_models`）、高级项（思考、价格、额外请求头） | M4 |
 | G3 | 引用与 Thoughts | ❌ | 角标悬浮显示原文；点击跳转来源预览；Thoughts 可折叠 | M4 |
 | G4 | Studio 表单与查看器 | ❌ | 7 种配置表单与 Demo 一致；各产物有查看器 | M4–M7 |
 | G5 | 引导与错误状态 | ❌ | 覆盖 13.3 节列出的全部状态 | M4 |
@@ -1520,5 +1526,5 @@ v2.2 代码包已合入并作为基线提交入库；B-01、B-04、B-07、B-09�
    - Windows 作业处理 `vswhere.exe` 的 PATH。
    - 视需要为 ONNX Runtime 设置 `ORT_LIB_LOCATION` 缓存（A3）。
 4. 清理联调页的视频卡片与搜索入口（H4）；归档 `docs/ARCHITECTURE.md`、`docs/PROTOCOL_ADAPTERS.md` 和 `backend-skeleton/`（A5、B-17）。
-5. 随包附带 PDFium，使冒烟 `-Pdf` 用例进入 `READY`（B-06，M1 前完成）。
+5. ~~随包附带 PDFium~~（已完成，见 B-06）。
 6. 为 1.3 节每个未关闭缺陷建立工单，标题引用缺陷 ID。
