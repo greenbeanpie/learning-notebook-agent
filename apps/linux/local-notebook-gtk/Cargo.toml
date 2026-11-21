@@ -1,0 +1,13 @@
+[package]
+name = "local-notebook-gtk"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+gtk4 = { version = "0.9", features = ["v4_12"] }
+glib = "0.20"
+lna-api = { path = "../../../crates/lna-api" }
+lna-types = { path = "../../../crates/lna-types" }
+serde_json = "1.0"
+dirs = "5.0"

@@ -1,0 +1,4 @@
+module CLnaFfi {
+    header "lna_ffi.h"
+    export *
+}

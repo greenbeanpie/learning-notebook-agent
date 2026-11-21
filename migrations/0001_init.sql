@@ -5,7 +5,7 @@
 CREATE TABLE IF NOT EXISTS notebooks (
     id                  TEXT PRIMARY KEY,
     title               TEXT NOT NULL,
-    emoji               TEXT NOT NULL DEFAULT '📚',
+    emoji               TEXT NOT NULL DEFAULT '',
     summary_md          TEXT,
     summary_fingerprint TEXT,
     suggested_questions_json TEXT,

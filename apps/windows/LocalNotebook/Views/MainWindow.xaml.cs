@@ -25,6 +25,7 @@ public sealed partial class MainWindow : Window
         App.Core.EventReceived += OnCoreEvent;
         Closed += (_, _) =>
         {
+            _activeArtifactPane?.Dispose();
             _math.Dispose();
             App.Core.Dispose();
         };

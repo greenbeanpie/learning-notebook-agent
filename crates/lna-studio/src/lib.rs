@@ -349,27 +349,29 @@ impl StudioService {
         if review_outline && art.draft.is_none() {
             self.set_stage(artifact_id, "RUNNING", "PLAN", 0.35, &topic)?;
             let plan_req = LlmRequest {
-                system: "你是内容大纲规划助手，请根据资料生成简洁的JSON大纲。".into(),
+                system: "你是演示文稿与内容大纲规划助手。请严格输出清晰、可直接阅读的 Markdown 提纲（使用 `# 标题`、`## 第 N 页：页面标题`、`- 核心要点`、`> 讲稿提示`），严禁输出 JSON 或代码块。".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
-                        "配置：{}\n资料：\n{}",
-                        art.config, evidence_txt
+                        "生成类型：{}\n配置：{}\n资料：\n{}",
+                        art.artifact_type.as_str(), art.config, evidence_txt
                     ))],
                 }],
                 tools: vec![],
                 tool_mode: ToolMode::None,
-                output: OutputMode::JsonObject,
-                max_output_tokens: 1500,
+                output: OutputMode::Text,
+                max_output_tokens: 1800,
                 reasoning: ReasoningOptions::default(),
             };
             let _permits = self.acquire_llm_slots(&profile.id).await?;
             let (draft_raw, _) = self.llm.complete_text(&resolved, &plan_req, cancel).await?;
+            let draft_md_json = serde_json::to_string(&Value::String(draft_raw.trim().to_string()))
+                .unwrap_or_else(|_| "\"\"".into());
             self.db.write(|conn| {
                 conn.execute(
                     "UPDATE studio_artifacts SET status='DRAFT_REVIEW', stage='DRAFT_REVIEW',
                      progress=0.45, draft_json=?1, updated_at=?2 WHERE id=?3",
-                    params![draft_raw, now_ms(), artifact_id],
+                    params![draft_md_json, now_ms(), artifact_id],
                 )
                 .map_err(map_sql_err)?;
                 Ok(())

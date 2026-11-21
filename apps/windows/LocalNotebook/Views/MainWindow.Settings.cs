@@ -95,7 +95,7 @@ public sealed partial class MainWindow
             keyBox.PlaceholderText = hasSecret ? "已保存，留空则保持不变" : "输入 API Key（本地模型可留空）";
             var c = Obj(prof, "capabilities");
             caps.Text = c.ValueKind == JsonValueKind.Object
-                ? $"已探测的能力：工具调用 {(Bool(c, "tools") ? "✔" : "✖")} · JSON Schema {(Bool(c, "json_schema") ? "✔" : "✖")} · JSON 模式 {(Bool(c, "json_mode") ? "✔" : "✖")} · 流式用量 {(Bool(c, "stream_usage") ? "✔" : "✖")}"
+                ? $"已探测的能力：工具调用 {(Bool(c, "tools") ? "支持" : "不支持")} · JSON Schema {(Bool(c, "json_schema") ? "支持" : "不支持")} · JSON 模式 {(Bool(c, "json_mode") ? "支持" : "不支持")} · 流式用量 {(Bool(c, "stream_usage") ? "支持" : "不支持")}"
                 : "";
             status.Text = hasSecret ? "密钥状态：已保存在 Windows 凭据管理器。" : "密钥状态：未保存。";
         }
@@ -249,7 +249,7 @@ public sealed partial class MainWindow
                 {
                     status.Text = $"{mark} 连接成功，模型回复：{Str(tr, "reply")}";
                     var c = Obj(tr, "capabilities");
-                    caps.Text = $"已探测的能力：工具调用 {(Bool(c, "tools") ? "✔" : "✖")} · JSON Schema {(Bool(c, "json_schema") ? "✔" : "✖")} · JSON 模式 {(Bool(c, "json_mode") ? "✔" : "✖")} · 流式用量 {(Bool(c, "stream_usage") ? "✔" : "✖")}";
+                    caps.Text = $"已探测的能力：工具调用 {(Bool(c, "tools") ? "支持" : "不支持")} · JSON Schema {(Bool(c, "json_schema") ? "支持" : "不支持")} · JSON 模式 {(Bool(c, "json_mode") ? "支持" : "不支持")} · 流式用量 {(Bool(c, "stream_usage") ? "支持" : "不支持")}";
                 }
                 else
                 {

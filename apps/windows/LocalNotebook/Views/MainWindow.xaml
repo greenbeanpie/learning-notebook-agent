@@ -10,9 +10,9 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="320" />
-            <ColumnDefinition Width="*" />
-            <ColumnDefinition Width="340" />
+            <ColumnDefinition x:Name="SourcesCol" Width="320" />
+            <ColumnDefinition x:Name="ChatCol" Width="*" />
+            <ColumnDefinition x:Name="StudioCol" Width="340" />
         </Grid.ColumnDefinitions>
 
         <!-- Shared offscreen host for KaTeX WebView2 formula rendering -->
@@ -37,7 +37,7 @@
                 <Button x:Name="NotebookMenuBtn" Style="{StaticResource PillButtonStyle}" AutomationProperties.Name="笔记本菜单" MinWidth="40" Width="40" Height="38" Padding="0">
                     <PathIcon Data="M6,10A2,2 0 0,0 4,12A2,2 0 0,0 6,14A2,2 0 0,0 8,12A2,2 0 0,0 6,10M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M18,10A2,2 0 0,0 16,12A2,2 0 0,0 18,14A2,2 0 0,0 20,12A2,2 0 0,0 18,10Z" />
                     <Button.Flyout>
-                        <MenuFlyout>
+                        <MenuFlyout Placement="BottomEdgeAlignedRight">
                             <MenuFlyoutItem Text="重命名笔记本" Click="OnRenameNotebookClick" />
                             <MenuFlyoutItem Text="导出为 .lna" Click="OnExportLnaClick" />
                             <MenuFlyoutItem Text="导出为 Markdown" Click="OnExportMarkdownClick" />
@@ -55,7 +55,7 @@
         </Grid>
 
         <!-- Left: sources and notes -->
-        <Border Grid.Row="1" Grid.Column="0" Background="{StaticResource PanelBgBrush}" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1" CornerRadius="16" Padding="14">
+        <Border x:Name="SourcesPaneBorder" Grid.Row="1" Grid.Column="0" Background="{StaticResource PanelBgBrush}" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1" CornerRadius="16" Padding="14">
             <Grid RowSpacing="12">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -70,7 +70,7 @@
                     </Grid.ColumnDefinitions>
                     <DropDownButton Grid.Column="0" HorizontalAlignment="Stretch" Style="{StaticResource PillDropDownButtonStyle}" Content="+ 添加来源" AutomationProperties.Name="添加来源">
                         <DropDownButton.Flyout>
-                            <MenuFlyout>
+                            <MenuFlyout Placement="BottomEdgeAlignedLeft">
                                 <MenuFlyoutItem Text="本地文件（PDF / Markdown / 文本）" Click="OnAddSourceClick" />
                                 <MenuFlyoutItem Text="网页地址" Click="OnAddUrlClick" />
                                 <MenuFlyoutItem Text="粘贴文本" Click="OnAddPasteClick" />
@@ -84,7 +84,7 @@
         </Border>
 
         <!-- Center: chat -->
-        <Border Grid.Row="1" Grid.Column="1" Background="{StaticResource PanelBgBrush}" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1" CornerRadius="16" Padding="18">
+        <Border x:Name="ChatPaneBorder" Grid.Row="1" Grid.Column="1" Background="{StaticResource PanelBgBrush}" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1" CornerRadius="16" Padding="18">
             <Grid RowSpacing="14">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -115,74 +115,78 @@
             </Grid>
         </Border>
 
-        <!-- Right: Studio -->
-        <Border Grid.Row="1" Grid.Column="2" Background="{StaticResource PanelBgBrush}" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1" CornerRadius="16" Padding="14">
-            <Grid RowSpacing="12">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-                <TextBlock Grid.Row="0" Text="Studio" FontSize="15" FontWeight="SemiBold" Foreground="#E3E3E3" Margin="2,0,0,0" />
-                <Grid Grid.Row="1" ColumnSpacing="10" RowSpacing="10">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
+        <!-- Right: Studio (Home grid OR embedded Artifact viewer) -->
+        <Border x:Name="StudioPaneBorder" Grid.Row="1" Grid.Column="2" Background="{StaticResource PanelBgBrush}" BorderBrush="{StaticResource SubtleBorderBrush}" BorderThickness="1" CornerRadius="16" Padding="14">
+            <Grid>
+                <Grid x:Name="StudioHomeView" RowSpacing="12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <Button Grid.Row="0" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="audio" Click="OnStudioTileClick">
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <PathIcon Foreground="#A8C7FA" Data="M12,14C13.66,14 15,12.66 15,11V5C15,3.34 13.66,2 12,2C10.34,2 9,3.34 9,5V11C9,12.66 10.34,14 12,14M17,11C17,13.76 14.76,16 12,16C9.24,16 7,13.76 7,11H5C5,14.53 7.61,17.43 11,17.92V21H13V17.92C16.39,17.43 19,14.53 19,11H17Z" />
-                            <TextBlock Text="音频概览" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-                    <Button Grid.Row="0" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="slides" Click="OnStudioTileClick">
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <PathIcon Foreground="#FDD663" Data="M19,3H5C3.89,3 3,3.89 3,5V19C3,20.11 3.89,21 5,21H19C20.11,21 21,20.11 21,19V5C21,3.89 20.11,3 19,3M19,19H5V5H19V19M7,10H9V17H7V10M11,7H13V17H11V7M15,13H17V17H15V13Z" />
-                            <TextBlock Text="演示文稿" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-                    <Button Grid.Row="1" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="mindmap" Click="OnStudioTileClick">
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <PathIcon Foreground="#C58AF9" Data="M12,2A3,3 0 0,1 15,5C15,6.28 14.19,7.38 13.06,7.81L14.5,10.5H16A3,3 0 0,1 19,13.5A3,3 0 0,1 16,16.5C14.68,16.5 13.56,15.66 13.16,14.5H10.84C10.44,15.66 9.32,16.5 8,16.5A3,3 0 0,1 5,13.5A3,3 0 0,1 8,10.5H9.5L10.94,7.81C9.81,7.38 9,6.28 9,5A3,3 0 0,1 12,2Z" />
-                            <TextBlock Text="思维导图" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-                    <Button Grid.Row="1" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="report" Click="OnStudioTileClick">
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <PathIcon Foreground="#81C995" Data="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M8,12H16V14H8V12M8,16H13V18H8V16Z" />
-                            <TextBlock Text="报告" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-                    <Button Grid.Row="2" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="flashcards" Click="OnStudioTileClick">
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <PathIcon Foreground="#F6AEA9" Data="M4,6H2V20A2,2 0 0,0 4,22H18V20H4V6M20,2H8A2,2 0 0,0 6,4V16A2,2 0 0,0 8,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M20,16H8V4H20V16Z" />
-                            <TextBlock Text="闪卡" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-                    <Button Grid.Row="2" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="quiz" Click="OnStudioTileClick">
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <PathIcon Foreground="#78D9EC" Data="M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M11,16.5L18,9.5L16.59,8.09L11,13.67L7.91,10.59L6.5,12L11,16.5Z" />
-                            <TextBlock Text="测验" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-                    <Button Grid.Row="3" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="infographic" Click="OnStudioTileClick">
-                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                            <PathIcon Foreground="#FCAD70" Data="M3,3V21H21V19H5V3H3M9,17H7V10H9V17M13,17H11V7H13V17M17,17H15V13H17V17Z" />
-                            <TextBlock Text="信息图" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
+                    <TextBlock Grid.Row="0" Text="Studio" FontSize="15" FontWeight="SemiBold" Foreground="#E3E3E3" Margin="2,0,0,0" />
+                    <Grid Grid.Row="1" ColumnSpacing="10" RowSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Button Grid.Row="0" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="audio" Click="OnStudioTileClick">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <PathIcon Foreground="#A8C7FA" Data="M12,14C13.66,14 15,12.66 15,11V5C15,3.34 13.66,2 12,2C10.34,2 9,3.34 9,5V11C9,12.66 10.34,14 12,14M17,11C17,13.76 14.76,16 12,16C9.24,16 7,13.76 7,11H5C5,14.53 7.61,17.43 11,17.92V21H13V17.92C16.39,17.43 19,14.53 19,11H17Z" />
+                                <TextBlock Text="音频概览" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Row="0" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="slides" Click="OnStudioTileClick">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <PathIcon Foreground="#FDD663" Data="M19,3H5C3.89,3 3,3.89 3,5V19C3,20.11 3.89,21 5,21H19C20.11,21 21,20.11 21,19V5C21,3.89 20.11,3 19,3M19,19H5V5H19V19M7,10H9V17H7V10M11,7H13V17H11V7M15,13H17V17H15V13Z" />
+                                <TextBlock Text="演示文稿" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Row="1" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="mindmap" Click="OnStudioTileClick">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <PathIcon Foreground="#C58AF9" Data="M12,2A3,3 0 0,1 15,5C15,6.28 14.19,7.38 13.06,7.81L14.5,10.5H16A3,3 0 0,1 19,13.5A3,3 0 0,1 16,16.5C14.68,16.5 13.56,15.66 13.16,14.5H10.84C10.44,15.66 9.32,16.5 8,16.5A3,3 0 0,1 5,13.5A3,3 0 0,1 8,10.5H9.5L10.94,7.81C9.81,7.38 9,6.28 9,5A3,3 0 0,1 12,2Z" />
+                                <TextBlock Text="思维导图" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Row="1" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="report" Click="OnStudioTileClick">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <PathIcon Foreground="#81C995" Data="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M8,12H16V14H8V12M8,16H13V18H8V16Z" />
+                                <TextBlock Text="报告" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Row="2" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="flashcards" Click="OnStudioTileClick">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <PathIcon Foreground="#F6AEA9" Data="M4,6H2V20A2,2 0 0,0 4,22H18V20H4V6M20,2H8A2,2 0 0,0 6,4V16A2,2 0 0,0 8,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M20,16H8V4H20V16Z" />
+                                <TextBlock Text="闪卡" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Row="2" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="quiz" Click="OnStudioTileClick">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <PathIcon Foreground="#78D9EC" Data="M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M11,16.5L18,9.5L16.59,8.09L11,13.67L7.91,10.59L6.5,12L11,16.5Z" />
+                                <TextBlock Text="测验" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Row="3" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="infographic" Click="OnStudioTileClick">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <PathIcon Foreground="#FCAD70" Data="M3,3V21H21V19H5V3H3M9,17H7V10H9V17M13,17H11V7H13V17M17,17H15V13H17V17Z" />
+                                <TextBlock Text="信息图" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                    <ListView x:Name="ArtifactsList" Grid.Row="2" SelectionMode="None" ItemContainerStyle="{StaticResource StretchListViewItemStyle}" />
                 </Grid>
-                <ListView x:Name="ArtifactsList" Grid.Row="2" SelectionMode="None" ItemContainerStyle="{StaticResource StretchListViewItemStyle}" />
+
+                <ContentControl x:Name="StudioDetailHost" Visibility="Collapsed" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
             </Grid>
         </Border>
 
-        <!-- Status bar: every core error is surfaced here instead of being swallowed -->
+        <!-- Status bar -->
         <InfoBar x:Name="StatusBar" Grid.Row="2" Grid.ColumnSpan="3" IsOpen="False" IsClosable="True"
                  Severity="Informational" Title="" Message="" />
     </Grid>

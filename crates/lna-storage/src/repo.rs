@@ -79,7 +79,7 @@ pub fn get_notebook(db: &Database, id: &str) -> LnaResult<Notebook> {
 pub fn create_notebook(db: &Database, title: &str, emoji: Option<&str>) -> LnaResult<Notebook> {
     let id = new_ulid();
     let now = now_ms();
-    let emoji = emoji.unwrap_or("📚");
+    let emoji = emoji.unwrap_or("");
     db.write(|conn| {
         conn.execute(
             "INSERT INTO notebooks (id, title, emoji, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",

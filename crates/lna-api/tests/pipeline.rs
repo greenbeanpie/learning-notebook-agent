@@ -71,7 +71,13 @@ fn tool_loop_stops_after_three_rounds_and_sums_usage() {
     // tool results are wrapped as untrusted
     assert!(chat[1].user_text().contains("untrusted"));
     let kinds = thought_kinds(&msg);
-    assert_eq!(kinds.iter().filter(|k| *k == "tool_call").count(), 3);
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| *k == "tool_list_sources" || *k == "tool_call")
+            .count(),
+        3
+    );
 
     let usage = env.ok("usage.summary", json!({ "notebook_id": nid }));
     assert_eq!(

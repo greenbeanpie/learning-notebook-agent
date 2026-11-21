@@ -671,6 +671,19 @@ impl AgentService {
                     description: "列出当前已选来源的名称、状态与语言".into(),
                     parameters: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
                 },
+                ToolDef {
+                    name: "report_thought_stage".into(),
+                    description: "每完成一个阶段的思考或分析时调用，向用户汇报该阶段的思考流程概括（标题+概述），不暴露内部原始推理。".into(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string", "description": "简短的思考阶段标题" },
+                            "summary": { "type": "string", "description": "1~2句该阶段思考流程概述" }
+                        },
+                        "required": ["title", "summary"],
+                        "additionalProperties": false
+                    }),
+                },
             ]
         } else {
             vec![]
@@ -714,10 +727,8 @@ impl AgentService {
                 .llm
                 .stream(&resolved, &req, cancel.clone(), |ev| match ev {
                     LlmEvent::ThoughtDelta(t) => {
+                        // Internal CoT is intentionally hidden from UI; only stage summaries are displayed.
                         _thought_buf.push_str(&t);
-                        if resolved.show_thinking {
-                            self.emit(&topic, "chat.thought_delta", json!({ "text": t }));
-                        }
                     }
                     LlmEvent::TextDelta(t) => {
                         let (out_chunk, cited_nos) = norm.push(&t);
@@ -993,22 +1004,55 @@ impl AgentService {
                                     }
                                 }
                             }
+                            "report_thought_stage" => {
+                                "已记录当前思考阶段概括。".to_string()
+                            }
                             _ => {
                                 is_error = true;
                                 format!("不支持的只读工具：{name}")
                             }
                         };
-                        let step = ThoughtStep {
-                            step_id: new_ulid(),
-                            kind: "tool_call".into(),
-                            title: match name.as_str() {
-                                "search_sources" => "补充检索来源".into(),
-                                "read_context" => "读取引用上下文".into(),
-                                "list_sources" => "查看已选来源".into(),
-                                _ => "执行只读工具".into(),
-                            },
-                            detail: Some(name.clone()),
-                            state: "done".into(),
+                        let step = if name == "report_thought_stage" {
+                            let stage_title = args
+                                .get("title")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("思考阶段")
+                                .trim()
+                                .to_string();
+                            let stage_summary = args
+                                .get("summary")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .trim()
+                                .to_string();
+                            ThoughtStep {
+                                step_id: new_ulid(),
+                                kind: "thought_stage".into(),
+                                title: stage_title,
+                                detail: if stage_summary.is_empty() { None } else { Some(stage_summary) },
+                                state: "done".into(),
+                            }
+                        } else {
+                            ThoughtStep {
+                                step_id: new_ulid(),
+                                kind: match name.as_str() {
+                                    "search_sources" => "tool_search".into(),
+                                    "read_context" => "tool_read_context".into(),
+                                    "list_sources" => "tool_list_sources".into(),
+                                    _ => "tool_call".into(),
+                                },
+                                title: match name.as_str() {
+                                    "search_sources" => "已搜索您的来源".into(),
+                                    "read_context" => "已读取引用上下文".into(),
+                                    "list_sources" => "已查看所选来源".into(),
+                                    _ => "已执行工具调用".into(),
+                                },
+                                detail: args
+                                    .get("query")
+                                    .and_then(|x| x.as_str())
+                                    .map(|q| q.to_string()),
+                                state: if is_error { "failed".into() } else { "done".into() },
+                            }
                         };
                         self.emit(
                             &topic,
@@ -1061,6 +1105,19 @@ impl AgentService {
 
                     let final_cites = collect_final_citations(&emitted_cites, &evidence_map);
 
+                    let (clean_text, parsed_stages) = extract_thought_stages(&full_text);
+                    for (st_title, st_summary) in parsed_stages {
+                        let st = ThoughtStep {
+                            step_id: new_ulid(),
+                            kind: "thought_stage".into(),
+                            title: st_title,
+                            detail: if st_summary.is_empty() { None } else { Some(st_summary) },
+                            state: "done".into(),
+                        };
+                        self.emit(&topic, "chat.thought_step", serde_json::to_value(&st).unwrap_or_default());
+                        thoughts.push(st);
+                    }
+                    full_text = clean_text;
                     self.finalize_message(
                         &asst_msg_id,
                         "COMPLETE",
@@ -1648,4 +1705,39 @@ fn collect_final_citations(
             source_removed: false,
         })
         .collect()
+}
+
+
+/// Extracts `<thought_stage title="...">summary</thought_stage>` blocks from text
+/// (fallback for models without tool calling), returning cleaned text and parsed stages.
+pub fn extract_thought_stages(raw: &str) -> (String, Vec<(String, String)>) {
+    let mut cleaned = String::with_capacity(raw.len());
+    let mut stages = Vec::new();
+    let mut rest = raw;
+    while let Some(start) = rest.find("<thought_stage") {
+        cleaned.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let Some(open_end) = after.find('>') else {
+            cleaned.push_str(after);
+            return (cleaned, stages);
+        };
+        let header = &after[..open_end];
+        let title = header
+            .split("title=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("思考阶段")
+            .trim()
+            .to_string();
+        let body_start = open_end + 1;
+        let Some(close_rel) = after[body_start..].find("</thought_stage>") else {
+            cleaned.push_str(after);
+            return (cleaned, stages);
+        };
+        let summary = after[body_start..body_start + close_rel].trim().to_string();
+        stages.push((title, summary));
+        rest = &after[body_start + close_rel + "</thought_stage>".len()..];
+    }
+    cleaned.push_str(rest);
+    (cleaned.trim_start().to_string(), stages)
 }

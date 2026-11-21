@@ -98,7 +98,7 @@ public sealed partial class MainWindow
         row.Children.Add(titleStack);
         head.Children.Add(row);
 
-        var menu = new MenuFlyout();
+        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
         void Add(string label, Func<Task> act)
         {
             var item = new MenuFlyoutItem { Text = label };
@@ -174,19 +174,69 @@ public sealed partial class MainWindow
         return card;
     }
 
-    private readonly Dictionary<string, ArtifactWindow> _artifactWindows = new();
+    private ArtifactViewerPane? _activeArtifactPane;
+    private bool _studioFullscreen;
 
     private void OpenArtifact(string id)
     {
-        if (_artifactWindows.TryGetValue(id, out var existing))
+        _activeArtifactPane?.Dispose();
+        _studioFullscreen = false;
+        var pane = new ArtifactViewerPane(
+            id,
+            this,
+            onClose: CloseArtifactInline,
+            onToggleFullscreen: ToggleStudioFullscreen);
+        _activeArtifactPane = pane;
+        StudioDetailHost.Content = pane;
+        StudioHomeView.Visibility = Visibility.Collapsed;
+        StudioDetailHost.Visibility = Visibility.Visible;
+        ApplyStudioLayout(opened: true, fullscreen: false);
+    }
+
+    private void CloseArtifactInline()
+    {
+        _activeArtifactPane?.Dispose();
+        _activeArtifactPane = null;
+        _studioFullscreen = false;
+        StudioDetailHost.Content = null;
+        StudioDetailHost.Visibility = Visibility.Collapsed;
+        StudioHomeView.Visibility = Visibility.Visible;
+        ApplyStudioLayout(opened: false, fullscreen: false);
+    }
+
+    private void ToggleStudioFullscreen()
+    {
+        _studioFullscreen = !_studioFullscreen;
+        _activeArtifactPane?.SetFullscreenIcon(_studioFullscreen);
+        ApplyStudioLayout(opened: true, fullscreen: _studioFullscreen);
+    }
+
+    private void ApplyStudioLayout(bool opened, bool fullscreen)
+    {
+        if (fullscreen)
         {
-            existing.Activate();
-            return;
+            SourcesPaneBorder.Visibility = Visibility.Collapsed;
+            ChatPaneBorder.Visibility = Visibility.Collapsed;
+            SourcesCol.Width = new GridLength(0);
+            ChatCol.Width = new GridLength(0);
+            StudioCol.Width = new GridLength(1, GridUnitType.Star);
         }
-        var w = new ArtifactWindow(id);
-        _artifactWindows[id] = w;
-        w.Closed += (_, _) => _artifactWindows.Remove(id);
-        w.Activate();
+        else if (opened)
+        {
+            SourcesPaneBorder.Visibility = Visibility.Visible;
+            ChatPaneBorder.Visibility = Visibility.Visible;
+            SourcesCol.Width = new GridLength(260);
+            ChatCol.Width = new GridLength(1, GridUnitType.Star);
+            StudioCol.Width = new GridLength(1.65, GridUnitType.Star);
+        }
+        else
+        {
+            SourcesPaneBorder.Visibility = Visibility.Visible;
+            ChatPaneBorder.Visibility = Visibility.Visible;
+            SourcesCol.Width = new GridLength(320);
+            ChatCol.Width = new GridLength(1, GridUnitType.Star);
+            StudioCol.Width = new GridLength(340);
+        }
     }
 
     // ---------- creating ----------

@@ -344,6 +344,19 @@
       50% { opacity: 1; }
     }
     .thinking-dot { animation: pulseDot 1.2s infinite ease-in-out; }
+  
+    /* v4.1: Studio fullscreen mode, inconspicuous Thoughts toggle, Report TOC, Infographic canvas */
+    .workspace.studio-fullscreen #left-panel,
+    .workspace.studio-fullscreen #center-panel { display: none !important; }
+    .workspace.studio-fullscreen #right-panel { flex: 1 1 100% !important; max-width: 100% !important; width: 100% !important; }
+    .thoughts-toggle-subtle { background: transparent !important; border: none !important; color: #c4c7c5; display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px; cursor: pointer; font-size: 13px; }
+    .thoughts-toggle-subtle:hover { color: #e3e3e3; }
+    .report-split { display: grid; grid-template-columns: 190px 1fr; gap: 14px; height: 100%; }
+    .report-toc { background: #282a2c; border-radius: 12px; padding: 10px; overflow-y: auto; }
+    .report-toc-item { display: block; width: 100%; text-align: left; background: transparent; border: none; color: #c4c7c5; padding: 6px 8px; border-radius: 8px; font-size: 12px; cursor: pointer; }
+    .report-toc-item:hover { background: #333537; color: #e3e3e3; }
+    .infographic-stage { position: relative; background: #f5f8ff; border-radius: 14px; padding: 16px; color: #173a7a; overflow: auto; }
+
   </style>
 </head>
 <body class="h-screen flex flex-col select-none sm:select-auto">

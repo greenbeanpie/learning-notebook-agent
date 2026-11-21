@@ -5,7 +5,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
-    emoji TEXT DEFAULT '📚',
+    emoji TEXT DEFAULT '',
     summary TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL

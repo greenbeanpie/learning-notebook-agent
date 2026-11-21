@@ -245,7 +245,7 @@ public sealed partial class MainWindow
         }
 
         // 3. Actions (three dots: preview, rename, retry, delete)
-        var menu = new MenuFlyout();
+        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
         void Add(string label, RoutedEventHandler h)
         {
             var item = new MenuFlyoutItem { Text = label, Tag = (id, title) };

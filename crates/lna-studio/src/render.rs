@@ -3,10 +3,43 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
 
-/// Render a minimal valid OOXML .pptx file from SlidesPayload JSON.
+fn try_render_pptx_with_python(payload: &Value, out_path: &Path) -> bool {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("scripts").join("generate_pptx.py"));
+            candidates.push(dir.join("generate_pptx.py"));
+        }
+    }
+    candidates.push(std::path::PathBuf::from("scripts/generate_pptx.py"));
+    let Some(script) = candidates.into_iter().find(|p| p.is_file()) else {
+        return false;
+    };
+    let tmp_json = out_path.with_extension("payload.tmp.json");
+    if std::fs::write(&tmp_json, payload.to_string()).is_err() {
+        return false;
+    }
+    let ok = ["python3", "python"].iter().any(|py| {
+        std::process::Command::new(py)
+            .arg(&script)
+            .arg(&tmp_json)
+            .arg(out_path)
+            .status()
+            .map(|st| st.success() && out_path.is_file())
+            .unwrap_or(false)
+    });
+    let _ = std::fs::remove_file(&tmp_json);
+    ok
+}
+
+/// Render a .pptx file from SlidesPayload JSON using local python-pptx tool when available,
+/// falling back to the built-in OOXML generator if Python is not installed.
 pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
     if let Some(p) = out_path.parent() {
         std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;
+    }
+    if try_render_pptx_with_python(payload, out_path) {
+        return Ok(());
     }
     let file = std::fs::File::create(out_path).map_err(|e| LnaError::internal(e.to_string()))?;
     let mut zip = zip::ZipWriter::new(file);
@@ -130,7 +163,7 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
     Ok(())
 }
 
-/// Render an SVG Infographic from InfographicPayload JSON.
+/// Render a rich structured SVG Infographic from InfographicPayload JSON (image_c93c68 style).
 pub fn render_infographic_svg(payload: &Value, out_path: &Path) -> LnaResult<()> {
     if let Some(p) = out_path.parent() {
         std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;
@@ -147,49 +180,83 @@ pub fn render_infographic_svg(payload: &Value, out_path: &Path) -> LnaResult<()>
             .and_then(|x| x.as_str())
             .unwrap_or(""),
     );
-    let style = payload
-        .get("style")
-        .and_then(|x| x.as_str())
-        .unwrap_or("auto");
-    let (bg, card_bg, accent) = match style {
-        "cute" => ("#1e1b2e", "#2b2640", "#f872b9"),
-        "clay" => ("#1f2428", "#2d3339", "#ecdf77"),
-        "sketch" => ("#18181b", "#27272a", "#3fdda0"),
-        "anime" => ("#131726", "#1d243b", "#76a0ff"),
-        _ => ("#131314", "#1e1f20", "#8ab4f8"),
-    };
-
     let blocks = payload
         .get("blocks")
         .and_then(|b| b.as_array())
         .cloned()
         .unwrap_or_default();
-    let height = 180 + blocks.len().max(1) * 130;
+    let cols = 2usize;
+    let rows = (blocks.len().max(1) + cols - 1) / cols;
+    let table_h = 64 + blocks.len().min(6) * 34;
+    let height = 190 + rows * 168 + table_h + 48;
+    let accents = ["#1a73e8", "#0f9d58", "#673ab7", "#e37400", "#00838f", "#c5221f"];
 
     let mut svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="900" height="{height}" viewBox="0 0 900 {height}">
-  <rect width="900" height="{height}" fill="{bg}" rx="16"/>
-  <text x="48" y="64" fill="#e3e3e3" font-size="28" font-weight="700" font-family="sans-serif">{title}</text>
-  <text x="48" y="96" fill="#9aa0a6" font-size="15" font-family="sans-serif">{subtitle}</text>
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="{height}" viewBox="0 0 1200 {height}">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fbff"/>
+      <stop offset="100%" stop-color="#eef3fb"/>
+    </linearGradient>
+    <linearGradient id="hdrGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#173a7a"/>
+      <stop offset="100%" stop-color="#2b59b5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="{height}" fill="url(#bgGrad)" rx="18"/>
+  <rect x="36" y="32" width="1128" height="118" rx="14" fill="url(#hdrGrad)"/>
+  <text x="64" y="84" fill="#ffffff" font-size="30" font-weight="700" font-family="sans-serif">{title}</text>
+  <text x="64" y="120" fill="#dbe7ff" font-size="16" font-family="sans-serif">{subtitle}</text>
 "##
     );
 
     for (i, blk) in blocks.iter().enumerate() {
-        let y = 130 + i * 124;
+        let col = i % cols;
+        let row = i / cols;
+        let x = 36 + col * 576;
+        let y = 174 + row * 168;
+        let accent = accents[i % accents.len()];
         let h = xml_escape(blk.get("heading").and_then(|x| x.as_str()).unwrap_or(""));
         let m = xml_escape(blk.get("metric").and_then(|x| x.as_str()).unwrap_or(""));
         let s = xml_escape(blk.get("summary").and_then(|x| x.as_str()).unwrap_or(""));
         svg.push_str(&format!(
-            r##"  <rect x="48" y="{y}" width="804" height="106" rx="14" fill="{card_bg}" stroke="{accent}" stroke-opacity="0.35"/>
-  <text x="72" y="{}" fill="{accent}" font-size="22" font-weight="700" font-family="sans-serif">{m}</text>
-  <text x="260" y="{}" fill="#e3e3e3" font-size="16" font-weight="600" font-family="sans-serif">{h}</text>
-  <text x="260" y="{}" fill="#c4c7c5" font-size="13" font-family="sans-serif">{s}</text>
+            r##"  <rect x="{x}" y="{y}" width="552" height="148" rx="14" fill="#ffffff" stroke="#d8e1f0" stroke-width="1.5"/>
+  <rect x="{x}" y="{y}" width="552" height="40" rx="14" fill="{accent}"/>
+  <text x="{}" y="{}" fill="#ffffff" font-size="16" font-weight="700" font-family="sans-serif">{h}</text>
+  <text x="{}" y="{}" fill="{accent}" font-size="26" font-weight="700" font-family="sans-serif">{m}</text>
+  <text x="{}" y="{}" fill="#3c4043" font-size="14" font-family="sans-serif">{s}</text>
 "##,
-            y + 58,
-            y + 42,
-            y + 72
+            x + 20, y + 26,
+            x + 20, y + 84,
+            x + 20, y + 120
         ));
     }
+
+    let table_y = 186 + rows * 168;
+    svg.push_str(&format!(
+        r##"  <rect x="36" y="{table_y}" width="1128" height="38" rx="8" fill="#173a7a"/>
+  <text x="56" y="{}" fill="#ffffff" font-size="14" font-weight="700" font-family="sans-serif">核心维度</text>
+  <text x="340" y="{}" fill="#ffffff" font-size="14" font-weight="700" font-family="sans-serif">关键指标</text>
+  <text x="580" y="{}" fill="#ffffff" font-size="14" font-weight="700" font-family="sans-serif">要点说明</text>
+"##,
+        table_y + 24, table_y + 24, table_y + 24
+    ));
+    for (i, blk) in blocks.iter().take(6).enumerate() {
+        let ry = table_y + 40 + i * 34;
+        let row_bg = if i % 2 == 0 { "#ffffff" } else { "#f2f6fc" };
+        let h = xml_escape(blk.get("heading").and_then(|x| x.as_str()).unwrap_or(""));
+        let m = xml_escape(blk.get("metric").and_then(|x| x.as_str()).unwrap_or(""));
+        let s = xml_escape(blk.get("summary").and_then(|x| x.as_str()).unwrap_or(""));
+        svg.push_str(&format!(
+            r##"  <rect x="36" y="{ry}" width="1128" height="34" fill="{row_bg}" stroke="#e2e8f4"/>
+  <text x="56" y="{}" fill="#1f2937" font-size="13" font-weight="600" font-family="sans-serif">{h}</text>
+  <text x="340" y="{}" fill="#173a7a" font-size="13" font-weight="600" font-family="sans-serif">{m}</text>
+  <text x="580" y="{}" fill="#4b5563" font-size="13" font-family="sans-serif">{s}</text>
+"##,
+            ry + 22, ry + 22, ry + 22
+        ));
+    }
+
     svg.push_str("</svg>");
     std::fs::write(out_path, svg).map_err(|e| LnaError::internal(e.to_string()))
 }

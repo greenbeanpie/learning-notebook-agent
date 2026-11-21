@@ -21,11 +21,11 @@ public sealed partial class MainWindow
         public ContentControl Body = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch };
         public TextBlock StreamText = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
         public StringBuilder Text = new();
-        public Expander? Thoughts;
-        public TextBlock? ThoughtsHeaderText;
-        public StackPanel ThoughtList = new() { Spacing = 4 };
-        public TextBlock ThoughtStream = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };
-        public Dictionary<string, TextBlock> Steps = new();
+        public StackPanel? ThoughtsContainer;
+        public PathIcon? ThoughtsChevron;
+        public bool ThoughtsExpanded;
+        public StackPanel ThoughtList = new() { Spacing = 10, Margin = new Thickness(4, 8, 0, 6), Visibility = Visibility.Collapsed };
+        public Dictionary<string, FrameworkElement> Steps = new();
         public Dictionary<int, (string Title, int Page, string Quote)> Citations = new();
         public StackPanel Footer = new() { Spacing = 8 };
         public StackPanel Followups = new() { Spacing = 8, Margin = new Thickness(0, 6, 0, 0) };
@@ -127,58 +127,130 @@ public sealed partial class MainWindow
         return panel;
     }
 
+    private const string RingIconPath = "M12,6A6,6 0 1,0 18,12A6,6 0 0,0 12,6M12,9A3,3 0 1,1 9,12A3,3 0 0,1 12,9Z";
+    private const string ChevronDownPath = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z";
+    private const string ChevronUpPath = "M7.41,15.41L12,10.83L16.59,15.41L18,14L12,8L6,14L7.41,15.41Z";
+    private const string BrainIconPath = "M13,3A3,3 0 0,1 16,6C16,6.35 15.94,6.68 15.83,7H16.5A2.5,2.5 0 0,1 19,9.5C19,10.22 18.69,10.87 18.19,11.33C18.69,11.83 19,12.53 19,13.3A2.7,2.7 0 0,1 16.3,16H16V17.5A2.5,2.5 0 0,1 13.5,20H12.5V3H13M11,3H11.5V20H10.5A2.5,2.5 0 0,1 8,17.5V16H7.7A2.7,2.7 0 0,1 5,13.3C5,12.53 5.31,11.83 5.81,11.33C5.31,10.87 5,10.22 5,9.5A2.5,2.5 0 0,1 7.5,7H8.17C8.06,6.68 8,6.35 8,6A3,3 0 0,1 11,3Z";
+    private const string SearchDocIconPath = "M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H12.5C12.18,21.39 12,20.72 12,20H6V4H13V9H18V12.08C18.71,12.22 19.38,12.5 20,12.88V8L14,2M17.5,14A3.5,3.5 0 0,0 14,17.5A3.5,3.5 0 0,0 17.5,21C18.23,21 18.9,20.77 19.45,20.38L21.54,22.46L22.96,21.04L20.88,18.95C21.27,18.4 21.5,17.73 21.5,17.5A3.5,3.5 0 0,0 17.5,14M17.5,16A1.5,1.5 0 0,1 19,17.5A1.5,1.5 0 0,1 17.5,19A1.5,1.5 0 0,1 16,17.5A1.5,1.5 0 0,1 17.5,16Z";
+    private const string ReadContextIconPath = "M18,22A2,2 0 0,0 20,20V4C20,2.89 19.1,2 18,2H12V9L9.5,7.5L7,9V2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18Z";
+
+    private static Microsoft.UI.Xaml.Media.Geometry Geom(string path) =>
+        (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), path);
+
     private void FillThoughts(MessageView v, IEnumerable<JsonElement> steps)
     {
-        foreach (var s in steps) UpdateStep(v, Str(s, "step_id"), Str(s, "title"), Str(s, "detail"), Str(s, "state"));
+        foreach (var s in steps) UpdateStep(v, Str(s, "step_id"), Str(s, "kind"), Str(s, "title"), Str(s, "detail"), Str(s, "state"));
     }
 
-    private static string Mark(string state) => state switch { "done" => "✔", "skipped" => "↷", "failed" => "✖", _ => "…" };
+    private static bool IsToolKind(string kind) =>
+        kind is "retrieve" or "retrieve_fallback" or "tool_search" or "tool_read_context" or "tool_list_sources" or "tool_call";
 
-    private void UpdateStep(MessageView v, string id, string title, string detail, string state)
+    private void UpdateStep(MessageView v, string id, string kind, string title, string detail, string state)
     {
-        if (!v.Steps.TryGetValue(id, out var tb))
+        var isTool = IsToolKind(kind);
+        var iconPath = kind switch
         {
-            tb = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.85 };
-            v.Steps[id] = tb;
-            v.ThoughtList.Children.Add(tb);
+            "tool_read_context" or "tool_list_sources" => ReadContextIconPath,
+            "retrieve" or "retrieve_fallback" or "tool_search" or "tool_call" => SearchDocIconPath,
+            _ => BrainIconPath,
+        };
+
+        var mutedBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"];
+        var subBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"];
+        var borderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"];
+
+        var container = new StackPanel { Spacing = 4 };
+        var headRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
+        headRow.Children.Add(new Viewbox
+        {
+            Width = 16,
+            Height = 16,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new PathIcon { Data = Geom(iconPath), Foreground = mutedBrush },
+        });
+        headRow.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 13,
+            FontWeight = isTool ? Microsoft.UI.Text.FontWeights.Normal : Microsoft.UI.Text.FontWeights.Medium,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextPrimaryBrush"],
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        container.Children.Add(headRow);
+
+        if (!isTool && detail.Length > 0)
+        {
+            var bodyRow = new Grid { Margin = new Thickness(7, 2, 0, 2) };
+            bodyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            bodyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var guide = new Border { Width = 1, Background = borderBrush, Margin = new Thickness(0, 2, 16, 2) };
+            var desc = new TextBlock { Text = detail, FontSize = 13, Foreground = subBrush, TextWrapping = TextWrapping.Wrap };
+            Grid.SetColumn(desc, 1);
+            bodyRow.Children.Add(guide);
+            bodyRow.Children.Add(desc);
+            container.Children.Add(bodyRow);
         }
-        tb.Text = detail.Length > 0 ? $"{Mark(state)} {title} — {detail}" : $"{Mark(state)} {title}";
+
+        if (v.Steps.TryGetValue(id, out var existing))
+        {
+            var idx = v.ThoughtList.Children.IndexOf(existing);
+            if (idx >= 0) v.ThoughtList.Children[idx] = container;
+        }
+        else
+        {
+            v.ThoughtList.Children.Add(container);
+        }
+        v.Steps[id] = container;
         EnsureThoughts(v);
     }
 
     private void EnsureThoughts(MessageView v)
     {
-        if (v.Thoughts != null)
+        if (v.ThoughtsContainer != null) return;
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        row.Children.Add(new Viewbox
         {
-            if (v.ThoughtsHeaderText != null) v.ThoughtsHeaderText.Text = $"思考过程（{v.Steps.Count} 步）";
-            return;
-        }
-        var inner = new StackPanel { Spacing = 6, Padding = new Thickness(4, 4, 4, 4) };
-        inner.Children.Add(v.ThoughtList);
-        inner.Children.Add(v.ThoughtStream);
-        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        headerRow.Children.Add(new PathIcon
-        {
-            Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z"),
-            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"],
+            Width = 14,
+            Height = 14,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new PathIcon { Data = Geom(RingIconPath), Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextPrimaryBrush"] },
         });
-        v.ThoughtsHeaderText = new TextBlock { Text = $"思考过程（{v.Steps.Count} 步）", FontSize = 13, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"], VerticalAlignment = VerticalAlignment.Center };
-        headerRow.Children.Add(v.ThoughtsHeaderText);
-        v.Thoughts = new Expander
+        row.Children.Add(new TextBlock
         {
-            Header = headerRow,
-            Content = inner,
-            IsExpanded = false,
-            MinHeight = 42,
-            Margin = new Thickness(0, 4, 0, 4),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"],
-            BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SubtleBorderBrush"],
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12),
+            Text = "Thoughts",
+            FontSize = 13,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        v.ThoughtsChevron = new PathIcon
+        {
+            Data = Geom(ChevronDownPath),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
         };
-        v.Root.Children.Insert(1, v.Thoughts);
+        row.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = v.ThoughtsChevron });
+
+        var toggle = new Button
+        {
+            Content = row,
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(2, 4, 6, 4),
+            MinHeight = 30,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        toggle.Click += (_, _) =>
+        {
+            v.ThoughtsExpanded = !v.ThoughtsExpanded;
+            v.ThoughtList.Visibility = v.ThoughtsExpanded ? Visibility.Visible : Visibility.Collapsed;
+            if (v.ThoughtsChevron != null) v.ThoughtsChevron.Data = Geom(v.ThoughtsExpanded ? ChevronUpPath : ChevronDownPath);
+        };
+
+        v.ThoughtsContainer = new StackPanel { Spacing = 4, Margin = new Thickness(0, 2, 0, 6) };
+        v.ThoughtsContainer.Children.Add(toggle);
+        v.ThoughtsContainer.Children.Add(v.ThoughtList);
+        v.Root.Children.Insert(1, v.ThoughtsContainer);
     }
 
     private void AddActions(MessageView v, string content, long feedback, bool isLast)
@@ -435,14 +507,10 @@ public sealed partial class MainWindow
             }
             case "chat.thought_step":
                 if (_streaming != null)
-                    UpdateStep(_streaming, Str(ev.Data, "step_id"), Str(ev.Data, "title"), Str(ev.Data, "detail"), Str(ev.Data, "state"));
+                    UpdateStep(_streaming, Str(ev.Data, "step_id"), Str(ev.Data, "kind"), Str(ev.Data, "title"), Str(ev.Data, "detail"), Str(ev.Data, "state"));
                 break;
             case "chat.thought_delta":
-                if (_streaming != null)
-                {
-                    EnsureThoughts(_streaming);
-                    _streaming.ThoughtStream.Text += Str(ev.Data, "text");
-                }
+                // Raw internal CoT is hidden from display (Requirement 1).
                 break;
             case "chat.text_delta":
                 _streaming?.Text.Append(Str(ev.Data, "text"));
