@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LocalNotebookAgent API Envelope DTOs",
+  "definitions": {
+    "OpenConfig": {
+      "type": "object",
+      "required": ["data_dir"],
+      "properties": {
+        "data_dir": { "type": "string" },
+        "allow_memory_secret_fallback": { "type": "boolean" }
+      }
+    },
+    "ApiRequest": {
+      "type": "object",
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": { "type": "string" },
+        "method": { "type": "string" },
+        "params": {}
+      }
+    },
+    "ApiError": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "ApiResponse": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "result": {},
+        "error": { "$ref": "#/definitions/ApiError" }
+      }
+    },
+    "ApiEvent": {
+      "type": "object",
+      "required": ["seq", "topic", "event", "data"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "topic": { "type": "string" },
+        "event": { "type": "string" },
+        "data": {}
+      }
+    }
+  }
+}

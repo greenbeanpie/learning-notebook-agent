@@ -525,12 +525,12 @@ impl StudioService {
                     let voice_a = Voice {
                         id: "host_a".into(),
                         name: "Host A".into(),
-                        lang: "zh-CN".into(),
+                        lang: "auto".into(),
                     };
                     let voice_b = Voice {
                         id: "host_b".into(),
                         name: "Host B".into(),
-                        lang: "zh-CN".into(),
+                        lang: "auto".into(),
                     };
                     let mut seg_paths = Vec::new();
                     if let Some(turns) = payload.get("turns").and_then(|t| t.as_array()) {
@@ -767,7 +767,25 @@ impl StudioService {
                     .map(|_| ())
                     .map_err(|e| LnaError::internal(e.to_string()))
             }
-            "svg" => render::render_infographic_svg(&payload, out_path),
+            "svg" => {
+                if art.artifact_type == ArtifactType::Mindmap {
+                    render::render_mindmap_svg(&payload, out_path)
+                } else {
+                    render::render_infographic_svg(&payload, out_path)
+                }
+            }
+            "png" => render::render_artifact_png(
+                art.artifact_type.as_str(),
+                &art.title,
+                &payload,
+                out_path,
+            ),
+            "html" => render::render_report_html(
+                art.artifact_type.as_str(),
+                &art.title,
+                &payload,
+                out_path,
+            ),
             "pptx" => render::render_pptx(&payload, out_path),
             _ => {
                 let md =

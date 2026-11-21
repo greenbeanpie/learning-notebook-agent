@@ -476,3 +476,65 @@ fn grade_answer_api_handles_choice_fill_and_unknown_questions() {
         "NOT_FOUND"
     );
 }
+
+/// E4/E5/E7/E8: studio.export supports mindmap svg/png, report html, infographic png, and audio wav.
+#[test]
+fn studio_export_supports_all_formats_and_audio_end_to_end() {
+    let mock = studio_mock();
+    let env = Env::new("exports");
+    let nid = small_notebook(&env);
+    env.profile(&mock, 32000, false);
+
+    let mm_id = create(&env, &nid, "mindmap", json!({}));
+    studio_wait(&env, &mm_id, "READY", 30);
+    let mm_svg = env.dir.join("mm.svg");
+    let mm_png = env.dir.join("mm.png");
+    env.ok(
+        "studio.export",
+        json!({ "artifact_id": mm_id, "format": "svg", "out_path": mm_svg }),
+    );
+    env.ok(
+        "studio.export",
+        json!({ "artifact_id": mm_id, "format": "png", "out_path": mm_png }),
+    );
+    assert!(std::fs::read_to_string(&mm_svg).unwrap().contains("<svg"));
+    assert_eq!(
+        &std::fs::read(&mm_png).unwrap()[0..8],
+        &[137, 80, 78, 71, 13, 10, 26, 10]
+    );
+
+    let rp_id = create(&env, &nid, "report", json!({}));
+    studio_wait(&env, &rp_id, "READY", 30);
+    let rp_html = env.dir.join("report.html");
+    env.ok(
+        "studio.export",
+        json!({ "artifact_id": rp_id, "format": "html", "out_path": rp_html }),
+    );
+    assert!(std::fs::read_to_string(&rp_html)
+        .unwrap()
+        .contains("<!DOCTYPE html>"));
+
+    let info_id = create(&env, &nid, "infographic", json!({}));
+    studio_wait(&env, &info_id, "READY", 30);
+    let info_png = env.dir.join("info.png");
+    env.ok(
+        "studio.export",
+        json!({ "artifact_id": info_id, "format": "png", "out_path": info_png }),
+    );
+    assert_eq!(
+        &std::fs::read(&info_png).unwrap()[0..8],
+        &[137, 80, 78, 71, 13, 10, 26, 10]
+    );
+
+    let aud_id = create(&env, &nid, "audio", json!({}));
+    let aud = studio_wait(&env, &aud_id, "READY", 60);
+    assert!(aud["output_dir"].as_str().is_some());
+    let aud_wav = env.dir.join("overview.wav");
+    env.ok(
+        "studio.export",
+        json!({ "artifact_id": aud_id, "format": "wav", "out_path": aud_wav }),
+    );
+    let wav_bytes = std::fs::read(&aud_wav).unwrap();
+    assert_eq!(&wav_bytes[0..4], b"RIFF");
+    assert_eq!(&wav_bytes[8..12], b"WAVE");
+}

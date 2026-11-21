@@ -516,19 +516,25 @@ fn rate_limit_is_retried_but_auth_failure_is_not() {
     let mock = MockLlm::start(|r| match r.kind {
         Kind::Followups => followups_ok(),
         Kind::Chat if r.nth == 0 => {
-            Reply::Status(429, r#"{"error":{"message":"slow down"}}"#.into())
+            Reply::RetryAfter(429, 2, r#"{"error":{"message":"slow down"}}"#.into())
         }
         _ => answer(),
     });
     let env = Env::new("retry429");
     let nid = notebook_with_sources(&env, 2);
     env.profile(&mock, 32000, false);
+    let t0 = std::time::Instant::now();
     let msg = env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
     );
+    let elapsed = t0.elapsed();
     assert_eq!(msg["status"], json!("COMPLETE"));
     assert_eq!(mock.of_kind(Kind::Chat).len(), 2);
+    assert!(
+        elapsed >= std::time::Duration::from_millis(1800),
+        "expected Retry-After: 2 to delay retry, elapsed={elapsed:?}"
+    );
 
     let mock2 = MockLlm::start(|_| Reply::Status(401, r#"{"error":{"message":"bad key"}}"#.into()));
     env.profile(&mock2, 32000, false);

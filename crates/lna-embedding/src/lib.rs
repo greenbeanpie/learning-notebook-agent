@@ -99,6 +99,56 @@ impl EmbeddingService {
         })
     }
 
+    pub fn get_model(&self, model_id: &str) -> LnaResult<Option<EmbeddingModelRecord>> {
+        self.db.read(|conn| {
+            conn.query_row(
+                "SELECT id, provider, model_name, dimension, query_prefix, passage_prefix,
+                        vec_table, endpoint_profile_id, is_active
+                 FROM embedding_models WHERE id = ?1 LIMIT 1",
+                params![model_id],
+                |r| {
+                    Ok(EmbeddingModelRecord {
+                        id: r.get(0)?,
+                        provider: r.get(1)?,
+                        model_name: r.get(2)?,
+                        dimension: r.get::<_, i64>(3)? as usize,
+                        query_prefix: r.get(4)?,
+                        passage_prefix: r.get(5)?,
+                        vec_table: r.get(6)?,
+                        endpoint_profile_id: r.get(7)?,
+                        is_active: r.get::<_, i64>(8)? == 1,
+                    })
+                },
+            )
+            .optional()
+            .map_err(map_sql_err)
+        })
+    }
+
+    pub fn activate_model(&self, model_id: &str) -> LnaResult<EmbeddingModelRecord> {
+        self.db.write(|conn| {
+            let tx = conn.transaction().map_err(map_sql_err)?;
+            tx.execute(
+                "UPDATE embedding_models SET is_active = 0 WHERE is_active = 1",
+                [],
+            )
+            .map_err(map_sql_err)?;
+            let changed = tx
+                .execute(
+                    "UPDATE embedding_models SET is_active = 1 WHERE id = ?1",
+                    params![model_id],
+                )
+                .map_err(map_sql_err)?;
+            if changed == 0 {
+                return Err(LnaError::not_found("Embedding model not found"));
+            }
+            tx.commit().map_err(map_sql_err)?;
+            Ok(())
+        })?;
+        self.get_model(model_id)?
+            .ok_or_else(|| LnaError::not_found("Embedding model not found"))
+    }
+
     pub fn status(&self) -> LnaResult<EmbeddingStatus> {
         let active = self.active_model()?;
         let (total_chunks, embedded_chunks) = self.db.read(|conn| {
@@ -135,6 +185,28 @@ impl EmbeddingService {
         passage_prefix: &str,
         endpoint_profile_id: Option<&str>,
     ) -> LnaResult<EmbeddingModelRecord> {
+        self.configure_with_activation(
+            provider,
+            model_name,
+            dimension,
+            query_prefix,
+            passage_prefix,
+            endpoint_profile_id,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn configure_with_activation(
+        &self,
+        provider: &str,
+        model_name: &str,
+        dimension: usize,
+        query_prefix: &str,
+        passage_prefix: &str,
+        endpoint_profile_id: Option<&str>,
+        activate_now: bool,
+    ) -> LnaResult<EmbeddingModelRecord> {
         if provider != "local_onnx" && provider != "remote" {
             return Err(LnaError::invalid("provider must be local_onnx or remote"));
         }
@@ -145,15 +217,18 @@ impl EmbeddingService {
         // Safe server-generated table name (Section 6.3)
         let vec_table = format!("chunks_vec_{}", id.to_lowercase());
         let now = now_ms();
+        let active_flag = if activate_now { 1i64 } else { 0i64 };
 
         self.db.write(|conn| {
             let tx = conn.transaction().map_err(map_sql_err)?;
-            tx.execute("UPDATE embedding_models SET is_active = 0 WHERE is_active = 1", [])
-                .map_err(map_sql_err)?;
+            if activate_now {
+                tx.execute("UPDATE embedding_models SET is_active = 0 WHERE is_active = 1", [])
+                    .map_err(map_sql_err)?;
+            }
             tx.execute(
                 "INSERT INTO embedding_models
                  (id, provider, model_name, dimension, query_prefix, passage_prefix, vec_table, endpoint_profile_id, is_active, created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 params![
                     id,
                     provider,
@@ -163,6 +238,7 @@ impl EmbeddingService {
                     passage_prefix,
                     vec_table,
                     endpoint_profile_id,
+                    active_flag,
                     now
                 ],
             )
@@ -179,7 +255,7 @@ impl EmbeddingService {
             Ok(())
         })?;
 
-        self.active_model()?
+        self.get_model(&id)?
             .ok_or_else(|| LnaError::internal("Failed to load configured embedding model"))
     }
 

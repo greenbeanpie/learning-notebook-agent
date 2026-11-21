@@ -49,12 +49,54 @@ public sealed partial class MainWindow
         var status = Str(a, "status");
         var title = Str(a, "title");
         var kind = Str(a, "artifact_type");
-        var card = new Border { Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"], CornerRadius = new CornerRadius(10), Padding = new Thickness(10), Margin = new Thickness(0, 0, 0, 6) };
-        var col = new StackPanel { Spacing = 4 };
-        var head = new Grid { ColumnSpacing = 6 };
+        var card = new Border
+        {
+            Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"],
+            BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SubtleBorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            MinHeight = 56,
+            Padding = new Thickness(12, 12, 10, 12),
+            Margin = new Thickness(0, 0, 0, 10),
+        };
+        var col = new StackPanel { Spacing = 6 };
+        var head = new Grid { ColumnSpacing = 8 };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        head.Children.Add(new TextBlock { Text = $"{title}", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+        var kindIconData = kind switch
+        {
+            "audio" => ("#A8C7FA", "M12,14C13.66,14 15,12.66 15,11V5C15,3.34 13.66,2 12,2C10.34,2 9,3.34 9,5V11C9,12.66 10.34,14 12,14M17,11C17,13.76 14.76,16 12,16C9.24,16 7,13.76 7,11H5C5,14.53 7.61,17.43 11,17.92V21H13V17.92C16.39,17.43 19,14.53 19,11H17Z"),
+            "slides" => ("#FDD663", "M19,3H5C3.89,3 3,3.89 3,5V19C3,20.11 3.89,21 5,21H19C20.11,21 21,20.11 21,19V5C21,3.89 20.11,3 19,3M19,19H5V5H19V19M7,10H9V17H7V10M11,7H13V17H11V7M15,13H17V17H15V13Z"),
+            "mindmap" => ("#C58AF9", "M12,2A3,3 0 0,1 15,5C15,6.28 14.19,7.38 13.06,7.81L14.5,10.5H16A3,3 0 0,1 19,13.5A3,3 0 0,1 16,16.5C14.68,16.5 13.56,15.66 13.16,14.5H10.84C10.44,15.66 9.32,16.5 8,16.5A3,3 0 0,1 5,13.5A3,3 0 0,1 8,10.5H9.5L10.94,7.81C9.81,7.38 9,6.28 9,5A3,3 0 0,1 12,2Z"),
+            "report" => ("#81C995", "M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M8,12H16V14H8V12M8,16H13V18H8V16Z"),
+            "flashcards" => ("#F6AEA9", "M4,6H2V20A2,2 0 0,0 4,22H18V20H4V6M20,2H8A2,2 0 0,0 6,4V16A2,2 0 0,0 8,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M20,16H8V4H20V16Z"),
+            "quiz" => ("#78D9EC", "M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M11,16.5L18,9.5L16.59,8.09L11,13.67L7.91,10.59L6.5,12L11,16.5Z"),
+            _ => ("#FCAD70", "M3,3V21H21V19H5V3H3M9,17H7V10H9V17M13,17H11V7H13V17M17,17H15V13H17V17Z"),
+        };
+        var row = new Grid { ColumnSpacing = 10 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var iconColor = Windows.UI.Color.FromArgb(
+            255,
+            Convert.ToByte(kindIconData.Item1.Substring(1, 2), 16),
+            Convert.ToByte(kindIconData.Item1.Substring(3, 2), 16),
+            Convert.ToByte(kindIconData.Item1.Substring(5, 2), 16));
+        var kindIcon = new PathIcon
+        {
+            Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), kindIconData.Item2),
+            Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(iconColor),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(kindIcon, 0);
+        row.Children.Add(kindIcon);
+
+        var titleStack = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        titleStack.Children.Add(new TextBlock { Text = $"{title}", FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.Medium, TextWrapping = TextWrapping.Wrap });
+        var stage = Str(a, "stage");
+        titleStack.Children.Add(new TextBlock { Text = $"{KindName(kind)} · {ArtifactStatusLabel(status, stage)}", FontSize = 11, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"] });
+        Grid.SetColumn(titleStack, 1);
+        row.Children.Add(titleStack);
+        head.Children.Add(row);
 
         var menu = new MenuFlyout();
         void Add(string label, Func<Task> act)
@@ -75,14 +117,30 @@ public sealed partial class MainWindow
         {
             if (await ConfirmAsync("删除产物", $"确定删除“{title}”吗？", "删除")) await CoreAsync("studio.delete", Args(("artifact_id", id)), "删除");
         });
-        var more = new Button { Content = "⋯", Flyout = menu, Padding = new Thickness(8, 0, 8, 0) };
+        var more = new Button
+        {
+            Content = new PathIcon
+            {
+                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M6,10A2,2 0 0,0 4,12A2,2 0 0,0 6,14A2,2 0 0,0 8,12A2,2 0 0,0 6,10M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M18,10A2,2 0 0,0 16,12A2,2 0 0,0 18,14A2,2 0 0,0 20,12A2,2 0 0,0 18,10Z"),
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+            },
+            Flyout = menu,
+            MinWidth = 38,
+            Width = 38,
+            MinHeight = 38,
+            Height = 38,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(19),
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        more.Tapped += (_, e) => e.Handled = true;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, "产物操作");
         Grid.SetColumn(more, 1);
         head.Children.Add(more);
         col.Children.Add(head);
 
-        var stage = Str(a, "stage");
-        col.Children.Add(new TextBlock { Text = $"{KindName(kind)} · {ArtifactStatusLabel(status, stage)}", FontSize = 12, Opacity = 0.7 });
         if (status is "PENDING" or "RUNNING") col.Children.Add(new ProgressBar { Value = Num(a, "progress") * 100, Maximum = 100 });
         var err = Str(a, "error_code");
         if (status == "FAILED")
@@ -92,11 +150,25 @@ public sealed partial class MainWindow
         }
         if (status == "READY" && Bool(a, "sources_stale"))
             col.Children.Add(new TextBlock { Text = "来源已更新，可重新生成", FontSize = 12, Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 200, 120)) });
-        if (status is "READY" or "DRAFT_REVIEW")
+        if (status == "DRAFT_REVIEW")
         {
-            var open = new Button { Content = status == "READY" ? "打开" : "审核大纲", HorizontalAlignment = HorizontalAlignment.Left };
+            var open = new Button
+            {
+                Content = "审核大纲",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Style = (Style)Application.Current.Resources["PillButtonStyle"],
+                Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["HoverBgBrush"],
+                BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"],
+                CornerRadius = new CornerRadius(16),
+                Padding = new Thickness(14, 4, 14, 4),
+                FontSize = 12,
+            };
             open.Click += (_, _) => OpenArtifact(id);
             col.Children.Add(open);
+        }
+        if (status is "READY" or "DRAFT_REVIEW")
+        {
+            card.Tapped += (_, _) => OpenArtifact(id);
         }
         card.Child = col;
         return card;

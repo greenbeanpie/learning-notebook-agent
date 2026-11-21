@@ -83,6 +83,7 @@ impl TtsProvider for SystemTtsProvider {
         }
         .to_string();
 
+        let cancel_bg = cancel.clone();
         let synth_res = tokio::task::spawn_blocking(move || {
             #[cfg(target_os = "windows")]
             {
@@ -99,12 +100,27 @@ impl TtsProvider for SystemTtsProvider {
                     idx = if is_b { 1 } else { 0 },
                     is_b_ps = if is_b { "$true" } else { "$false" }
                 );
-                if let Ok(st) = std::process::Command::new("powershell")
+                if let Ok(mut child) = std::process::Command::new("powershell")
                     .args(["-NoProfile", "-Command", &ps])
-                    .status()
+                    .spawn()
                 {
-                    if st.success() && out_owned.exists() {
-                        return Ok(());
+                    loop {
+                        if cancel_bg.is_cancelled() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            let _ = std::fs::remove_file(&out_owned);
+                            return Err(true);
+                        }
+                        match child.try_wait() {
+                            Ok(Some(st)) => {
+                                if st.success() && out_owned.exists() {
+                                    return Ok(());
+                                }
+                                break;
+                            }
+                            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                            Err(_) => break,
+                        }
                     }
                 }
             }
@@ -112,19 +128,38 @@ impl TtsProvider for SystemTtsProvider {
             {
                 let pitch = if voice_id == "host_b" { "65" } else { "45" };
                 let lang_arg = if lang_prefix == "zh" { "cmn" } else { "en" };
-                if let Ok(st) = std::process::Command::new("espeak-ng")
+                if let Ok(mut child) = std::process::Command::new("espeak-ng")
                     .args(["-v", lang_arg, "-p", pitch, "-w", &out_owned.to_string_lossy(), &text_owned])
-                    .status()
+                    .spawn()
                 {
-                    if st.success() && out_owned.exists() {
-                        return Ok(());
+                    loop {
+                        if cancel_bg.is_cancelled() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            let _ = std::fs::remove_file(&out_owned);
+                            return Err(true);
+                        }
+                        match child.try_wait() {
+                            Ok(Some(st)) => {
+                                if st.success() && out_owned.exists() {
+                                    return Ok(());
+                                }
+                                break;
+                            }
+                            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                            Err(_) => break,
+                        }
                     }
                 }
             }
-            let _ = (&text_owned, &voice_id, &lang_prefix, &out_owned);
-            Err(())
+            let _ = (&text_owned, &voice_id, &lang_prefix, &out_owned, &cancel_bg);
+            Err(false)
         })
         .await;
+
+        if matches!(synth_res, Ok(Err(true))) || cancel.is_cancelled() {
+            return Err(LnaError::new(ErrorCode::Cancelled, "TTS cancelled"));
+        }
 
         if matches!(synth_res, Ok(Ok(()))) {
             if let Ok(parsed) = parse_wav_pcm16(out) {
@@ -319,6 +354,77 @@ mod tests {
         let merged = parse_wav_pcm16(&out).unwrap();
         assert_eq!(merged.sample_rate, 22_050);
         assert!((merged.samples.len() as i64 - 44_100).abs() <= 4);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn e8_b08_real_system_tts_bilingual_and_cancel() {
+        let tmp = std::env::temp_dir().join("lna_tts_e8_real_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let tts = SystemTtsProvider;
+        let va = Voice {
+            id: "host_a".into(),
+            name: "Host A".into(),
+            lang: "auto".into(),
+        };
+        let vb = Voice {
+            id: "host_b".into(),
+            name: "Host B".into(),
+            lang: "auto".into(),
+        };
+        let p_zh = tmp.join("turn_000.wav");
+        let p_en = tmp.join("turn_001.wav");
+        let merged = tmp.join("overview.wav");
+
+        let info_zh = tts
+            .synthesize(
+                "欢迎收听本地笔记本音频概览。",
+                &va,
+                &p_zh,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let info_en = tts
+            .synthesize(
+                "Welcome to the local notebook audio overview.",
+                &vb,
+                &p_en,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(info_zh.duration_ms > 300);
+        assert!(info_en.duration_ms > 300);
+
+        concat_wavs(&[p_zh, p_en], &merged).unwrap();
+        let wav = parse_wav_pcm16(&merged).unwrap();
+        assert!(
+            wav.samples.iter().any(|&s| s.abs() > 100),
+            "real TTS should produce non-silent audio"
+        );
+
+        // Cancellation mid-synthesis
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            cancel_clone.cancel();
+        });
+        let p_cancel = tmp.join("cancelled.wav");
+        let err = tts
+            .synthesize(
+                "This is a long sentence that will be cancelled before finishing synthesis.",
+                &va,
+                &p_cancel,
+                cancel,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Cancelled);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

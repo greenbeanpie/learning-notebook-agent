@@ -324,7 +324,17 @@ impl IngestService {
             Some(m) => m,
             None => return Ok(()),
         };
+        self.embed_source_chunks_for_model(source_id, notebook_id, source_title, &model)
+            .await
+    }
 
+    pub async fn embed_source_chunks_for_model(
+        &self,
+        source_id: &str,
+        notebook_id: &str,
+        source_title: &str,
+        model: &lna_embedding::EmbeddingModelRecord,
+    ) -> LnaResult<()> {
         let pending: Vec<(i64, Option<String>, String)> = self.db.read(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -360,14 +370,14 @@ impl IngestService {
                     )
                 })
                 .collect();
-            let vecs = self.embedding.embed_passages(&model, &texts).await?;
+            let vecs = self.embedding.embed_passages(model, &texts).await?;
             let items: Vec<(i64, Vec<f32>)> = batch
                 .iter()
                 .zip(vecs)
                 .map(|((cid, _, _), v)| (*cid, v))
                 .collect();
             self.embedding
-                .store_chunk_embeddings(&model, notebook_id, &items)?;
+                .store_chunk_embeddings(model, notebook_id, &items)?;
         }
         Ok(())
     }

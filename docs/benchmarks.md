@@ -11,7 +11,7 @@
 | 混合检索 P95（关键词部分，10 万分块） | < 300 ms | **123 ms**（P50 95 ms）；1 万分块 P95 5.6 ms | `crates/lna-api/tests/bench.rs::retrieval_latency_on_10k_and_100k_chunks` |
 | 首个 `thought_step` | < 100 ms | **P95 1.1 ms**（P50 0.9 ms，模拟模型） | `first_thought_step_latency`，从 `chat.send` 到第一个事件 |
 | 500 页 PDF 分块入库 | < 30 秒 | **0.8 秒**，819 个分块 | `pdf_500_pages_ingest_time`，纯文本 PDF，含页眉页脚识别 |
-| 10 万分块语义查询 P95 | < 150 ms | **未测** | 需要 10 万个向量；`vec0` 精确检索的耗时留待真实嵌入模型下测量 |
+| 10 万分块语义查询 P95 | < 150 ms（目标）/ < 300 ms（混合预算） | **217.5 ms**（P50 204.9 ms，384 维 float32 `vec0` 暴力扫描） | `crates/lna-api/tests/bench.rs::semantic_query_p95_on_100k_vectors`；若需压到 150 ms 内需启用 `int8`/量化索引 |
 
 复现：
 

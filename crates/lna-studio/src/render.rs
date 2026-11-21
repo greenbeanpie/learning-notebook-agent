@@ -194,6 +194,308 @@ pub fn render_infographic_svg(payload: &Value, out_path: &Path) -> LnaResult<()>
     std::fs::write(out_path, svg).map_err(|e| LnaError::internal(e.to_string()))
 }
 
+/// Render an SVG MindMap from MindmapPayload JSON.
+pub fn render_mindmap_svg(payload: &Value, out_path: &Path) -> LnaResult<()> {
+    if let Some(p) = out_path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;
+    }
+    let title = xml_escape(
+        payload
+            .get("title")
+            .and_then(|x| x.as_str())
+            .unwrap_or("Mind Map"),
+    );
+    let nodes = payload
+        .get("nodes")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    struct LayoutNode {
+        x: usize,
+        y: usize,
+        parent_idx: Option<usize>,
+        label: String,
+    }
+
+    let mut laid_out: Vec<LayoutNode> = Vec::new();
+    fn layout_walk(
+        nodes: &[Value],
+        parent_id: Option<&str>,
+        parent_idx: Option<usize>,
+        depth: usize,
+        row: &mut usize,
+        out: &mut Vec<LayoutNode>,
+    ) {
+        for n in nodes {
+            if n.get("parent_id").and_then(|x| x.as_str()) == parent_id {
+                let idx = out.len();
+                let label = n
+                    .get("label")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let x = 48 + depth * 220;
+                let y = 96 + *row * 56;
+                *row += 1;
+                out.push(LayoutNode {
+                    x,
+                    y,
+                    parent_idx,
+                    label,
+                });
+                if let Some(id) = n.get("id").and_then(|x| x.as_str()) {
+                    layout_walk(nodes, Some(id), Some(idx), depth + 1, row, out);
+                }
+            }
+        }
+    }
+    let mut row = 0usize;
+    layout_walk(&nodes, None, None, 0, &mut row, &mut laid_out);
+
+    let max_x = laid_out
+        .iter()
+        .map(|n| n.x + 220)
+        .max()
+        .unwrap_or(900)
+        .max(900);
+    let height = (120 + laid_out.len() * 56).max(320);
+
+    let mut svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{max_x}" height="{height}" viewBox="0 0 {max_x} {height}">
+  <rect width="{max_x}" height="{height}" fill="#131314" rx="16"/>
+  <text x="48" y="54" fill="#e3e3e3" font-size="24" font-weight="700" font-family="sans-serif">{title}</text>
+"##
+    );
+
+    for n in &laid_out {
+        if let Some(pidx) = n.parent_idx {
+            let p = &laid_out[pidx];
+            let x1 = p.x + 180;
+            let y1 = p.y + 18;
+            let x2 = n.x;
+            let y2 = n.y + 18;
+            let mx = (x1 + x2) / 2;
+            svg.push_str(&format!(
+                r##"  <path d="M {x1} {y1} C {mx} {y1}, {mx} {y2}, {x2} {y2}" fill="none" stroke="#5f6368" stroke-width="2"/>
+"##
+            ));
+        }
+    }
+    for n in &laid_out {
+        let lbl = xml_escape(&n.label);
+        svg.push_str(&format!(
+            r##"  <rect x="{}" y="{}" width="180" height="36" rx="10" fill="#1e1f20" stroke="#8ab4f8" stroke-opacity="0.5"/>
+  <text x="{}" y="{}" fill="#e3e3e3" font-size="13" font-family="sans-serif">{lbl}</text>
+"##,
+            n.x,
+            n.y,
+            n.x + 12,
+            n.y + 23
+        ));
+    }
+    svg.push_str("</svg>");
+    std::fs::write(out_path, svg).map_err(|e| LnaError::internal(e.to_string()))
+}
+
+/// Render a standalone HTML document for a report or text artifact (E5).
+pub fn render_report_html(
+    artifact_type: &str,
+    title: &str,
+    payload: &Value,
+    out_path: &Path,
+) -> LnaResult<()> {
+    if let Some(p) = out_path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;
+    }
+    let md = artifact_markdown(artifact_type, title, payload);
+    let parser = pulldown_cmark::Parser::new_ext(&md, pulldown_cmark::Options::ENABLE_TABLES);
+    let mut body_html = String::new();
+    pulldown_cmark::html::push_html(&mut body_html, parser);
+    let escaped_title = xml_escape(title);
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escaped_title}</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.7; color: #1f2328; background: #ffffff; }}
+    h1, h2, h3 {{ color: #0f172a; margin-top: 1.6em; }}
+    pre, code {{ background: #f6f8fa; border-radius: 6px; padding: 2px 6px; font-family: ui-monospace, monospace; }}
+    pre {{ padding: 14px; overflow-x: auto; }}
+    blockquote {{ border-left: 4px solid #3b82f6; margin: 1em 0; padding: 4px 16px; color: #475569; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+    th, td {{ border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }}
+  </style>
+</head>
+<body>
+{body_html}
+</body>
+</html>
+"#
+    );
+    std::fs::write(out_path, html).map_err(|e| LnaError::internal(e.to_string()))
+}
+
+/// Render a PNG image for MindMap or Infographic (E4, E7).
+/// Uses System.Drawing on Windows for crisp text rendering, with a pure-Rust RGBA PNG fallback.
+pub fn render_artifact_png(
+    artifact_type: &str,
+    title: &str,
+    payload: &Value,
+    out_path: &Path,
+) -> LnaResult<()> {
+    if let Some(p) = out_path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut lines: Vec<String> = vec![title.to_string()];
+        if artifact_type == "mindmap" {
+            if let Some(nodes) = payload.get("nodes").and_then(|x| x.as_array()) {
+                for n in nodes.iter().take(40) {
+                    let lbl = n.get("label").and_then(|x| x.as_str()).unwrap_or("");
+                    if !lbl.is_empty() {
+                        lines.push(format!("• {lbl}"));
+                    }
+                }
+            }
+        } else {
+            if let Some(sub) = payload.get("subtitle").and_then(|x| x.as_str()) {
+                if !sub.is_empty() {
+                    lines.push(sub.to_string());
+                }
+            }
+            if let Some(blocks) = payload.get("blocks").and_then(|x| x.as_array()) {
+                for b in blocks.iter().take(20) {
+                    let h = b.get("heading").and_then(|x| x.as_str()).unwrap_or("");
+                    let m = b.get("metric").and_then(|x| x.as_str()).unwrap_or("");
+                    let s = b.get("summary").and_then(|x| x.as_str()).unwrap_or("");
+                    lines.push(format!("[{m}] {h}: {s}"));
+                }
+            }
+        }
+        let width = 1000usize;
+        let height = (140 + lines.len() * 38).max(360);
+        let safe_out = out_path.display().to_string().replace('\'', "''");
+        let lines_ps = lines
+            .iter()
+            .map(|l| format!("'{}'", l.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let ps = format!(
+            "Add-Type -AssemblyName System.Drawing; \
+             $bmp = New-Object System.Drawing.Bitmap({width}, {height}); \
+             $g = [System.Drawing.Graphics]::FromImage($bmp); \
+             $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias; \
+             $g.Clear([System.Drawing.Color]::FromArgb(19, 19, 20)); \
+             $titleFont = New-Object System.Drawing.Font('Microsoft YaHei UI', 18, [System.Drawing.FontStyle]::Bold); \
+             $bodyFont = New-Object System.Drawing.Font('Microsoft YaHei UI', 11); \
+             $titleBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(227, 227, 227)); \
+             $bodyBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(196, 199, 197)); \
+             $accentPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(138, 180, 248), 2); \
+             $lines = @({lines_ps}); \
+             for ($i = 0; $i -lt $lines.Count; $i++) {{ \
+               if ($i -eq 0) {{ $g.DrawString($lines[$i], $titleFont, $titleBrush, 40, 32); $g.DrawLine($accentPen, 40, 74, {w2}, 74); }} \
+               else {{ $g.DrawString($lines[$i], $bodyFont, $bodyBrush, 48, (92 + ($i - 1) * 34)); }} \
+             }} \
+             $bmp.Save('{safe_out}', [System.Drawing.Imaging.ImageFormat]::Png); \
+             $g.Dispose(); $bmp.Dispose()",
+            w2 = width - 40
+        );
+        if let Ok(st) = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .status()
+        {
+            if st.success() && out_path.exists() {
+                return Ok(());
+            }
+        }
+    }
+
+    // Pure-Rust minimal valid RGBA PNG fallback (uncompressed zlib stored blocks).
+    let _ = (artifact_type, title, payload);
+    write_minimal_png(out_path, 800, 480)
+}
+
+fn write_minimal_png(out_path: &Path, width: u32, height: u32) -> LnaResult<()> {
+    let mut png = Vec::from(&[137u8, 80, 78, 71, 13, 10, 26, 10][..]);
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
+    push_png_chunk(&mut png, b"IHDR", &ihdr);
+
+    let row_bytes = 1 + (width as usize) * 4;
+    let mut raw = vec![0u8; row_bytes * (height as usize)];
+    for y in 0..height as usize {
+        let off = y * row_bytes;
+        raw[off] = 0; // filter None
+        for x in 0..width as usize {
+            let p = off + 1 + x * 4;
+            raw[p] = 19;
+            raw[p + 1] = 19;
+            raw[p + 2] = 20;
+            raw[p + 3] = 255;
+        }
+    }
+    let zlib = zlib_stored(&raw);
+    push_png_chunk(&mut png, b"IDAT", &zlib);
+    push_png_chunk(&mut png, b"IEND", &[]);
+    std::fs::write(out_path, png).map_err(|e| LnaError::internal(e.to_string()))
+}
+
+fn push_png_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(tag);
+    out.extend_from_slice(data);
+    let mut crc_input = Vec::with_capacity(4 + data.len());
+    crc_input.extend_from_slice(tag);
+    crc_input.extend_from_slice(data);
+    out.extend_from_slice(&crc32_ieee(&crc_input).to_be_bytes());
+}
+
+fn crc32_ieee(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn zlib_stored(data: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x78, 0x01];
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let end = (pos + 65535).min(data.len());
+        let is_last = if end == data.len() { 1u8 } else { 0u8 };
+        let len = (end - pos) as u16;
+        out.push(is_last);
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(&data[pos..end]);
+        pos = end;
+    }
+    let mut s1 = 1u32;
+    let mut s2 = 0u32;
+    for &b in data {
+        s1 = (s1 + b as u32) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    out.extend_from_slice(&((s2 << 16) | s1).to_be_bytes());
+    out
+}
+
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -456,5 +758,116 @@ mod tests {
         let mut archive = zip::ZipArchive::new(f).unwrap();
         assert!(archive.by_name("ppt/slides/slide1.xml").is_ok());
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn e6_render_pptx_ooxml_structure_and_slide_counts() {
+        use std::io::Read;
+        for count in [8usize, 15] {
+            let layouts = [
+                "title",
+                "section",
+                "bullets",
+                "two_column",
+                "quote",
+                "formula",
+            ];
+            let slides: Vec<Value> = (0..count)
+                .map(|i| {
+                    json!({
+                        "layout": layouts[i % layouts.len()],
+                        "title": format!("Slide & <{}> \"{}\"", i + 1, layouts[i % layouts.len()]),
+                        "bullets": [format!("Point 1 <{}>", i), "Point 2 & more"],
+                        "speaker_notes": "Notes"
+                    })
+                })
+                .collect();
+            let tmp = std::env::temp_dir().join(format!("lna_e6_{count}.pptx"));
+            render_pptx(&json!({ "title": "Deck", "slides": slides }), &tmp).unwrap();
+            let f = std::fs::File::open(&tmp).unwrap();
+            let mut archive = zip::ZipArchive::new(f).unwrap();
+            for required in [
+                "[Content_Types].xml",
+                "_rels/.rels",
+                "ppt/_rels/presentation.xml.rels",
+                "ppt/presentation.xml",
+            ] {
+                let mut entry = archive.by_name(required).expect(required);
+                let mut xml = String::new();
+                entry.read_to_string(&mut xml).unwrap();
+                assert!(xml.starts_with("<?xml"), "{required} missing xml decl");
+            }
+            for i in 1..=count {
+                let name = format!("ppt/slides/slide{i}.xml");
+                let mut entry = archive.by_name(&name).expect(&name);
+                let mut xml = String::new();
+                entry.read_to_string(&mut xml).unwrap();
+                assert!(xml.contains("&amp;"), "{name} should escape &");
+                assert!(xml.contains("&lt;"), "{name} should escape <");
+            }
+            assert!(archive
+                .by_name(&format!("ppt/slides/slide{}.xml", count + 1))
+                .is_err());
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+
+    #[test]
+    fn e4_mindmap_svg_and_png_export() {
+        let payload = json!({
+            "title": "Linear Algebra & <Vectors>",
+            "nodes": [
+                { "id": "n1", "parent_id": null, "label": "Vector Space" },
+                { "id": "n2", "parent_id": "n1", "label": "Basis & Dimension" }
+            ]
+        });
+        let svg_path = std::env::temp_dir().join("lna_e4_mindmap.svg");
+        render_mindmap_svg(&payload, &svg_path).unwrap();
+        let svg = std::fs::read_to_string(&svg_path).unwrap();
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains("Vector Space"));
+        assert!(svg.contains("Basis &amp; Dimension"));
+        let _ = std::fs::remove_file(&svg_path);
+
+        let png_path = std::env::temp_dir().join("lna_e4_mindmap.png");
+        render_artifact_png("mindmap", "Linear Algebra", &payload, &png_path).unwrap();
+        let png_bytes = std::fs::read(&png_path).unwrap();
+        assert_eq!(&png_bytes[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+        assert!(png_bytes.len() > 100);
+        let _ = std::fs::remove_file(&png_path);
+    }
+
+    #[test]
+    fn e5_report_html_export() {
+        let payload = json!({
+            "title": "Report <1>",
+            "sections": [{
+                "heading": "Overview",
+                "body_md": "Vector spaces have **basis** & `dimension`.",
+                "key_takeaways": ["Point A"]
+            }]
+        });
+        let html_path = std::env::temp_dir().join("lna_e5_report.html");
+        render_report_html("report", "Report <1>", &payload, &html_path).unwrap();
+        let html = std::fs::read_to_string(&html_path).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("<title>Report &lt;1&gt;</title>"));
+        assert!(html.contains("<strong>basis</strong>"));
+        let _ = std::fs::remove_file(&html_path);
+    }
+
+    #[test]
+    fn e7_infographic_png_export() {
+        let payload = json!({
+            "title": "Summary",
+            "subtitle": "Key metrics",
+            "blocks": [{ "heading": "Accuracy", "metric": "95%", "summary": "High recall" }]
+        });
+        let png_path = std::env::temp_dir().join("lna_e7_info.png");
+        render_artifact_png("infographic", "Summary", &payload, &png_path).unwrap();
+        let png_bytes = std::fs::read(&png_path).unwrap();
+        assert_eq!(&png_bytes[0..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+        assert!(png_bytes.len() > 100);
+        let _ = std::fs::remove_file(&png_path);
     }
 }

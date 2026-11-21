@@ -180,11 +180,38 @@ impl CoreRuntime {
                                 .await
                         }
                         "embed_source" => {
-                            match lna_storage::get_source(&core.db, &job.subject_id) {
+                            let (sid, target_mid) = match job.subject_id.split_once('@') {
+                                Some((s, m)) => (s, Some(m)),
+                                None => (job.subject_id.as_str(), None),
+                            };
+                            match lna_storage::get_source(&core.db, sid) {
                                 Ok(src) => {
-                                    core.ingest
-                                        .embed_source_chunks(&src.id, &src.notebook_id, &src.title)
-                                        .await
+                                    if let Some(mid) = target_mid {
+                                        match core.embedding.get_model(mid) {
+                                            Ok(Some(model)) => {
+                                                core.ingest
+                                                    .embed_source_chunks_for_model(
+                                                        &src.id,
+                                                        &src.notebook_id,
+                                                        &src.title,
+                                                        &model,
+                                                    )
+                                                    .await
+                                            }
+                                            Ok(None) => Err(LnaError::not_found(
+                                                "Target embedding model not found",
+                                            )),
+                                            Err(e) => Err(e),
+                                        }
+                                    } else {
+                                        core.ingest
+                                            .embed_source_chunks(
+                                                &src.id,
+                                                &src.notebook_id,
+                                                &src.title,
+                                            )
+                                            .await
+                                    }
                                 }
                                 Err(e) => Err(e),
                             }
@@ -194,6 +221,28 @@ impl CoreRuntime {
                     match res {
                         Ok(()) => {
                             let _ = core.jobs.mark_done(&job.id);
+                            if job.kind == "embed_source" {
+                                if let Some((_, mid)) = job.subject_id.split_once('@') {
+                                    let suffix = format!("%@{mid}");
+                                    let remaining: i64 = core
+                                        .db
+                                        .read(|conn| {
+                                            conn.query_row(
+                                                "SELECT COUNT(*) FROM jobs
+                                                 WHERE kind = 'embed_source'
+                                                   AND subject_id LIKE ?1
+                                                   AND status IN ('QUEUED','RUNNING')",
+                                                [suffix],
+                                                |r| r.get(0),
+                                            )
+                                            .map_err(map_sql_err)
+                                        })
+                                        .unwrap_or(1);
+                                    if remaining == 0 {
+                                        let _ = core.embedding.activate_model(mid);
+                                    }
+                                }
+                            }
                         }
                         Err(e) => {
                             let _ = core.jobs.mark_failed_or_retry(
@@ -649,9 +698,19 @@ impl CoreRuntime {
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
                 let ep = p.get("endpoint_profile_id").and_then(|x| x.as_str());
-                let rec = self
-                    .embedding
-                    .configure(provider, model_name, dim, qp, pp, ep)?;
+                let defer_activate = p
+                    .get("defer_activate")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                let rec = self.embedding.configure_with_activation(
+                    provider,
+                    model_name,
+                    dim,
+                    qp,
+                    pp,
+                    ep,
+                    !defer_activate,
+                )?;
                 Ok(serde_json::to_value(rec).unwrap())
             }
 
@@ -929,7 +988,9 @@ impl CoreRuntime {
             }
             "embedding.rebuild" => {
                 let force = p.get("force").and_then(|x| x.as_bool()).unwrap_or(false);
-                let count = queue_embeddings(&self.db, &self.embedding, &self.jobs, force)?;
+                let model_id = p.get("model_id").and_then(|x| x.as_str());
+                let count =
+                    queue_embeddings(&self.db, &self.embedding, &self.jobs, force, model_id)?;
                 Ok(json!({ "ok": true, "queued": count > 0, "sources_queued": count }))
             }
 
@@ -1027,7 +1088,7 @@ impl CoreRuntime {
                                 None,
                             )
                             .and_then(|_| {
-                                queue_embeddings(&db, &embedding, &jobs, false).map(|_| ())
+                                queue_embeddings(&db, &embedding, &jobs, false, None).map(|_| ())
                             }),
                         Ok(_) => Ok(()),
                         Err(e) => Err(e),
@@ -1076,13 +1137,19 @@ fn queue_embeddings(
     embedding: &EmbeddingService,
     jobs: &JobQueue,
     force: bool,
+    target_model_id: Option<&str>,
 ) -> LnaResult<usize> {
-    let model = embedding.active_model()?.ok_or_else(|| {
-        LnaError::new(
-            ErrorCode::CapabilityMissing,
-            "No active embedding model configured",
-        )
-    })?;
+    let model = match target_model_id {
+        Some(mid) => embedding
+            .get_model(mid)?
+            .ok_or_else(|| LnaError::not_found("Target embedding model not found"))?,
+        None => embedding.active_model()?.ok_or_else(|| {
+            LnaError::new(
+                ErrorCode::CapabilityMissing,
+                "No active embedding model configured",
+            )
+        })?,
+    };
     if force {
         db.write(|conn| {
             // The vec0 table has a primary key per chunk, so old vectors must go before new ones are written.
@@ -1111,7 +1178,12 @@ fn queue_embeddings(
     })?;
     let count = ready_sources.len();
     for (sid, nid) in ready_sources {
-        jobs.enqueue("embed_source", Some(&nid), &sid, 50)?;
+        let subject = if target_model_id.is_some() {
+            format!("{sid}@{}", model.id)
+        } else {
+            sid
+        };
+        jobs.enqueue("embed_source", Some(&nid), &subject, 50)?;
     }
     Ok(count)
 }

@@ -1759,6 +1759,7 @@ dependencies = [
  "lna-storage",
  "lna-tts",
  "lna-types",
+ "pulldown-cmark",
  "rusqlite",
  "serde",
  "serde_json",

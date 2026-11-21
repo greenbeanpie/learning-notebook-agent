@@ -17,17 +17,18 @@ public sealed partial class MainWindow
     {
         public string Id = "";
         public string Role = "";
-        public StackPanel Root = new() { Spacing = 6 };
+        public StackPanel Root = new() { Spacing = 8 };
         public ContentControl Body = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch };
         public TextBlock StreamText = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
         public StringBuilder Text = new();
         public Expander? Thoughts;
-        public StackPanel ThoughtList = new() { Spacing = 2 };
+        public TextBlock? ThoughtsHeaderText;
+        public StackPanel ThoughtList = new() { Spacing = 4 };
         public TextBlock ThoughtStream = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };
         public Dictionary<string, TextBlock> Steps = new();
         public Dictionary<int, (string Title, int Page, string Quote)> Citations = new();
-        public StackPanel Footer = new() { Spacing = 4 };
-        public StackPanel Followups = new() { Spacing = 2 };
+        public StackPanel Footer = new() { Spacing = 8 };
+        public StackPanel Followups = new() { Spacing = 8, Margin = new Thickness(0, 6, 0, 0) };
         public bool Streaming;
     }
 
@@ -51,7 +52,7 @@ public sealed partial class MainWindow
         v.Footer.Visibility = Visibility.Collapsed;
         v.Root.Children.Add(v.Footer);
         v.Root.Children.Add(v.Followups);
-        v.Root.Margin = new Thickness(0, 6, 0, 10);
+        v.Root.Margin = new Thickness(0, 8, 0, 14);
         if (isUser) v.Root.HorizontalAlignment = HorizontalAlignment.Stretch;
         return v;
     }
@@ -74,7 +75,7 @@ public sealed partial class MainWindow
         v.Streaming = false;
         v.Body.Content = v.Role == "user"
             ? new TextBlock { Text = markdown, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }
-            : Md.Render(markdown, n => v.Citations.ContainsKey(n) ? CitationChip(v, n) : null);
+            : Md.Render(markdown, n => v.Citations.ContainsKey(n) ? CitationChip(v, n) : null, 14, _math, MathRenderHost);
     }
 
     private void RenderChat(JsonElement history)
@@ -149,43 +150,101 @@ public sealed partial class MainWindow
     {
         if (v.Thoughts != null)
         {
-            v.Thoughts.Header = $"思考过程（{v.Steps.Count} 步）";
+            if (v.ThoughtsHeaderText != null) v.ThoughtsHeaderText.Text = $"思考过程（{v.Steps.Count} 步）";
             return;
         }
-        var inner = new StackPanel { Spacing = 4 };
+        var inner = new StackPanel { Spacing = 6, Padding = new Thickness(4, 4, 4, 4) };
         inner.Children.Add(v.ThoughtList);
         inner.Children.Add(v.ThoughtStream);
-        v.Thoughts = new Expander { Header = $"思考过程（{v.Steps.Count} 步）", Content = inner, IsExpanded = false, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        headerRow.Children.Add(new PathIcon
+        {
+            Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z"),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"],
+        });
+        v.ThoughtsHeaderText = new TextBlock { Text = $"思考过程（{v.Steps.Count} 步）", FontSize = 13, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"], VerticalAlignment = VerticalAlignment.Center };
+        headerRow.Children.Add(v.ThoughtsHeaderText);
+        v.Thoughts = new Expander
+        {
+            Header = headerRow,
+            Content = inner,
+            IsExpanded = false,
+            MinHeight = 42,
+            Margin = new Thickness(0, 4, 0, 4),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"],
+            BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SubtleBorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+        };
         v.Root.Children.Insert(1, v.Thoughts);
     }
 
     private void AddActions(MessageView v, string content, long feedback, bool isLast)
     {
-        var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 6, 0, 2) };
         Button Mk(string text, string tip, Func<Task> act)
         {
-            var b = new Button { Content = text, Padding = new Thickness(8, 2, 8, 2), FontSize = 12, Background = null, BorderThickness = new Thickness(0) };
+            var b = new Button { Content = text, MinHeight = 36, Padding = new Thickness(12, 6, 12, 6), CornerRadius = new CornerRadius(18), FontSize = 12, Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
             ToolTipService.SetToolTip(b, tip);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, tip);
             b.Click += async (_, _) => await act();
             return b;
         }
-        bar.Children.Add(Mk("复制", "复制回答", () =>
+        var saveContent = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        saveContent.Children.Add(new PathIcon
         {
-            var dp = new DataPackage();
-            dp.SetText(content);
-            Clipboard.SetContent(dp);
-            ShowStatus(InfoBarSeverity.Success, "已复制", "回答已复制到剪贴板。");
-            return Task.CompletedTask;
-        }));
-        bar.Children.Add(Mk("存为笔记", "把这条回答保存为笔记（保留引用）", async () =>
+            Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z"),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+        });
+        saveContent.Children.Add(new TextBlock { Text = "保存到笔记", FontSize = 12, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"], VerticalAlignment = VerticalAlignment.Center });
+        var saveBtn = new Button
+        {
+            Content = saveContent,
+            MinHeight = 36,
+            Padding = new Thickness(12, 6, 12, 6),
+            CornerRadius = new CornerRadius(18),
+            Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"],
+            BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"],
+            BorderThickness = new Thickness(1),
+        };
+        ToolTipService.SetToolTip(saveBtn, "把这条回答保存为笔记（保留引用）");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(saveBtn, "把这条回答保存为笔记（保留引用）");
+        saveBtn.Click += async (_, _) =>
         {
             if (await CoreAsync("note.from_message", Args(("message_id", v.Id)), "保存笔记") != null)
             {
                 ShowStatus(InfoBarSeverity.Success, "已保存", "回答已保存为笔记。");
                 await RefreshNotebookDataAsync();
             }
-        }));
+        };
+        bar.Children.Add(saveBtn);
+
+        var copyBtn = new Button
+        {
+            Content = new PathIcon
+            {
+                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"),
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+            },
+            MinWidth = 38,
+            MinHeight = 36,
+            Padding = new Thickness(10, 6, 10, 6),
+            CornerRadius = new CornerRadius(18),
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+        };
+        ToolTipService.SetToolTip(copyBtn, "复制回答");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(copyBtn, "复制回答");
+        copyBtn.Click += (_, _) =>
+        {
+            var dp = new DataPackage();
+            dp.SetText(content);
+            Clipboard.SetContent(dp);
+            ShowStatus(InfoBarSeverity.Success, "已复制", "回答已复制到剪贴板。");
+        };
+        bar.Children.Add(copyBtn);
         if (isLast)
         {
             bar.Children.Add(Mk("重新生成", "重新生成这条回答", async () =>
@@ -197,20 +256,57 @@ public sealed partial class MainWindow
                 await RefreshNotebookDataAsync();
             }));
         }
-        bar.Children.Add(Mk(feedback > 0 ? "👍 已赞" : "👍", "回答有帮助", async () =>
+        Button MkIcon(string pathData, string label, bool active, string tip, Func<Task> act)
+        {
+            var sp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+            sp.Children.Add(new PathIcon
+            {
+                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), pathData),
+                Foreground = active
+                    ? (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"]
+                    : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+            });
+            if (label.Length > 0)
+            {
+                sp.Children.Add(new TextBlock
+                {
+                    Text = label,
+                    FontSize = 12,
+                    Foreground = active
+                        ? (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"]
+                        : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+            }
+            var b = new Button
+            {
+                Content = sp,
+                MinWidth = 38,
+                MinHeight = 36,
+                Padding = new Thickness(10, 6, 10, 6),
+                CornerRadius = new CornerRadius(18),
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                BorderThickness = new Thickness(0),
+            };
+            ToolTipService.SetToolTip(b, tip);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, tip);
+            b.Click += async (_, _) => await act();
+            return b;
+        }
+        bar.Children.Add(MkIcon(
+            "M23,10C23,8.89 22.1,8 21,8H14.68L15.64,3.43C15.66,3.33 15.67,3.22 15.67,3.11C15.67,2.7 15.5,2.32 15.23,2.05L14.17,1L7.59,7.58C7.22,7.95 7,8.45 7,9V19A2,2 0 0,0 9,21H18C18.83,21 19.54,20.5 19.84,19.78L22.86,12.73C22.95,12.5 23,12.26 23,12V10M1,21H5V9H1V21Z",
+            feedback > 0 ? "已赞" : "", feedback > 0, "回答有帮助", async () =>
         {
             await CoreAsync("chat.set_feedback", Args(("message_id", v.Id), ("feedback", 1)), "提交反馈");
             await RefreshNotebookDataAsync();
         }));
-        bar.Children.Add(Mk(feedback < 0 ? "👎 已踩" : "👎", "回答没有帮助", async () =>
+        bar.Children.Add(MkIcon(
+            "M19,15H23V3H19M15,3H6C5.17,3 4.46,3.5 4.16,4.22L1.14,11.27C1.05,11.5 1,11.74 1,12V14A2,2 0 0,0 3,16H9.31L8.36,20.57C8.34,20.67 8.33,20.77 8.33,20.88C8.33,21.3 8.5,21.67 8.77,21.94L9.83,23L16.41,16.41C16.78,16.05 17,15.55 17,15V5A2,2 0 0,0 15,3Z",
+            feedback < 0 ? "已踩" : "", feedback < 0, "回答没有帮助", async () =>
         {
             await CoreAsync("chat.set_feedback", Args(("message_id", v.Id), ("feedback", -1)), "提交反馈");
             await RefreshNotebookDataAsync();
         }));
-        if (Md.HasMath(content))
-        {
-            bar.Children.Add(Mk("公式视图", "用排版好的公式查看这条回答", () => ShowMathAsync(content)));
-        }
         v.Footer.Children.Add(bar);
         v.Footer.Visibility = Visibility.Visible;
     }
@@ -220,8 +316,26 @@ public sealed partial class MainWindow
         v.Followups.Children.Clear();
         foreach (var q in questions.Where(q => q.Length > 0))
         {
-            var b = new HyperlinkButton { Content = q, Padding = new Thickness(0, 2, 0, 2), Tag = q };
-            b.Click += async (s, _) => { if (s is HyperlinkButton hb && hb.Tag is string text) await SendChatAsync(text); };
+            var b = new Button
+            {
+                Content = new TextBlock
+                {
+                    Text = q,
+                    FontSize = 13,
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                Tag = q,
+                MinHeight = 42,
+                Padding = new Thickness(14, 10, 14, 10),
+                CornerRadius = new CornerRadius(12),
+                Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["PanelBgBrush"],
+                BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"],
+                BorderThickness = new Thickness(1),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+            };
+            b.Click += async (s, _) => { if (s is Button btn && btn.Tag is string text) await SendChatAsync(text); };
             v.Followups.Children.Add(b);
         }
     }
@@ -425,20 +539,5 @@ public sealed partial class MainWindow
             foreach (var s in Arr(r, "sources")) if (Str(s, "title") == title) return Str(s, "id");
         }
         return "";
-    }
-
-    // ---------- formulas ----------
-
-    private async Task ShowMathAsync(string text)
-    {
-        var host = new Grid { MinWidth = 640, Height = 480 };
-        var dlg = new ContentDialog { Title = "公式视图", Content = host, CloseButtonText = "关闭", XamlRoot = Content.XamlRoot };
-        dlg.Opened += async (_, _) =>
-        {
-            try { await _math.RenderMathAsync(host, text); }
-            catch (Exception ex) { ShowStatus(InfoBarSeverity.Error, "公式视图不可用", ex.Message); }
-        };
-        await dlg.ShowAsync();
-        _math.Release(); // the next view creates a fresh WebView2; an idle one holds tens of MB
     }
 }

@@ -126,38 +126,12 @@ public sealed class ArtifactWindow : Window
             menu.Items.Add(item);
         }
         _tools.Children.Add(new DropDownButton { Content = "导出", Flyout = menu });
-        if (kind == "report")
-        {
-            var nl = Environment.NewLine;
-            var text = string.Join(nl + nl, Arr(Obj(_art, "payload"), "sections").Select(s => $"{Str(s, "heading")}{nl}{Str(s, "body_md")}"));
-            if (Md.HasMath(text))
-            {
-                var math = new Button { Content = "公式视图" };
-                math.Click += async (_, _) => await ShowMathAsync(text);
-                _tools.Children.Add(math);
-            }
-        }
         var up = new Button { Content = "👍" };
         up.Click += async (_, _) => { await Core("studio.set_feedback", Args(("artifact_id", _id), ("feedback", 1)), "提交反馈"); Say(InfoBarSeverity.Success, "谢谢反馈", ""); };
         var down = new Button { Content = "👎" };
         down.Click += async (_, _) => { await Core("studio.set_feedback", Args(("artifact_id", _id), ("feedback", -1)), "提交反馈"); Say(InfoBarSeverity.Success, "谢谢反馈", ""); };
         _tools.Children.Add(up);
         _tools.Children.Add(down);
-    }
-
-    private readonly WebContentHost _math = new();
-
-    private async Task ShowMathAsync(string text)
-    {
-        var host = new Grid { MinWidth = 720, Height = 520 };
-        var dlg = new ContentDialog { Title = "公式视图", Content = host, CloseButtonText = "关闭", XamlRoot = _root.XamlRoot };
-        dlg.Opened += async (_, _) =>
-        {
-            try { await _math.RenderMathAsync(host, text); }
-            catch (Exception ex) { Say(InfoBarSeverity.Error, "公式视图不可用", ex.Message); }
-        };
-        await dlg.ShowAsync();
-        _math.Release();
     }
 
     private async Task ExportAsync(string fmt, string ext, string label)

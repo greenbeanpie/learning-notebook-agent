@@ -63,10 +63,29 @@ public sealed class ApiEventDto
     public JsonElement Data { get; set; }
 }
 
+public sealed class MathMeasureDto
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; set; }
+
+    [JsonPropertyName("width")]
+    public int Width { get; set; }
+
+    [JsonPropertyName("height")]
+    public int Height { get; set; }
+
+    [JsonPropertyName("overflow")]
+    public bool Overflow { get; set; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; set; }
+}
+
 [JsonSerializable(typeof(OpenConfigDto))]
 [JsonSerializable(typeof(ApiRequestDto))]
 [JsonSerializable(typeof(ApiResponseDto))]
 [JsonSerializable(typeof(ApiEventDto))]
+[JsonSerializable(typeof(MathMeasureDto))]
 [JsonSerializable(typeof(string))]
 internal partial class LnaJsonContext : JsonSerializerContext
 {

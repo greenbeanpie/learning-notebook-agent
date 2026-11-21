@@ -20,6 +20,7 @@ if (Test-Path $vsInstaller) { $env:Path += ";$vsInstaller" }
 $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
 if (Test-Path $cargoBin) { $env:Path += ";$cargoBin" }
 
+New-Item -ItemType Directory -Force -Path target/release/examples,target/release/deps | Out-Null
 cargo build --release -p lna-ffi -p lna-devtools
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 

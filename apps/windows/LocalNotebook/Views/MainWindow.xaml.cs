@@ -23,7 +23,11 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         App.Core.EventReceived += OnCoreEvent;
-        Closed += (_, _) => App.Core.Dispose();
+        Closed += (_, _) =>
+        {
+            _math.Dispose();
+            App.Core.Dispose();
+        };
     }
 
     // ---------- helpers ----------
@@ -159,7 +163,14 @@ public sealed partial class MainWindow : Window
             foreach (var nb in Arr(res, "notebooks"))
             {
                 var id = Str(nb, "id");
-                var item = new ComboBoxItem { Content = $"{Str(nb, "emoji")} {Str(nb, "title")}".Trim(), Tag = id };
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+                row.Children.Add(new PathIcon
+                {
+                    Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M18,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V4A2,2 0 0,0 18,2M18,20H6V4H8V12L10.5,9.75L13,12V4H18V20Z"),
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"],
+                });
+                row.Children.Add(new TextBlock { Text = Str(nb, "title"), VerticalAlignment = VerticalAlignment.Center });
+                var item = new ComboBoxItem { Content = row, Tag = id };
                 NotebookPicker.Items.Add(item);
                 if (id == _activeNotebookId) NotebookPicker.SelectedItem = item;
             }
@@ -316,6 +327,7 @@ public sealed partial class MainWindow : Window
         var md = Str(nb, "summary_md");
         SummaryText.Text = md.Length > 0 ? md : "请添加来源或直接提问。";
         SuggestedPanel.Children.Clear();
+        SuggestedPanel.ColumnDefinitions.Clear();
         var raw = Str(nb, "suggested_questions_json");
         var questions = new List<string>();
         if (nb.TryGetProperty("suggested_questions", out var sq) && sq.ValueKind == JsonValueKind.Array)
@@ -331,10 +343,35 @@ public sealed partial class MainWindow : Window
             }
             catch (JsonException) { }
         }
-        foreach (var q in questions.Where(q => q.Length > 0).Take(3))
+        var topQuestions = questions.Where(q => q.Length > 0).Take(3).ToList();
+        for (int i = 0; i < topQuestions.Count; i++)
         {
-            var btn = new HyperlinkButton { Content = q, Padding = new Thickness(0, 2, 0, 2), Tag = q };
-            btn.Click += async (s, _) => { if (s is HyperlinkButton hb && hb.Tag is string text) await SendChatAsync(text); };
+            SuggestedPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var q = topQuestions[i];
+            var btn = new Button
+            {
+                Content = new TextBlock
+                {
+                    Text = q,
+                    FontSize = 12,
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxLines = 2,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+                Tag = q,
+                Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["PanelBgBrush"],
+                BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"],
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(14, 10, 14, 10),
+                MinHeight = 44,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Stretch,
+            };
+            btn.Click += async (s, _) => { if (s is Button b && b.Tag is string text) await SendChatAsync(text); };
+            Grid.SetColumn(btn, i);
             SuggestedPanel.Children.Add(btn);
         }
     }

@@ -23,6 +23,9 @@ STUDIO_EXTRA = {
     "infographic": {"title": "基与维数", "subtitle": "一图读懂", "orientation": "landscape", "style": "clean", "blocks": [
         {"heading": "维数", "metric": "n", "summary": "基中向量的个数", "citations": [1]},
         {"heading": "基", "metric": "2 个条件", "summary": "线性无关且张成", "citations": [1]}]},
+    "audio": {"title": "基与维数播客", "speakers": [{"id": "A", "role": "主讲"}, {"id": "B", "role": "嘉宾"}], "turns": [
+        {"speaker": "A", "text": "欢迎收听线性代数播客，今天我们讨论基与维数。", "citations": [1]},
+        {"speaker": "B", "text": "Welcome! A basis is a linearly independent spanning set.", "citations": [1]}]},
 }
 SUMMARY = {"title_suggestion": "线性代数笔记", "summary_md": "本笔记本讨论基与维数。",
            "suggested_questions": ["什么是基？", "维数如何定义？", "秩是什么？"]}

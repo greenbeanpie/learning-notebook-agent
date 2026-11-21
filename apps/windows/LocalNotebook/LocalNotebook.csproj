@@ -26,6 +26,7 @@
   <ItemGroup>
     <!-- KaTeX for the formula view (G6): local files only, loaded through a virtual host name. -->
     <Content Include="Assets\katex\**\*" CopyToOutputDirectory="PreserveNewest" Link="Assets\katex\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Content Include="Assets\logo.svg" CopyToOutputDirectory="PreserveNewest" Link="Assets\logo.svg" />
   </ItemGroup>
 
   <ItemGroup>

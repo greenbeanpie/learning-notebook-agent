@@ -1,19 +1,39 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.Web.WebView2.Core;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
+using Windows.Storage.Streams;
 
 namespace LocalNotebook.Services;
 
+public sealed record MathRenderResult(
+    bool Success,
+    byte[]? PngBytes,
+    int Width,
+    int Height,
+    bool Overflow,
+    string? Error);
+
 /// <summary>
-/// One shared WebView2 for LaTeX formulas, created on demand and released after 60 s without use (G6).
-/// The page is local (KaTeX bundled under Assets/katex), has a CSP that forbids network access and
-/// inline script, receives text only (never HTML), and every navigation away from the local host is cancelled.
+/// One shared WebView2 for inline & block LaTeX formulas, created on demand and released after 60 s
+/// without use (G6). Renders each formula once into a cached transparent PNG so chat lists never spawn
+/// per-message WebViews. Enforces length, timeout, and error fallbacks.
 /// </summary>
 public sealed class WebContentHost : IDisposable
 {
+    public const int MaxFormulaLength = 2000;
+    public const int MaxFormulasPerMessage = 30;
+    private const int MaxCacheEntries = 250;
+    private const int RenderTimeoutMs = 5000;
     private const string HostName = "katex.local";
+
     private WebView2? _webView;
     private bool _pageReady;
+    private bool _disposed;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Dictionary<string, MathRenderResult> _cache = new();
+    private readonly LinkedList<string> _cacheOrder = new();
     private readonly DispatcherTimer _idleTimer;
 
     public WebContentHost()
@@ -24,49 +44,185 @@ public sealed class WebContentHost : IDisposable
 
     public bool IsLoaded => _webView != null;
 
-    /// <summary>Shows <paramref name="text"/> with its formulas typeset inside <paramref name="hostContainer"/>.</summary>
-    public async Task RenderMathAsync(Panel hostContainer, string text)
+    /// <summary>
+    /// Renders a single LaTeX expression to a cached transparent PNG.
+    /// Must be called on the UI thread (WinUI DispatcherQueue).
+    /// </summary>
+    public async Task<MathRenderResult> RenderFormulaAsync(Panel hostContainer, string latex, bool displayMode)
     {
-        _idleTimer.Stop();
-        if (_webView == null)
+        if (_disposed)
+            return new MathRenderResult(false, null, 0, 0, false, "公式渲染器已释放");
+        if (string.IsNullOrWhiteSpace(latex))
+            return new MathRenderResult(false, null, 0, 0, false, "公式内容为空");
+        if (latex.Length > MaxFormulaLength)
+            return new MathRenderResult(false, null, 0, 0, false, $"公式长度超过 {MaxFormulaLength} 字符上限");
+
+        var cacheKey = $"{(displayMode ? 'D' : 'I')}:{latex}";
+        if (_cache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
+        await _gate.WaitAsync();
+        try
         {
+            if (_cache.TryGetValue(cacheKey, out cached))
+                return cached;
+
+            _idleTimer.Stop();
+            var ready = await EnsureReadyAsync(hostContainer);
+            if (!ready || _webView?.CoreWebView2 == null)
+            {
+                return new MathRenderResult(false, null, 0, 0, false, "WebView2 公式引擎未就绪");
+            }
+
+            var jsonArg = JsonSerializer.Serialize(latex, Interop.LnaJsonContext.Default.String);
+            var dmArg = displayMode ? "true" : "false";
+            var evalTask = _webView.CoreWebView2.ExecuteScriptAsync($"window.lnaRenderFormula({jsonArg}, {dmArg})").AsTask();
+            if (await Task.WhenAny(evalTask, Task.Delay(RenderTimeoutMs)) != evalTask)
+            {
+                return new MathRenderResult(false, null, 0, 0, false, "公式渲染超时");
+            }
+
+            var rawJsonString = await evalTask;
+            // ExecuteScriptAsync returns a JSON-encoded string literal.
+            var innerJson = JsonSerializer.Deserialize(rawJsonString, Interop.LnaJsonContext.Default.String);
+            if (string.IsNullOrEmpty(innerJson))
+            {
+                return new MathRenderResult(false, null, 0, 0, false, "公式测量返回空结果");
+            }
+
+            var measure = JsonSerializer.Deserialize(innerJson, Interop.LnaJsonContext.Default.MathMeasureDto);
+            if (measure == null || !measure.Ok)
+            {
+                var err = measure?.Error ?? "KaTeX 解析失败";
+                var failRes = new MathRenderResult(false, null, 0, 0, false, err);
+                CachePut(cacheKey, failRes);
+                return failRes;
+            }
+
+            var w = Math.Clamp(measure.Width, 4, 1600);
+            var h = Math.Clamp(measure.Height, 4, 800);
+            _webView.Width = w;
+            _webView.Height = h;
+            _webView.UpdateLayout();
+            // Allow one compositor frame for the resized WebView2 viewport to repaint.
+            await Task.Delay(24);
+
+            using var mem = new InMemoryRandomAccessStream();
+            var capTask = _webView.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, mem).AsTask();
+            if (await Task.WhenAny(capTask, Task.Delay(RenderTimeoutMs)) != capTask)
+            {
+                return new MathRenderResult(false, null, 0, 0, false, "公式截图超时");
+            }
+            await capTask;
+
+            var size = (uint)mem.Size;
+            if (size == 0)
+            {
+                return new MathRenderResult(false, null, 0, 0, false, "公式截图为空");
+            }
+            var bytes = new byte[size];
+            mem.Seek(0);
+            await mem.ReadAsync(bytes.AsBuffer(), size, InputStreamOptions.None);
+
+            var okRes = new MathRenderResult(true, bytes, w, h, measure.Overflow, null);
+            CachePut(cacheKey, okRes);
+            return okRes;
+        }
+        catch (Exception ex)
+        {
+            return new MathRenderResult(false, null, 0, 0, false, $"公式渲染异常：{ex.Message}");
+        }
+        finally
+        {
+            _idleTimer.Start();
+            _gate.Release();
+        }
+    }
+
+    private async Task<bool> EnsureReadyAsync(Panel hostContainer)
+    {
+        if (_webView != null && _pageReady)
+        {
+            if (!hostContainer.Children.Contains(_webView))
+            {
+                hostContainer.Children.Clear();
+                hostContainer.Children.Add(_webView);
+            }
+            return true;
+        }
+
+        try
+        {
+            if (_webView != null)
+            {
+                if (_webView.Parent is Panel oldP) oldP.Children.Remove(_webView);
+                _webView.Close();
+                _webView = null;
+            }
+
             _pageReady = false;
-            var view = new WebView2();
+            var view = new WebView2
+            {
+                Width = 400,
+                Height = 120,
+                DefaultBackgroundColor = Windows.UI.Color.FromArgb(0, 0, 0, 0),
+            };
             _webView = view;
             hostContainer.Children.Clear();
             hostContainer.Children.Add(view);
-            await view.EnsureCoreWebView2Async();
+
+            var ensureTask = view.EnsureCoreWebView2Async().AsTask();
+            if (await Task.WhenAny(ensureTask, Task.Delay(RenderTimeoutMs)) != ensureTask)
+                return false;
+            await ensureTask;
+
             var core = view.CoreWebView2;
             core.Settings.AreDefaultScriptDialogsEnabled = false;
             core.Settings.IsWebMessageEnabled = false;
             core.Settings.AreDevToolsEnabled = false;
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
+
             var folder = Path.Combine(AppContext.BaseDirectory, "Assets", "katex");
-            core.SetVirtualHostNameToFolderMapping(HostName, folder,
-                Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.DenyCors);
+            core.SetVirtualHostNameToFolderMapping(
+                HostName,
+                folder,
+                CoreWebView2HostResourceAccessKind.DenyCors);
+
             view.NavigationStarting += (_, args) =>
             {
-                if (!args.Uri.StartsWith($"https://{HostName}/", StringComparison.Ordinal)) args.Cancel = true;
+                if (!args.Uri.StartsWith($"https://{HostName}/", StringComparison.Ordinal))
+                    args.Cancel = true;
             };
             core.NewWindowRequested += (_, args) => args.Handled = true;
-            var loaded = new TaskCompletionSource();
-            view.NavigationCompleted += (_, _) => { _pageReady = true; loaded.TrySetResult(); };
-            view.Source = new Uri($"https://{HostName}/view.html");
-            await Task.WhenAny(loaded.Task, Task.Delay(8000));
-        }
-        else if (!hostContainer.Children.Contains(_webView))
-        {
-            hostContainer.Children.Clear();
-            hostContainer.Children.Add(_webView);
-        }
 
-        if (_pageReady)
-        {
-            // The text is passed as a JSON string literal, so it can never become script.
-            await _webView.CoreWebView2.ExecuteScriptAsync($"window.lnaRender({JsonSerializer.Serialize(text, Interop.LnaJsonContext.Default.String)})");
+            var loaded = new TaskCompletionSource<bool>();
+            view.NavigationCompleted += (_, args) =>
+            {
+                _pageReady = args.IsSuccess;
+                loaded.TrySetResult(args.IsSuccess);
+            };
+            view.Source = new Uri($"https://{HostName}/view.html");
+            var completed = await Task.WhenAny(loaded.Task, Task.Delay(RenderTimeoutMs));
+            return completed == loaded.Task && await loaded.Task;
         }
-        _idleTimer.Start();
+        catch
+        {
+            _pageReady = false;
+            return false;
+        }
+    }
+
+    private void CachePut(string key, MathRenderResult value)
+    {
+        if (_cache.ContainsKey(key)) return;
+        if (_cacheOrder.Count >= MaxCacheEntries && _cacheOrder.First is { } oldest)
+        {
+            _cache.Remove(oldest.Value);
+            _cacheOrder.RemoveFirst();
+        }
+        _cache[key] = value;
+        _cacheOrder.AddLast(key);
     }
 
     public void Release()
@@ -81,5 +237,10 @@ public sealed class WebContentHost : IDisposable
         }
     }
 
-    public void Dispose() => Release();
+    public void Dispose()
+    {
+        _disposed = true;
+        Release();
+        _gate.Dispose();
+    }
 }

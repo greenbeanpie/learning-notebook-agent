@@ -22,3 +22,4 @@ tokio-util.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
 zip.workspace = true
+pulldown-cmark.workspace = true

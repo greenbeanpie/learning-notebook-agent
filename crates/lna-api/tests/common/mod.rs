@@ -71,6 +71,8 @@ pub enum Reply {
     },
     /// HTTP error with a body.
     Status(u16, String),
+    /// HTTP error with a Retry-After header (seconds) and a body.
+    RetryAfter(u16, u64, String),
     /// 302 redirect to another URL.
     Redirect(String),
     /// Raw SSE frames (each a full `data: ...` payload string without the prefix).
@@ -445,6 +447,14 @@ fn serve(
             write!(
                 stream,
                 "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )?;
+        }
+        Reply::RetryAfter(code, secs, body) => {
+            write!(
+                stream,
+                "HTTP/1.1 {code} X\r\nretry-after: {secs}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
                 body
             )?;

@@ -14,6 +14,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Prepare target dirs for ort-sys copy-dylibs
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path target/debug/examples,target/debug/deps | Out-Null
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -46,6 +49,9 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - uses: dtolnay/rust-toolchain@stable
+      - name: Prepare target dirs for ort-sys copy-dylibs
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path target/release/examples,target/release/deps | Out-Null
       - name: Assemble the runnable client (core + NativeAOT client + PDFium)
         shell: pwsh
         run: pwsh scripts/package-windows-client.ps1 -Out dist/LocalNotebook

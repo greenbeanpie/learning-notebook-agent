@@ -236,3 +236,71 @@ fn deferred_and_cancelled_features_are_rejected() {
         "INVALID_ARGUMENT"
     );
 }
+
+/// S1: Exported API DTO JSON Schema matches Rust DTO serialization and C# JsonContext.cs properties.
+#[test]
+fn s1_dto_schema_matches_rust_and_csharp() {
+    let schema: Value = serde_json::from_str(include_str!("../../../schemas/api.schema.json"))
+        .expect("valid api.schema.json");
+    let defs = schema["definitions"].as_object().expect("definitions");
+    for def in [
+        "OpenConfig",
+        "ApiRequest",
+        "ApiError",
+        "ApiResponse",
+        "ApiEvent",
+    ] {
+        assert!(defs.contains_key(def), "missing definition {def}");
+    }
+
+    // Verify Rust DTOs serialize with matching keys.
+    let req_val = serde_json::to_value(lna_types::ApiRequest {
+        id: "1".into(),
+        method: "app.health".into(),
+        params: json!({}),
+    })
+    .unwrap();
+    for k in defs["ApiRequest"]["properties"].as_object().unwrap().keys() {
+        assert!(req_val.get(k).is_some(), "ApiRequest missing {k}");
+    }
+
+    let resp_val = serde_json::to_value(lna_types::ApiResponse::err(
+        "1".into(),
+        lna_types::LnaError::invalid("bad"),
+    ))
+    .unwrap();
+    assert!(resp_val.get("id").is_some());
+    assert!(resp_val.get("error").is_some());
+    for k in defs["ApiError"]["properties"].as_object().unwrap().keys() {
+        assert!(resp_val["error"].get(k).is_some(), "ApiError missing {k}");
+    }
+
+    let evt_val = serde_json::to_value(lna_types::ApiEvent {
+        seq: 1,
+        topic: "chat".into(),
+        event: "chat.text_delta".into(),
+        data: json!({}),
+    })
+    .unwrap();
+    for k in defs["ApiEvent"]["properties"].as_object().unwrap().keys() {
+        assert!(evt_val.get(k).is_some(), "ApiEvent missing {k}");
+    }
+
+    // Verify C# JsonContext.cs declares every property from the schema.
+    let cs = include_str!("../../../apps/windows/LocalNotebook/Interop/JsonContext.cs");
+    for def in [
+        "OpenConfig",
+        "ApiRequest",
+        "ApiError",
+        "ApiResponse",
+        "ApiEvent",
+    ] {
+        for k in defs[def]["properties"].as_object().unwrap().keys() {
+            let attr = format!("[JsonPropertyName(\"{k}\")]");
+            assert!(
+                cs.contains(&attr),
+                "JsonContext.cs missing {attr} for {def}"
+            );
+        }
+    }
+}

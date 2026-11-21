@@ -237,3 +237,112 @@ d.save(r"__OUT__")
     );
     assert!(secs < 30.0, "target is 30 s, got {secs:.1}");
 }
+
+#[test]
+#[ignore]
+fn semantic_query_p95_on_100k_vectors() {
+    let env = Env::new("bench_vec100k");
+    let nid = env.notebook();
+    let rec = env
+        .core
+        .embedding
+        .configure("local_onnx", "bench-384", 384, "", "", None)
+        .unwrap();
+    let vec_table = rec.vec_table;
+
+    // Insert 100,000 normalized 384-dim vectors into vec0.
+    let mut base_vec = vec![0.0f32; 384];
+    env.core
+        .db
+        .write(|c| {
+            let tx = c
+                .transaction()
+                .map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+            {
+                let sql = format!(
+                    "INSERT INTO {vec_table} (chunk_id, notebook_id, embedding) VALUES (?1, ?2, ?3)"
+                );
+                let mut st = tx
+                    .prepare(&sql)
+                    .map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+                for i in 1..=100_000i64 {
+                    for (d, slot) in base_vec.iter_mut().enumerate() {
+                        *slot = (((i as usize + d * 17) % 97) as f32) / 97.0;
+                    }
+                    let bytes: Vec<u8> = base_vec.iter().flat_map(|f| f.to_le_bytes()).collect();
+                    st.execute(rusqlite::params![i, nid, bytes])
+                        .map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+                }
+            }
+            tx.commit()
+                .map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+
+    let query_sql = format!(
+        "SELECT chunk_id, distance FROM {vec_table}
+         WHERE notebook_id = ?1 AND embedding MATCH ?2 AND k = 20
+         ORDER BY distance"
+    );
+    let mut qvec = vec![0.0f32; 384];
+    for (d, slot) in qvec.iter_mut().enumerate() {
+        *slot = ((d % 31) as f32) / 31.0;
+    }
+    let qbytes: Vec<u8> = qvec.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+    // Warm up
+    for _ in 0..5 {
+        env.core
+            .db
+            .read(|c| {
+                let mut st = c
+                    .prepare(&query_sql)
+                    .map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+                let rows = st
+                    .query_map(rusqlite::params![nid, qbytes], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
+                    })
+                    .map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+                for r in rows {
+                    let _ = r.map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    let mut lat = Vec::with_capacity(60);
+    for i in 0..60 {
+        qvec[0] = (i as f32) / 60.0;
+        let qb: Vec<u8> = qvec.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let t = Instant::now();
+        let count = env
+            .core
+            .db
+            .read(|c| {
+                let mut st = c
+                    .prepare(&query_sql)
+                    .map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+                let rows = st
+                    .query_map(rusqlite::params![nid, qb], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
+                    })
+                    .map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+                let mut cnt = 0usize;
+                for r in rows {
+                    let _ = r.map_err(|e| lna_types::LnaError::internal(e.to_string()))?;
+                    cnt += 1;
+                }
+                Ok(cnt)
+            })
+            .unwrap();
+        lat.push(t.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(count, 20);
+    }
+    let p50 = percentile(lat.clone(), 0.50);
+    let p95 = percentile(lat, 0.95);
+    println!("100k vectors semantic KNN (384-dim): p50={p50:.1} ms, p95={p95:.1} ms");
+    report("semantic_100k", json!({ "p50_ms": p50, "p95_ms": p95 }));
+    assert!(p95 < 300.0, "target p95 < 300 ms, got {p95:.1} ms");
+}

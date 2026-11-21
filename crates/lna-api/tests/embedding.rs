@@ -618,3 +618,92 @@ fn an_interrupted_download_resumes_and_still_verifies_the_checksum() {
         "a Range request was made"
     );
 }
+
+/// B8: while rebuilding vectors for a new embedding model, retrieval keeps using the old active model.
+#[test]
+fn b8_rebuild_keeps_using_old_model_until_complete() {
+    let env = Env::new("b8_continuity");
+    let emb_a = MockLlm::start_with(
+        |r| match r.kind {
+            Kind::Followups => Reply::Text(r#"{"followups":[]}"#.into()),
+            _ => Reply::Text("Quantum entanglement [1].".into()),
+        },
+        Some(concept_embedder()),
+    );
+    let ep_a = env.profile(&emb_a, 32000, false)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rec_a = env.ok(
+        "embedding.configure",
+        json!({
+            "provider": "remote",
+            "model_name": "concept-9",
+            "dimension": 9,
+            "endpoint_profile_id": ep_a
+        }),
+    );
+    let id_a = rec_a["id"].as_str().unwrap().to_string();
+
+    let nid = env.ok("notebook.create", json!({ "title": "B8" }))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    env.add_text(
+        &nid,
+        "alpha.md",
+        "# Alpha\n\nQuantum entanglement and bell pairs.",
+    );
+    env.add_text(
+        &nid,
+        "beta.md",
+        "# Beta\n\nLinear algebra basis and dimension.",
+    );
+    env.wait_sources_ready(&nid, 2);
+    wait_embedded(&env);
+
+    // Configure model B with defer_activate: true so model A stays active during rebuild.
+    let emb_b = MockLlm::start_with(
+        |_| Reply::Text("OK".into()),
+        Some(std::sync::Arc::new(|_| vec![0.1f32; 12])),
+    );
+    let ep_b = env.ok(
+        "profile.upsert",
+        json!({
+            "display_name": "emb-b",
+            "protocol": "chat_completion",
+            "base_url": format!("http://127.0.0.1:{}/v1", emb_b.port),
+            "model_id": "text-b",
+            "activate": false,
+            "api_key": "k"
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rec_b = env.ok(
+        "embedding.configure",
+        json!({
+            "provider": "remote",
+            "model_name": "text-b",
+            "dimension": 12,
+            "endpoint_profile_id": ep_b,
+            "defer_activate": true
+        }),
+    );
+    let id_b = rec_b["id"].as_str().unwrap().to_string();
+    assert_eq!(rec_b["is_active"], json!(false));
+    assert_eq!(status(&env)["active_model"]["id"], json!(id_a));
+
+    // Before rebuild finishes, retrieval still uses model A without error.
+    env.ok("embedding.rebuild", json!({ "model_id": id_b }));
+    let reply = env.ok(
+        "chat.send",
+        json!({ "notebook_id": nid, "text": "What is quantum entanglement in alpha?" }),
+    );
+    assert_eq!(reply["status"], json!("COMPLETE"));
+
+    // Once rebuild finishes, model B is automatically activated.
+    env.wait(30, || status(&env)["active_model"]["id"] == json!(id_b));
+    assert_eq!(status(&env)["active_model"]["dimension"], json!(12));
+}
