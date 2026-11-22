@@ -42,6 +42,9 @@ public sealed class ArtifactViewerPane : IDisposable
     private readonly Window _hostWindow;
     private readonly Action _onClose;
     private readonly Action _onToggleFullscreen;
+    private readonly Action<string>? _onQuizConcept;
+    private readonly Action<string>? _onExpandMindmap;
+    private readonly Action<string>? _onAskConcept;
     private readonly TextBlock _title = new() { FontSize = 17, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button _promptSourcesBtn = new()
     {
@@ -75,12 +78,22 @@ public sealed class ArtifactViewerPane : IDisposable
     private static Geometry Geom(string path) =>
         (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), path);
 
-    public ArtifactViewerPane(string id, Window hostWindow, Action onClose, Action onToggleFullscreen)
+    public ArtifactViewerPane(
+        string id,
+        Window hostWindow,
+        Action onClose,
+        Action onToggleFullscreen,
+        Action<string>? onQuizConcept = null,
+        Action<string>? onExpandMindmap = null,
+        Action<string>? onAskConcept = null)
     {
         _id = id;
         _hostWindow = hostWindow;
         _onClose = onClose;
         _onToggleFullscreen = onToggleFullscreen;
+        _onQuizConcept = onQuizConcept;
+        _onExpandMindmap = onExpandMindmap;
+        _onAskConcept = onAskConcept;
 
         Root.RowSpacing = 10;
         Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -241,7 +254,10 @@ public sealed class ArtifactViewerPane : IDisposable
             }
             _interactiveView = new InteractiveArtifactView(
                 _id, kind, a, _hostWindow, Say, compact: false, feedbackBar: BuildFeedbackBar(),
-                onExportSvg: () => _ = ExportAsync("svg", ".svg", "SVG"));
+                onExportSvg: () => _ = ExportAsync("svg", ".svg", "SVG"),
+                onQuizConcept: _onQuizConcept,
+                onExpandMindmap: _onExpandMindmap,
+                onAskConcept: _onAskConcept);
             _body.Content = _interactiveView.Root;
             return;
         }
@@ -1020,6 +1036,9 @@ internal sealed class InteractiveArtifactView : IDisposable
     private readonly Panel? _mathHost;
     private readonly FrameworkElement? _feedbackBar;
     private readonly Action? _onExportSvg;
+    private readonly Action<string>? _onQuizConcept;
+    private readonly Action<string>? _onExpandMindmap;
+    private readonly Action<string>? _onAskConcept;
     private readonly JsonElement _art;
 
     private Windows.Media.Playback.MediaPlayer? _player;
@@ -1038,7 +1057,10 @@ internal sealed class InteractiveArtifactView : IDisposable
         FrameworkElement? feedbackBar = null,
         WebContentHost? math = null,
         Panel? mathHost = null,
-        Action? onExportSvg = null)
+        Action? onExportSvg = null,
+        Action<string>? onQuizConcept = null,
+        Action<string>? onExpandMindmap = null,
+        Action<string>? onAskConcept = null)
     {
         _artifactId = artifactId;
         _art = artifact;
@@ -1049,6 +1071,9 @@ internal sealed class InteractiveArtifactView : IDisposable
         _math = math;
         _mathHost = mathHost;
         _onExportSvg = onExportSvg;
+        _onQuizConcept = onQuizConcept;
+        _onExpandMindmap = onExpandMindmap;
+        _onAskConcept = onAskConcept;
 
         var payload = Obj(artifact, "payload");
         Root = kind switch
@@ -1316,7 +1341,15 @@ internal sealed class InteractiveArtifactView : IDisposable
     // mind map ----------------------------------------------------------------
 
     private FrameworkElement BuildMindmap(JsonElement payload) =>
-        new MindmapTreeView(payload, _onExportSvg, _compact, _feedbackBar).Root;
+        new MindmapTreeView(
+            payload,
+            _onExportSvg,
+            _compact,
+            _feedbackBar,
+            isKnowledgeGraph: Str(Obj(_art, "config"), "mode") == "knowledge_graph" || Str(payload, "kind") == "knowledge_graph",
+            onQuizConcept: _onQuizConcept,
+            onExpandMindmap: _onExpandMindmap,
+            onAskConcept: _onAskConcept).Root;
 
     // report ------------------------------------------------------------------
 

@@ -239,6 +239,17 @@ fn map_source_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Source> {
         error_code: r.get(13)?,
         error_detail: r.get(14)?,
         guide_summary_md: r.get(15)?,
+        recommend_knowledge_graph: (r.get::<_, i64>(17)? == 1 && guide_topics.len() >= 3)
+            || r.get::<_, i64>(8).unwrap_or(0) >= 1200
+            || r.get::<_, Option<i64>>(7).unwrap_or(None).unwrap_or(0) >= 3,
+        knowledge_graph_reason: if (r.get::<_, i64>(17)? == 1 && guide_topics.len() >= 3)
+            || r.get::<_, i64>(8).unwrap_or(0) >= 1200
+            || r.get::<_, Option<i64>>(7).unwrap_or(None).unwrap_or(0) >= 3
+        {
+            Some("This material contains structured concepts suitable for a Knowledge Graph.".into())
+        } else {
+            None
+        },
         guide_topics,
         ai_indexed: r.get::<_, i64>(17)? == 1,
         created_at: r.get(18)?,

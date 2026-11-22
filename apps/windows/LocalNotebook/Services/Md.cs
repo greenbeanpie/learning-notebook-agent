@@ -19,47 +19,66 @@ public static class Md
 {
     public static bool HasMath(string text) => text.Contains('$') || text.Contains("\\(") || text.Contains("\\[");
 
+    public static readonly FontFamily BodyFontFamily = new("Microsoft YaHei UI, Segoe UI");
+
     public static Inline SuperscriptCitation(int no, string? tooltip = null, Action? onClick = null)
     {
-        var accent = (Brush)Application.Current.Resources["AccentBlueBrush"];
-        var tb = new TextBlock
+        var pill = new Border
         {
-            Text = $"[{no}]",
-            FontSize = 10.5,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = accent,
-            Margin = new Thickness(1, 0, 1, 0),
-            RenderTransform = new TranslateTransform { Y = -5 },
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 42, 46, 54)),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 68, 74, 86)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            MinWidth = 20,
+            Height = 20,
+            Padding = new Thickness(6, 0, 6, 0),
+            Margin = new Thickness(3, 0, 3, -3),
+            Child = new TextBlock
+            {
+                Text = $"{no}",
+                FontFamily = BodyFontFamily,
+                FontSize = 11,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 198, 206, 220)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
         };
         if (!string.IsNullOrEmpty(tooltip))
         {
-            ToolTipService.SetToolTip(tb, tooltip);
+            ToolTipService.SetToolTip(pill, tooltip);
         }
         if (onClick != null)
         {
-            tb.Tapped += (_, e) =>
+            pill.Tapped += (_, e) =>
             {
                 e.Handled = true;
                 onClick();
             };
         }
-        return new InlineUIContainer { Child = tb };
+        return new InlineUIContainer { Child = pill };
     }
 
     public static UIElement Render(
         string markdown,
         Func<int, Inline?>? citationChip = null,
-        double fontSize = 14,
+        double fontSize = 15,
         WebContentHost? math = null,
         Panel? mathHost = null)
     {
+        var effectiveSize = fontSize <= 0 ? L10n.Prefs.FontSize : fontSize;
         var rtb = new RichTextBlock
         {
+            FontFamily = BodyFontFamily,
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = true,
-            FontSize = fontSize,
-            LineHeight = fontSize * 1.55,
+            FontSize = effectiveSize,
+            LineHeight = Math.Round(effectiveSize * 1.72),
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            CharacterSpacing = 12,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 226, 228, 232)),
         };
+        fontSize = effectiveSize;
         var lines = markdown.Replace("\r\n", "\n").Split('\n');
         var para = new StringBuilder();
         var i = 0;
@@ -297,9 +316,14 @@ public static class Md
     {
         var rtb = new RichTextBlock
         {
+            FontFamily = BodyFontFamily,
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = true,
             FontSize = fontSize,
+            LineHeight = Math.Round(fontSize * 1.72),
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            CharacterSpacing = 12,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 226, 228, 232)),
         };
         var p = new Paragraph();
         rtb.Blocks.Add(p);
@@ -314,14 +338,31 @@ public static class Md
         double fontSize,
         WebContentHost? math,
         Panel? mathHost,
-        ref int formulaCount)
+        ref int formulaCount) =>
+        AppendInlinesTo(p.Inlines, text, citationChip, fontSize, math, mathHost, ref formulaCount, bold: false);
+
+    private static void AppendInlinesTo(
+        InlineCollection target,
+        string text,
+        Func<int, Inline?>? citationChip,
+        double fontSize,
+        WebContentHost? math,
+        Panel? mathHost,
+        ref int formulaCount,
+        bool bold)
     {
         var buf = new StringBuilder();
         void Flush()
         {
             if (buf.Length > 0)
             {
-                p.Inlines.Add(new Run { Text = buf.ToString() });
+                var run = new Run { Text = buf.ToString(), FontFamily = BodyFontFamily };
+                if (bold)
+                {
+                    run.FontWeight = FontWeights.SemiBold;
+                    run.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 244, 246, 250));
+                }
+                target.Add(run);
                 buf.Clear();
             }
         }
@@ -342,7 +383,7 @@ public static class Md
                 if (end > i)
                 {
                     Flush();
-                    p.Inlines.Add(new Run
+                    target.Add(new Run
                     {
                         Text = text[(i + 1)..end],
                         FontFamily = new FontFamily("Consolas"),
@@ -362,7 +403,7 @@ public static class Md
                     if (expr.Length > 0)
                     {
                         Flush();
-                        p.Inlines.Add(new InlineUIContainer
+                        target.Add(new InlineUIContainer
                         {
                             Child = CreateMathBlock(expr, displayMode: false, fontSize, math, mathHost, ref formulaCount),
                         });
@@ -378,7 +419,7 @@ public static class Md
                 if (expr.Length > 0)
                 {
                     Flush();
-                    p.Inlines.Add(new InlineUIContainer
+                    target.Add(new InlineUIContainer
                     {
                         Child = CreateMathBlock(expr, displayMode: false, fontSize, math, mathHost, ref formulaCount),
                     });
@@ -386,13 +427,13 @@ public static class Md
                     continue;
                 }
             }
-            else if (c == '*' && i + 1 < text.Length && text[i + 1] == '*')
+            else if (!bold && c == '*' && i + 1 < text.Length && text[i + 1] == '*')
             {
                 var boldEnd = text.IndexOf("**", i + 2, StringComparison.Ordinal);
                 if (boldEnd > i + 1)
                 {
                     Flush();
-                    p.Inlines.Add(new Run { Text = text[(i + 2)..boldEnd], FontWeight = FontWeights.Bold });
+                    AppendInlinesTo(target, text[(i + 2)..boldEnd], citationChip, fontSize, math, mathHost, ref formulaCount, bold: true);
                     i = boldEnd + 2;
                     continue;
                 }
@@ -405,7 +446,7 @@ public static class Md
                     // Trim a single space before citation so superscript sits cleanly next to the text
                     if (buf.Length > 0 && buf[^1] == ' ') buf.Length--;
                     Flush();
-                    p.Inlines.Add(chip);
+                    target.Add(chip);
                     i = citeEnd + 1;
                     continue;
                 }

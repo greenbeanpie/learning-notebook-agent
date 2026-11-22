@@ -160,6 +160,7 @@ public sealed partial class MainWindow : Window
         TileFlashcardsText.Text = L10n.T("studio.flashcards");
         TileQuizText.Text = L10n.T("studio.quiz");
         TileInfographicText.Text = L10n.T("studio.infographic");
+        TileKnowledgeGraphText.Text = L10n.T("kg.title");
     }
 
     // ---------- startup ----------

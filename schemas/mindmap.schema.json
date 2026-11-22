@@ -6,6 +6,7 @@
   "required": ["title", "nodes"],
   "properties": {
     "title": { "type": "string" },
+    "kind": { "type": "string", "enum": ["mindmap", "knowledge_graph"] },
     "nodes": {
       "type": "array",
       "items": {
@@ -16,6 +17,9 @@
           "id": { "type": "string" },
           "parent_id": { "type": ["string", "null"] },
           "label": { "type": "string" },
+          "importance": { "type": "string", "enum": ["core", "key", "detail"] },
+          "summary": { "type": "string" },
+          "prerequisites": { "type": "array", "items": { "type": "string" } },
           "citations": { "type": "array", "items": { "type": "integer" } }
         }
       }

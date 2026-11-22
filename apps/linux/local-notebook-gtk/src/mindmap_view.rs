@@ -1,5 +1,5 @@
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, DrawingArea, GestureClick, Orientation, Overlay, ScrolledWindow};
+use gtk4::{Box as GtkBox, Button, DrawingArea, GestureClick, Orientation, Overlay, Popover, ScrolledWindow};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -24,8 +24,11 @@ struct TreeState {
     collapsed: HashSet<String>,
     scale: f64,
     all_collapsed: bool,
+    is_kg: bool,
     // Hit boxes for toggle buttons: (cx, cy, radius, node_id)
     toggle_hits: Vec<(f64, f64, f64, String)>,
+    // Hit boxes for node cards: (x, y, w, h, label)
+    node_hits: Vec<(f64, f64, f64, f64, String)>,
 }
 
 const NODE_H: f64 = 34.0;
@@ -101,7 +104,15 @@ fn relayout(state: &mut TreeState) -> (f64, f64) {
     (max_x, max_y)
 }
 
-fn node_colors(depth: usize) -> ((f64, f64, f64), (f64, f64, f64)) {
+fn node_colors(depth: usize, is_kg: bool) -> ((f64, f64, f64), (f64, f64, f64)) {
+    if is_kg {
+        return match depth {
+            0 => ((0.16, 0.24, 0.35), (0.36, 0.54, 0.77)),
+            1 => ((0.14, 0.21, 0.27), (0.27, 0.42, 0.54)),
+            2 => ((0.14, 0.23, 0.22), (0.24, 0.42, 0.39)),
+            _ => ((0.16, 0.22, 0.18), (0.28, 0.40, 0.32)),
+        };
+    }
     match depth {
         0 => ((0.26, 0.27, 0.39), (0.40, 0.42, 0.60)),
         1 => ((0.17, 0.20, 0.27), (0.27, 0.31, 0.42)),
@@ -127,7 +138,7 @@ fn rounded_rect(cr: &gtk4::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f6
     cr.close_path();
 }
 
-pub fn build_mindmap_widget(payload: &Value, en: bool) -> Overlay {
+pub fn build_mindmap_widget(payload: &Value, en: bool, is_kg: bool, on_action: Rc<dyn Fn(&str, &str)>) -> Overlay {
     let raw_nodes = payload
         .get("nodes")
         .and_then(Value::as_array)
@@ -191,7 +202,9 @@ pub fn build_mindmap_widget(payload: &Value, en: bool) -> Overlay {
         collapsed: HashSet::new(),
         scale: 1.0,
         all_collapsed: false,
+        is_kg: is_kg || payload.get("kind").and_then(Value::as_str) == Some("knowledge_graph"),
         toggle_hits: Vec::new(),
+        node_hits: Vec::new(),
     }));
 
     let (init_w, init_h) = relayout(&mut state.borrow_mut());
@@ -206,6 +219,7 @@ pub fn build_mindmap_widget(payload: &Value, en: bool) -> Overlay {
 
         let mut st = st_draw.borrow_mut();
         st.toggle_hits.clear();
+        st.node_hits.clear();
         let scale = st.scale;
         cr.scale(scale, scale);
 
@@ -240,10 +254,13 @@ pub fn build_mindmap_widget(payload: &Value, en: bool) -> Overlay {
             nodes: &[MindNode],
             collapsed: &HashSet<String>,
             hits: &mut Vec<(f64, f64, f64, String)>,
+            node_hits: &mut Vec<(f64, f64, f64, f64, String)>,
+            is_kg: bool,
             idx: usize,
         ) {
             let node = &nodes[idx];
-            let ((br, bg, bb), (sr, sg, sb)) = node_colors(node.depth);
+            node_hits.push((node.x, node.y, node.w, node.h, node.label.clone()));
+            let ((br, bg, bb), (sr, sg, sb)) = node_colors(node.depth, is_kg);
             rounded_rect(cr, node.x, node.y, node.w, node.h, 8.0);
             cr.set_source_rgb(br, bg, bb);
             let _ = cr.fill_preserve();
@@ -277,7 +294,7 @@ pub fn build_mindmap_widget(payload: &Value, en: bool) -> Overlay {
 
             if !is_col {
                 for &cidx in &node.children {
-                    draw_nodes(cr, nodes, collapsed, hits, cidx);
+                    draw_nodes(cr, nodes, collapsed, hits, node_hits, is_kg, cidx);
                 }
             }
         }
@@ -287,9 +304,13 @@ pub fn build_mindmap_widget(payload: &Value, en: bool) -> Overlay {
         }
         let nodes_clone = st.nodes.clone();
         let col_clone = st.collapsed.clone();
+        let mut thits = Vec::new();
+        let mut nhits = Vec::new();
         for &r in &roots {
-            draw_nodes(cr, &nodes_clone, &col_clone, &mut st.toggle_hits, r);
+            draw_nodes(cr, &nodes_clone, &col_clone, &mut thits, &mut nhits, st.is_kg, r);
         }
+        st.toggle_hits = thits;
+        st.node_hits = nhits;
     });
 
     // Click gesture to toggle branches
@@ -317,6 +338,37 @@ pub fn build_mindmap_widget(payload: &Value, en: bool) -> Overlay {
             area_click.set_content_width((w * sc) as i32);
             area_click.set_content_height((h * sc) as i32);
             area_click.queue_draw();
+            return;
+        }
+        let hit_label = st
+            .node_hits
+            .iter()
+            .find(|(nx, ny, nw, nh, _)| sx >= *nx && sx <= nx + nw && sy >= *ny && sy <= ny + nh)
+            .map(|(_, _, _, _, lbl)| lbl.clone());
+        drop(st);
+        if let Some(lbl) = hit_label {
+            let pop = Popover::new();
+            pop.set_parent(&area_click);
+            pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            let menu = GtkBox::new(Orientation::Vertical, 4);
+            for (act, key_en, key_zh) in [
+                ("quiz", "Quiz on this concept", "针对此知识点生成测验"),
+                ("mindmap", "Expand as Mind Map", "展开为详细思维导图"),
+                ("chat", "Explain in Chat", "在对话中深入讲解"),
+            ] {
+                let b = Button::with_label(if en { key_en } else { key_zh });
+                b.add_css_class("lna-pill-btn");
+                let cb = on_action.clone();
+                let concept = lbl.clone();
+                let p_c = pop.clone();
+                b.connect_clicked(move |_| {
+                    p_c.popdown();
+                    cb(act, &concept);
+                });
+                menu.append(&b);
+            }
+            pop.set_child(Some(&menu));
+            pop.popup();
         }
     });
     area.add_controller(click);

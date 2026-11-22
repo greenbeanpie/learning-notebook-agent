@@ -52,7 +52,7 @@ public sealed partial class MainWindow
         themeBox.SelectedIndex = Math.Max(0, Array.FindIndex(themeOpts, x => x.Item2 == L10n.Prefs.Theme));
 
         var fontBox = new ComboBox { Header = L10n.T("settings.font_size"), HorizontalAlignment = HorizontalAlignment.Stretch };
-        var fontOpts = new[] { (L10n.T("settings.font_compact"), 13), (L10n.T("settings.font_normal"), 14), (L10n.T("settings.font_large"), 16) };
+        var fontOpts = new[] { (L10n.T("settings.font_compact"), 14), (L10n.T("settings.font_normal"), 15), (L10n.T("settings.font_large"), 17) };
         foreach (var (lbl, val) in fontOpts) fontBox.Items.Add(new ComboBoxItem { Content = lbl, Tag = val });
         fontBox.SelectedIndex = Math.Max(0, Array.FindIndex(fontOpts, x => x.Item2 == L10n.Prefs.FontSize));
 
@@ -92,7 +92,7 @@ public sealed partial class MainWindow
         {
             L10n.Prefs.Language = (langBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "auto";
             L10n.Prefs.Theme = (themeBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "dark";
-            L10n.Prefs.FontSize = (fontBox.SelectedItem as ComboBoxItem)?.Tag is int fsz ? fsz : 14;
+            L10n.Prefs.FontSize = (fontBox.SelectedItem as ComboBoxItem)?.Tag is int fsz ? fsz : 15;
             L10n.Prefs.FullscreenAnimation = fsAnimToggle.IsOn;
             L10n.Prefs.ExpandThoughtsByDefault = expandThoughtsToggle.IsOn;
             L10n.Prefs.ShowSuggestedQuestions = showSuggestionsToggle.IsOn;

@@ -182,6 +182,10 @@ pub struct Source {
     pub guide_topics: Vec<String>,
     #[serde(default)]
     pub ai_indexed: bool,
+    #[serde(default)]
+    pub recommend_knowledge_graph: bool,
+    #[serde(default)]
+    pub knowledge_graph_reason: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

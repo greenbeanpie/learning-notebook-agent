@@ -158,7 +158,7 @@ public sealed partial class MainWindow
         v.StreamView = null;
         v.Body.Content = v.Role == "user"
             ? new TextBlock { Text = markdown, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }
-            : Md.Render(markdown, n => v.Citations.ContainsKey(n) ? CitationChip(v, n) : null, 14, _math, MathRenderHost);
+            : Md.Render(markdown, n => v.Citations.ContainsKey(n) ? CitationChip(v, n) : null, L10n.Prefs.FontSize, _math, MathRenderHost);
     }
 
     private static void DisposeViewArtifacts(MessageView v)

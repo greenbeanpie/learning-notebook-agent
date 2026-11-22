@@ -14,6 +14,7 @@ struct SourceItem: Identifiable {
     let kind: String
     let status: String
     var isSelected: Bool
+    let recommendKnowledgeGraph: Bool
 }
 
 struct ArtifactSourceRefItem: Identifiable {
@@ -154,7 +155,8 @@ final class AppState: ObservableObject {
                     title: $0["title"] as? String ?? "",
                     kind: $0["kind"] as? String ?? "txt",
                     status: $0["status"] as? String ?? "READY",
-                    isSelected: $0["is_selected"] as? Bool ?? true
+                    isSelected: $0["is_selected"] as? Bool ?? true,
+                    recommendKnowledgeGraph: $0["recommend_knowledge_graph"] as? Bool ?? false
                 )
             }
 
@@ -227,13 +229,51 @@ final class AppState: ObservableObject {
 
     func createStudio(kind: String) async {
         guard !activeNotebookId.isEmpty else { return }
-        var cfg: [String: Any] = kind == "slides" ? ["pages": 8, "reviewOutline": true] : [:]
+        let actualType = kind == "knowledge_graph" ? "mindmap" : kind
+        var cfg: [String: Any] = kind == "slides"
+            ? ["pages": 8, "reviewOutline": true]
+            : (kind == "knowledge_graph" ? ["mode": "knowledge_graph"] : [:])
         if !prefs.defaultStudioLang.isEmpty {
             cfg["lang"] = prefs.defaultStudioLang
         }
         do {
-            _ = try await core.call(method: "studio.create", params: ["notebook_id": activeNotebookId, "artifact_type": kind, "config": cfg])
+            _ = try await core.call(method: "studio.create", params: ["notebook_id": activeNotebookId, "artifact_type": actualType, "config": cfg])
             statusMessage = t("studio.submitted")
+            await refreshAll()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func createKnowledgeGraph(sourceTitle: String) async {
+        guard !activeNotebookId.isEmpty else { return }
+        let title = isEnglish ? "\(sourceTitle) - Knowledge Graph" : "\(sourceTitle) · 知识点图谱"
+        do {
+            _ = try await core.call(method: "studio.create", params: [
+                "notebook_id": activeNotebookId,
+                "artifact_type": "mindmap",
+                "title": title,
+                "config": ["mode": "knowledge_graph", "topic": sourceTitle]
+            ])
+            statusMessage = t("studio.submitted")
+            await refreshAll()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func createConceptLink(kind: String, concept: String) async {
+        guard !activeNotebookId.isEmpty else { return }
+        let cfg: [String: Any] = kind == "quiz"
+            ? ["topic": concept, "count": 5, "difficulty": "mixed"]
+            : ["topic": concept]
+        do {
+            _ = try await core.call(method: "studio.create", params: [
+                "notebook_id": activeNotebookId,
+                "artifact_type": kind,
+                "title": kind == "quiz" ? "Quiz: \(concept)" : "Mind Map: \(concept)",
+                "config": cfg
+            ])
             await refreshAll()
         } catch {
             statusMessage = error.localizedDescription

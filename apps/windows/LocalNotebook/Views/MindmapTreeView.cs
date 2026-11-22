@@ -12,8 +12,10 @@ using static LocalNotebook.Services.Api;
 namespace LocalNotebook.Views;
 
 /// <summary>
-/// Interactive left-to-right collapsible mind map tree diagram with curved Bezier links,
-/// depth-coded rounded nodes, per-branch expand/collapse buttons, and left floating zoom/export controls.
+/// Interactive left-to-right collapsible mind map & Knowledge Graph tree diagram
+/// with curved Bezier links, depth-coded / importance-badged rounded nodes,
+/// per-branch expand/collapse buttons, left floating controls, and node-level
+/// linkage to Quiz, Mind Map expansion, and Chat.
 /// </summary>
 internal sealed class MindmapTreeView
 {
@@ -26,13 +28,16 @@ internal sealed class MindmapTreeView
     {
         public string Id { get; init; } = "";
         public string Label { get; init; } = "";
+        public string Importance { get; init; } = "";
+        public string Summary { get; init; } = "";
+        public List<string> Prerequisites { get; } = new();
         public int Depth { get; set; }
         public bool IsCollapsed { get; set; }
         public List<MindNode> Children { get; } = new();
         public double X { get; set; }
         public double Y { get; set; }
         public double Width { get; set; }
-        public double Height { get; set; } = 36;
+        public double Height { get; set; } = 38;
     }
 
     public FrameworkElement Root { get; }
@@ -42,20 +47,36 @@ internal sealed class MindmapTreeView
     private readonly ScaleTransform _scale = new() { ScaleX = 1.0, ScaleY = 1.0 };
     private readonly ScrollViewer _scroll;
     private readonly bool _compact;
+    private readonly bool _isKnowledgeGraph;
     private readonly Action? _onDownloadSvg;
+    private readonly Action<string>? _onQuizConcept;
+    private readonly Action<string>? _onExpandMindmap;
+    private readonly Action<string>? _onAskConcept;
     private bool _allCollapsed;
 
-    private const double NodeHeight = 36;
+    private const double NodeHeight = 38;
     private const double RowGap = 14;
     private const double ColGap = 68;
     private const double ToggleSize = 22;
     private const double CanvasPadX = 72;
-    private const double CanvasPadY = 36;
+    private const double CanvasPadY = 38;
 
-    public MindmapTreeView(JsonElement payload, Action? onDownloadSvg, bool compact, FrameworkElement? feedbackBar = null)
+    public MindmapTreeView(
+        JsonElement payload,
+        Action? onDownloadSvg,
+        bool compact,
+        FrameworkElement? feedbackBar = null,
+        bool isKnowledgeGraph = false,
+        Action<string>? onQuizConcept = null,
+        Action<string>? onExpandMindmap = null,
+        Action<string>? onAskConcept = null)
     {
         _compact = compact;
+        _isKnowledgeGraph = isKnowledgeGraph || Str(payload, "kind") == "knowledge_graph";
         _onDownloadSvg = onDownloadSvg;
+        _onQuizConcept = onQuizConcept;
+        _onExpandMindmap = onExpandMindmap;
+        _onAskConcept = onAskConcept;
 
         var rawNodes = Arr(payload, "nodes").ToList();
         if (rawNodes.Count == 0)
@@ -82,6 +103,30 @@ internal sealed class MindmapTreeView
         };
 
         var controls = BuildFloatingControls();
+        var stageGrid = new Grid { Children = { _scroll, controls } };
+
+        if (_isKnowledgeGraph)
+        {
+            var badge = new Border
+            {
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 14, 16, 0),
+                Padding = new Thickness(10, 4, 10, 4),
+                CornerRadius = new CornerRadius(12),
+                Background = new SolidColorBrush(Color.FromArgb(225, 36, 56, 72)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 92, 146, 196)),
+                BorderThickness = new Thickness(1),
+                Child = new TextBlock
+                {
+                    Text = L10n.T("kg.badge_hint"),
+                    FontSize = 11.5,
+                    FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI"),
+                    Foreground = new SolidColorBrush(Color.FromArgb(255, 196, 224, 250)),
+                },
+            };
+            stageGrid.Children.Add(badge);
+        }
 
         var stage = new Border
         {
@@ -89,10 +134,7 @@ internal sealed class MindmapTreeView
             BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
             BorderThickness = new Thickness(1),
             Background = new SolidColorBrush(Color.FromArgb(255, 29, 31, 36)),
-            Child = new Grid
-            {
-                Children = { _scroll, controls },
-            },
+            Child = stageGrid,
         };
 
         var outer = new Grid { RowSpacing = 8 };
@@ -123,12 +165,21 @@ internal sealed class MindmapTreeView
             var label = Str(n, "label");
             var nums = Arr(n, "citations").Where(c => c.ValueKind == JsonValueKind.Number).Select(c => $"[{c.GetInt32()}]").ToArray();
             if (nums.Length > 0) label += " " + string.Join("", nums);
+            var imp = Str(n, "importance");
+            var sum = Str(n, "summary");
             var node = new MindNode
             {
                 Id = id,
                 Label = label,
-                Width = EstimateWidth(label),
+                Importance = imp,
+                Summary = sum,
+                Width = EstimateWidth(label, imp.Length > 0),
             };
+            foreach (var pr in Arr(n, "prerequisites"))
+            {
+                if (pr.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(pr.GetString()))
+                    node.Prerequisites.Add(pr.GetString()!);
+            }
             map[id] = node;
             parentById[id] = n.TryGetProperty("parent_id", out var p) && p.ValueKind == JsonValueKind.String ? (p.GetString() ?? "") : "";
             order.Add(node);
@@ -157,12 +208,12 @@ internal sealed class MindmapTreeView
             AssignDepth(child, depth + 1);
     }
 
-    private static double EstimateWidth(string label)
+    private static double EstimateWidth(string label, bool hasDot)
     {
         double units = 0;
         foreach (var ch in label)
-            units += ch > 127 ? 13.5 : 7.5;
-        return Math.Clamp(units + 28, 96, 280);
+            units += ch > 127 ? 14.0 : 7.8;
+        return Math.Clamp(units + (hasDot ? 42 : 28), 104, 290);
     }
 
     private void Redraw()
@@ -170,8 +221,8 @@ internal sealed class MindmapTreeView
         _canvas.Children.Clear();
 
         double cursorY = CanvasPadY;
-        double maxX = 400;
-        double maxY = 300;
+        double maxX = 420;
+        double maxY = 320;
 
         double LayoutNode(MindNode node, double x)
         {
@@ -190,7 +241,7 @@ internal sealed class MindmapTreeView
                     lastY = LayoutNode(node.Children[i], childX);
                 node.Y = (firstY + lastY) / 2.0;
             }
-            maxX = Math.Max(maxX, node.X + node.Width + 60);
+            maxX = Math.Max(maxX, node.X + node.Width + 68);
             maxY = Math.Max(maxY, node.Y + NodeHeight + 48);
             return node.Y;
         }
@@ -209,7 +260,7 @@ internal sealed class MindmapTreeView
             if (node.IsCollapsed || node.Children.Count == 0) return;
             double startX = node.X + node.Width + ToggleSize + 6;
             double startY = node.Y + NodeHeight / 2.0;
-            var stroke = EdgeBrush(node.Depth);
+            var stroke = EdgeBrush(node.Depth, _isKnowledgeGraph);
 
             foreach (var child in node.Children)
             {
@@ -239,28 +290,81 @@ internal sealed class MindmapTreeView
 
         void DrawNodes(MindNode node)
         {
-            var (bg, border, fg) = NodeColors(node.Depth);
-            var card = new Border
+            var (bg, border, fg) = NodeColors(node.Depth, _isKnowledgeGraph);
+            var contentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7, VerticalAlignment = VerticalAlignment.Center };
+            if (node.Importance.Length > 0)
+            {
+                var dotColor = node.Importance switch
+                {
+                    "core" => Color.FromArgb(255, 253, 214, 99),
+                    "key" => Color.FromArgb(255, 138, 180, 248),
+                    _ => Color.FromArgb(255, 129, 201, 149),
+                };
+                contentRow.Children.Add(new Border
+                {
+                    Width = 7,
+                    Height = 7,
+                    CornerRadius = new CornerRadius(3.5),
+                    Background = new SolidColorBrush(dotColor),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+            }
+            contentRow.Children.Add(new TextBlock
+            {
+                Text = node.Label,
+                Foreground = new SolidColorBrush(fg),
+                FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI"),
+                FontSize = 13,
+                FontWeight = node.Depth == 0 ? FontWeights.SemiBold : FontWeights.Normal,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+
+            var card = new Button
             {
                 Width = node.Width,
                 Height = NodeHeight,
+                MinHeight = NodeHeight,
                 CornerRadius = new CornerRadius(8),
                 Background = new SolidColorBrush(bg),
                 BorderBrush = new SolidColorBrush(border),
                 BorderThickness = new Thickness(1),
-                Padding = new Thickness(12, 0, 12, 0),
-                Child = new TextBlock
-                {
-                    Text = node.Label,
-                    Foreground = new SolidColorBrush(fg),
-                    FontSize = 12.5,
-                    FontWeight = node.Depth == 0 ? FontWeights.SemiBold : FontWeights.Normal,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    IsTextSelectionEnabled = true,
-                },
+                Padding = new Thickness(11, 0, 11, 0),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Content = contentRow,
             };
-            ToolTipService.SetToolTip(card, node.Label);
+
+            var tipParts = new List<string> { node.Label };
+            if (node.Summary.Length > 0) tipParts.Add(node.Summary);
+            if (node.Prerequisites.Count > 0) tipParts.Add($"{L10n.T("kg.prereq")}: {string.Join(", ", node.Prerequisites)}");
+            ToolTipService.SetToolTip(card, string.Join("\n", tipParts));
+
+            if (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null)
+            {
+                var cleanConcept = node.Label.Split('[')[0].Trim();
+                var menu = new MenuFlyout();
+                if (_onQuizConcept != null)
+                {
+                    var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_quiz") };
+                    mi.Click += (_, _) => _onQuizConcept(cleanConcept);
+                    menu.Items.Add(mi);
+                }
+                if (_onExpandMindmap != null)
+                {
+                    var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_mindmap") };
+                    mi.Click += (_, _) => _onExpandMindmap(cleanConcept);
+                    menu.Items.Add(mi);
+                }
+                if (_onAskConcept != null)
+                {
+                    var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_chat") };
+                    mi.Click += (_, _) => _onAskConcept(cleanConcept);
+                    menu.Items.Add(mi);
+                }
+                card.Flyout = menu;
+            }
+
             Canvas.SetLeft(card, node.X);
             Canvas.SetTop(card, node.Y);
             _canvas.Children.Add(card);
@@ -406,18 +510,33 @@ internal sealed class MindmapTreeView
         return stack;
     }
 
-    private static (Color Bg, Color Border, Color Fg) NodeColors(int depth) => depth switch
-    {
-        0 => (Color.FromArgb(255, 67, 70, 99), Color.FromArgb(255, 102, 108, 152), Color.FromArgb(255, 240, 242, 248)),
-        1 => (Color.FromArgb(255, 43, 50, 69), Color.FromArgb(255, 68, 80, 108), Color.FromArgb(255, 227, 232, 242)),
-        2 => (Color.FromArgb(255, 37, 55, 58), Color.FromArgb(255, 56, 84, 90), Color.FromArgb(255, 224, 238, 236)),
-        _ => (Color.FromArgb(255, 39, 56, 46), Color.FromArgb(255, 60, 88, 72), Color.FromArgb(255, 224, 238, 228)),
-    };
+    private static (Color Bg, Color Border, Color Fg) NodeColors(int depth, bool isKg) => isKg
+        ? depth switch
+        {
+            0 => (Color.FromArgb(255, 42, 62, 88), Color.FromArgb(255, 92, 138, 196), Color.FromArgb(255, 240, 246, 255)),
+            1 => (Color.FromArgb(255, 36, 54, 68), Color.FromArgb(255, 68, 108, 138), Color.FromArgb(255, 228, 240, 248)),
+            2 => (Color.FromArgb(255, 35, 58, 56), Color.FromArgb(255, 62, 106, 100), Color.FromArgb(255, 224, 242, 238)),
+            _ => (Color.FromArgb(255, 42, 56, 46), Color.FromArgb(255, 72, 102, 82), Color.FromArgb(255, 226, 240, 230)),
+        }
+        : depth switch
+        {
+            0 => (Color.FromArgb(255, 67, 70, 99), Color.FromArgb(255, 102, 108, 152), Color.FromArgb(255, 240, 242, 248)),
+            1 => (Color.FromArgb(255, 43, 50, 69), Color.FromArgb(255, 68, 80, 108), Color.FromArgb(255, 227, 232, 242)),
+            2 => (Color.FromArgb(255, 37, 55, 58), Color.FromArgb(255, 56, 84, 90), Color.FromArgb(255, 224, 238, 236)),
+            _ => (Color.FromArgb(255, 39, 56, 46), Color.FromArgb(255, 60, 88, 72), Color.FromArgb(255, 224, 238, 228)),
+        };
 
-    private static Brush EdgeBrush(int depth) => new SolidColorBrush(depth switch
-    {
-        0 => Color.FromArgb(220, 132, 140, 210),
-        1 => Color.FromArgb(220, 122, 166, 198),
-        _ => Color.FromArgb(220, 115, 178, 156),
-    });
+    private static Brush EdgeBrush(int depth, bool isKg) => new SolidColorBrush(isKg
+        ? depth switch
+        {
+            0 => Color.FromArgb(220, 114, 168, 224),
+            1 => Color.FromArgb(220, 104, 186, 182),
+            _ => Color.FromArgb(220, 122, 190, 148),
+        }
+        : depth switch
+        {
+            0 => Color.FromArgb(220, 132, 140, 210),
+            1 => Color.FromArgb(220, 122, 166, 198),
+            _ => Color.FromArgb(220, 115, 178, 156),
+        });
 }

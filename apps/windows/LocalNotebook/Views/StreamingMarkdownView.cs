@@ -27,7 +27,7 @@ public sealed class StreamingMarkdownView
 
     public StreamingMarkdownView(
         Func<int, Inline?>? citationChip,
-        double fontSize = 14,
+        double fontSize = 15,
         WebContentHost? math = null,
         Panel? mathHost = null)
     {

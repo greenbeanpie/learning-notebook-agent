@@ -911,6 +911,8 @@ mod tests {
             guide_summary_md: None,
             guide_topics: vec![],
             ai_indexed: false,
+            recommend_knowledge_graph: false,
+            knowledge_graph_reason: None,
             created_at: 0,
             updated_at: 0,
         }

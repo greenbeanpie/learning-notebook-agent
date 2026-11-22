@@ -8,6 +8,7 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
+            <FontFamily x:Key="AppFontFamily">Microsoft YaHei UI, Segoe UI</FontFamily>
             <SolidColorBrush x:Key="CanvasBgBrush" Color="#131314" />
             <SolidColorBrush x:Key="PanelBgBrush" Color="#1E1F20" />
             <SolidColorBrush x:Key="ElevatedBgBrush" Color="#282A2C" />

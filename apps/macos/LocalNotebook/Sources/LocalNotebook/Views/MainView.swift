@@ -3,6 +3,7 @@ import SwiftUI
 struct MainView: View {
     @EnvironmentObject var state: AppState
     @State private var chatInput = ""
+    @State private var hoveredSourceId: String? = nil
 
     private var isLight: Bool { state.prefs.theme == "light" }
     private var canvasBg: Color { isLight ? Color(white: 0.96) : Color(red: 0x13/255, green: 0x13/255, blue: 0x14/255) }
@@ -152,8 +153,29 @@ struct MainView: View {
                             .labelsHidden()
                         }
                         .padding(8)
-                        .background(elevatedBg.opacity(0.6))
+                        .background(hoveredSourceId == src.id ? elevatedBg : Color.clear)
                         .cornerRadius(10)
+                        .onHover { hovering in
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                hoveredSourceId = hovering ? src.id : (hoveredSourceId == src.id ? nil : hoveredSourceId)
+                            }
+                        }
+                        if src.recommendKnowledgeGraph {
+                            HStack(spacing: 6) {
+                                Text(state.t("kg.recommended"))
+                                    .font(.caption2)
+                                    .foregroundColor(Color(red: 0.83, green: 0.89, blue: 0.97))
+                                Spacer()
+                                Button(state.t("kg.build_btn")) {
+                                    Task { await state.createKnowledgeGraph(sourceTitle: src.title) }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.mini)
+                            }
+                            .padding(8)
+                            .background(Color(red: 34/255, green: 52/255, blue: 68/255))
+                            .cornerRadius(10)
+                        }
                     }
                 }
             }
@@ -171,8 +193,8 @@ struct MainView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(5)
                 if state.prefs.showSuggestedQuestions && !state.suggestedQuestions.isEmpty {
-                    HStack(spacing: 8) {
-                        ForEach(state.suggestedQuestions.prefix(3), id: \.self) { q in
+                    WrapFlowLayout(spacing: 8) {
+                        ForEach(state.suggestedQuestions.prefix(6), id: \.self) { q in
                             Button(q) {
                                 Task { await state.sendChat(q) }
                             }
@@ -234,6 +256,7 @@ struct MainView: View {
                     ("flashcards", state.t("studio.flashcards"), "square.on.square"),
                     ("quiz", state.t("studio.quiz"), "checkmark.circle"),
                     ("infographic", state.t("studio.infographic"), "chart.bar.xaxis"),
+                    ("knowledge_graph", state.t("studio.knowledge_graph"), "circle.hexagongrid"),
                 ]
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(tiles, id: \.0) { kind, label, icon in
@@ -364,8 +387,54 @@ struct ChatMessageRow: View {
 
             Text(message.content)
                 .textSelection(.enabled)
-                .font(.system(size: fontSize))
+                .font(.system(size: fontSize, weight: .regular))
+                .lineSpacing(6)
         }
         .onAppear { expanded = defaultExpanded }
+    }
+}
+
+struct WrapFlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxW = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineH: CGFloat = 0
+        var maxLineW: CGFloat = 0
+        for sub in subviews {
+            let sz = sub.sizeThatFits(.unspecified)
+            if x > 0 && x + spacing + sz.width > maxW {
+                maxLineW = max(maxLineW, x)
+                y += lineH + spacing
+                x = sz.width
+                lineH = sz.height
+            } else {
+                if x > 0 { x += spacing }
+                x += sz.width
+                lineH = max(lineH, sz.height)
+            }
+        }
+        return CGSize(width: max(maxLineW, x), height: y + lineH)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var lineH: CGFloat = 0
+        for sub in subviews {
+            let sz = sub.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + spacing + sz.width > bounds.maxX {
+                x = bounds.minX
+                y += lineH + spacing
+                lineH = 0
+            } else if x > bounds.minX {
+                x += spacing
+            }
+            sub.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(sz))
+            x += sz.width
+            lineH = max(lineH, sz.height)
+        }
     }
 }

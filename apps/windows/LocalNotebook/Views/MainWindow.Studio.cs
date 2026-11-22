@@ -17,6 +17,7 @@ public sealed partial class MainWindow
         "flashcards" => L10n.T("studio.flashcards"),
         "quiz" => L10n.T("studio.quiz"),
         "infographic" => L10n.T("studio.infographic"),
+        "knowledge_graph" => L10n.T("kg.title"),
         _ => kind,
     };
 
@@ -232,7 +233,10 @@ public sealed partial class MainWindow
             id,
             this,
             onClose: CloseArtifactInline,
-            onToggleFullscreen: ToggleStudioFullscreen);
+            onToggleFullscreen: ToggleStudioFullscreen,
+            onQuizConcept: concept => _ = CreateConceptLinkArtifactAsync("quiz", concept),
+            onExpandMindmap: concept => _ = CreateConceptLinkArtifactAsync("mindmap", concept),
+            onAskConcept: concept => _ = SendChatAsync(L10n.IsEnglish ? $"Explain the concept '{concept}' in detail with key theorems and examples." : $"请详细讲解知识点「{concept}」的核心定义、推导思路与典型应用。"));
         _activeArtifactPane = pane;
         StudioDetailHost.Content = pane.Root;
         StudioHomeView.Visibility = Visibility.Collapsed;
@@ -408,14 +412,58 @@ public sealed partial class MainWindow
 
     // ---------- creating ----------
 
+    private async Task CreateKnowledgeGraphAsync(string sourceId, string sourceTitle)
+    {
+        if (_activeNotebookId == null) return;
+        var topic = L10n.IsEnglish
+            ? $"Build a structured Knowledge Graph for '{sourceTitle}' covering core concepts, prerequisites, and relationships."
+            : $"基于《{sourceTitle}》构建知识点图谱，梳理核心概念、前置依赖与定理体系。";
+        var cfg = Args(("mode", "knowledge_graph"), ("topic", topic), ("source_id", sourceId));
+        var title = L10n.IsEnglish ? $"{sourceTitle} - Knowledge Graph" : $"{sourceTitle} · 知识点图谱";
+        var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", "mindmap"), ("title", title), ("config", cfg)), L10n.T("kg.title"));
+        if (res != null) ShowStatus(InfoBarSeverity.Success, L10n.T("kg.title"), L10n.IsEnglish ? "Building Knowledge Graph in background." : "已开始在后台构建知识点图谱。");
+        await RefreshNotebookDataAsync();
+    }
+
+    private async Task CreateConceptLinkArtifactAsync(string artifactType, string concept)
+    {
+        if (_activeNotebookId == null) return;
+        var cfg = artifactType == "quiz"
+            ? Args(("topic", L10n.IsEnglish ? $"Focused quiz on concept: {concept}" : $"针对知识点「{concept}」的专项测验"), ("count", 5), ("difficulty", "mixed"))
+            : Args(("topic", L10n.IsEnglish ? $"Detailed mind map expanding concept: {concept}" : $"深入展开知识点「{concept}」的详细思维导图"));
+        var title = artifactType == "quiz"
+            ? (L10n.IsEnglish ? $"Quiz: {concept}" : $"专项测验：{concept}")
+            : (L10n.IsEnglish ? $"Mind Map: {concept}" : $"思维导图：{concept}");
+        var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", artifactType), ("title", title), ("config", cfg)), KindName(artifactType));
+        if (res != null) ShowStatus(InfoBarSeverity.Success, title, L10n.IsEnglish ? "Started generating in background." : "已加入后台生成队列。");
+        await RefreshNotebookDataAsync();
+    }
+
     private async void OnStudioTileClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null || sender is not Button btn || btn.Tag is not string kind) return;
         var cfg = await ConfigureArtifactAsync(kind);
         if (cfg is not { } config) return;
-        var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", kind), ("config", config)), $"生成{KindName(kind)}");
-        if (res != null) ShowStatus(InfoBarSeverity.Success, "已提交", $"{KindName(kind)}已加入后台生成队列，点击右侧卡片可实时查看思考过程。");
+        var actualType = kind == "knowledge_graph" ? "mindmap" : kind;
+        var finalConfig = kind == "knowledge_graph"
+            ? MergeKnowledgeGraphMode(config)
+            : config;
+        var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", actualType), ("config", finalConfig)), KindName(kind));
+        if (res != null) ShowStatus(InfoBarSeverity.Success, KindName(kind), L10n.IsEnglish ? "Submitted to background queue." : "已加入后台生成队列。");
         await RefreshNotebookDataAsync();
+    }
+
+    private static JsonElement MergeKnowledgeGraphMode(JsonElement cfg)
+    {
+        var kv = new List<(string, object?)> { ("mode", "knowledge_graph") };
+        if (cfg.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var p in cfg.EnumerateObject())
+            {
+                if (p.Name != "mode") kv.Add((p.Name, p.Value));
+            }
+        }
+        return Args(kv.ToArray());
     }
 
     private async Task<JsonElement?> ConfigureArtifactAsync(string kind, JsonElement? initialConfig = null, bool isUpdate = false)

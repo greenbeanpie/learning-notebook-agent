@@ -3,7 +3,7 @@ use crate::icons::{studio_icon_image, svg_image, SVG_BRAIN, SVG_CLOSE, SVG_FULLS
 use crate::mindmap_view::build_mindmap_widget;
 use gtk4::prelude::*;
 use gtk4::{
-    Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry, Expander,
+    Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry, Expander, FlowBox, SelectionMode,
     Grid, Label, MenuButton, Notebook, Orientation, Paned, Popover, PositionType, ScrolledWindow,
     Stack, StringList, Switch, TextView,
 };
@@ -44,7 +44,7 @@ struct UiState {
     studio_fullscreen: RefCell<bool>,
     sources_box: GtkBox,
     chat_box: GtkBox,
-    suggested_box: GtkBox,
+    suggested_box: FlowBox,
     artifacts_box: GtkBox,
     summary_label: Label,
     status_label: Label,
@@ -170,7 +170,11 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     let summary_label = Label::new(Some(tr(en, "chat.empty_summary")));
     summary_label.set_wrap(true);
     summary_label.set_xalign(0.0);
-    let suggested_box = GtkBox::new(Orientation::Horizontal, 8);
+    let suggested_box = FlowBox::new();
+    suggested_box.set_selection_mode(SelectionMode::None);
+    suggested_box.set_row_spacing(6);
+    suggested_box.set_column_spacing(8);
+    suggested_box.set_homogeneous(false);
     let summary_card = GtkBox::new(Orientation::Vertical, 8);
     summary_card.add_css_class("lna-card");
     summary_card.append(&summary_label);
@@ -221,6 +225,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         "flashcards",
         "quiz",
         "infographic",
+        "knowledge_graph",
     ];
     let mut tile_labels = Vec::new();
 
@@ -308,9 +313,12 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             let dlang = st.prefs.borrow().default_studio_lang.clone();
             let mut cfg = if k == "slides" {
                 json!({ "pages": 8, "reviewOutline": true })
+            } else if k == "knowledge_graph" {
+                json!({ "mode": "knowledge_graph" })
             } else {
                 json!({})
             };
+            let actual_type = if k == "knowledge_graph" { "mindmap" } else { k.as_str() };
             if !dlang.is_empty() {
                 if let Some(obj) = cfg.as_object_mut() {
                     obj.insert("lang".into(), json!(dlang));
@@ -320,7 +328,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             match call_core(
                 &st.core,
                 "studio.create",
-                json!({ "notebook_id": nid, "artifact_type": k, "config": cfg }),
+                json!({ "notebook_id": nid, "artifact_type": actual_type, "config": cfg }),
             ) {
                 Ok(_) => {
                     st.status_label.set_text(tr(en, "studio.submitted"));
@@ -478,10 +486,12 @@ fn refresh_all(st: &Rc<UiState>) {
             .unwrap_or(tr(en, "chat.empty_summary"));
         st.summary_label.set_text(sum);
 
-        clear_box(&st.suggested_box);
+        while let Some(child) = st.suggested_box.first_child() {
+            st.suggested_box.remove(&child);
+        }
         if st.prefs.borrow().show_suggested_questions {
             if let Some(arr) = nb.get("suggested_questions").and_then(Value::as_array) {
-                for q in arr.iter().take(3) {
+                for q in arr.iter().take(6) {
                     if let Some(qs) = q.as_str() {
                         let btn = Button::with_label(qs);
                         btn.add_css_class("lna-pill-btn");
@@ -493,7 +503,7 @@ fn refresh_all(st: &Rc<UiState>) {
                                 refresh_all(&st_q);
                             }
                         });
-                        st.suggested_box.append(&btn);
+                        st.suggested_box.insert(&btn, -1);
                     }
                 }
             }
@@ -509,6 +519,7 @@ fn refresh_all(st: &Rc<UiState>) {
                 let title = s.get("title").and_then(Value::as_str).unwrap_or("");
                 let selected = s.get("is_selected").and_then(Value::as_bool).unwrap_or(true);
                 let row = GtkBox::new(Orientation::Horizontal, 8);
+                row.add_css_class("lna-source-row");
                 let lbl = Label::new(Some(title));
                 lbl.set_hexpand(true);
                 lbl.set_xalign(0.0);
@@ -525,6 +536,34 @@ fn refresh_all(st: &Rc<UiState>) {
                 row.append(&lbl);
                 row.append(&cb);
                 st.sources_box.append(&row);
+                if s.get("recommend_knowledge_graph").and_then(Value::as_bool).unwrap_or(false) {
+                    let kg_row = GtkBox::new(Orientation::Horizontal, 6);
+                    kg_row.add_css_class("lna-kg-banner");
+                    let kg_lbl = Label::new(Some(tr(en, "kg.recommended")));
+                    kg_lbl.set_hexpand(true);
+                    kg_lbl.set_xalign(0.0);
+                    let kg_btn = Button::with_label(tr(en, "kg.build_btn"));
+                    kg_btn.add_css_class("lna-primary-btn");
+                    let st_kg = st.clone();
+                    let s_title = title.to_string();
+                    kg_btn.connect_clicked(move |_| {
+                        let nid2 = st_kg.active_notebook_id.borrow().clone();
+                        let _ = call_core(
+                            &st_kg.core,
+                            "studio.create",
+                            json!({
+                                "notebook_id": nid2,
+                                "artifact_type": "mindmap",
+                                "title": format!("{s_title} · {}", tr(st_kg.is_en(), "studio.knowledge_graph")),
+                                "config": { "mode": "knowledge_graph", "topic": s_title }
+                            }),
+                        );
+                        refresh_all(&st_kg);
+                    });
+                    kg_row.append(&kg_lbl);
+                    kg_row.append(&kg_btn);
+                    st.sources_box.append(&kg_row);
+                }
             }
         }
     }
@@ -889,7 +928,36 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         st.studio_detail_box.append(&approve);
     } else if kind == "mindmap" {
         let payload = art.get("payload").unwrap_or(&Value::Null);
-        st.studio_detail_box.append(&build_mindmap_widget(payload, en));
+        let is_kg = art.pointer("/config/mode").and_then(Value::as_str) == Some("knowledge_graph")
+            || payload.get("kind").and_then(Value::as_str) == Some("knowledge_graph");
+        let st_link = st.clone();
+        let on_action: Rc<dyn Fn(&str, &str)> = Rc::new(move |action, concept| {
+            let nid2 = st_link.active_notebook_id.borrow().clone();
+            if nid2.is_empty() { return; }
+            match action {
+                "quiz" => {
+                    let _ = call_core(&st_link.core, "studio.create", json!({
+                        "notebook_id": nid2, "artifact_type": "quiz",
+                        "title": format!("Quiz: {concept}"),
+                        "config": { "topic": concept, "count": 5 }
+                    }));
+                }
+                "mindmap" => {
+                    let _ = call_core(&st_link.core, "studio.create", json!({
+                        "notebook_id": nid2, "artifact_type": "mindmap",
+                        "title": format!("Mind Map: {concept}"),
+                        "config": { "topic": concept }
+                    }));
+                }
+                _ => {
+                    let _ = call_core(&st_link.core, "chat.send", json!({
+                        "notebook_id": nid2, "text": format!("Explain: {concept}")
+                    }));
+                }
+            }
+            refresh_all(&st_link);
+        });
+        st.studio_detail_box.append(&build_mindmap_widget(payload, en, is_kg, on_action));
     } else if kind == "report" {
         let split = GtkBox::new(Orientation::Horizontal, 12);
         split.set_vexpand(true);

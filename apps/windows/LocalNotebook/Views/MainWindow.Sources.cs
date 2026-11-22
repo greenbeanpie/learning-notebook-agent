@@ -345,14 +345,21 @@ public sealed partial class MainWindow
         row.Children.Add(more);
         row.Children.Add(cb);
 
+        var transparentBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        var hoverBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["HoverBgBrush"];
+        var pressedBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"];
         var border = new Border
         {
-            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            Background = transparentBrush,
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(8, 4, 4, 4),
             Margin = new Thickness(0, 2, 0, 2),
             Child = row,
         };
+        border.PointerEntered += (_, _) => border.Background = hoverBrush;
+        border.PointerExited += (_, _) => border.Background = transparentBrush;
+        border.PointerPressed += (_, _) => border.Background = pressedBrush;
+        border.PointerReleased += (_, _) => border.Background = hoverBrush;
         border.Tapped += async (_, _) => await ShowSourcePreviewAsync(id, null, null, title);
         return border;
     }
@@ -540,7 +547,7 @@ public sealed partial class MainWindow
     }
 
     /// <summary>Builds the collapsible NotebookLM-style "来源指南" card with bolded summary and clickable topic pills.</summary>
-    private FrameworkElement BuildSourceGuideCard(string sourceId, string sourceTitle, string guideSummaryMd, List<string> guideTopics)
+    private FrameworkElement BuildSourceGuideCard(string sourceId, string sourceTitle, string guideSummaryMd, List<string> guideTopics, bool recommendKnowledgeGraph = false)
     {
         var expanded = true;
         var cardBg = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 36, 40, 56));
@@ -639,27 +646,19 @@ public sealed partial class MainWindow
 
             if (guideTopics.Count > 0)
             {
-                // Wrap pills in rows of 2~3
-                var rowsPanel = new StackPanel { Spacing = 8, Margin = new Thickness(0, 2, 0, 0) };
-                StackPanel? curRow = null;
-                var curRowChars = 0;
+                // True horizontal flow-wrap layout: fills each row before wrapping to next line
+                var wrapPanel = new FlowWrapPanel { HorizontalSpacing = 8, VerticalSpacing = 8, Margin = new Thickness(0, 2, 0, 0) };
                 foreach (var topic in guideTopics)
                 {
                     var t = topic.Trim();
                     if (t.Length == 0) continue;
-                    if (curRow == null || curRowChars + Math.Min(t.Length, 8) > 15)
-                    {
-                        curRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                        rowsPanel.Children.Add(curRow);
-                        curRowChars = 0;
-                    }
                     var chipText = new TextBlock
                     {
                         Text = t,
-                        FontSize = 12,
+                        FontFamily = Md.BodyFontFamily,
+                        FontSize = 12.5,
                         MaxLines = 1,
                         TextTrimming = TextTrimming.CharacterEllipsis,
-                        MaxWidth = 128,
                         Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 224, 229, 242)),
                     };
                     var chip = new Button
@@ -671,17 +670,58 @@ public sealed partial class MainWindow
                         BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 68, 74, 102)),
                         BorderThickness = new Thickness(1),
                     };
-                    ToolTipService.SetToolTip(chip, $"点击提问：{t}");
+                    ToolTipService.SetToolTip(chip, t);
                     var capturedTopic = t;
                     chip.Click += async (_, _) =>
                     {
                         await SendChatAsync($"请结合《{sourceTitle}》详细讲解「{capturedTopic}」的核心内容与要点。");
                     };
-                    curRow.Children.Add(chip);
-                    curRowChars += Math.Min(t.Length, 8) + 2;
+                    wrapPanel.Children.Add(chip);
                 }
-                body.Children.Add(rowsPanel);
+                body.Children.Add(wrapPanel);
             }
+
+            // Learning tool: Knowledge Graph builder (with AI auto-recommendation banner when suitable)
+            var kgBar = new Border
+            {
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(
+                    recommendKnowledgeGraph
+                        ? Windows.UI.Color.FromArgb(255, 34, 52, 68)
+                        : Windows.UI.Color.FromArgb(255, 40, 44, 60)),
+                BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(
+                    recommendKnowledgeGraph
+                        ? Windows.UI.Color.FromArgb(255, 82, 134, 186)
+                        : Windows.UI.Color.FromArgb(255, 62, 68, 92)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(10, 8, 10, 8),
+                Margin = new Thickness(0, 4, 0, 0),
+            };
+            var kgRow = new Grid { ColumnSpacing = 10 };
+            kgRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            kgRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            kgRow.Children.Add(new TextBlock
+            {
+                Text = recommendKnowledgeGraph ? L10n.T("kg.recommended_banner") : L10n.T("kg.title"),
+                FontFamily = Md.BodyFontFamily,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 212, 228, 248)),
+            });
+            var kgBtn = new Button
+            {
+                Content = L10n.T("kg.build_btn"),
+                Style = (Style)Application.Current.Resources[recommendKnowledgeGraph ? "PrimaryPillButtonStyle" : "PillButtonStyle"],
+                MinHeight = 30,
+                Padding = new Thickness(12, 4, 12, 4),
+                FontSize = 12,
+            };
+            kgBtn.Click += async (_, _) => await CreateKnowledgeGraphAsync(sourceId, sourceTitle);
+            Grid.SetColumn(kgBtn, 1);
+            kgRow.Children.Add(kgBtn);
+            kgBar.Child = kgRow;
+            body.Children.Add(kgBar);
         }
         else
         {
@@ -1120,7 +1160,8 @@ public sealed partial class MainWindow
         container.Children.Add(head);
 
         // Row 1: Collapsible "来源指南" card
-        var guideCard = BuildSourceGuideCard(sourceId, title, guideSummaryMd, guideTopics);
+        var recommendKg = Bool(r, "recommend_knowledge_graph") || guideTopics.Count >= 3;
+        var guideCard = BuildSourceGuideCard(sourceId, title, guideSummaryMd, guideTopics, recommendKg);
         Grid.SetRow(guideCard, 1);
         container.Children.Add(guideCard);
 

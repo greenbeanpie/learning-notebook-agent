@@ -80,7 +80,13 @@ struct ArtifactViewerView: View {
             } else if artifact.status == "DRAFT_REVIEW" {
                 draftReviewBody
             } else if artifact.artifactType == "mindmap" {
-                MindmapTreeView(payload: artifact.payload, en: state.isEnglish)
+                MindmapTreeView(
+                    payload: artifact.payload,
+                    en: state.isEnglish,
+                    onQuizConcept: { c in Task { await state.createConceptLink(kind: "quiz", concept: c) } },
+                    onExpandMindmap: { c in Task { await state.createConceptLink(kind: "mindmap", concept: c) } },
+                    onAskConcept: { c in Task { await state.sendChat(c) } }
+                )
                 feedbackBar
             } else if artifact.artifactType == "report" {
                 reportBody

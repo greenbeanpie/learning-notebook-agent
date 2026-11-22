@@ -8,7 +8,7 @@ public sealed class UiPreferences
 {
     public string Language { get; set; } = "auto";           // "auto" | "zh-CN" | "en-US"
     public string Theme { get; set; } = "dark";              // "dark" | "light" | "system"
-    public int FontSize { get; set; } = 14;                  // 13 | 14 | 16
+    public int FontSize { get; set; } = 15;                  // 14 | 15 | 17
     public bool FullscreenAnimation { get; set; } = true;
     public bool ExpandThoughtsByDefault { get; set; } = false;
     public bool ShowSuggestedQuestions { get; set; } = true;
@@ -22,8 +22,8 @@ public sealed class UiPreferences
         if (lang.Length > 0) p.Language = lang;
         var theme = Str(el, "theme");
         if (theme.Length > 0) p.Theme = theme;
-        var fs = (int)Int(el, "font_size", 14);
-        if (fs is 13 or 14 or 16) p.FontSize = fs;
+        var fs = (int)Int(el, "font_size", 15);
+        if (fs is 13 or 14 or 15 or 16 or 17) p.FontSize = fs;
         if (el.TryGetProperty("fullscreen_animation", out var fa) && fa.ValueKind is JsonValueKind.True or JsonValueKind.False)
             p.FullscreenAnimation = fa.GetBoolean();
         if (el.TryGetProperty("expand_thoughts_by_default", out var et) && et.ValueKind is JsonValueKind.True or JsonValueKind.False)
@@ -178,6 +178,15 @@ public static class L10n
         ["mindmap.download"] = "下载思维导图 (SVG)",
         ["mindmap.empty"] = "没有导图节点。",
 
+        ["kg.title"] = "知识点图谱",
+        ["kg.build_btn"] = "构建知识点图谱",
+        ["kg.recommended_banner"] = "AI 推荐：这份材料概念体系清晰，适合构建知识点图谱",
+        ["kg.badge_hint"] = "知识点图谱 · 点击节点可测验 / 展开导图",
+        ["kg.prereq"] = "前置知识",
+        ["kg.action_quiz"] = "针对此知识点生成测验",
+        ["kg.action_mindmap"] = "展开为详细思维导图",
+        ["kg.action_chat"] = "在对话中深入讲解",
+
         ["settings.title"] = "设置",
         ["settings.tab_appearance"] = "外观与界面",
         ["settings.tab_general"] = "通用与功能",
@@ -317,6 +326,15 @@ public static class L10n
         ["mindmap.zoom_out"] = "Zoom out",
         ["mindmap.download"] = "Download Mind Map (SVG)",
         ["mindmap.empty"] = "No mind map nodes.",
+
+        ["kg.title"] = "Knowledge Graph",
+        ["kg.build_btn"] = "Build Knowledge Graph",
+        ["kg.recommended_banner"] = "AI Recommended: Structured concepts ideal for a Knowledge Graph",
+        ["kg.badge_hint"] = "Knowledge Graph · Click any node to Quiz / Expand",
+        ["kg.prereq"] = "Prerequisites",
+        ["kg.action_quiz"] = "Quiz on this concept",
+        ["kg.action_mindmap"] = "Expand as Mind Map",
+        ["kg.action_chat"] = "Explain in Chat",
 
         ["settings.title"] = "Settings",
         ["settings.tab_appearance"] = "Appearance",

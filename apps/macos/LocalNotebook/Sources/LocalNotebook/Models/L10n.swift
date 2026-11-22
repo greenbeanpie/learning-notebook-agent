@@ -3,7 +3,7 @@ import Foundation
 struct UiPreferences {
     var language: String = "auto"           // "auto" | "zh-CN" | "en-US"
     var theme: String = "dark"              // "dark" | "light" | "system"
-    var fontSize: Double = 14               // 13 | 14 | 16
+    var fontSize: Double = 15               // 14 | 15 | 17
     var fullscreenAnimation: Bool = true
     var expandThoughtsByDefault: Bool = false
     var showSuggestedQuestions: Bool = true
@@ -89,6 +89,12 @@ enum L10n {
         "studio.flashcards": "闪卡",
         "studio.quiz": "测验",
         "studio.infographic": "信息图",
+        "studio.knowledge_graph": "知识点图谱",
+        "kg.build_btn": "构建知识点图谱",
+        "kg.recommended": "AI 推荐：适合构建知识点图谱",
+        "kg.action_quiz": "针对此知识点生成测验",
+        "kg.action_mindmap": "展开为详细思维导图",
+        "kg.action_chat": "在对话中深入讲解",
         "studio.prompt_header": "提示",
         "studio.prompt_empty": "基于所选来源自动生成",
         "studio.sources_header": "来源",
@@ -144,6 +150,12 @@ enum L10n {
         "studio.flashcards": "Flashcards",
         "studio.quiz": "Quiz",
         "studio.infographic": "Infographic",
+        "studio.knowledge_graph": "Knowledge Graph",
+        "kg.build_btn": "Build Knowledge Graph",
+        "kg.recommended": "AI Recommended: Build Knowledge Graph",
+        "kg.action_quiz": "Quiz on this concept",
+        "kg.action_mindmap": "Expand as Mind Map",
+        "kg.action_chat": "Explain in Chat",
         "studio.prompt_header": "Prompt",
         "studio.prompt_empty": "Generated from selected sources",
         "studio.sources_header": "Sources",

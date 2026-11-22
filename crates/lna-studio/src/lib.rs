@@ -1273,10 +1273,18 @@ impl StudioService {
             return Ok((json!({ "title": title, "cards": all_cards }), usage_sum));
         }
 
+        let is_kg = art.artifact_type == ArtifactType::Mindmap
+            && art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        let extra_kg_hint = if is_kg {
+            r#" Set "kind": "knowledge_graph". Build a concept Knowledge Graph structured as a collapsible tree from foundational prerequisites to core theorems and advanced applications. For each node, set "importance" ("core" | "key" | "detail"), a brief 1-sentence "summary", and "prerequisites" (names of prerequisite concepts when applicable)."#
+        } else {
+            ""
+        };
         let gen_req = LlmRequest {
             system: format!(
-                "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep content concise, accurate, and well-structured without filler.",
-                art.artifact_type.as_str()
+                "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array.{} Match the language requested in config or the primary language of the sources. Keep content concise, accurate, and well-structured without filler.",
+                art.artifact_type.as_str(),
+                extra_kg_hint
             ),
             messages: vec![LlmMessage {
                 role: Role::User,

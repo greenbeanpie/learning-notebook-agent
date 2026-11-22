@@ -24,6 +24,9 @@ private final class MindNodeItem: Identifiable {
 struct MindmapTreeView: View {
     let payload: [String: Any]
     let en: Bool
+    var onQuizConcept: ((String) -> Void)? = nil
+    var onExpandMindmap: ((String) -> Void)? = nil
+    var onAskConcept: ((String) -> Void)? = nil
 
     @State private var collapsedIds: Set<String> = []
     @State private var scale: CGFloat = 1.0
@@ -134,16 +137,24 @@ struct MindmapTreeView: View {
 
                     ForEach(laid.visible) { node in
                         let colors = nodeColors(node.depth)
-                        Text(node.label)
-                            .font(.system(size: 12.5, weight: node.depth == 0 ? .semibold : .regular))
-                            .foregroundColor(Color(white: 0.93))
-                            .lineLimit(1)
-                            .padding(.horizontal, 11)
-                            .frame(width: node.width, height: node.height, alignment: .leading)
-                            .background(colors.bg)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(colors.border, lineWidth: 1))
-                            .cornerRadius(8)
-                            .position(x: node.x + node.width / 2, y: node.y + node.height / 2)
+                        Menu {
+                            Button(L10n.t("kg.action_quiz", en: en)) { onQuizConcept?(node.label) }
+                            Button(L10n.t("kg.action_mindmap", en: en)) { onExpandMindmap?(node.label) }
+                            Button(L10n.t("kg.action_chat", en: en)) { onAskConcept?(node.label) }
+                        } label: {
+                            Text(node.label)
+                                .font(.system(size: 13, weight: node.depth == 0 ? .semibold : .regular))
+                                .foregroundColor(Color(white: 0.93))
+                                .lineLimit(1)
+                                .padding(.horizontal, 11)
+                                .frame(width: node.width, height: node.height, alignment: .leading)
+                                .background(colors.bg)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(colors.border, lineWidth: 1))
+                                .cornerRadius(8)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .frame(width: node.width, height: node.height)
+                        .position(x: node.x + node.width / 2, y: node.y + node.height / 2)
 
                         if !node.children.isEmpty {
                             let isCol = collapsedIds.contains(node.id)
