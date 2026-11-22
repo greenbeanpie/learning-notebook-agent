@@ -10,10 +10,19 @@ lna-storage = { path = "../lna-storage" }
 lna-jobs = { path = "../lna-jobs" }
 lna-embedding = { path = "../lna-embedding" }
 lna-retrieval = { path = "../lna-retrieval" }
+lna-llm = { path = "../lna-llm" }
+lna-secrets = { path = "../lna-secrets" }
 chardetng.workspace = true
 encoding_rs.workspace = true
 pdfium-render.workspace = true
 pulldown-cmark.workspace = true
+quick-xml.workspace = true
+csv.workspace = true
+cfb.workspace = true
+flate2.workspace = true
+base64.workspace = true
+image.workspace = true
+zip.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 scraper.workspace = true
@@ -22,5 +31,6 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true

@@ -23,16 +23,72 @@ impl ProtocolAdapter for ChatCompletionAdapter {
         for m in &req.messages {
             match m.role {
                 Role::User => {
-                    let text = m
-                        .parts
-                        .iter()
-                        .filter_map(|p| match p {
-                            Part::Text(t) => Some(t.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    messages.push(json!({ "role": "user", "content": text }));
+                    let has_media = m.parts.iter().any(|p| matches!(p, Part::Media { .. }));
+                    if !has_media {
+                        let text = m
+                            .parts
+                            .iter()
+                            .filter_map(|p| match p {
+                                Part::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        messages.push(json!({ "role": "user", "content": text }));
+                    } else {
+                        let mut content_parts = Vec::new();
+                        for p in &m.parts {
+                            match p {
+                                Part::Text(t) if !t.is_empty() => {
+                                    content_parts.push(json!({ "type": "text", "text": t }));
+                                }
+                                Part::Media {
+                                    mime_type,
+                                    data_base64,
+                                    audio_format,
+                                    ..
+                                } => {
+                                    let b64 = data_base64.as_deref().ok_or_else(|| {
+                                        LnaError::new(
+                                            ErrorCode::CapabilityMissing,
+                                            "Chat Completion 协议不支持 file_uri 引用，需要内联 base64 媒体数据",
+                                        )
+                                    })?;
+                                    if mime_type.starts_with("image/") {
+                                        content_parts.push(json!({
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": format!("data:{mime_type};base64,{b64}")
+                                            }
+                                        }));
+                                    } else if mime_type.starts_with("audio/") {
+                                        let fmt = audio_format.as_deref().unwrap_or("");
+                                        if matches!(fmt, "wav" | "mp3") {
+                                            content_parts.push(json!({
+                                                "type": "input_audio",
+                                                "input_audio": {
+                                                    "data": b64,
+                                                    "format": fmt
+                                                }
+                                            }));
+                                        } else {
+                                            return Err(LnaError::new(
+                                                ErrorCode::CapabilityMissing,
+                                                format!("Chat Completion 协议仅原生支持 wav/mp3 音频，当前格式（{mime_type}）请使用 Gemini 模型处理"),
+                                            ));
+                                        }
+                                    } else {
+                                        return Err(LnaError::new(
+                                            ErrorCode::CapabilityMissing,
+                                            format!("Chat Completion 协议不支持原生视频或此类媒体（{mime_type}），请在“模型协议配置”中为视频勾选 Gemini 模型"),
+                                        ));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        messages.push(json!({ "role": "user", "content": content_parts }));
+                    }
                 }
                 Role::Assistant => {
                     let mut text = String::new();
@@ -54,7 +110,9 @@ impl ProtocolAdapter for ChatCompletionAdapter {
                                     }
                                 }));
                             }
-                            Part::Opaque(_) | Part::ToolResult { .. } => {}
+                            Part::Opaque(_)
+                            | Part::ToolResult { .. }
+                            | Part::Media { .. } => {}
                         }
                     }
                     let mut msg = json!({ "role": "assistant" });

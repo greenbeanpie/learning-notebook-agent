@@ -31,14 +31,40 @@ impl ProtocolAdapter for AnthropicAdapter {
         for m in &req.messages {
             match m.role {
                 Role::User => {
-                    let blocks: Vec<Value> = m
-                        .parts
-                        .iter()
-                        .filter_map(|p| match p {
-                            Part::Text(t) => Some(json!({ "type": "text", "text": t })),
-                            _ => None,
-                        })
-                        .collect();
+                    let mut blocks = Vec::new();
+                    for p in &m.parts {
+                        match p {
+                            Part::Text(t) => blocks.push(json!({ "type": "text", "text": t })),
+                            Part::Media {
+                                mime_type,
+                                data_base64,
+                                ..
+                            } => {
+                                if mime_type.starts_with("image/") {
+                                    let b64 = data_base64.as_deref().ok_or_else(|| {
+                                        LnaError::new(
+                                            ErrorCode::CapabilityMissing,
+                                            "Anthropic 协议需要 base64 图片数据",
+                                        )
+                                    })?;
+                                    blocks.push(json!({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": mime_type,
+                                            "data": b64
+                                        }
+                                    }));
+                                } else {
+                                    return Err(LnaError::new(
+                                        ErrorCode::CapabilityMissing,
+                                        format!("Anthropic 协议不支持原生音视频输入（{mime_type}），请在“模型协议配置”中为音视频勾选 Gemini 等原生支持的模型"),
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     messages.push(json!({ "role": "user", "content": blocks }));
                 }
                 Role::Assistant => {

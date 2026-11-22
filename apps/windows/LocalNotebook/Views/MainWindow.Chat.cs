@@ -20,6 +20,7 @@ public sealed partial class MainWindow
         public StackPanel Root = new() { Spacing = 8 };
         public ContentControl Body = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch };
         public TextBlock StreamText = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+        public StreamingMarkdownView? StreamView;
         public StringBuilder Text = new();
         public StackPanel? ThoughtsContainer;
         public PathIcon? ThoughtsChevron;
@@ -27,6 +28,8 @@ public sealed partial class MainWindow
         public StackPanel ThoughtList = new() { Spacing = 10, Margin = new Thickness(4, 8, 0, 6), Visibility = Visibility.Collapsed };
         public Dictionary<string, FrameworkElement> Steps = new();
         public Dictionary<int, (string Title, int Page, string Quote)> Citations = new();
+        public StackPanel Artifacts = new() { Spacing = 8, Visibility = Visibility.Collapsed };
+        public Dictionary<string, ChatArtifactCard> ArtifactCards = new();
         public StackPanel Footer = new() { Spacing = 8 };
         public StackPanel Followups = new() { Spacing = 8, Margin = new Thickness(0, 6, 0, 0) };
         public bool Streaming;
@@ -38,6 +41,88 @@ public sealed partial class MainWindow
     private readonly Services.WebContentHost _math = new();
     private string? _lastUserText;
     private bool _hintShown;
+    private ScrollViewer? _chatScrollViewer;
+    private bool _chatStickToBottom = true;
+    private bool _programmaticChatScroll;
+    private bool _scrollPending;
+    private double _lastScrollableHeight;
+    private double _lastVerticalOffset;
+
+    private ScrollViewer? EnsureChatScrollViewer()
+    {
+        if (_chatScrollViewer != null) return _chatScrollViewer;
+        _chatScrollViewer = FindDescendant<ScrollViewer>(ChatList);
+        if (_chatScrollViewer != null)
+        {
+            _lastScrollableHeight = _chatScrollViewer.ScrollableHeight;
+            _lastVerticalOffset = _chatScrollViewer.VerticalOffset;
+            _chatScrollViewer.ViewChanged += (_, _) =>
+            {
+                if (_chatScrollViewer == null) return;
+                if (_programmaticChatScroll)
+                {
+                    _lastScrollableHeight = _chatScrollViewer.ScrollableHeight;
+                    _lastVerticalOffset = _chatScrollViewer.VerticalOffset;
+                    return;
+                }
+                var sh = _chatScrollViewer.ScrollableHeight;
+                var vo = _chatScrollViewer.VerticalOffset;
+                if (sh > _lastScrollableHeight + 0.5 && vo >= _lastVerticalOffset - 1.0)
+                {
+                    if (_chatStickToBottom) ScrollChatToBottomIfSticky();
+                }
+                else
+                {
+                    _chatStickToBottom = (sh - vo) <= 36.0;
+                }
+                _lastScrollableHeight = sh;
+                _lastVerticalOffset = vo;
+            };
+        }
+        return _chatScrollViewer;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject parent) where T : DependencyObject
+    {
+        var count = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < count; i++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T match) return match;
+            var nested = FindDescendant<T>(child);
+            if (nested != null) return nested;
+        }
+        return null;
+    }
+
+    private void ScrollChatToBottomIfSticky()
+    {
+        if (!_chatStickToBottom || _scrollPending) return;
+        _scrollPending = true;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            _scrollPending = false;
+            if (!_chatStickToBottom) return;
+            var sv = EnsureChatScrollViewer();
+            if (sv == null)
+            {
+                if (ChatList.Items.Count > 0) ChatList.ScrollIntoView(ChatList.Items[^1]);
+                return;
+            }
+            if (sv.ScrollableHeight - sv.VerticalOffset <= 0.5) return;
+            _programmaticChatScroll = true;
+            try
+            {
+                sv.ChangeView(null, sv.ScrollableHeight, null, true);
+                _lastScrollableHeight = sv.ScrollableHeight;
+                _lastVerticalOffset = sv.ScrollableHeight;
+            }
+            finally
+            {
+                _programmaticChatScroll = false;
+            }
+        });
+    }
 
     // ---------- rendering ----------
 
@@ -49,6 +134,7 @@ public sealed partial class MainWindow
         v.Root.Children.Add(header);
         v.Body.Content = v.StreamText;
         v.Root.Children.Add(v.Body);
+        v.Root.Children.Add(v.Artifacts);
         v.Footer.Visibility = Visibility.Collapsed;
         v.Root.Children.Add(v.Footer);
         v.Root.Children.Add(v.Followups);
@@ -62,24 +148,52 @@ public sealed partial class MainWindow
         var tip = v.Citations.TryGetValue(no, out var c)
             ? $"{c.Title}{(c.Page > 0 ? $" · 第 {c.Page} 页" : "")}{Environment.NewLine}{c.Quote}"
             : "引用";
-        var link = new Microsoft.UI.Xaml.Documents.Hyperlink { UnderlineStyle = Microsoft.UI.Xaml.Documents.UnderlineStyle.None };
-        link.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = $"[{no}]", FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        ToolTipService.SetToolTip(link, tip);
         var messageId = v.Id;
-        link.Click += async (_, _) => await ShowCitationAsync(messageId, no);
-        return link;
+        return Md.SuperscriptCitation(no, tip, () => _ = ShowCitationAsync(messageId, no));
     }
 
     private void RenderFinal(MessageView v, string markdown)
     {
         v.Streaming = false;
+        v.StreamView = null;
         v.Body.Content = v.Role == "user"
             ? new TextBlock { Text = markdown, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }
             : Md.Render(markdown, n => v.Citations.ContainsKey(n) ? CitationChip(v, n) : null, 14, _math, MathRenderHost);
     }
 
+    private static void DisposeViewArtifacts(MessageView v)
+    {
+        foreach (var card in v.ArtifactCards.Values) card.Dispose();
+        v.ArtifactCards.Clear();
+        v.Artifacts.Children.Clear();
+        v.Artifacts.Visibility = Visibility.Collapsed;
+    }
+
+    private void UpsertChatArtifact(MessageView v, JsonElement artifact)
+    {
+        var aid = Str(artifact, "id");
+        if (aid.Length == 0) return;
+        if (v.ArtifactCards.TryGetValue(aid, out var existing))
+        {
+            existing.Update(artifact);
+            return;
+        }
+        var card = new ChatArtifactCard(
+            artifact,
+            this,
+            ShowStatus,
+            () => _ = RefreshStudioArtifactsAsync(),
+            id => OpenArtifact(id),
+            _math,
+            MathRenderHost);
+        v.ArtifactCards[aid] = card;
+        v.Artifacts.Children.Add(card.Root);
+        v.Artifacts.Visibility = Visibility.Visible;
+    }
+
     private void RenderChat(JsonElement history)
     {
+        foreach (var old in _views.Values) DisposeViewArtifacts(old);
         ChatList.Items.Clear();
         _views.Clear();
         var messages = Arr(history, "messages").ToList();
@@ -101,6 +215,7 @@ public sealed partial class MainWindow
             if (v.Role == "assistant")
             {
                 FillThoughts(v, Arr(m, "thoughts"));
+                foreach (var art in Arr(m, "artifacts")) UpsertChatArtifact(v, art);
                 var status = Str(m, "status");
                 var code = Str(m, "error_code");
                 if (status is "INCOMPLETE" or "FAILED" or "CANCELLED")
@@ -114,7 +229,8 @@ public sealed partial class MainWindow
             _views[v.Id] = v;
             ChatList.Items.Add(v.Root);
         }
-        ChatList.ScrollIntoView(ChatList.Items[^1]);
+        _chatStickToBottom = true;
+        ScrollChatToBottomIfSticky();
     }
 
     private UIElement EmptyChatHint()
@@ -143,7 +259,7 @@ public sealed partial class MainWindow
     }
 
     private static bool IsToolKind(string kind) =>
-        kind is "retrieve" or "retrieve_fallback" or "tool_search" or "tool_read_context" or "tool_list_sources" or "tool_call";
+        kind is "retrieve" or "retrieve_fallback" or "tool_search" or "tool_read_context" or "tool_list_sources" or "tool_call" or "tool_studio";
 
     private void UpdateStep(MessageView v, string id, string kind, string title, string detail, string state)
     {
@@ -265,10 +381,18 @@ public sealed partial class MainWindow
             return b;
         }
         var saveContent = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-        saveContent.Children.Add(new PathIcon
+        saveContent.Children.Add(new Viewbox
         {
-            Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z"),
-            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+            Width = 15,
+            Height = 15,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new PathIcon
+            {
+                Width = 24,
+                Height = 24,
+                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M16,12V4H17V2H7V4H8V12L6,14V16H11.2V22H12.8V16H18V14L16,12Z"),
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+            },
         });
         saveContent.Children.Add(new TextBlock { Text = "保存到笔记", FontSize = 12, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"], VerticalAlignment = VerticalAlignment.Center });
         var saveBtn = new Button
@@ -295,15 +419,28 @@ public sealed partial class MainWindow
 
         var copyBtn = new Button
         {
-            Content = new PathIcon
+            Content = new Viewbox
             {
-                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"),
-                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+                Width = 16,
+                Height = 16,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new PathIcon
+                {
+                    Width = 24,
+                    Height = 24,
+                    Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z"),
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+                },
             },
-            MinWidth = 38,
+            MinWidth = 36,
+            Width = 36,
             MinHeight = 36,
-            Padding = new Thickness(10, 6, 10, 6),
+            Height = 36,
+            Padding = new Thickness(0),
             CornerRadius = new CornerRadius(18),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
         };
@@ -321,25 +458,52 @@ public sealed partial class MainWindow
         {
             bar.Children.Add(Mk("重新生成", "重新生成这条回答", async () =>
             {
-                if (_activeNotebookId == null) return;
+                if (_activeNotebookId == null || _streaming != null) return;
+                if (ChatList.Items.Count == 0 || !ReferenceEquals(ChatList.Items[^1], v.Root)) return;
+                // Roll back the current turn's assistant bubble in UI before streaming the new one.
+                DisposeViewArtifacts(v);
+                ChatList.Items.RemoveAt(ChatList.Items.Count - 1);
+                _views.Remove(v.Id);
+                _flushedLength = 0;
+                _chatStickToBottom = true;
                 SetBusy(true);
-                try { await CoreAsync("chat.regenerate", Args(("notebook_id", _activeNotebookId)), "重新生成"); }
-                finally { SetBusy(false); }
+                try
+                {
+                    var (_, err) = await Api.CallAsync("chat.regenerate", Args(("notebook_id", _activeNotebookId)));
+                    if (err is { } e) ShowChatError(e);
+                }
+                finally
+                {
+                    SetBusy(false);
+                    _streaming = null;
+                    _flushTimer?.Stop();
+                }
                 await RefreshNotebookDataAsync();
             }));
         }
         Button MkIcon(string pathData, string label, bool active, string tip, Func<Task> act)
         {
-            var sp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-            sp.Children.Add(new PathIcon
+            var iconView = new Viewbox
             {
-                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), pathData),
-                Foreground = active
-                    ? (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"]
-                    : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
-            });
+                Width = 16,
+                Height = 16,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new PathIcon
+                {
+                    Width = 24,
+                    Height = 24,
+                    Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), pathData),
+                    Foreground = active
+                        ? (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"]
+                        : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+                },
+            };
+            object btnContent;
             if (label.Length > 0)
             {
+                var sp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                sp.Children.Add(iconView);
                 sp.Children.Add(new TextBlock
                 {
                     Text = label,
@@ -349,17 +513,26 @@ public sealed partial class MainWindow
                         : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
                     VerticalAlignment = VerticalAlignment.Center,
                 });
+                btnContent = sp;
+            }
+            else
+            {
+                btnContent = iconView;
             }
             var b = new Button
             {
-                Content = sp,
-                MinWidth = 38,
+                Content = btnContent,
+                MinWidth = 36,
                 MinHeight = 36,
-                Padding = new Thickness(10, 6, 10, 6),
+                Height = 36,
+                Padding = label.Length > 0 ? new Thickness(12, 0, 12, 0) : new Thickness(0),
                 CornerRadius = new CornerRadius(18),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
                 Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
                 BorderThickness = new Thickness(0),
             };
+            if (label.Length == 0) b.Width = 36;
             ToolTipService.SetToolTip(b, tip);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, tip);
             b.Click += async (_, _) => await act();
@@ -456,7 +629,9 @@ public sealed partial class MainWindow
         var user = NewView("pending-user", "user");
         RenderFinal(user, text);
         ChatList.Items.Add(user.Root);
-        ChatList.ScrollIntoView(user.Root);
+        _flushedLength = 0;
+        _chatStickToBottom = true;
+        ScrollChatToBottomIfSticky();
         SetBusy(true);
         try
         {
@@ -497,17 +672,27 @@ public sealed partial class MainWindow
             {
                 var v = NewView(Str(ev.Data, "message_id"), "assistant");
                 v.Streaming = true;
+                v.StreamView = new StreamingMarkdownView(
+                    n => v.Citations.ContainsKey(n) ? CitationChip(v, n) : null,
+                    14,
+                    _math,
+                    MathRenderHost);
+                v.Body.Content = v.StreamView.Root;
                 _streaming = v;
+                _flushedLength = 0;
                 _views[v.Id] = v;
                 ChatList.Items.Add(v.Root);
-                ChatList.ScrollIntoView(v.Root);
+                ScrollChatToBottomIfSticky();
                 _flushTimer ??= CreateFlushTimer();
                 _flushTimer.Start();
                 break;
             }
             case "chat.thought_step":
                 if (_streaming != null)
+                {
                     UpdateStep(_streaming, Str(ev.Data, "step_id"), Str(ev.Data, "kind"), Str(ev.Data, "title"), Str(ev.Data, "detail"), Str(ev.Data, "state"));
+                    ScrollChatToBottomIfSticky();
+                }
                 break;
             case "chat.thought_delta":
                 // Raw internal CoT is hidden from display (Requirement 1).
@@ -519,6 +704,17 @@ public sealed partial class MainWindow
                 if (_streaming != null)
                     _streaming.Citations[(int)Int(ev.Data, "no")] = (Str(ev.Data, "title"), (int)Int(ev.Data, "page"), Str(ev.Data, "quote"));
                 break;
+            case "chat.artifact":
+            {
+                var mid = Str(ev.Data, "message_id");
+                var target = (mid.Length > 0 && _views.TryGetValue(mid, out var mv)) ? mv : _streaming;
+                if (target != null && ev.Data.TryGetProperty("artifact", out var artEl) && artEl.ValueKind == JsonValueKind.Object)
+                {
+                    UpsertChatArtifact(target, artEl);
+                    ScrollChatToBottomIfSticky();
+                }
+                break;
+            }
             case "chat.followups":
                 if (_views.TryGetValue(Str(ev.Data, "message_id"), out var fv)) AddFollowups(fv, Arr(ev.Data, "questions").Select(q => q.GetString() ?? ""));
                 break;
@@ -526,8 +722,9 @@ public sealed partial class MainWindow
             {
                 if (_streaming is { } done)
                 {
-                    FlushStream(done);
+                    _flushedLength = done.Text.Length;
                     RenderFinal(done, done.Text.ToString());
+                    ScrollChatToBottomIfSticky();
                 }
                 var status = Str(ev.Data, "status");
                 if (status is "FAILED" or "INCOMPLETE" && ev.Data.TryGetProperty("error", out var err))
@@ -542,7 +739,7 @@ public sealed partial class MainWindow
 
     private DispatcherTimer CreateFlushTimer()
     {
-        var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
+        var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
         t.Tick += (_, _) => { if (_streaming != null) FlushStream(_streaming); };
         return t;
     }
@@ -550,10 +747,17 @@ public sealed partial class MainWindow
     private int _flushedLength;
     private void FlushStream(MessageView v)
     {
-        if (v.Text.Length == _flushedLength && v.StreamText.Text.Length == v.Text.Length) return;
-        v.StreamText.Text = v.Text.ToString();
+        if (v.Text.Length == _flushedLength) return;
         _flushedLength = v.Text.Length;
-        if (ChatList.Items.Count > 0) ChatList.ScrollIntoView(ChatList.Items[^1]);
+        if (v.StreamView != null)
+        {
+            v.StreamView.Update(v.Text.ToString());
+        }
+        else
+        {
+            v.StreamText.Text = v.Text.ToString();
+        }
+        ScrollChatToBottomIfSticky();
     }
 
     // ---------- citations ----------

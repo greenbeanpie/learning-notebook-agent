@@ -378,3 +378,48 @@ fn b11_limits() {
     );
     let _ = mock();
 }
+
+#[test]
+fn ai_source_guide_and_hierarchical_index_work_on_import_and_on_demand() {
+    let ai_mock = MockLlm::start(|r| match r.kind {
+        Kind::SourceIndex => Reply::Text(
+            r#"{
+              "guide_summary_md": "本文系统讲解了**微积分基础**与**微分中值定理**，帮助读者建立严谨逻辑。",
+              "guide_topics": ["微积分基础", "微分中值定理", "积分计算"],
+              "nodes": [
+                {"id": "n1", "parent_id": null, "level": 1, "title": "第1章 实数与极限", "summary": "介绍实数完备性与函数极限", "keywords": ["实数", "极限"], "page_start": 1, "page_end": 20},
+                {"id": "n2", "parent_id": null, "level": 1, "title": "第2章 导数与微分中值定理", "summary": "罗尔定理与拉格朗日中值定理", "keywords": ["导数", "中值定理"], "page_start": 21, "page_end": 50}
+              ]
+            }"#
+            .into(),
+        ),
+        _ => Reply::Text("ok".into()),
+    });
+
+    let env = Env::new("ai_guide");
+    let nid = env.notebook();
+
+    // 1. Import before model is configured -> ai_indexed=false, then on-demand source.generate_guide works
+    let legacy_id = env.add_text(&nid, "高等数学.md", "# 第1章 实数与极限\n\n函数与极限基础。\n\n# 第2章 导数\n\n微分中值定理。");
+    env.wait_sources_ready(&nid, 1);
+    let preview_before = env.ok("source.preview", json!({ "source_id": legacy_id }));
+    assert_eq!(preview_before["ai_indexed"], false);
+
+    // Configure model and trigger on-demand guide generation
+    env.profile(&ai_mock, 32000, false);
+    let gen = env.ok("source.generate_guide", json!({ "source_id": legacy_id }));
+    assert_eq!(gen["source"]["ai_indexed"], true);
+    assert!(gen["source"]["guide_summary_md"]
+        .as_str()
+        .unwrap_or("")
+        .contains("**微积分基础**"));
+    assert_eq!(gen["index_nodes"].as_array().unwrap().len(), 2);
+
+    // 2. Import after model is configured -> automatically AI-indexed on import
+    let auto_id = env.add_text(&nid, "微积分讲义.md", "# 导数与积分\n\n牛顿-莱布尼茨公式。");
+    env.wait_sources_ready(&nid, 2);
+    let preview_after = env.ok("source.preview", json!({ "source_id": auto_id }));
+    assert_eq!(preview_after["ai_indexed"], true);
+    assert_eq!(preview_after["guide_topics"].as_array().unwrap().len(), 3);
+    assert_eq!(preview_after["index_nodes"].as_array().unwrap().len(), 2);
+}

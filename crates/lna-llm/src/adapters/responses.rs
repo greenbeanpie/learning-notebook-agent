@@ -21,16 +21,53 @@ impl ProtocolAdapter for ResponsesAdapter {
         for m in &req.messages {
             match m.role {
                 Role::User => {
-                    let text = m
-                        .parts
-                        .iter()
-                        .filter_map(|p| match p {
-                            Part::Text(t) => Some(t.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    input.push(json!({ "role": "user", "content": text }));
+                    let has_media = m.parts.iter().any(|p| matches!(p, Part::Media { .. }));
+                    if !has_media {
+                        let text = m
+                            .parts
+                            .iter()
+                            .filter_map(|p| match p {
+                                Part::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        input.push(json!({ "role": "user", "content": text }));
+                    } else {
+                        let mut content_parts = Vec::new();
+                        for p in &m.parts {
+                            match p {
+                                Part::Text(t) if !t.is_empty() => {
+                                    content_parts.push(json!({ "type": "input_text", "text": t }));
+                                }
+                                Part::Media {
+                                    mime_type,
+                                    data_base64,
+                                    ..
+                                } => {
+                                    if mime_type.starts_with("image/") {
+                                        let b64 = data_base64.as_deref().ok_or_else(|| {
+                                            LnaError::new(
+                                                ErrorCode::CapabilityMissing,
+                                                "Responses 协议需要 base64 图片数据",
+                                            )
+                                        })?;
+                                        content_parts.push(json!({
+                                            "type": "input_image",
+                                            "image_url": format!("data:{mime_type};base64,{b64}")
+                                        }));
+                                    } else {
+                                        return Err(LnaError::new(
+                                            ErrorCode::CapabilityMissing,
+                                            format!("Responses 协议暂不支持原生音视频输入（{mime_type}），请在“模型协议配置”中为音视频勾选 Gemini 等原生支持的模型"),
+                                        ));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        input.push(json!({ "role": "user", "content": content_parts }));
+                    }
                 }
                 Role::Assistant => {
                     for p in &m.parts {

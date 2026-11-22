@@ -23,6 +23,15 @@ pub struct ProviderOpaque {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Part {
     Text(String),
+    Media {
+        mime_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_base64: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_uri: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        audio_format: Option<String>,
+    },
     ToolCall {
         id: String,
         name: String,

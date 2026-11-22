@@ -1,6 +1,9 @@
 using LocalNotebook.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
+using Microsoft.Web.WebView2.Core;
+using System.Diagnostics;
 using System.Text.Json;
 using static LocalNotebook.Services.Api;
 
@@ -31,6 +34,13 @@ public sealed partial class MainWindow
         {
             "pdf" => ("#F28B82", "M19,3H5C3.9,3 3,3.9 3,5V19C3,20.1 3.9,21 5,21H19C20.1,21 21,20.1 21,19V5C21,3.9 20.1,3 19,3M9.5,11.5C9.5,12.3 8.8,13 8,13H7V15H5.5V9H8C8.8,9 9.5,9.7 9.5,10.5V11.5M14.5,13.5C14.5,14.3 13.8,15 13,15H10.5V9H13C13.8,9 14.5,9.7 14.5,10.5V13.5M18.5,10.5H17V11.5H18.5V13H17V15H15.5V9H18.5V10.5M12,10.5H13V13.5H12V10.5M7,10.5H8V11.5H7V10.5Z"),
             "md" or "markdown" => ("#8AB4F8", "M20.56,18H3.44C2.65,18 2,17.37 2,16.59V7.41C2,6.63 2.65,6 3.44,6H20.56C21.35,6 22,6.63 22,7.41V16.59C22,17.37 21.35,18 20.56,18M6.81,15.19V11.53L8.73,13.88L10.65,11.53V15.19H12.58V8.81H10.65L8.73,11.16L6.81,8.81H4.89V15.19H6.81M19.69,12H17.77V8.81H15.85V12H13.92L16.81,15.28L19.69,12Z"),
+            "docx" or "odt" or "rtf" or "hwp" or "hwpx" => ("#669DF6", "M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M16,11V13H8V11H16M16,15V17H8V15H16Z"),
+            "csv" => ("#5BB974", "M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M10,19H7V16H10V19M10,15H7V12H10V15M15,19H12V16H15V19M15,15H12V12H15V15Z"),
+            "pptx" => ("#FCAD70", "M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3M19,19H5V5H19V19M7,8H17V10H7V8M7,12H14V14H7V12Z"),
+            "epub" => ("#C58AF9", "M18,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V4A2,2 0 0,0 18,2M18,20H6V4H9V12L11.5,10.5L14,12V4H18V20Z"),
+            "image" => ("#78D9EC", "M19,19H5V5H19M19,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3M13.96,12.29L11.21,15.83L9.25,13.47L6.5,17H17.5L13.96,12.29Z"),
+            "audio" => ("#F48FB1", "M12,3V13.55C11.41,13.21 10.73,13 10,13A4,4 0 0,0 6,17A4,4 0 0,0 10,21A4,4 0 0,0 14,17V7H18V3H12Z"),
+            "video" => ("#EE675C", "M17,10.5V7A1,1 0 0,0 16,6H4A1,1 0 0,0 3,7V17A1,1 0 0,0 4,18H16A1,1 0 0,0 17,17V13.5L21,17.5V6.5L17,10.5Z"),
             "txt" => ("#81C995", "M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M8,12H16V14H8V12M8,16H13V18H8V16Z"),
             "web" => ("#78D9EC", "M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M11,19.93C7.05,19.44 4,16.08 4,12C4,11.38 4.08,10.79 4.21,10.21L9,15V16A2,2 0 0,0 11,18M17.9,17.39C17.64,16.58 16.9,16 16,16H15V13A1,1 0 0,0 14,12H8V10H10A1,1 0 0,0 11,9V7H13A2,2 0 0,0 15,5V4.59C17.93,5.78 20,8.65 20,12C20,14.08 19.2,15.97 17.9,17.39Z"),
             "note" => ("#FDD663", "M14,10H19.5L14,4.5V10M5,3H15L21,9V19A2,2 0 0,1 19,21H5C3.89,21 3,20.1 3,19V5C3,3.89 3.89,3 5,3M5,5V19H19V12H12V5H5Z"),
@@ -119,11 +129,18 @@ public sealed partial class MainWindow
                 foreach (var n in list)
                 {
                     var rowContent = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
-                    rowContent.Children.Add(new PathIcon
+                    rowContent.Children.Add(new Viewbox
                     {
-                        Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M14,10H19.5L14,4.5V10M5,3H15L21,9V19A2,2 0 0,1 19,21H5C3.89,21 3,20.1 3,19V5C3,3.89 3.89,3 5,3M5,5V19H19V12H12V5H5Z"),
-                        Foreground = BrushFromHex("#FDD663"),
+                        Width = 18,
+                        Height = 18,
                         VerticalAlignment = VerticalAlignment.Center,
+                        Child = new PathIcon
+                        {
+                            Width = 24,
+                            Height = 24,
+                            Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M14,10H19.5L14,4.5V10M5,3H15L21,9V19A2,2 0 0,1 19,21H5C3.89,21 3,20.1 3,19V5C3,3.89 3.89,3 5,3M5,5V19H19V12H12V5H5Z"),
+                            Foreground = BrushFromHex("#FDD663"),
+                        },
                     });
                     rowContent.Children.Add(new TextBlock
                     {
@@ -203,16 +220,17 @@ public sealed partial class MainWindow
         var (iconHex, iconPath) = SourceKindIcon(kind, title);
         var typeIcon = new PathIcon
         {
+            Width = 24,
+            Height = 24,
             Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), iconPath),
             Foreground = BrushFromHex(iconHex),
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
         };
         var iconHost = new Viewbox
         {
             Width = 18,
             Height = 18,
             VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
             Child = typeIcon,
         };
 
@@ -238,13 +256,9 @@ public sealed partial class MainWindow
                 MaxLines = 1,
             });
         }
-        ToolTipService.SetToolTip(titleStack, subtext != null ? $"{title}\n{subtext}" : $"{title}（{StatusLabel(status)}）");
-        if (status == "READY")
-        {
-            titleStack.Tapped += async (_, _) => await ShowSourcePreviewAsync(id, null, null);
-        }
+        ToolTipService.SetToolTip(titleStack, subtext != null ? $"{title}\n{subtext}" : $"{title}（点击查看材料）");
 
-        // 3. Actions (three dots: preview, rename, retry, delete)
+        // 3. Actions (three dots: rename, retry, delete — preview is triggered by clicking the row)
         var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
         void Add(string label, RoutedEventHandler h)
         {
@@ -252,17 +266,25 @@ public sealed partial class MainWindow
             item.Click += h;
             menu.Items.Add(item);
         }
-        if (status == "READY") Add("预览", OnPreviewSourceClick);
         Add("重命名", OnRenameSourceClick);
         if (status == "FAILED") Add("重试导入", OnRetrySourceClick);
         Add("删除来源", OnDeleteSourceClick);
 
         var more = new Button
         {
-            Content = new PathIcon
+            Content = new Viewbox
             {
-                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M6,10A2,2 0 0,0 4,12A2,2 0 0,0 6,14A2,2 0 0,0 8,12A2,2 0 0,0 6,10M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M18,10A2,2 0 0,0 16,12A2,2 0 0,0 18,14A2,2 0 0,0 20,12A2,2 0 0,0 18,10Z"),
-                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                Width = 18,
+                Height = 18,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new PathIcon
+                {
+                    Width = 24,
+                    Height = 24,
+                    Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M6,10A2,2 0 0,0 4,12A2,2 0 0,0 6,14A2,2 0 0,0 8,12A2,2 0 0,0 6,10M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M18,10A2,2 0 0,0 16,12A2,2 0 0,0 18,14A2,2 0 0,0 20,12A2,2 0 0,0 18,10Z"),
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                },
             },
             Flyout = menu,
             MinWidth = 36,
@@ -272,10 +294,13 @@ public sealed partial class MainWindow
             Padding = new Thickness(0),
             Margin = new Thickness(0, 0, 4, 0),
             CornerRadius = new CornerRadius(18),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        more.Tapped += (_, e) => e.Handled = true;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, $"更多操作 {title}");
         ToolTipService.SetToolTip(more, "更多操作（重命名、删除等）");
 
@@ -293,6 +318,7 @@ public sealed partial class MainWindow
             VerticalContentAlignment = VerticalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        cb.Tapped += (_, e) => e.Handled = true;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(cb, $"引用来源 {title}");
         ToolTipService.SetToolTip(cb, "选择是否引用此来源");
         cb.Checked += OnSourceCheckChanged;
@@ -302,6 +328,7 @@ public sealed partial class MainWindow
         {
             ColumnSpacing = 8,
             MinHeight = 44,
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
         };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -318,7 +345,7 @@ public sealed partial class MainWindow
         row.Children.Add(more);
         row.Children.Add(cb);
 
-        return new Border
+        var border = new Border
         {
             Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
             CornerRadius = new CornerRadius(10),
@@ -326,6 +353,8 @@ public sealed partial class MainWindow
             Margin = new Thickness(0, 2, 0, 2),
             Child = row,
         };
+        border.Tapped += async (_, _) => await ShowSourcePreviewAsync(id, null, null, title);
+        return border;
     }
 
     private static (string Id, string Title) Tagged(object sender) =>
@@ -334,7 +363,32 @@ public sealed partial class MainWindow
     private async void OnAddSourceClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        var path = await PickOpenFileAsync(".pdf", ".md", ".txt");
+        var avEnabled = true;
+        var mediaSet = await Api.CallAsync("settings.get", Args(("key", "media_processing")));
+        if (mediaSet.Result is { } ms && ms.TryGetProperty("value", out var mv) && mv.ValueKind == JsonValueKind.Object)
+        {
+            if (mv.TryGetProperty("audio_video_enabled", out var avp) && avp.ValueKind == JsonValueKind.False)
+                avEnabled = false;
+        }
+
+        var exts = new List<string>
+        {
+            ".pdf", ".txt", ".md", ".markdown", ".docx", ".csv", ".pptx", ".epub", ".odt", ".rtf", ".hwp", ".hwpx",
+            ".avif", ".bmp", ".gif", ".ico", ".jp2", ".png", ".webp", ".tif", ".tiff", ".heic", ".heif", ".jpeg", ".jpg", ".jpe",
+            ".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml", ".html", ".htm", ".xhtml", ".tex", ".log", ".rst", ".tsv",
+            ".py", ".rs", ".js", ".ts", ".c", ".cpp", ".h", ".cs", ".java", ".go", ".sql", ".ini", ".cfg", ".srt", ".vtt",
+        };
+        if (avEnabled)
+        {
+            exts.AddRange(new[]
+            {
+                ".aac", ".aif", ".aifc", ".aiff", ".amr", ".au", ".m4a", ".mp3", ".ogg", ".opus", ".ra", ".snd", ".wav", ".wma",
+                ".3g2", ".3gp", ".avi", ".mp4", ".mpeg",
+            });
+        }
+        exts.Add("*");
+
+        var path = await PickOpenFileAsync(exts.ToArray());
         if (path == null) return;
         await CoreAsync("source.add_files", Args(("notebook_id", _activeNotebookId), ("paths", new[] { path })), "添加来源");
         await RefreshNotebookDataAsync();
@@ -402,41 +456,690 @@ public sealed partial class MainWindow
         await RefreshNotebookDataAsync();
     }
 
-    private async void OnPreviewSourceClick(object sender, RoutedEventArgs e)
+    private const string SourceFullscreenIconPath = "M5,5H10V7H7V10H5V5M14,5H19V10H17V7H14V5M17,14H19V19H14V17H17V14M10,17V19H5V14H7V17H10Z";
+    private const string SourceExitFullscreenIconPath = "M14,14H19V16H16V19H14V14M5,14H10V19H8V16H5V14M8,5H10V10H5V8H8V5M19,8V10H14V5H16V8H19Z";
+    private const string SourceCloseIconPath = "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
+    private const string SourceExternalIconPath = "M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z";
+    private const string GuideSparkleIconPath = "M12,2L14.4,8.6L21,11L14.4,13.4L12,20L9.6,13.4L3,11L9.6,8.6L12,2M19,15L20.1,17.9L23,19L20.1,20.1L19,23L17.9,20.1L15,19L17.9,17.9L19,15Z";
+    private const string ChevronUpIconPath = "M7.41,15.41L12,10.83L16.59,15.41L18,14L12,8L6,14L7.41,15.41Z";
+    private const string ChevronDownIconPath = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z";
+
+    private bool _sourcePreviewOpen;
+    private bool _sourceFullscreen;
+    private PathIcon? _sourceFullscreenIcon;
+    private WebView2? _sourcePreviewWebView;
+
+    private static Button MakePaneIconBtn(string path, string tip, RoutedEventHandler onClick, out PathIcon iconRef)
     {
-        var (id, _) = Tagged(sender);
-        if (id.Length > 0) await ShowSourcePreviewAsync(id, null, null);
+        iconRef = new PathIcon
+        {
+            Width = 24,
+            Height = 24,
+            Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), path),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+        };
+        var btn = new Button
+        {
+            Content = new Viewbox
+            {
+                Width = 16,
+                Height = 16,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = iconRef,
+            },
+            MinWidth = 34,
+            Width = 34,
+            MinHeight = 34,
+            Height = 34,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(17),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+        };
+        ToolTipService.SetToolTip(btn, tip);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(btn, tip);
+        btn.Click += onClick;
+        return btn;
     }
 
-    /// <summary>Lists a source's chunks; when <paramref name="focusText"/> or a page is given, that part is scrolled into view.</summary>
-    private async Task ShowSourcePreviewAsync(string sourceId, int? page, string? focusText)
+    private void DisposeSourcePreviewWebView()
     {
-        var res = await CoreAsync("source.preview", Args(("source_id", sourceId)), "读取来源预览");
-        if (res is not { } r) return;
-        var panel = new StackPanel { Spacing = 10, MinWidth = 520, MaxWidth = 700 };
-        FrameworkElement? focus = null;
+        if (_sourcePreviewWebView != null)
+        {
+            try { _sourcePreviewWebView.Close(); } catch { }
+            _sourcePreviewWebView = null;
+        }
+    }
+
+    private void CloseSourcePreview()
+    {
+        _sourcePreviewOpen = false;
+        _sourceFullscreen = false;
+        _sourceFullscreenIcon = null;
+        DisposeSourcePreviewWebView();
+        SourceDetailHost.Content = null;
+        SourceDetailHost.Visibility = Visibility.Collapsed;
+        SourcesHomeView.Visibility = Visibility.Visible;
+        ApplyPaneLayout();
+    }
+
+    private void ToggleSourceFullscreen()
+    {
+        _sourceFullscreen = !_sourceFullscreen;
+        if (_sourceFullscreen) _studioFullscreen = false;
+        if (_sourceFullscreenIcon != null)
+        {
+            _sourceFullscreenIcon.Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
+                typeof(Microsoft.UI.Xaml.Media.Geometry),
+                _sourceFullscreen ? SourceExitFullscreenIconPath : SourceFullscreenIconPath);
+        }
+        ApplyPaneLayout();
+    }
+
+    /// <summary>Builds the collapsible NotebookLM-style "来源指南" card with bolded summary and clickable topic pills.</summary>
+    private FrameworkElement BuildSourceGuideCard(string sourceId, string sourceTitle, string guideSummaryMd, List<string> guideTopics)
+    {
+        var expanded = true;
+        var cardBg = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 36, 40, 56));
+        var cardBorder = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 56, 62, 86));
+
+        var outer = new StackPanel { Spacing = 10 };
+
+        // Header row: sparkle icon + "来源指南" + collapse chevron
+        var header = new Grid { ColumnSpacing = 8 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var leftHead = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        leftHead.Children.Add(new Viewbox
+        {
+            Width = 16,
+            Height = 16,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new PathIcon
+            {
+                Width = 24,
+                Height = 24,
+                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), GuideSparkleIconPath),
+                Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 224, 232, 255)),
+            },
+        });
+        leftHead.Children.Add(new TextBlock
+        {
+            Text = "来源指南",
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 241, 243, 244)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        header.Children.Add(leftHead);
+
+        var body = new StackPanel { Spacing = 10 };
+        var chevronBtn = MakePaneIconBtn(ChevronUpIconPath, "折叠 / 展开来源指南", (_, _) => { }, out var chevronIcon);
+        chevronBtn.Width = 28;
+        chevronBtn.MinWidth = 28;
+        chevronBtn.Height = 28;
+        chevronBtn.MinHeight = 28;
+        chevronBtn.Click += (_, _) =>
+        {
+            expanded = !expanded;
+            body.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+            chevronIcon.Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
+                typeof(Microsoft.UI.Xaml.Media.Geometry),
+                expanded ? ChevronUpIconPath : ChevronDownIconPath);
+        };
+        Grid.SetColumn(chevronBtn, 1);
+        header.Children.Add(chevronBtn);
+        outer.Children.Add(header);
+
+        if (!string.IsNullOrWhiteSpace(guideSummaryMd))
+        {
+            var tb = new TextBlock
+            {
+                FontSize = 13,
+                LineHeight = 22,
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+                Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 206, 212, 228)),
+            };
+            // Parse **bold** inline segments
+            var raw = guideSummaryMd.Trim();
+            var idx = 0;
+            while (idx < raw.Length)
+            {
+                var open = raw.IndexOf("**", idx, StringComparison.Ordinal);
+                if (open < 0)
+                {
+                    tb.Inlines.Add(new Run { Text = raw[idx..] });
+                    break;
+                }
+                if (open > idx)
+                {
+                    tb.Inlines.Add(new Run { Text = raw[idx..open] });
+                }
+                var close = raw.IndexOf("**", open + 2, StringComparison.Ordinal);
+                if (close < 0)
+                {
+                    tb.Inlines.Add(new Run { Text = raw[open..] });
+                    break;
+                }
+                var boldRun = new Run
+                {
+                    Text = raw[(open + 2)..close],
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 248, 250, 255)),
+                };
+                tb.Inlines.Add(boldRun);
+                idx = close + 2;
+            }
+            body.Children.Add(tb);
+
+            if (guideTopics.Count > 0)
+            {
+                // Wrap pills in rows of 2~3
+                var rowsPanel = new StackPanel { Spacing = 8, Margin = new Thickness(0, 2, 0, 0) };
+                StackPanel? curRow = null;
+                var curRowChars = 0;
+                foreach (var topic in guideTopics)
+                {
+                    var t = topic.Trim();
+                    if (t.Length == 0) continue;
+                    if (curRow == null || curRowChars + Math.Min(t.Length, 8) > 15)
+                    {
+                        curRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                        rowsPanel.Children.Add(curRow);
+                        curRowChars = 0;
+                    }
+                    var chipText = new TextBlock
+                    {
+                        Text = t,
+                        FontSize = 12,
+                        MaxLines = 1,
+                        TextTrimming = TextTrimming.CharacterEllipsis,
+                        MaxWidth = 128,
+                        Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 224, 229, 242)),
+                    };
+                    var chip = new Button
+                    {
+                        Content = chipText,
+                        Padding = new Thickness(12, 5, 12, 5),
+                        CornerRadius = new CornerRadius(14),
+                        Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 48, 53, 73)),
+                        BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 68, 74, 102)),
+                        BorderThickness = new Thickness(1),
+                    };
+                    ToolTipService.SetToolTip(chip, $"点击提问：{t}");
+                    var capturedTopic = t;
+                    chip.Click += async (_, _) =>
+                    {
+                        await SendChatAsync($"请结合《{sourceTitle}》详细讲解「{capturedTopic}」的核心内容与要点。");
+                    };
+                    curRow.Children.Add(chip);
+                    curRowChars += Math.Min(t.Length, 8) + 2;
+                }
+                body.Children.Add(rowsPanel);
+            }
+        }
+        else
+        {
+            var hintRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
+            hintRow.Children.Add(new TextBlock
+            {
+                Text = "该来源尚未生成 AI 来源指南与结构索引。",
+                FontSize = 12,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            var genBtn = new Button
+            {
+                Content = "AI 生成指南",
+                FontSize = 12,
+                Padding = new Thickness(10, 4, 10, 4),
+                CornerRadius = new CornerRadius(12),
+            };
+            genBtn.Click += async (_, _) =>
+            {
+                genBtn.IsEnabled = false;
+                genBtn.Content = "生成中...";
+                var g = await CoreAsync("source.generate_guide", Args(("source_id", sourceId)), "生成来源指南");
+                if (g != null)
+                {
+                    await ShowSourcePreviewAsync(sourceId, null, null, sourceTitle);
+                }
+                else
+                {
+                    genBtn.IsEnabled = true;
+                    genBtn.Content = "AI 生成指南";
+                }
+            };
+            hintRow.Children.Add(genBtn);
+            body.Children.Add(hintRow);
+        }
+
+        outer.Children.Add(body);
+
+        return new Border
+        {
+            Background = cardBg,
+            BorderBrush = cardBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14, 12, 14, 12),
+            Child = outer,
+        };
+    }
+
+    private static bool IsCodeExtension(string ext) => ext is
+        ".py" or ".rs" or ".js" or ".ts" or ".jsx" or ".tsx" or ".c" or ".cpp" or ".h" or ".hpp" or
+        ".cs" or ".java" or ".go" or ".sql" or ".json" or ".jsonl" or ".yaml" or ".yml" or ".toml" or
+        ".xml" or ".ini" or ".cfg" or ".sh" or ".ps1" or ".bat";
+
+    private async Task<UIElement> BuildOriginalFileViewAsync(
+        string kind,
+        string blobPath,
+        string previewHtmlPath,
+        int? page,
+        string? focusText,
+        List<JsonElement> chunks)
+    {
+        var hasBlob = !string.IsNullOrWhiteSpace(blobPath) && File.Exists(blobPath);
+        var ext = hasBlob ? Path.GetExtension(blobPath).ToLowerInvariant() : "";
+
+        // 1. PDF -> Native WebView2 Chromium PDF Viewer with #page=N jump
+        if (kind == "pdf" && hasBlob)
+        {
+            return await CreateWebViewForFileAsync(blobPath, page is > 0 ? $"#page={page}" : "");
+        }
+
+        // 2. Office / EPUB / CSV / RTF / HWP -> Clean dark HTML preview in WebView2
+        if (!string.IsNullOrWhiteSpace(previewHtmlPath) && File.Exists(previewHtmlPath))
+        {
+            return await CreateWebViewForFileAsync(previewHtmlPath, page is > 0 ? $"#page-{page}" : "");
+        }
+
+        // 3. Web / HTML -> WebView2 sandboxed view
+        if ((kind == "web" || ext is ".html" or ".htm" or ".xhtml") && hasBlob)
+        {
+            return await CreateWebViewForFileAsync(blobPath, "");
+        }
+
+        // 4. Image -> Full zoomable HTML image wrapper in WebView2 (supports png/jpg/webp/gif/avif/bmp/ico)
+        if (kind == "image" && hasBlob)
+        {
+            var dir = Path.GetDirectoryName(blobPath)!;
+            var fileName = Path.GetFileName(blobPath);
+            var html = $"<!DOCTYPE html><html><head><meta charset='utf-8'><style>body{{margin:0;background:#141720;display:flex;justify-content:center;align-items:flex-start;min-height:100vh;padding:12px;box-sizing:border-box;}}img{{max-width:100%;height:auto;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.45);}}</style></head><body><img src='https://source-preview.local/{Uri.EscapeDataString(fileName)}' /></body></html>";
+            return await CreateWebViewWithHtmlAndDirAsync(dir, html);
+        }
+
+        // 5. Audio / Video -> Native HTML5 player + AI transcript below
+        if ((kind == "audio" || kind == "video") && hasBlob)
+        {
+            var dir = Path.GetDirectoryName(blobPath)!;
+            var fileName = Path.GetFileName(blobPath);
+            var mediaTag = kind == "video"
+                ? $"<video controls style='width:100%;max-height:360px;border-radius:8px;background:#000;' src='https://source-preview.local/{Uri.EscapeDataString(fileName)}'></video>"
+                : $"<audio controls style='width:100%;margin:8px 0;' src='https://source-preview.local/{Uri.EscapeDataString(fileName)}'></audio>";
+            var transcript = string.Join("\n\n", chunks.Select(c => Str(c, "content")));
+            var escTranscript = System.Net.WebUtility.HtmlEncode(transcript);
+            var html = $"<!DOCTYPE html><html><head><meta charset='utf-8'><style>body{{margin:0;padding:14px;background:#1B1E28;color:#E8EAED;font:13.5px/1.7 'Microsoft YaHei UI',sans-serif;}}.tr{{margin-top:14px;white-space:pre-wrap;background:#232836;padding:12px;border-radius:8px;}}</style></head><body>{mediaTag}{(transcript.Length > 0 ? $"<div class='tr'>{escTranscript}</div>" : "")}</body></html>";
+            return await CreateWebViewWithHtmlAndDirAsync(dir, html);
+        }
+
+        // 6. Markdown / Note -> Full original file rendered with Md.Render (with aligned KaTeX)
+        if ((kind is "md" or "note" || ext is ".md" or ".markdown" or ".mdx") && hasBlob)
+        {
+            var rawMd = await File.ReadAllTextAsync(blobPath);
+            var rendered = Md.Render(rawMd, null, 14, _math, MathRenderHost);
+            return new ScrollViewer
+            {
+                Content = new Border
+                {
+                    Padding = new Thickness(4, 4, 10, 20),
+                    Child = rendered,
+                },
+            };
+        }
+
+        // 7. Plain text / Code -> Full original file text
+        if (hasBlob)
+        {
+            var rawTxt = await File.ReadAllTextAsync(blobPath);
+            var tb = new TextBlock
+            {
+                Text = rawTxt,
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+                FontSize = IsCodeExtension(ext) ? 12.5 : 13.5,
+                LineHeight = 22,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextPrimaryBrush"],
+            };
+            if (IsCodeExtension(ext))
+            {
+                tb.FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas, Cascadia Mono, monospace");
+            }
+            return new ScrollViewer
+            {
+                Content = new Border
+                {
+                    Padding = new Thickness(4, 4, 10, 20),
+                    Child = tb,
+                },
+            };
+        }
+
+        return BuildChunksFallbackView(chunks, page, focusText);
+    }
+
+    private async Task<UIElement> CreateWebViewForFileAsync(string filePath, string fragment)
+    {
+        DisposeSourcePreviewWebView();
+        var wv = new WebView2
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            MinHeight = 320,
+        };
+        _sourcePreviewWebView = wv;
+        var dir = Path.GetDirectoryName(filePath) ?? ".";
+        var name = Path.GetFileName(filePath);
+        wv.Loaded += async (_, _) =>
+        {
+            try
+            {
+                await wv.EnsureCoreWebView2Async();
+                if (wv.CoreWebView2 == null) return;
+                wv.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                    "source-preview.local",
+                    dir,
+                    CoreWebView2HostResourceAccessKind.Allow);
+                wv.CoreWebView2.Navigate($"https://source-preview.local/{Uri.EscapeDataString(name)}{fragment}");
+            }
+            catch { }
+        };
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 24, 27, 36)),
+            Child = wv,
+        };
+    }
+
+    private async Task<UIElement> CreateWebViewWithHtmlAndDirAsync(string dir, string html)
+    {
+        DisposeSourcePreviewWebView();
+        var wv = new WebView2
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            MinHeight = 320,
+        };
+        _sourcePreviewWebView = wv;
+        wv.Loaded += async (_, _) =>
+        {
+            try
+            {
+                await wv.EnsureCoreWebView2Async();
+                if (wv.CoreWebView2 == null) return;
+                wv.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                    "source-preview.local",
+                    dir,
+                    CoreWebView2HostResourceAccessKind.Allow);
+                wv.CoreWebView2.NavigateToString(html);
+            }
+            catch { }
+        };
+        return new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 24, 27, 36)),
+            Child = wv,
+        };
+    }
+
+    private UIElement BuildChunksFallbackView(List<JsonElement> chunks, int? page, string? focusText)
+    {
+        var panel = new StackPanel { Spacing = 10, Padding = new Thickness(0, 0, 8, 8) };
         var needle = (focusText ?? "").Trim();
         if (needle.Length > 60) needle = needle[..60];
-        foreach (var c in Arr(r, "chunks"))
+        foreach (var c in chunks)
         {
             var content = Str(c, "content");
             var p = (int)Int(c, "page_start");
-            var header = new TextBlock { FontSize = 11, Opacity = 0.6, Text = $"片段 {Int(c, "chunk_index") + 1}{(p > 0 ? $" · 第 {p} 页" : "")}{(Str(c, "section_path").Length > 0 ? $" · {Str(c, "section_path")}" : "")}" };
-            var body = new Border { Padding = new Thickness(8), CornerRadius = new CornerRadius(6), Child = Line(content) };
-            var hit = (needle.Length > 0 && content.Contains(needle)) || (needle.Length == 0 && page is { } pg && p == pg);
-            if (hit)
+            panel.Children.Add(new TextBlock
             {
-                body.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 40, 60, 90));
-                focus ??= body;
-            }
-            panel.Children.Add(header);
-            panel.Children.Add(body);
+                FontSize = 11,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+                Text = $"片段 {Int(c, "chunk_index") + 1}{(p > 0 ? $" · 第 {p} 页" : "")}{(Str(c, "section_path").Length > 0 ? $" · {Str(c, "section_path")}" : "")}",
+            });
+            var hit = (needle.Length > 0 && content.Contains(needle)) || (needle.Length == 0 && page is { } pg && p == pg);
+            panel.Children.Add(new Border
+            {
+                Background = hit
+                    ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 40, 60, 90))
+                    : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"],
+                Padding = new Thickness(10),
+                CornerRadius = new CornerRadius(8),
+                Child = Line(content),
+            });
         }
-        if (panel.Children.Count == 0) panel.Children.Add(Line("这个来源还没有可预览的内容。"));
-        var scroll = new ScrollViewer { Content = panel, MaxHeight = 560 };
-        var dlg = new ContentDialog { Title = "来源预览", Content = scroll, CloseButtonText = "关闭", XamlRoot = Content.XamlRoot };
-        dlg.Opened += (_, _) => focus?.StartBringIntoView();
-        await dlg.ShowAsync();
+        if (chunks.Count == 0)
+        {
+            var empty = Line("这个来源还没有可展示的内容。");
+            empty.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"];
+            panel.Children.Add(empty);
+        }
+        return new ScrollViewer { Content = panel };
+    }
+
+    private UIElement BuildIndexTreeView(List<JsonElement> indexNodes, List<JsonElement> chunks, Action<int> onJumpToPage)
+    {
+        if (indexNodes.Count == 0)
+        {
+            return BuildChunksFallbackView(chunks, null, null);
+        }
+        var panel = new StackPanel { Spacing = 8, Padding = new Thickness(0, 2, 8, 12) };
+        foreach (var n in indexNodes)
+        {
+            var level = (int)Int(n, "level");
+            var title = Str(n, "title");
+            var summary = Str(n, "summary");
+            var ps = (int)Int(n, "page_start");
+            var pe = (int)Int(n, "page_end");
+            var pageLabel = ps > 0 ? (pe > ps ? $"第 {ps}-{pe} 页" : $"第 {ps} 页") : "";
+
+            var inner = new StackPanel { Spacing = 4 };
+            var topRow = new Grid { ColumnSpacing = 8 };
+            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            topRow.Children.Add(new TextBlock
+            {
+                Text = title,
+                FontSize = level <= 1 ? 13.5 : 12.5,
+                FontWeight = level <= 1 ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextPrimaryBrush"],
+                TextWrapping = TextWrapping.Wrap,
+            });
+            if (pageLabel.Length > 0)
+            {
+                var pTxt = new TextBlock
+                {
+                    Text = pageLabel,
+                    FontSize = 11,
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 138, 180, 248)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                Grid.SetColumn(pTxt, 1);
+                topRow.Children.Add(pTxt);
+            }
+            inner.Children.Add(topRow);
+
+            if (!string.IsNullOrWhiteSpace(summary))
+            {
+                inner.Children.Add(new TextBlock
+                {
+                    Text = summary,
+                    FontSize = 12,
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
+
+            var itemBorder = new Border
+            {
+                Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"],
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(10, 8, 10, 8),
+                Margin = new Thickness(Math.Max(0, (level - 1) * 14), 0, 0, 0),
+                Child = inner,
+            };
+            if (ps > 0)
+            {
+                var targetPage = ps;
+                ToolTipService.SetToolTip(itemBorder, $"点击跳转到原文件第 {targetPage} 页");
+                itemBorder.Tapped += (_, _) => onJumpToPage(targetPage);
+            }
+            panel.Children.Add(itemBorder);
+        }
+        return new ScrollViewer { Content = panel };
+    }
+
+    /// <summary>Displays a collapsible "来源指南" card + native original file preview (with optional AI index tree view & fullscreen toggle).</summary>
+    private async Task ShowSourcePreviewAsync(string sourceId, int? page, string? focusText, string? sourceTitle = null)
+    {
+        var res = await CoreAsync("source.preview", Args(("source_id", sourceId)), "读取来源材料");
+        if (res is not { } r) return;
+
+        var title = !string.IsNullOrWhiteSpace(sourceTitle)
+            ? sourceTitle
+            : (Str(r, "title") is { Length: > 0 } t ? t : "来源材料");
+        var kind = Str(r, "kind");
+        var blobPath = Str(r, "blob_path");
+        var previewHtmlPath = Str(r, "preview_html_path");
+        var pageCount = (int)Int(r, "page_count");
+        var guideSummaryMd = Str(r, "guide_summary_md");
+        var guideTopics = Arr(r, "guide_topics").Select(x => x.GetString() ?? "").Where(s => s.Length > 0).ToList();
+        var indexNodes = Arr(r, "index_nodes").ToList();
+        var chunks = Arr(r, "chunks").ToList();
+
+        var container = new Grid { RowSpacing = 10 };
+        container.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Header
+        container.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 来源指南
+        container.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 原文件 / 索引视图
+
+        // Row 0: Header
+        var head = new Grid { ColumnSpacing = 8 };
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var titleCol = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        titleCol.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 15,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextPrimaryBrush"],
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 2,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var metaParts = new List<string>();
+        if (kind.Length > 0) metaParts.Add(kind.ToUpperInvariant());
+        if (pageCount > 0) metaParts.Add($"共 {pageCount} 页");
+        if (indexNodes.Count > 0) metaParts.Add($"{indexNodes.Count} 个 AI 索引节点");
+        titleCol.Children.Add(new TextBlock
+        {
+            Text = metaParts.Count > 0 ? string.Join(" · ", metaParts) : "原文件预览",
+            FontSize = 11,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+        });
+        head.Children.Add(titleCol);
+
+        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var contentHost = new ContentControl
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch,
+        };
+
+        var showingIndex = false;
+        var modeBtn = new Button
+        {
+            Content = "索引目录",
+            FontSize = 11.5,
+            Padding = new Thickness(9, 4, 9, 4),
+            CornerRadius = new CornerRadius(12),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(modeBtn, "在“原文件预览”与“AI 索引目录”之间切换");
+
+        async Task LoadOriginalAsync(int? targetPage)
+        {
+            showingIndex = false;
+            modeBtn.Content = "索引目录";
+            contentHost.Content = await BuildOriginalFileViewAsync(kind, blobPath, previewHtmlPath, targetPage, focusText, chunks);
+        }
+
+        modeBtn.Click += async (_, _) =>
+        {
+            if (showingIndex)
+            {
+                await LoadOriginalAsync(page);
+            }
+            else
+            {
+                showingIndex = true;
+                modeBtn.Content = "原文件";
+                DisposeSourcePreviewWebView();
+                contentHost.Content = BuildIndexTreeView(indexNodes, chunks, p => _ = LoadOriginalAsync(p));
+            }
+        };
+        tools.Children.Add(modeBtn);
+
+        if (!string.IsNullOrWhiteSpace(blobPath) && File.Exists(blobPath))
+        {
+            var openExtBtn = MakePaneIconBtn(SourceExternalIconPath, "用系统默认应用打开原文件", (_, _) =>
+            {
+                try { Process.Start(new ProcessStartInfo(blobPath) { UseShellExecute = true }); } catch { }
+            }, out _);
+            tools.Children.Add(openExtBtn);
+        }
+
+        var fsBtn = MakePaneIconBtn(_sourceFullscreen ? SourceExitFullscreenIconPath : SourceFullscreenIconPath, "全屏显示 / 还原", (_, _) => ToggleSourceFullscreen(), out _sourceFullscreenIcon);
+        var closeBtn = MakePaneIconBtn(SourceCloseIconPath, "返回来源列表", (_, _) => CloseSourcePreview(), out _);
+        tools.Children.Add(fsBtn);
+        tools.Children.Add(closeBtn);
+        Grid.SetColumn(tools, 1);
+        head.Children.Add(tools);
+        container.Children.Add(head);
+
+        // Row 1: Collapsible "来源指南" card
+        var guideCard = BuildSourceGuideCard(sourceId, title, guideSummaryMd, guideTopics);
+        Grid.SetRow(guideCard, 1);
+        container.Children.Add(guideCard);
+
+        // Row 2: Original file preview (default)
+        Grid.SetRow(contentHost, 2);
+        container.Children.Add(contentHost);
+
+        _sourcePreviewOpen = true;
+        if (_studioFullscreen)
+        {
+            _studioFullscreen = false;
+            _activeArtifactPane?.SetFullscreenIcon(false);
+        }
+        SourceDetailHost.Content = container;
+        SourcesHomeView.Visibility = Visibility.Collapsed;
+        SourceDetailHost.Visibility = Visibility.Visible;
+        ApplyPaneLayout();
+
+        await LoadOriginalAsync(page);
     }
 
     // ---------- notes ----------

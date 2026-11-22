@@ -10,20 +10,33 @@
     padding: 0;
     background: transparent;
     color: #e3e3e3;
-    font: 15px/1.4 "Segoe UI","Microsoft YaHei UI",sans-serif;
+    font: 14px/1.2 "Segoe UI","Microsoft YaHei UI",sans-serif;
     overflow: hidden;
+  }
+  #stage {
+    display: inline-block;
+    white-space: nowrap;
   }
   #formula {
     display: inline-block;
-    padding: 4px 6px;
+    padding: 1px 2px;
     white-space: nowrap;
+  }
+  #formula:not(.display) .katex {
+    font-size: 1.05em;
   }
   #formula.display {
     padding: 8px 10px;
   }
+  #probe {
+    display: inline-block;
+    width: 0;
+    height: 0;
+    vertical-align: baseline;
+  }
 </style>
 </head>
-<body><div id="formula"></div>
+<body><div id="stage"><div id="formula"></div><span id="probe"></span></div>
 <script src="katex.min.js"></script>
 <script src="view.js"></script>
 </body>

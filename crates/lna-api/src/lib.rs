@@ -65,24 +65,31 @@ impl CoreRuntime {
         }
         let embedding = EmbeddingService::new(db.clone(), secrets.clone());
         let retrieval = Arc::new(RetrievalEngine::new(db.clone(), embedding.clone()));
-        let ingest = IngestService::new(db.clone(), jobs.clone(), embedding.clone());
+        let ingest = IngestService::new(
+            db.clone(),
+            jobs.clone(),
+            embedding.clone(),
+            llm.clone(),
+            secrets.clone(),
+        );
 
         let (events, _) = broadcast::channel(512);
         let seq = Arc::new(AtomicU64::new(0));
-        let agent = AgentService::new(
-            db.clone(),
-            secrets.clone(),
-            llm.clone(),
-            retrieval.clone(),
-            events.clone(),
-            seq.clone(),
-        );
         let studio = StudioService::new(
             db.clone(),
             secrets.clone(),
             jobs.clone(),
             llm.clone(),
             retrieval.clone(),
+            events.clone(),
+            seq.clone(),
+        );
+        let agent = AgentService::new(
+            db.clone(),
+            secrets.clone(),
+            llm.clone(),
+            retrieval.clone(),
+            studio.clone(),
             events.clone(),
             seq.clone(),
         );
@@ -279,14 +286,12 @@ impl CoreRuntime {
                             let _ = core.jobs.mark_done(&job.id);
                         }
                         Err(e) => {
-                            let terminal = core
+                            // StudioService::process_job owns the 3-retry rollback loop and records error_log on terminal failure.
+                            let _ = core
                                 .jobs
-                                .mark_failed_or_retry(&job.id, &e.message, 5000, e.retryable)
-                                .unwrap_or(true);
+                                .mark_failed_or_retry(&job.id, &e.message, 0, false);
                             if e.code == ErrorCode::Cancelled {
                                 let _ = core.studio.mark_cancelled(&job.subject_id);
-                            } else if terminal {
-                                let _ = core.studio.mark_failed(&job.subject_id, &e);
                             }
                         }
                     }
@@ -663,9 +668,61 @@ impl CoreRuntime {
                 Ok(json!({ "ok": true, "reply": txt, "capabilities": caps }))
             }
             "profile.discover_models" => {
-                let id = req_str(p, "profile_id")?;
-                let prof = lna_storage::get_profile(&self.db, id)?;
-                let resolved = self.agent.resolve_profile(&prof)?;
+                let resolved = if let Some(id) = p
+                    .get("profile_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    let prof = lna_storage::get_profile(&self.db, id)?;
+                    let mut r = self.agent.resolve_profile(&prof)?;
+                    if let Some(url) = p
+                        .get("base_url")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        r.base_url = url.to_string();
+                    }
+                    if let Some(key) = p
+                        .get("api_key")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        r.api_key = Some(SecretString::from(key.to_string()));
+                    }
+                    r
+                } else {
+                    let base_url = req_str(p, "base_url")?.to_string();
+                    let protocol = match p
+                        .get("protocol")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("chat_completion")
+                    {
+                        "responses" => lna_types::ProtocolKind::Responses,
+                        "anthropic" => lna_types::ProtocolKind::Anthropic,
+                        "gemini" => lna_types::ProtocolKind::Gemini,
+                        _ => lna_types::ProtocolKind::ChatCompletion,
+                    };
+                    let api_key = p
+                        .get("api_key")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| SecretString::from(s.to_string()));
+                    lna_llm::ResolvedProfile {
+                        id: String::new(),
+                        display_name: String::new(),
+                        protocol,
+                        base_url,
+                        model_id: String::new(),
+                        api_key,
+                        show_thinking: false,
+                        effort: None,
+                        context_window: 0,
+                        max_output_tokens: 0,
+                        capabilities: Default::default(),
+                        extra_headers: Default::default(),
+                        anthropic_version: "2023-06-01".to_string(),
+                    }
+                };
                 let models = self.llm.discover_models(&resolved).await?;
                 Ok(json!({ "models": models }))
             }
@@ -777,6 +834,19 @@ impl CoreRuntime {
             "studio.retry" => {
                 let id = req_str(p, "artifact_id")?;
                 Ok(serde_json::to_value(self.studio.retry(id)?).unwrap())
+            }
+            "studio.regenerate" => {
+                let id = req_str(p, "artifact_id")?;
+                let config = p.get("config").cloned().filter(|v| !v.is_null());
+                let use_selected = p
+                    .get("use_selected_sources")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(true);
+                Ok(serde_json::to_value(self.studio.regenerate(id, config, use_selected)?).unwrap())
+            }
+            "studio.import_to_studio" => {
+                let id = req_str(p, "artifact_id")?;
+                Ok(serde_json::to_value(self.studio.import_to_studio(id)?).unwrap())
             }
             "studio.set_feedback" => {
                 let id = req_str(p, "artifact_id")?;
@@ -894,8 +964,38 @@ impl CoreRuntime {
             "source.preview" => {
                 let sid = req_str(p, "source_id")?;
                 let page = p.get("page").and_then(|x| x.as_i64()).map(|n| n as i32);
+                let src = lna_storage::get_source(&self.db, sid)?;
                 let chunks = self.ingest.source_preview(sid, page)?;
-                Ok(json!({ "chunks": chunks }))
+                let index_nodes = lna_storage::list_source_index_nodes(&self.db, sid).unwrap_or_default();
+                let preview_html_path = self
+                    .ingest
+                    .ensure_preview_html(sid)
+                    .ok()
+                    .flatten()
+                    .map(|p| p.to_string_lossy().to_string());
+                Ok(json!({
+                    "id": src.id,
+                    "title": src.title,
+                    "kind": src.kind.as_str(),
+                    "origin_uri": src.origin_uri,
+                    "blob_path": src.blob_path,
+                    "preview_html_path": preview_html_path,
+                    "page_count": src.page_count,
+                    "guide_summary_md": src.guide_summary_md,
+                    "guide_topics": src.guide_topics,
+                    "ai_indexed": src.ai_indexed,
+                    "index_nodes": index_nodes,
+                    "chunks": chunks
+                }))
+            }
+            "source.generate_guide" => {
+                let sid = req_str(p, "source_id")?;
+                let src = self.ingest.regenerate_source_guide(sid).await?;
+                let index_nodes = lna_storage::list_source_index_nodes(&self.db, sid).unwrap_or_default();
+                Ok(json!({
+                    "source": src,
+                    "index_nodes": index_nodes
+                }))
             }
             "chat.regenerate" => {
                 let nid = req_str(p, "notebook_id")?;

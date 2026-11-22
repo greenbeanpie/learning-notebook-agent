@@ -32,6 +32,13 @@ public sealed partial class MainWindow
     {
         var list = await CoreAsync("profile.list", Args(), "读取模型配置");
         var profiles = list is { } lr ? Arr(lr, "profiles").ToList() : new List<JsonElement>();
+        var avEnabled = true;
+        var mediaSet = await Api.CallAsync("settings.get", Args(("key", "media_processing")));
+        if (mediaSet.Result is { } ms && ms.TryGetProperty("value", out var mv) && mv.ValueKind == JsonValueKind.Object)
+        {
+            if (mv.TryGetProperty("audio_video_enabled", out var avp) && avp.ValueKind == JsonValueKind.False)
+                avEnabled = false;
+        }
 
         string? profileId = null;
         var keychainRef = "";
@@ -45,6 +52,12 @@ public sealed partial class MainWindow
         var discoverBtn = new Button { Content = "获取模型列表" };
         var keyBox = new PasswordBox { Header = "API Key" };
         var allowInsecureHttpBox = new CheckBox { Content = "确认允许非回环 HTTP 明文传输（仅用于可信本地网络）" };
+        var activateChatBox = new CheckBox { Content = "设为当前默认对话模型", IsChecked = true };
+        var visionBox = new CheckBox { Content = "用于处理图文（图片 / 扫描 PDF / 图文混合视觉读取）" };
+        var audioBox = new CheckBox { Content = "用于处理音频" };
+        var videoBox = new CheckBox { Content = "用于处理视频" };
+        var audioVideoToggle = new ToggleSwitch { Header = "允许处理音视频文件（直接交给原生支持音视频的 AI 处理）", IsOn = avEnabled };
+        var mediaRoutingSummary = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.8 };
         var thinkingBox = new ToggleSwitch { Header = "显示模型的思考过程（如果模型提供）", IsOn = true };
         var effortBox = new ComboBox { Header = "推理强度", HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var (label, tag) in new[] { ("默认", ""), ("low", "low"), ("medium", "medium"), ("high", "high") }) effortBox.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
@@ -58,6 +71,25 @@ public sealed partial class MainWindow
         var newBtn = new Button { Content = "新建配置" };
         var deleteBtn = new Button { Content = "删除此配置" };
 
+        void UpdateMediaSummary()
+        {
+            var chatModel = profiles.FirstOrDefault(p => Bool(p, "is_active"));
+            string PickMod(string capKey, string emptyLabel)
+            {
+                if (chatModel.ValueKind == JsonValueKind.Object && Bool(Obj(chatModel, "capabilities"), capKey))
+                    return Str(chatModel, "display_name");
+                var m = profiles.FirstOrDefault(p => Bool(Obj(p, "capabilities"), capKey));
+                return m.ValueKind == JsonValueKind.Object ? Str(m, "display_name") : emptyLabel;
+            }
+            var chatName = chatModel.ValueKind == JsonValueKind.Object ? Str(chatModel, "display_name") : "未配置";
+            mediaRoutingSummary.Text =
+                $"当前多模型分配：\n" +
+                $"• 默认对话：{chatName}\n" +
+                $"• 图文处理：{PickMod("supports_vision", "未指定（将尝试本地 OCR）")}\n" +
+                $"• 音频处理：{(audioVideoToggle.IsOn ? PickMod("supports_audio", "未指定（请在模型配置中勾选）") : "已关闭")}\n" +
+                $"• 视频处理：{(audioVideoToggle.IsOn ? PickMod("supports_video", "未指定（请在模型配置中勾选）") : "已关闭")}";
+        }
+
         void Fill(JsonElement? p)
         {
             if (p is not { } prof)
@@ -65,12 +97,14 @@ public sealed partial class MainWindow
                 profileId = null; keychainRef = ""; hasSecret = false;
                 protocolBox.SelectedIndex = 0;
                 urlBox.Text = ""; modelBox.Items.Clear(); modelBox.Text = "";
+                activateChatBox.IsChecked = !profiles.Any(x => Bool(x, "is_active"));
+                visionBox.IsChecked = false; audioBox.IsChecked = false; videoBox.IsChecked = false;
                 thinkingBox.IsOn = true; effortBox.SelectedIndex = 0;
                 ctxBox.Value = 32000; outBox.Value = 8000; priceIn.Value = double.NaN; priceOut.Value = double.NaN;
                 headersBox.Text = ""; caps.Text = "";
                 keyBox.Password = "";
                 keyBox.PlaceholderText = "输入 API Key（本地模型可留空）";
-                status.Text = "尚未配置模型。";
+                status.Text = "正在编辑新配置，填写并保存即可启用。";
                 return;
             }
             profileId = Str(prof, "id");
@@ -83,6 +117,7 @@ public sealed partial class MainWindow
             modelBox.Items.Clear();
             if (savedModel.Length > 0) { modelBox.Items.Add(savedModel); modelBox.SelectedIndex = 0; }
             modelBox.Text = savedModel;
+            activateChatBox.IsChecked = Bool(prof, "is_active");
             thinkingBox.IsOn = !prof.TryGetProperty("show_thinking", out var st) || st.ValueKind != JsonValueKind.False;
             var effort = Str(prof, "effort");
             effortBox.SelectedIndex = Math.Max(0, new[] { "", "low", "medium", "high" }.ToList().IndexOf(effort));
@@ -94,6 +129,9 @@ public sealed partial class MainWindow
             keyBox.Password = "";
             keyBox.PlaceholderText = hasSecret ? "已保存，留空则保持不变" : "输入 API Key（本地模型可留空）";
             var c = Obj(prof, "capabilities");
+            visionBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_vision");
+            audioBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_audio");
+            videoBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_video");
             caps.Text = c.ValueKind == JsonValueKind.Object
                 ? $"已探测的能力：工具调用 {(Bool(c, "tools") ? "支持" : "不支持")} · JSON Schema {(Bool(c, "json_schema") ? "支持" : "不支持")} · JSON 模式 {(Bool(c, "json_mode") ? "支持" : "不支持")} · 流式用量 {(Bool(c, "stream_usage") ? "支持" : "不支持")}"
                 : "";
@@ -105,10 +143,17 @@ public sealed partial class MainWindow
             picker.Items.Clear();
             foreach (var p in profiles)
             {
-                var item = new ComboBoxItem { Content = $"{Str(p, "display_name")}{(Bool(p, "is_active") ? "（使用中）" : "")}", Tag = Str(p, "id") };
+                var c = Obj(p, "capabilities");
+                var mods = new List<string>();
+                if (Bool(c, "supports_vision")) mods.Add("图文");
+                if (Bool(c, "supports_audio")) mods.Add("音频");
+                if (Bool(c, "supports_video")) mods.Add("视频");
+                var modTag = mods.Count > 0 ? $" [{string.Join("/", mods)}]" : "";
+                var item = new ComboBoxItem { Content = $"{Str(p, "display_name")}{(Bool(p, "is_active") ? "（默认对话）" : "")}{modTag}", Tag = Str(p, "id") };
                 picker.Items.Add(item);
                 if (Str(p, "id") == select) picker.SelectedItem = item;
             }
+            UpdateMediaSummary();
         }
         var active = profiles.FirstOrDefault(p => Bool(p, "is_active"));
         var initial = active.ValueKind == JsonValueKind.Object ? active : (profiles.Count > 0 ? profiles[0] : default);
@@ -134,8 +179,24 @@ public sealed partial class MainWindow
         };
         discoverBtn.Click += async (_, _) =>
         {
-            if (profileId == null) { status.Text = "请先点击“保存并测试”，再获取模型列表。"; return; }
-            var res = await CoreAsync("profile.discover_models", Args(("profile_id", profileId)), "获取模型列表");
+            var baseUrl = urlBox.Text.Trim();
+            if (string.IsNullOrEmpty(baseUrl))
+            {
+                status.Text = "请先填写接口地址 (Base URL)。";
+                return;
+            }
+            var protocol = (protocolBox.SelectedItem as ComboBoxItem)?.Tag as string ?? Protocols[0];
+            var apiKey = keyBox.Password.Trim();
+            var res = await CoreAsync(
+                "profile.discover_models",
+                Args(
+                    ("profile_id", profileId ?? ""),
+                    ("base_url", baseUrl),
+                    ("protocol", protocol),
+                    ("api_key", apiKey)
+                ),
+                "获取模型列表"
+            );
             if (res is not { } r) return;
             var current = modelBox.Text;
             modelBox.Items.Clear();
@@ -173,6 +234,45 @@ public sealed partial class MainWindow
         advanced.Children.Add(headersBox);
         advanced.Children.Add(caps);
 
+        var testBtn = new Button { Content = "测试连接" };
+        testBtn.Click += async (_, _) =>
+        {
+            if (profileId == null)
+            {
+                status.Text = "请先点击“保存”保存配置，再测试连接。";
+                return;
+            }
+            status.Text = "正在测试连接并探测模型能力…";
+            var test = await CoreAsync("profile.test", Args(("profile_id", profileId)), "测试连接");
+            if (test is { } tr)
+            {
+                status.Text = $"连接成功，模型回复：{Str(tr, "reply")}";
+                var c = Obj(tr, "capabilities");
+                caps.Text = $"已探测的能力：工具调用 {(Bool(c, "tools") ? "支持" : "不支持")} · JSON Schema {(Bool(c, "json_schema") ? "支持" : "不支持")} · JSON 模式 {(Bool(c, "json_mode") ? "支持" : "不支持")} · 流式用量 {(Bool(c, "stream_usage") ? "支持" : "不支持")}";
+            }
+            else
+            {
+                status.Text = "连接测试失败，详见底部提示。";
+            }
+        };
+
+        audioVideoToggle.Toggled += async (_, _) =>
+        {
+            await Api.CallAsync("settings.set", Args(("key", "media_processing"), ("value", Args(("audio_video_enabled", audioVideoToggle.IsOn)))));
+            UpdateMediaSummary();
+        };
+
+        var modalityBox = new StackPanel { Spacing = 4 };
+        modalityBox.Children.Add(new TextBlock { Text = "此模型处理的模态（可配置多个模型分别负责不同模态）", FontSize = 12, Opacity = 0.85 });
+        modalityBox.Children.Add(visionBox);
+        modalityBox.Children.Add(audioBox);
+        modalityBox.Children.Add(videoBox);
+
+        var mediaSettingsBox = new StackPanel { Spacing = 8, Padding = new Thickness(10), CornerRadius = new CornerRadius(8), Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"] };
+        mediaSettingsBox.Children.Add(new TextBlock { Text = "文件与媒体处理设置", FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        mediaSettingsBox.Children.Add(audioVideoToggle);
+        mediaSettingsBox.Children.Add(mediaRoutingSummary);
+
         var panel = new StackPanel { Spacing = 10, MinWidth = 480 };
         panel.Children.Add(top);
         panel.Children.Add(protocolBox);
@@ -180,14 +280,18 @@ public sealed partial class MainWindow
         panel.Children.Add(modelRow);
         panel.Children.Add(keyBox);
         panel.Children.Add(allowInsecureHttpBox);
+        panel.Children.Add(activateChatBox);
+        panel.Children.Add(modalityBox);
         panel.Children.Add(new Expander { Header = "高级选项", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+        panel.Children.Add(mediaSettingsBox);
+        panel.Children.Add(testBtn);
         panel.Children.Add(status);
 
         var dialog = new ContentDialog
         {
             Title = "模型协议配置",
             Content = new ScrollViewer { Content = panel, MaxHeight = 620 },
-            PrimaryButtonText = "保存并测试",
+            PrimaryButtonText = "保存",
             SecondaryButtonText = "清除密钥",
             CloseButtonText = "关闭",
             DefaultButton = ContentDialogButton.Primary,
@@ -208,18 +312,22 @@ public sealed partial class MainWindow
                     return;
                 }
                 var proto = (protocolBox.SelectedItem as ComboBoxItem)?.Tag as string ?? Protocols[0];
+                var makeActive = activateChatBox.IsChecked == true;
                 var up = new List<(string, object?)>
                 {
                     ("display_name", $"{proto} / {modelId}"),
                     ("protocol", proto),
                     ("base_url", url),
                     ("model_id", modelId),
-                    ("activate", true),
+                    ("activate", makeActive),
                     ("allow_insecure_http", allowInsecureHttpBox.IsChecked == true),
                     ("show_thinking", thinkingBox.IsOn),
                     ("context_window", (int)ctxBox.Value),
                     ("max_output_tokens", (int)outBox.Value),
                     ("extra_headers", HeadersJson(headersBox.Text)),
+                    ("supports_vision", visionBox.IsChecked == true),
+                    ("supports_audio", audioBox.IsChecked == true),
+                    ("supports_video", videoBox.IsChecked == true),
                 };
                 var effort = (effortBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
                 if (effort.Length > 0) up.Add(("effort", effort));
@@ -241,20 +349,11 @@ public sealed partial class MainWindow
                 hasSecret = ex is { } er && Bool(er, "exists");
                 keyBox.PlaceholderText = hasSecret ? "已保存，留空则保持不变" : "输入 API Key（本地模型可留空）";
 
-                await CoreAsync("profile.activate", Args(("profile_id", profileId)), "启用模型配置");
+                if (makeActive)
+                    await CoreAsync("profile.activate", Args(("profile_id", profileId)), "启用模型配置");
+                await Api.CallAsync("settings.set", Args(("key", "media_processing"), ("value", Args(("audio_video_enabled", audioVideoToggle.IsOn)))));
                 var mark = hasSecret ? "密钥状态：已保存在 Windows 凭据管理器。" : "密钥状态：未保存。";
-                status.Text = $"{mark} 正在测试连接并探测模型能力…";
-                var test = await CoreAsync("profile.test", Args(("profile_id", profileId)), "测试连接");
-                if (test is { } tr)
-                {
-                    status.Text = $"{mark} 连接成功，模型回复：{Str(tr, "reply")}";
-                    var c = Obj(tr, "capabilities");
-                    caps.Text = $"已探测的能力：工具调用 {(Bool(c, "tools") ? "支持" : "不支持")} · JSON Schema {(Bool(c, "json_schema") ? "支持" : "不支持")} · JSON 模式 {(Bool(c, "json_mode") ? "支持" : "不支持")} · 流式用量 {(Bool(c, "stream_usage") ? "支持" : "不支持")}";
-                }
-                else
-                {
-                    status.Text = $"{mark} 连接测试失败，详见底部提示。";
-                }
+                status.Text = makeActive ? $"配置已保存并设为默认对话模型。{mark}" : $"配置已保存。{mark}";
                 var relist = await CoreAsync("profile.list", Args(), "读取模型配置");
                 if (relist is { } rl)
                 {
@@ -330,8 +429,8 @@ public sealed partial class MainWindow
         if (seen.Result is { } s && s.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.True) return;
         var panel = new StackPanel { Spacing = 10, MaxWidth = 460 };
         panel.Children.Add(Line("欢迎使用 Local Notebook Agent。三步开始："));
-        panel.Children.Add(Line("1. 配置模型：点击右上角“模型协议配置”，选择协议、填写接口地址、模型和 API Key，点“保存并测试”。"));
-        panel.Children.Add(Line("2. 添加来源：左侧“+ 添加来源”可导入 PDF、Markdown、文本、网页，或直接粘贴文本，并勾选要使用的来源。"));
+        panel.Children.Add(Line("1. 配置模型：点击右上角“模型协议配置”，选择协议、填写接口地址、模型和 API Key，可为多个模型勾选负责的图文、音频或视频模态，点“保存”。"));
+        panel.Children.Add(Line("2. 添加来源：左侧“+ 添加来源”可导入 PDF（含扫描件与图文混合）、Markdown、文本、Word/PPT/EPUB/ODT/RTF/HWP/CSV、图片、音视频及网页，并勾选要使用的来源。"));
         panel.Children.Add(Line("3. 提问或生成：在中间提问（回答带可点击的引用），或在右侧 Studio 生成测验、闪卡、导图、报告等。"));
         panel.Children.Add(Line("想要跨语言也能找得准，可以在“语义检索”里下载嵌入模型（可选）。"));
         var dlg = new ContentDialog { Title = "快速开始", Content = panel, PrimaryButtonText = "去配置模型", CloseButtonText = "稍后", DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };

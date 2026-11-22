@@ -16,6 +16,7 @@ pub enum Kind {
     Followups,
     HistorySummary,
     NotebookSummary,
+    SourceIndex,
     Digest,
     Reduce,
     Plan,
@@ -86,6 +87,8 @@ pub fn classify(system: &str, body: &Value) -> Kind {
         Kind::Followups
     } else if system.contains("不超过 300 字") {
         Kind::HistorySummary
+    } else if system.contains("guide_summary_md") {
+        Kind::SourceIndex
     } else if system.contains("title_suggestion") || system.contains("summary_md") {
         Kind::NotebookSummary
     } else if system.contains("章节摘要助手") {

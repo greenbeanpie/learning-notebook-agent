@@ -6,6 +6,10 @@ use std::time::{Duration, Instant};
 
 static REGISTER_VEC: Once = Once::new();
 const MIGRATION_0001: &str = include_str!("../../../migrations/0001_init.sql");
+const MIGRATION_0002: &str = include_str!("../../../migrations/0002_extended_source_kinds.sql");
+const MIGRATION_0003: &str = include_str!("../../../migrations/0003_source_guide_and_index.sql");
+const MIGRATION_0004: &str = include_str!("../../../migrations/0004_chat_studio_artifacts.sql");
+const MIGRATION_0005: &str = include_str!("../../../migrations/0005_studio_thoughts_and_logs.sql");
 
 #[derive(Debug, Clone)]
 pub struct StoragePaths {
@@ -218,6 +222,85 @@ fn run_migrations(conn: &Connection, db_path: &Path) -> LnaResult<()> {
             .map_err(map_sql_err)?;
         conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
         tracing::info!("Applied SQLite migration 0001_init.sql");
+    }
+
+    if version < 2 {
+        if db_path.exists() && std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0) > 0 {
+            let backup = db_path.with_extension("db.bak");
+            let _ = std::fs::copy(db_path, backup);
+        }
+        conn.pragma_update(None, "foreign_keys", "OFF")
+            .map_err(map_sql_err)?;
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(map_sql_err)?;
+        if let Err(e) = conn.execute_batch(MIGRATION_0002) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            let _ = conn.pragma_update(None, "foreign_keys", "ON");
+            return Err(map_sql_err(e));
+        }
+        conn.pragma_update(None, "user_version", 2)
+            .map_err(map_sql_err)?;
+        conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(map_sql_err)?;
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check").map_err(map_sql_err)?;
+        if stmt.exists([]).map_err(map_sql_err)? {
+            return Err(LnaError::internal(
+                "Foreign key check failed after migration 0002",
+            ));
+        }
+        tracing::info!("Applied SQLite migration 0002_extended_source_kinds.sql");
+    }
+
+    if version < 3 {
+        if db_path.exists() && std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0) > 0 {
+            let backup = db_path.with_extension("db.bak");
+            let _ = std::fs::copy(db_path, backup);
+        }
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(map_sql_err)?;
+        if let Err(e) = conn.execute_batch(MIGRATION_0003) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(map_sql_err(e));
+        }
+        conn.pragma_update(None, "user_version", 3)
+            .map_err(map_sql_err)?;
+        conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
+        tracing::info!("Applied SQLite migration 0003_source_guide_and_index.sql");
+    }
+
+    if version < 4 {
+        if db_path.exists() && std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0) > 0 {
+            let backup = db_path.with_extension("db.bak");
+            let _ = std::fs::copy(db_path, backup);
+        }
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(map_sql_err)?;
+        if let Err(e) = conn.execute_batch(MIGRATION_0004) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(map_sql_err(e));
+        }
+        conn.pragma_update(None, "user_version", 4)
+            .map_err(map_sql_err)?;
+        conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
+        tracing::info!("Applied SQLite migration 0004_chat_studio_artifacts.sql");
+    }
+
+    if version < 5 {
+        if db_path.exists() && std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0) > 0 {
+            let backup = db_path.with_extension("db.bak");
+            let _ = std::fs::copy(db_path, backup);
+        }
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(map_sql_err)?;
+        if let Err(e) = conn.execute_batch(MIGRATION_0005) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(map_sql_err(e));
+        }
+        conn.pragma_update(None, "user_version", 5)
+            .map_err(map_sql_err)?;
+        conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
+        tracing::info!("Applied SQLite migration 0005_studio_thoughts_and_logs.sql");
     }
     Ok(())
 }

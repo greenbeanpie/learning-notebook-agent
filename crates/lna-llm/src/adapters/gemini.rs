@@ -26,14 +26,29 @@ impl ProtocolAdapter for GeminiAdapter {
         for m in &req.messages {
             match m.role {
                 Role::User => {
-                    let parts: Vec<Value> = m
-                        .parts
-                        .iter()
-                        .filter_map(|p| match p {
-                            Part::Text(t) => Some(json!({ "text": t })),
-                            _ => None,
-                        })
-                        .collect();
+                    let mut parts = Vec::new();
+                    for p in &m.parts {
+                        match p {
+                            Part::Text(t) => parts.push(json!({ "text": t })),
+                            Part::Media {
+                                mime_type,
+                                data_base64,
+                                file_uri,
+                                ..
+                            } => {
+                                if let Some(uri) = file_uri {
+                                    parts.push(json!({
+                                        "fileData": { "mimeType": mime_type, "fileUri": uri }
+                                    }));
+                                } else if let Some(b64) = data_base64 {
+                                    parts.push(json!({
+                                        "inlineData": { "mimeType": mime_type, "data": b64 }
+                                    }));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     contents.push(json!({ "role": "user", "parts": parts }));
                 }
                 Role::Assistant => {

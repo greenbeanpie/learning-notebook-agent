@@ -297,10 +297,7 @@ fn import_inner(
             }
             let stitle = s.get("title").and_then(|x| x.as_str()).unwrap_or("来源");
             let kind_str = s.get("kind").and_then(|x| x.as_str()).unwrap_or("txt");
-            let kind_db = match kind_str {
-                "pdf" | "md" | "txt" | "web" | "note" => kind_str,
-                _ => "txt",
-            };
+            let kind_db = lna_types::SourceKind::from_db_str(kind_str).as_str();
             let origin_uri = s.get("origin_uri").and_then(|x| x.as_str());
             let content_hash = s.get("content_hash").and_then(|x| x.as_str()).unwrap_or("");
             let byte_size = s.get("byte_size").and_then(|x| x.as_i64()).unwrap_or(0);

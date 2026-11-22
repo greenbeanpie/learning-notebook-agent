@@ -268,8 +268,98 @@ impl RetrievalEngine {
             }
         }
 
+        // 2.5. Tree-Boosted RRF: score AI-generated `source_index_nodes` (title/summary/keywords)
+        // and boost chunks belonging to the highest-matching semantic nodes.
+        let mut tree_hits = 0usize;
+        let query_terms: Vec<String> = queries
+            .iter()
+            .flat_map(|q| {
+                let norm: String = q.nfkc().collect::<String>().to_lowercase();
+                jieba()
+                    .cut_for_search(&norm, false)
+                    .into_iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty() && !STOP_WORDS.contains(&s.as_str()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if !query_terms.is_empty() {
+            let matched_nodes: Vec<(String, usize)> = self
+                .db
+                .read(|conn| {
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT id, title, summary, keywords_json
+                             FROM source_index_nodes
+                             WHERE source_id IN (SELECT value FROM json_each(?1))",
+                        )
+                        .map_err(map_sql_err)?;
+                    let rows = stmt
+                        .query_map([&selected_json], |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                                r.get::<_, String>(3)?,
+                            ))
+                        })
+                        .map_err(map_sql_err)?;
+                    let mut scored = Vec::new();
+                    for r in rows {
+                        let (nid, title, summary, kw) = r.map_err(map_sql_err)?;
+                        let hay = format!("{title} {summary} {kw}").to_lowercase();
+                        let mut score = 0usize;
+                        for t in &query_terms {
+                            if hay.contains(t.as_str()) {
+                                score += if title.to_lowercase().contains(t.as_str()) { 3 } else { 1 };
+                            }
+                        }
+                        if score > 0 {
+                            scored.push((nid, score));
+                        }
+                    }
+                    scored.sort_by(|a, b| b.1.cmp(&a.1));
+                    scored.truncate(6);
+                    Ok(scored)
+                })
+                .unwrap_or_default();
+
+            if !matched_nodes.is_empty() {
+                for (n_rank, (nid, _)) in matched_nodes.into_iter().enumerate() {
+                    let node_chunks: Vec<i64> = self
+                        .db
+                        .read(|conn| {
+                            let mut stmt = conn
+                                .prepare(
+                                    "SELECT id FROM source_chunks
+                                     WHERE node_id = ?1
+                                     ORDER BY chunk_index ASC
+                                     LIMIT 8",
+                                )
+                                .map_err(map_sql_err)?;
+                            let rows = stmt
+                                .query_map([&nid], |r| r.get::<_, i64>(0))
+                                .map_err(map_sql_err)?;
+                            let mut out = Vec::new();
+                            for r in rows {
+                                out.push(r.map_err(map_sql_err)?);
+                            }
+                            Ok(out)
+                        })
+                        .unwrap_or_default();
+                    if !node_chunks.is_empty() {
+                        tree_hits += node_chunks.len();
+                        let boost = 1.2 / (60.0 + (n_rank as f64) + 1.0);
+                        for (c_rank, cid) in node_chunks.into_iter().enumerate() {
+                            *rrf_scores.entry(cid).or_insert(0.0) += boost * (1.0 / (1.0 + c_rank as f64 * 0.15));
+                        }
+                    }
+                }
+            }
+        }
+
         // Section 8.5: Groundedness check
-        let grounded = total_bm25_hits > 0 || best_cosine >= 0.35;
+        let grounded = total_bm25_hits > 0 || best_cosine >= 0.35 || tree_hits > 0;
         if !grounded {
             return Ok(RetrievalOutcome {
                 evidences: Vec::new(),
@@ -448,5 +538,134 @@ impl RetrievalEngine {
             }
             Ok(out)
         })
+    }
+
+    /// Read sequential chunks from a specific source starting at `start_chunk`.
+    pub fn read_source_chunks(
+        &self,
+        source_id: &str,
+        start_chunk: i32,
+        count: i32,
+    ) -> LnaResult<Vec<RetrievedEvidence>> {
+        let start = start_chunk.max(0);
+        let limit = count.clamp(1, 8) as i64;
+        self.db.read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT c.id, c.source_id, s.title, c.chunk_index, c.page_start,
+                            c.page_end, c.section_path, c.content, c.token_count
+                     FROM source_chunks c
+                     JOIN sources s ON s.id = c.source_id
+                     WHERE c.source_id = ?1 AND c.chunk_index >= ?2
+                     ORDER BY c.chunk_index ASC
+                     LIMIT ?3",
+                )
+                .map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map(params![source_id, start, limit], |r| {
+                    Ok(RetrievedEvidence {
+                        citation_no: 0,
+                        chunk_id: r.get(0)?,
+                        source_id: r.get(1)?,
+                        source_title: r.get(2)?,
+                        chunk_index: r.get(3)?,
+                        page_start: r.get(4)?,
+                        page_end: r.get(5)?,
+                        section_path: r.get(6)?,
+                        content: r.get(7)?,
+                        token_count: r.get(8)?,
+                        rrf_score: 0.0,
+                    })
+                })
+                .map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(map_sql_err)?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Read chunks belonging to a specific AI-generated `source_index_nodes` entry.
+    pub fn read_index_node_chunks(
+        &self,
+        source_id: &str,
+        node_id: &str,
+        limit: i32,
+    ) -> LnaResult<Vec<RetrievedEvidence>> {
+        let lim = limit.clamp(1, 8) as i64;
+        self.db.read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT c.id, c.source_id, s.title, c.chunk_index, c.page_start,
+                            c.page_end, c.section_path, c.content, c.token_count
+                     FROM source_chunks c
+                     JOIN sources s ON s.id = c.source_id
+                     WHERE c.source_id = ?1 AND c.node_id = ?2
+                     ORDER BY c.chunk_index ASC
+                     LIMIT ?3",
+                )
+                .map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map(params![source_id, node_id, lim], |r| {
+                    Ok(RetrievedEvidence {
+                        citation_no: 0,
+                        chunk_id: r.get(0)?,
+                        source_id: r.get(1)?,
+                        source_title: r.get(2)?,
+                        chunk_index: r.get(3)?,
+                        page_start: r.get(4)?,
+                        page_end: r.get(5)?,
+                        section_path: r.get(6)?,
+                        content: r.get(7)?,
+                        token_count: r.get(8)?,
+                        rrf_score: 0.0,
+                    })
+                })
+                .map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(map_sql_err)?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Read representative leading chunks across selected sources for broad overview questions.
+    pub fn read_source_overview(
+        &self,
+        selected_source_ids: &[String],
+        token_budget: usize,
+        max_groups: usize,
+    ) -> LnaResult<Vec<RetrievedEvidence>> {
+        if selected_source_ids.is_empty() || max_groups == 0 {
+            return Ok(Vec::new());
+        }
+        let per_source = ((max_groups + selected_source_ids.len() - 1) / selected_source_ids.len())
+            .clamp(1, 8) as i32;
+        let mut buckets: Vec<Vec<RetrievedEvidence>> = Vec::with_capacity(selected_source_ids.len());
+        for sid in selected_source_ids {
+            buckets.push(self.read_source_chunks(sid, 0, per_source)?);
+        }
+        let mut selected = Vec::new();
+        let mut used_tokens = 0usize;
+        for round in 0..(per_source as usize) {
+            for bucket in &buckets {
+                if selected.len() >= max_groups {
+                    break;
+                }
+                if let Some(ev) = bucket.get(round) {
+                    let t = (ev.token_count as usize).max(1);
+                    if !selected.is_empty() && used_tokens + t > token_budget {
+                        continue;
+                    }
+                    let mut item = ev.clone();
+                    item.citation_no = (selected.len() + 1) as i32;
+                    used_tokens += t;
+                    selected.push(item);
+                }
+            }
+        }
+        Ok(selected)
     }
 }

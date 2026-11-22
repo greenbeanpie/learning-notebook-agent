@@ -29,6 +29,62 @@ pub enum SourceKind {
     Txt,
     Web,
     Note,
+    Docx,
+    Csv,
+    Pptx,
+    Epub,
+    Odt,
+    Rtf,
+    Hwp,
+    Hwpx,
+    Image,
+    Audio,
+    Video,
+}
+
+impl SourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pdf => "pdf",
+            Self::Md => "md",
+            Self::Txt => "txt",
+            Self::Web => "web",
+            Self::Note => "note",
+            Self::Docx => "docx",
+            Self::Csv => "csv",
+            Self::Pptx => "pptx",
+            Self::Epub => "epub",
+            Self::Odt => "odt",
+            Self::Rtf => "rtf",
+            Self::Hwp => "hwp",
+            Self::Hwpx => "hwpx",
+            Self::Image => "image",
+            Self::Audio => "audio",
+            Self::Video => "video",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "pdf" => Self::Pdf,
+            "md" => Self::Md,
+            "txt" => Self::Txt,
+            "web" => Self::Web,
+            "note" => Self::Note,
+            "docx" => Self::Docx,
+            "csv" => Self::Csv,
+            "pptx" => Self::Pptx,
+            "epub" => Self::Epub,
+            "odt" => Self::Odt,
+            "rtf" => Self::Rtf,
+            "hwp" => Self::Hwp,
+            "hwpx" => Self::Hwpx,
+            "image" => Self::Image,
+            "audio" => Self::Audio,
+            "video" => Self::Video,
+            _ => Self::Note,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,8 +176,31 @@ pub struct Source {
     pub status: SourceStatus,
     pub error_code: Option<String>,
     pub error_detail: Option<String>,
+    #[serde(default)]
+    pub guide_summary_md: Option<String>,
+    #[serde(default)]
+    pub guide_topics: Vec<String>,
+    #[serde(default)]
+    pub ai_indexed: bool,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceIndexNode {
+    pub id: String,
+    pub source_id: String,
+    pub parent_id: Option<String>,
+    pub ordinal: i32,
+    pub level: i32,
+    pub title: String,
+    pub summary: String,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    pub page_start: Option<i32>,
+    pub page_end: Option<i32>,
+    pub char_start: Option<i32>,
+    pub char_end: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +236,12 @@ pub struct ModelCapabilities {
     pub max_tokens_field: Option<String>,
     #[serde(default)]
     pub anthropic_thinking: Option<String>,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_audio: bool,
+    #[serde(default)]
+    pub supports_video: bool,
 }
 
 fn default_true() -> bool {
@@ -224,6 +309,8 @@ pub struct ChatMessage {
     pub stop_reason: Option<String>,
     pub error_code: Option<String>,
     pub feedback: Option<i32>,
+    #[serde(default)]
+    pub artifacts: Vec<StudioArtifact>,
     pub created_at: i64,
 }
 
@@ -239,6 +326,15 @@ pub struct Note {
     pub converted_source_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactThought {
+    pub seq: i32,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,8 +357,16 @@ pub struct StudioArtifact {
     pub estimated_output_tokens: Option<i64>,
     pub error_code: Option<String>,
     pub error_detail: Option<String>,
+    #[serde(default)]
+    pub error_log: Option<String>,
+    #[serde(default)]
+    pub thoughts: Vec<ArtifactThought>,
     pub feedback: Option<i32>,
     pub sources_stale: bool,
+    #[serde(default = "default_true")]
+    pub in_studio: bool,
+    #[serde(default)]
+    pub origin_message_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub finished_at: Option<i64>,

@@ -66,6 +66,12 @@ pub struct ProfileUpsertParams {
     #[serde(default)]
     pub capabilities: Option<ModelCapabilities>,
     #[serde(default)]
+    pub supports_vision: Option<bool>,
+    #[serde(default)]
+    pub supports_audio: Option<bool>,
+    #[serde(default)]
+    pub supports_video: Option<bool>,
+    #[serde(default)]
     pub activate: bool,
 }
 

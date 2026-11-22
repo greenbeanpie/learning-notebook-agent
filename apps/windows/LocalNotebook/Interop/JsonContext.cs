@@ -74,6 +74,9 @@ public sealed class MathMeasureDto
     [JsonPropertyName("height")]
     public int Height { get; set; }
 
+    [JsonPropertyName("descent")]
+    public int Descent { get; set; }
+
     [JsonPropertyName("overflow")]
     public bool Overflow { get; set; }
 

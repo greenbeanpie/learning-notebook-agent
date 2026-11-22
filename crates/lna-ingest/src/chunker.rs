@@ -4,6 +4,7 @@ use crate::parser::{Block, BlockKind, ParsedDoc};
 pub struct ChunkDraft {
     pub chunk_index: i32,
     pub section_path: Option<String>,
+    pub node_id: Option<String>,
     pub page_start: Option<i32>,
     pub page_end: Option<i32>,
     pub char_start: i32,
@@ -62,6 +63,7 @@ pub fn chunk_document(doc: &ParsedDoc) -> Vec<ChunkDraft> {
         chunks.push(ChunkDraft {
             chunk_index: idx,
             section_path: cur_section.clone(),
+            node_id: None,
             page_start: *cur_page_start,
             page_end: *cur_page_end,
             char_start: *cur_char_start,

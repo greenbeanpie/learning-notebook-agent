@@ -24,6 +24,25 @@ const SCHEMA_SLIDES: &str = include_str!("../../../schemas/slides.schema.json");
 const SCHEMA_INFOGRAPHIC: &str = include_str!("../../../schemas/infographic.schema.json");
 const SCHEMA_AUDIO: &str = include_str!("../../../schemas/audio.schema.json");
 
+const MAX_STUDIO_RETRIES: u32 = 3;
+const QUIZ_BATCH_SIZE: usize = 5;
+const FLASHCARD_BATCH_SIZE: usize = 8;
+
+const ARTIFACT_SELECT_COLS: &str =
+    "id, notebook_id, artifact_type, title, status, stage, progress, config_json, \
+     source_ids_json, sources_fingerprint, profile_id, draft_json, payload_json, output_dir, \
+     estimated_input_tokens, estimated_output_tokens, error_code, error_detail, feedback, \
+     created_at, updated_at, finished_at, in_studio, origin_message_id, error_log";
+
+struct AttemptFailureRecord {
+    attempt: u32,
+    stage: String,
+    elapsed_ms: u128,
+    code: String,
+    retryable: bool,
+    message: String,
+}
+
 /// (source id, title, content hash, source language, chunk index, chunk id, content, section path)
 type ChunkRow = (String, String, String, String, i32, i64, String, String);
 /// source id -> (title, content hash, language)
@@ -197,21 +216,119 @@ impl StudioService {
         self.get(&id)
     }
 
+    /// Create a chat-attached artifact (`in_studio = 0`) and enqueue it asynchronously in the
+    /// background studio job queue so the chat agent does not block waiting for completion.
+    pub fn create_for_chat(
+        &self,
+        notebook_id: &str,
+        message_id: &str,
+        artifact_type: ArtifactType,
+        title: Option<&str>,
+        mut config: Value,
+    ) -> LnaResult<StudioArtifact> {
+        let (selected_ids, fp) = self.current_sources_fingerprint(notebook_id)?;
+        if selected_ids.is_empty() {
+            return Err(LnaError::new(
+                ErrorCode::NoSourceSelected,
+                "Please select at least one ready source",
+            ));
+        }
+        let active_profile = lna_storage::get_active_profile(&self.db)?.ok_or_else(|| {
+            LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured")
+        })?;
+
+        if !config.is_object() {
+            config = json!({});
+        }
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("confirmed".into(), json!(true));
+            if artifact_type == ArtifactType::Slides && !obj.contains_key("reviewOutline") {
+                obj.insert("reviewOutline".into(), json!(false));
+            }
+        }
+
+        let est = self.estimate(notebook_id, artifact_type)?;
+        let est_in = est.get("estimated_input_tokens").and_then(|x| x.as_i64());
+        let est_out = est.get("estimated_output_tokens").and_then(|x| x.as_i64());
+
+        let id = new_ulid();
+        let now = now_ms();
+        let default_title = match artifact_type {
+            ArtifactType::Audio => "音频概览",
+            ArtifactType::Slides => "演示文稿",
+            ArtifactType::Mindmap => "思维导图",
+            ArtifactType::Report => "研究报告",
+            ArtifactType::Flashcards => "学习闪卡",
+            ArtifactType::Quiz => "知识测验",
+            ArtifactType::Infographic => "信息图",
+        };
+        let title = title
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(default_title);
+        let cfg_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".into());
+        let sids_json = serde_json::to_string(&selected_ids).unwrap_or_else(|_| "[]".into());
+
+        self.db.write(|conn| {
+            conn.execute(
+                "INSERT INTO studio_artifacts
+                 (id, notebook_id, artifact_type, title, status, stage, progress, config_json,
+                  source_ids_json, sources_fingerprint, profile_id, estimated_input_tokens,
+                  estimated_output_tokens, in_studio, origin_message_id, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,'PENDING','QUEUED',0.0,?5,?6,?7,?8,?9,?10,0,?11,?12,?13)",
+                params![
+                    id,
+                    notebook_id,
+                    artifact_type.as_str(),
+                    title,
+                    cfg_json,
+                    sids_json,
+                    fp,
+                    active_profile.id,
+                    est_in,
+                    est_out,
+                    message_id,
+                    now,
+                    now
+                ],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })?;
+
+        self.jobs
+            .enqueue("studio_generate", Some(notebook_id), &id, 100)?;
+        self.get(&id)
+    }
+
     pub fn list(&self, notebook_id: &str) -> LnaResult<Vec<StudioArtifact>> {
         let (_, cur_fp) = self.current_sources_fingerprint(notebook_id)?;
+        let sql = format!(
+            "SELECT {ARTIFACT_SELECT_COLS}
+             FROM studio_artifacts WHERE notebook_id = ?1 AND in_studio = 1 ORDER BY created_at DESC"
+        );
         self.db.read(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, notebook_id, artifact_type, title, status, stage, progress,
-                            config_json, source_ids_json, sources_fingerprint, profile_id,
-                            draft_json, payload_json, output_dir, estimated_input_tokens,
-                            estimated_output_tokens, error_code, error_detail, feedback,
-                            created_at, updated_at, finished_at
-                     FROM studio_artifacts WHERE notebook_id = ?1 ORDER BY created_at DESC",
-                )
-                .map_err(map_sql_err)?;
+            let mut stmt = conn.prepare(&sql).map_err(map_sql_err)?;
             let rows = stmt
                 .query_map([notebook_id], |r| map_artifact_row(r, &cur_fp))
+                .map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(map_sql_err)?);
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn list_by_message(&self, message_id: &str) -> LnaResult<Vec<StudioArtifact>> {
+        let sql = format!(
+            "SELECT {ARTIFACT_SELECT_COLS}
+             FROM studio_artifacts WHERE origin_message_id = ?1 ORDER BY created_at ASC"
+        );
+        self.db.read(|conn| {
+            let mut stmt = conn.prepare(&sql).map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map([message_id], |r| map_artifact_row(r, ""))
                 .map_err(map_sql_err)?;
             let mut out = Vec::new();
             for r in rows {
@@ -233,19 +350,117 @@ impl StudioService {
             .ok_or_else(|| LnaError::not_found(format!("Artifact not found: {id}")))
         })?;
         let (_, cur_fp) = self.current_sources_fingerprint(&nb_id)?;
+        let sql = format!("SELECT {ARTIFACT_SELECT_COLS} FROM studio_artifacts WHERE id = ?1");
+        let mut art = self.db.read(|conn| {
+            conn.query_row(&sql, [id], |r| map_artifact_row(r, &cur_fp))
+                .map_err(map_sql_err)
+        })?;
+        art.thoughts = self.list_thoughts(id)?;
+        Ok(art)
+    }
+
+    pub fn list_thoughts(&self, artifact_id: &str) -> LnaResult<Vec<ArtifactThought>> {
         self.db.read(|conn| {
-            conn.query_row(
-                "SELECT id, notebook_id, artifact_type, title, status, stage, progress,
-                        config_json, source_ids_json, sources_fingerprint, profile_id,
-                        draft_json, payload_json, output_dir, estimated_input_tokens,
-                        estimated_output_tokens, error_code, error_detail, feedback,
-                        created_at, updated_at, finished_at
-                 FROM studio_artifacts WHERE id = ?1",
-                [id],
-                |r| map_artifact_row(r, &cur_fp),
-            )
-            .map_err(map_sql_err)
+            let mut stmt = conn
+                .prepare(
+                    "SELECT seq, kind, title, body, created_at
+                     FROM artifact_thoughts WHERE artifact_id = ?1 ORDER BY seq ASC",
+                )
+                .map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map([artifact_id], |r| {
+                    Ok(ArtifactThought {
+                        seq: r.get(0)?,
+                        kind: r.get(1)?,
+                        title: r.get(2)?,
+                        body: r.get(3)?,
+                        created_at: r.get(4)?,
+                    })
+                })
+                .map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(map_sql_err)?);
+            }
+            Ok(out)
         })
+    }
+
+    pub fn import_to_studio(&self, id: &str) -> LnaResult<StudioArtifact> {
+        let _ = self.get(id)?;
+        let now = now_ms();
+        self.db.write(|conn| {
+            conn.execute(
+                "UPDATE studio_artifacts SET in_studio = 1, updated_at = ?1 WHERE id = ?2",
+                params![now, id],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })?;
+        let art = self.get(id)?;
+        self.emit(
+            &format!("studio:{}", art.notebook_id),
+            "studio.status",
+            json!({
+                "artifact_id": id,
+                "status": art.status,
+                "in_studio": true,
+                "origin_message_id": art.origin_message_id
+            }),
+        );
+        if let Some(ref mid) = art.origin_message_id {
+            let mut compact = art.clone();
+            compact.thoughts.clear();
+            self.emit(
+                &format!("chat:{}", art.notebook_id),
+                "chat.artifact",
+                json!({ "message_id": mid, "artifact": compact }),
+            );
+        }
+        Ok(art)
+    }
+
+    pub fn delete_unimported_for_messages(&self, message_ids: &[String]) -> LnaResult<()> {
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        let mut dirs_to_remove: Vec<String> = Vec::new();
+        self.db.write(|conn| {
+            let tx = conn.transaction().map_err(map_sql_err)?;
+            for mid in message_ids {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT id, output_dir FROM studio_artifacts
+                         WHERE origin_message_id = ?1 AND in_studio = 0",
+                    )
+                    .map_err(map_sql_err)?;
+                let rows = stmt
+                    .query_map([mid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))
+                    .map_err(map_sql_err)?;
+                let mut ids = Vec::new();
+                for r in rows {
+                    let (aid, dir) = r.map_err(map_sql_err)?;
+                    ids.push(aid);
+                    if let Some(d) = dir {
+                        dirs_to_remove.push(d);
+                    }
+                }
+                drop(stmt);
+                for aid in ids {
+                    tx.execute("DELETE FROM studio_artifacts WHERE id = ?1", [aid])
+                        .map_err(map_sql_err)?;
+                }
+            }
+            tx.commit().map_err(map_sql_err)?;
+            Ok(())
+        })?;
+        for dir in dirs_to_remove {
+            let p = std::path::Path::new(&dir);
+            if p.exists() {
+                let _ = std::fs::remove_dir_all(p);
+            }
+        }
+        Ok(())
     }
 
     pub fn approve_draft(
@@ -270,8 +485,16 @@ impl StudioService {
             .map_err(map_sql_err)?;
             Ok(())
         })?;
+        self.append_thought(
+            id,
+            &art.notebook_id,
+            "stage",
+            "大纲已确认",
+            "已提交审核通过的大纲，正在加入后台生成队列…",
+        );
         self.jobs
             .enqueue("studio_generate", Some(&art.notebook_id), id, 90)?;
+        self.emit_status_event(id, "PENDING", "GENERATE", art.progress, None, None);
         self.get(id)
     }
 
@@ -290,10 +513,26 @@ impl StudioService {
 
     pub async fn process_job(&self, artifact_id: &str, cancel: CancellationToken) -> LnaResult<()> {
         let art = self.get(artifact_id)?;
-        let topic = format!("studio:{}", art.notebook_id);
-        let profile = lna_storage::get_active_profile(&self.db)?.ok_or_else(|| {
-            LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured")
-        })?;
+        let profile = match lna_storage::get_active_profile(&self.db)? {
+            Some(p) => p,
+            None => {
+                let err = LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured");
+                let log = format_error_log(
+                    &art,
+                    None,
+                    &[AttemptFailureRecord {
+                        attempt: 1,
+                        stage: "INIT".into(),
+                        elapsed_ms: 0,
+                        code: err.code.as_str().into(),
+                        retryable: false,
+                        message: err.message.clone(),
+                    }],
+                );
+                let _ = self.mark_failed_with_log(artifact_id, &err, &log);
+                return Err(err);
+            }
+        };
         let api_key = match profile.keychain_ref {
             Some(ref k) => self.secrets.get(k)?,
             None => None,
@@ -314,6 +553,138 @@ impl StudioService {
             anthropic_version: "2023-06-01".to_string(),
         };
 
+        let is_local_test = resolved.base_url.contains("127.0.0.1")
+            || resolved.base_url.contains("localhost");
+        let mut records: Vec<AttemptFailureRecord> = Vec::new();
+        let total_attempts = MAX_STUDIO_RETRIES + 1;
+
+        for attempt in 1..=total_attempts {
+            if cancel.is_cancelled() {
+                let _ = self.mark_cancelled(artifact_id);
+                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+            }
+            let fresh_art = self.get(artifact_id)?;
+            if fresh_art.status == ArtifactStatus::Cancelled {
+                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+            }
+
+            let mut current_stage = "COLLECT".to_string();
+            let started = std::time::Instant::now();
+            match self
+                .process_job_once(
+                    &fresh_art,
+                    &profile,
+                    &resolved,
+                    artifact_id,
+                    attempt,
+                    &mut current_stage,
+                    cancel.clone(),
+                )
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let elapsed_ms = started.elapsed().as_millis();
+                    if cancel.is_cancelled() || e.code == ErrorCode::Cancelled {
+                        let _ = self.mark_cancelled(artifact_id);
+                        return Err(e);
+                    }
+                    records.push(AttemptFailureRecord {
+                        attempt,
+                        stage: current_stage.clone(),
+                        elapsed_ms,
+                        code: e.code.as_str().to_string(),
+                        retryable: e.retryable,
+                        message: e.message.clone(),
+                    });
+
+                    if is_non_retryable_config_error(e.code) {
+                        self.append_thought(
+                            artifact_id,
+                            &fresh_art.notebook_id,
+                            "error",
+                            "配置或权限错误，无法重试",
+                            &format!("阶段 {current_stage} 失败（{}）：{}", e.code.as_str(), e.message),
+                        );
+                        let log = format_error_log(&fresh_art, Some(&profile), &records);
+                        let _ = self.mark_failed_with_log(artifact_id, &e, &log);
+                        return Err(e);
+                    }
+
+                    if attempt <= MAX_STUDIO_RETRIES {
+                        let _ = self.rollback_checkpoints(artifact_id, &current_stage);
+                        self.append_thought(
+                            artifact_id,
+                            &fresh_art.notebook_id,
+                            "retry",
+                            &format!("第 {attempt}/{MAX_STUDIO_RETRIES} 次回退重试"),
+                            &format!(
+                                "阶段 {current_stage} 执行失败（{}）：{}。已回退该阶段检查点并准备重试。",
+                                e.code.as_str(),
+                                truncate_str(&e.message, 220)
+                            ),
+                        );
+                        let topic = format!("studio:{}", fresh_art.notebook_id);
+                        let rolled_progress = stage_progress(&current_stage);
+                        let _ = self.set_stage(
+                            artifact_id,
+                            "RUNNING",
+                            &current_stage,
+                            rolled_progress,
+                            &topic,
+                        );
+                        let delay_ms = if is_local_test {
+                            40
+                        } else {
+                            u64::from(attempt) * 2000
+                        };
+                        tokio::select! {
+                            _ = cancel.cancelled() => {
+                                let _ = self.mark_cancelled(artifact_id);
+                                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled during retry backoff"));
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
+                        }
+                    } else {
+                        self.append_thought(
+                            artifact_id,
+                            &fresh_art.notebook_id,
+                            "error",
+                            "多次回退重试后仍然失败",
+                            &format!(
+                                "已完成初始尝试及 {MAX_STUDIO_RETRIES} 次回退重试，最终错误（{}）：{}",
+                                e.code.as_str(),
+                                truncate_str(&e.message, 240)
+                            ),
+                        );
+                        let log = format_error_log(&fresh_art, Some(&profile), &records);
+                        let _ = self.mark_failed_with_log(artifact_id, &e, &log);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        unreachable!()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn process_job_once(
+        &self,
+        art: &StudioArtifact,
+        profile: &ModelProfile,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        attempt: u32,
+        current_stage: &mut String,
+        cancel: CancellationToken,
+    ) -> LnaResult<()> {
+        let topic = format!("studio:{}", art.notebook_id);
+        let reasoning = ReasoningOptions {
+            show_summary: resolved.show_thinking || resolved.capabilities.reasoning_summary,
+            effort: resolved.effort.clone(),
+        };
+
+        *current_stage = "COLLECT".to_string();
         self.set_stage(artifact_id, "RUNNING", "COLLECT", 0.15, &topic)?;
         let saved_collect = self.get_checkpoint(artifact_id, "collect")?;
         let evidence_txt = if let Some(checkpoint) = saved_collect.filter(|value| {
@@ -321,6 +692,15 @@ impl StudioService {
                 && value.get("sources_fingerprint").and_then(Value::as_str)
                     == Some(art.sources_fingerprint.as_str())
         }) {
+            if attempt == 1 {
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    "复用已缓存来源证据",
+                    "已从检查点加载来源资料，跳过重复收集。",
+                );
+            }
             checkpoint
                 .get("evidence_text")
                 .and_then(Value::as_str)
@@ -328,7 +708,7 @@ impl StudioService {
                 .to_string()
         } else {
             let text = self
-                .collect_evidence_text(&art, &profile, &resolved, artifact_id, cancel.clone())
+                .collect_evidence_text(art, profile, resolved, artifact_id, cancel.clone())
                 .await?;
             self.save_checkpoint(
                 artifact_id,
@@ -347,9 +727,17 @@ impl StudioService {
             .and_then(|x| x.as_bool())
             .unwrap_or(false);
         if review_outline && art.draft.is_none() {
+            *current_stage = "PLAN".to_string();
             self.set_stage(artifact_id, "RUNNING", "PLAN", 0.35, &topic)?;
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                "规划演示文稿大纲",
+                "正在基于已选来源梳理章节结构与每页要点…",
+            );
             let plan_req = LlmRequest {
-                system: "你是演示文稿与内容大纲规划助手。请严格输出清晰、可直接阅读的 Markdown 提纲（使用 `# 标题`、`## 第 N 页：页面标题`、`- 核心要点`、`> 讲稿提示`），严禁输出 JSON 或代码块。".into(),
+                system: "你是演示文稿与内容大纲规划助手。请严格输出清晰、可直接阅读的 Markdown 提纲（使用 `# 标题`、`## 第 N 页：页面标题`、`- 核心要点`、`> 讲稿提示`），内容精炼准确，严禁输出 JSON 或代码块。".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
@@ -361,63 +749,36 @@ impl StudioService {
                 tool_mode: ToolMode::None,
                 output: OutputMode::Text,
                 max_output_tokens: 1800,
-                reasoning: ReasoningOptions::default(),
+                reasoning: reasoning.clone(),
             };
             let _permits = self.acquire_llm_slots(&profile.id).await?;
-            let (draft_raw, _) = self.llm.complete_text(&resolved, &plan_req, cancel).await?;
+            let (draft_raw, _) = self
+                .run_text_with_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "大纲规划思考过程",
+                    resolved,
+                    &plan_req,
+                    cancel,
+                )
+                .await?;
             let draft_md_json = serde_json::to_string(&Value::String(draft_raw.trim().to_string()))
                 .unwrap_or_else(|_| "\"\"".into());
             self.db.write(|conn| {
                 conn.execute(
                     "UPDATE studio_artifacts SET status='DRAFT_REVIEW', stage='DRAFT_REVIEW',
-                     progress=0.45, draft_json=?1, updated_at=?2 WHERE id=?3",
+                     progress=0.45, draft_json=?1, updated_at=?2 WHERE id=?3 AND status != 'CANCELLED'",
                     params![draft_md_json, now_ms(), artifact_id],
                 )
                 .map_err(map_sql_err)?;
                 Ok(())
             })?;
-            self.emit(
-                &topic,
-                "studio.status",
-                json!({ "artifact_id": artifact_id, "status": "DRAFT_REVIEW", "stage": "DRAFT_REVIEW", "progress": 0.45 }),
-            );
+            self.emit_status_event(artifact_id, "DRAFT_REVIEW", "DRAFT_REVIEW", 0.45, None, None);
             return Ok(());
         }
 
+        *current_stage = "GENERATE".to_string();
         self.set_stage(artifact_id, "RUNNING", "GENERATE", 0.55, &topic)?;
-        let (schema_str, schema_name) = match art.artifact_type {
-            ArtifactType::Quiz => (SCHEMA_QUIZ, "quiz_payload"),
-            ArtifactType::Flashcards => (SCHEMA_FLASHCARDS, "flashcards_payload"),
-            ArtifactType::Mindmap => (SCHEMA_MINDMAP, "mindmap_payload"),
-            ArtifactType::Report => (SCHEMA_REPORT, "report_payload"),
-            ArtifactType::Slides => (SCHEMA_SLIDES, "slides_payload"),
-            ArtifactType::Infographic => (SCHEMA_INFOGRAPHIC, "infographic_payload"),
-            ArtifactType::Audio => (SCHEMA_AUDIO, "audio_script_payload"),
-        };
-        let schema: Value =
-            serde_json::from_str(schema_str).map_err(|e| LnaError::internal(e.to_string()))?;
-
-        let gen_req = LlmRequest {
-            system: format!(
-                "你是 Local Notebook Studio 生成器。请严格依据给定资料生成 {} 的结构化 JSON，并保留引用编号 [n] 到 citations 数组。",
-                art.artifact_type.as_str()
-            ),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text(format!(
-                    "生成参数：{}\n参考大纲：{}\n\n资料：\n{}",
-                    art.config,
-                    art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "无".into()),
-                    evidence_txt
-                ))],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: resolved.max_output_tokens,
-            reasoning: ReasoningOptions::default(),
-        };
-
         let saved_generate = self
             .get_checkpoint(artifact_id, "generate")?
             .filter(|value| {
@@ -425,15 +786,73 @@ impl StudioService {
                     && value.get("sources_fingerprint").and_then(Value::as_str)
                         == Some(art.sources_fingerprint.as_str())
             });
+        let max_evidence = validate::max_evidence_no(&evidence_txt);
+        let evidence_cap =
+            (max_evidence > 0 && evidence_txt.starts_with("[1] ")).then_some(max_evidence);
+
         let (mut payload, usage) =
             if let Some(saved) = saved_generate.and_then(|v| v.get("payload").cloned()) {
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    "复用已验证内容检查点",
+                    "已加载上次生成的结构化内容，准备继续渲染。",
+                );
                 (saved, Usage::default())
             } else {
-                let _permits = self.acquire_llm_slots(&profile.id).await?;
-                let (generated, usage) = self
-                    .llm
-                    .complete_structured(&resolved, &gen_req, schema_name, &schema, cancel.clone())
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    if attempt == 1 {
+                        "生成结构化成品内容"
+                    } else {
+                        "重新生成结构化成品内容"
+                    },
+                    &format!(
+                        "正在调用模型生成「{}」{}…",
+                        art.title,
+                        if attempt == 1 {
+                            String::new()
+                        } else {
+                            format!("（第 {} 次尝试）", attempt)
+                        }
+                    ),
+                );
+                let max_repairs = if attempt == 1 { 2 } else { 0 };
+                let (mut generated, usage) = self
+                    .generate_structured_payload(
+                        art,
+                        profile,
+                        resolved,
+                        artifact_id,
+                        &evidence_txt,
+                        reasoning,
+                        max_repairs,
+                        cancel.clone(),
+                    )
                     .await?;
+                if let Some(max) = evidence_cap {
+                    if art.artifact_type != ArtifactType::Quiz {
+                        validate::sanitize_citations(&mut generated, max);
+                    }
+                }
+                match art.artifact_type {
+                    ArtifactType::Quiz => {
+                        let allowed_types: Vec<&str> = art
+                            .config
+                            .get("types")
+                            .and_then(|v| v.as_array())
+                            .map(|items| items.iter().filter_map(|v| v.as_str()).collect())
+                            .unwrap_or_default();
+                        validate::validate_quiz_with(&generated, &allowed_types, evidence_cap)?;
+                    }
+                    ArtifactType::Flashcards => validate::dedup_flashcards(&mut generated),
+                    ArtifactType::Mindmap => validate::enforce_mindmap_limits(&mut generated),
+                    _ => {}
+                }
+                // Only save the checkpoint after validation succeeds so broken payloads are never reused.
                 self.save_checkpoint(
                     artifact_id,
                     "generate",
@@ -445,29 +864,12 @@ impl StudioService {
                 (generated, usage)
             };
 
-        // Evidence numbers are only stable on the direct path (all chunks numbered 1..n).
-        let max_evidence = validate::max_evidence_no(&evidence_txt);
-        let evidence_cap =
-            (max_evidence > 0 && evidence_txt.starts_with("[1] ")).then_some(max_evidence);
         if let Some(max) = evidence_cap {
             if art.artifact_type != ArtifactType::Quiz {
                 validate::sanitize_citations(&mut payload, max);
             }
         }
-        match art.artifact_type {
-            ArtifactType::Quiz => {
-                let allowed_types: Vec<&str> = art
-                    .config
-                    .get("types")
-                    .and_then(|v| v.as_array())
-                    .map(|items| items.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
-                validate::validate_quiz_with(&payload, &allowed_types, evidence_cap)?;
-            }
-            ArtifactType::Flashcards => validate::dedup_flashcards(&mut payload),
-            ArtifactType::Mindmap => validate::enforce_mindmap_limits(&mut payload),
-            _ => {}
-        }
+
         let _ = lna_storage::record_usage(
             &self.db,
             Some(&art.notebook_id),
@@ -480,6 +882,7 @@ impl StudioService {
             false,
         );
 
+        *current_stage = "RENDER".to_string();
         self.set_stage(artifact_id, "RUNNING", "RENDER", 0.85, &topic)?;
         let out_dir = self.db.paths().artifacts_dir.join(artifact_id);
         std::fs::create_dir_all(&out_dir).map_err(|e| LnaError::internal(e.to_string()))?;
@@ -577,56 +980,346 @@ impl StudioService {
         self.db.write(|conn| {
             conn.execute(
                 "UPDATE studio_artifacts SET status='READY', stage='READY', progress=1.0,
-                 payload_json=?1, output_dir=?2, updated_at=?3, finished_at=?4 WHERE id=?5",
+                 payload_json=?1, output_dir=?2, error_code=NULL, error_detail=NULL, updated_at=?3, finished_at=?4
+                 WHERE id=?5 AND status != 'CANCELLED'",
                 params![payload_str, out_dir_str, now, now, artifact_id],
             )
             .map_err(map_sql_err)?;
             Ok(())
         })?;
-        self.emit(
-            &topic,
-            "studio.status",
-            json!({ "artifact_id": artifact_id, "status": "READY", "stage": "READY", "progress": 1.0 }),
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "stage",
+            "成品生成完成",
+            "内容校验与渲染均已完成，可开始交互预览或导出。",
         );
+        self.emit_status_event(artifact_id, "READY", "READY", 1.0, None, None);
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn generate_structured_payload(
+        &self,
+        art: &StudioArtifact,
+        profile: &ModelProfile,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        evidence_txt: &str,
+        reasoning: ReasoningOptions,
+        max_repairs: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<(Value, Usage)> {
+        let (schema_str, schema_name) = match art.artifact_type {
+            ArtifactType::Quiz => (SCHEMA_QUIZ, "quiz_payload"),
+            ArtifactType::Flashcards => (SCHEMA_FLASHCARDS, "flashcards_payload"),
+            ArtifactType::Mindmap => (SCHEMA_MINDMAP, "mindmap_payload"),
+            ArtifactType::Report => (SCHEMA_REPORT, "report_payload"),
+            ArtifactType::Slides => (SCHEMA_SLIDES, "slides_payload"),
+            ArtifactType::Infographic => (SCHEMA_INFOGRAPHIC, "infographic_payload"),
+            ArtifactType::Audio => (SCHEMA_AUDIO, "audio_script_payload"),
+        };
+        let schema: Value =
+            serde_json::from_str(schema_str).map_err(|e| LnaError::internal(e.to_string()))?;
+
+        let explicit_count = art
+            .config
+            .get("count")
+            .and_then(|v| v.as_i64())
+            .filter(|n| *n > 0);
+        if art.artifact_type == ArtifactType::Quiz
+            && explicit_count.is_some_and(|n| n as usize > QUIZ_BATCH_SIZE)
+        {
+            let total = (explicit_count.unwrap() as usize).clamp(1, 30);
+            let batches = total.div_ceil(QUIZ_BATCH_SIZE);
+            let mut all_questions: Vec<Value> = Vec::new();
+            let mut seen_prompts: Vec<String> = Vec::new();
+            let mut title = art.title.clone();
+            let mut usage_sum = Usage::default();
+            let mut remaining = total;
+            for bi in 0..batches {
+                if cancel.is_cancelled() {
+                    return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+                }
+                let batch_cnt = remaining.min(QUIZ_BATCH_SIZE);
+                remaining -= batch_cnt;
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    &format!("分批生成测验题目（{}/{batches}）", bi + 1),
+                    &format!("为保证稳定性并避免单次输出过长，本批生成 {batch_cnt} 道题（总目标 {total} 道）。"),
+                );
+                let avoid_txt = if seen_prompts.is_empty() {
+                    String::new()
+                } else {
+                    let recent: Vec<&str> = seen_prompts
+                        .iter()
+                        .rev()
+                        .take(20)
+                        .map(String::as_str)
+                        .collect();
+                    format!("\n\n已生成题干（严禁重复相同考点或题干）：\n- {}", recent.join("\n- "))
+                };
+                let mut batch_cfg = art.config.clone();
+                if let Some(obj) = batch_cfg.as_object_mut() {
+                    obj.insert("count".into(), json!(batch_cnt));
+                }
+                let batch_req = LlmRequest {
+                    system: format!(
+                        "你是 Local Notebook Studio 生成器。请严格依据给定资料生成 {} 的结构化 JSON，并保留引用编号 [n] 到 citations 数组。每道题的题干、选项、解析必须精炼准确、直击要点，不要冗余凑字。",
+                        art.artifact_type.as_str()
+                    ),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text(format!(
+                            "当前批次：第 {}/{} 批，只需生成 {} 道题目。\n生成参数：{}\n参考大纲：{}{}\n\n资料：\n{}",
+                            bi + 1,
+                            batches,
+                            batch_cnt,
+                            batch_cfg,
+                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "无".into()),
+                            avoid_txt,
+                            evidence_txt
+                        ))],
+                    }],
+                    tools: vec![],
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::Text,
+                    max_output_tokens: resolved.max_output_tokens,
+                    reasoning: reasoning.clone(),
+                };
+                let _permits = self.acquire_llm_slots(&profile.id).await?;
+                let (part, u) = self
+                    .run_structured_with_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        &format!("第 {}/{} 批推理思考", bi + 1, batches),
+                        resolved,
+                        &batch_req,
+                        schema_name,
+                        &schema,
+                        max_repairs,
+                        cancel.clone(),
+                    )
+                    .await?;
+                usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u.input_tokens);
+                usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u.output_tokens);
+                usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u.cached_tokens);
+                if bi == 0 {
+                    if let Some(t) = part.get("title").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                        title = t.to_string();
+                    }
+                }
+                if let Some(qs) = part.get("questions").and_then(Value::as_array) {
+                    for mut q in qs.iter().cloned() {
+                        let prompt = q
+                            .get("prompt")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if !prompt.is_empty() && !seen_prompts.contains(&prompt) {
+                            seen_prompts.push(prompt);
+                            if let Some(obj) = q.as_object_mut() {
+                                obj.insert("id".into(), json!(format!("q{}", all_questions.len() + 1)));
+                            }
+                            all_questions.push(q);
+                        }
+                    }
+                }
+            }
+            if all_questions.is_empty() {
+                return Err(LnaError::new(
+                    ErrorCode::OutputInvalid,
+                    "Batched quiz generation produced 0 valid questions",
+                ));
+            }
+            return Ok((
+                json!({ "title": title, "questions": all_questions }),
+                usage_sum,
+            ));
+        }
+
+        if art.artifact_type == ArtifactType::Flashcards
+            && explicit_count.is_some_and(|n| n as usize > FLASHCARD_BATCH_SIZE)
+        {
+            let total = (explicit_count.unwrap() as usize).clamp(1, 50);
+            let batches = total.div_ceil(FLASHCARD_BATCH_SIZE);
+            let mut all_cards: Vec<Value> = Vec::new();
+            let mut seen_fronts: Vec<String> = Vec::new();
+            let mut title = art.title.clone();
+            let mut usage_sum = Usage::default();
+            let mut remaining = total;
+            for bi in 0..batches {
+                if cancel.is_cancelled() {
+                    return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+                }
+                let batch_cnt = remaining.min(FLASHCARD_BATCH_SIZE);
+                remaining -= batch_cnt;
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    &format!("分批生成学习闪卡（{}/{batches}）", bi + 1),
+                    &format!("为保证稳定性并避免单次输出过长，本批生成 {batch_cnt} 张卡片（总目标 {total} 张）。"),
+                );
+                let avoid_txt = if seen_fronts.is_empty() {
+                    String::new()
+                } else {
+                    let recent: Vec<&str> = seen_fronts
+                        .iter()
+                        .rev()
+                        .take(24)
+                        .map(String::as_str)
+                        .collect();
+                    format!("\n\n已生成卡片正面（请勿重复）：\n- {}", recent.join("\n- "))
+                };
+                let mut batch_cfg = art.config.clone();
+                if let Some(obj) = batch_cfg.as_object_mut() {
+                    obj.insert("count".into(), json!(batch_cnt));
+                }
+                let batch_req = LlmRequest {
+                    system: format!(
+                        "你是 Local Notebook Studio 生成器。请严格依据给定资料生成 {} 的结构化 JSON，并保留引用编号 [n] 到 citations 数组。每张闪卡正反面务必精炼清晰、直击核心定义或结论，避免冗长正文。",
+                        art.artifact_type.as_str()
+                    ),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text(format!(
+                            "当前批次：第 {}/{} 批，只需生成 {} 张闪卡。\n生成参数：{}\n参考大纲：{}{}\n\n资料：\n{}",
+                            bi + 1,
+                            batches,
+                            batch_cnt,
+                            batch_cfg,
+                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "无".into()),
+                            avoid_txt,
+                            evidence_txt
+                        ))],
+                    }],
+                    tools: vec![],
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::Text,
+                    max_output_tokens: resolved.max_output_tokens,
+                    reasoning: reasoning.clone(),
+                };
+                let _permits = self.acquire_llm_slots(&profile.id).await?;
+                let (part, u) = self
+                    .run_structured_with_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        &format!("第 {}/{} 批推理思考", bi + 1, batches),
+                        resolved,
+                        &batch_req,
+                        schema_name,
+                        &schema,
+                        max_repairs,
+                        cancel.clone(),
+                    )
+                    .await?;
+                usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u.input_tokens);
+                usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u.output_tokens);
+                usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u.cached_tokens);
+                if bi == 0 {
+                    if let Some(t) = part.get("title").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                        title = t.to_string();
+                    }
+                }
+                if let Some(cards) = part.get("cards").and_then(Value::as_array) {
+                    for mut c in cards.iter().cloned() {
+                        let front = c
+                            .get("front")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if !front.is_empty() && !seen_fronts.contains(&front) {
+                            seen_fronts.push(front);
+                            if let Some(obj) = c.as_object_mut() {
+                                obj.insert("id".into(), json!(format!("c{}", all_cards.len() + 1)));
+                            }
+                            all_cards.push(c);
+                        }
+                    }
+                }
+            }
+            if all_cards.is_empty() {
+                return Err(LnaError::new(
+                    ErrorCode::OutputInvalid,
+                    "Batched flashcards generation produced 0 valid cards",
+                ));
+            }
+            return Ok((json!({ "title": title, "cards": all_cards }), usage_sum));
+        }
+
+        let gen_req = LlmRequest {
+            system: format!(
+                "你是 Local Notebook Studio 生成器。请严格依据给定资料生成 {} 的结构化 JSON，并保留引用编号 [n] 到 citations 数组。内容务必精炼、准确、直击要点，控制单次输出长度，避免冗长空洞的铺垫。",
+                art.artifact_type.as_str()
+            ),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text(format!(
+                    "生成参数：{}\n参考大纲：{}\n\n资料：\n{}",
+                    art.config,
+                    art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "无".into()),
+                    evidence_txt
+                ))],
+            }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            max_output_tokens: resolved.max_output_tokens,
+            reasoning,
+        };
+        let _permits = self.acquire_llm_slots(&profile.id).await?;
+        self.run_structured_with_thought(
+            artifact_id,
+            &art.notebook_id,
+            "模型推理思考过程",
+            resolved,
+            &gen_req,
+            schema_name,
+            &schema,
+            max_repairs,
+            cancel,
+        )
+        .await
+    }
+
     pub fn mark_failed(&self, id: &str, err: &LnaError) -> LnaResult<()> {
-        let nb_id: Option<String> = self.db.read(|conn| {
-            conn.query_row(
-                "SELECT notebook_id FROM studio_artifacts WHERE id = ?1",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(map_sql_err)
-        })?;
+        let now = now_ms();
         self.db.write(|conn| {
             conn.execute(
-                "UPDATE studio_artifacts SET status='FAILED', stage='FAILED', error_code=?1, error_detail=?2, updated_at=?3 WHERE id=?4 AND status != 'CANCELLED'",
-                params![err.code.as_str(), err.message, now_ms(), id],
+                "UPDATE studio_artifacts
+                 SET status='FAILED', stage='FAILED', error_code=?1, error_detail=?2, updated_at=?3
+                 WHERE id=?4 AND status != 'CANCELLED'",
+                params![err.code.as_str(), err.message, now, id],
             )
             .map_err(map_sql_err)?;
             Ok(())
         })?;
-        if let Some(nid) = nb_id {
-            self.emit(&format!("studio:{nid}"), "studio.status", json!({
-                "artifact_id": id, "status": "FAILED", "error_code": err.code.as_str(), "error_detail": err.message
-            }));
-        }
+        self.emit_status_event(id, "FAILED", "FAILED", 0.0, Some(err.code.as_str()), Some(&err.message));
+        Ok(())
+    }
+
+    pub fn mark_failed_with_log(&self, id: &str, err: &LnaError, error_log: &str) -> LnaResult<()> {
+        let now = now_ms();
+        self.db.write(|conn| {
+            conn.execute(
+                "UPDATE studio_artifacts
+                 SET status='FAILED', stage='FAILED', error_code=?1, error_detail=?2, error_log=?3, updated_at=?4
+                 WHERE id=?5 AND status != 'CANCELLED'",
+                params![err.code.as_str(), err.message, error_log, now, id],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })?;
+        self.emit_status_event(id, "FAILED", "FAILED", 0.0, Some(err.code.as_str()), Some(&err.message));
         Ok(())
     }
 
     pub fn mark_cancelled(&self, id: &str) -> LnaResult<()> {
-        let nb_id: Option<String> = self.db.read(|conn| {
-            conn.query_row(
-                "SELECT notebook_id FROM studio_artifacts WHERE id = ?1",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(map_sql_err)
-        })?;
         let changed = self.db.write(|conn| {
             conn.execute(
                 "UPDATE studio_artifacts SET status='CANCELLED', stage='CANCELLED', updated_at=?1
@@ -636,13 +1329,7 @@ impl StudioService {
             .map_err(map_sql_err)
         })?;
         if changed > 0 {
-            if let Some(nid) = nb_id {
-                self.emit(
-                    &format!("studio:{nid}"),
-                    "studio.status",
-                    json!({ "artifact_id": id, "status": "CANCELLED", "stage": "CANCELLED" }),
-                );
-            }
+            self.emit_status_event(id, "CANCELLED", "CANCELLED", 0.0, None, None);
         }
         Ok(())
     }
@@ -676,15 +1363,67 @@ impl StudioService {
 
     pub fn retry(&self, id: &str) -> LnaResult<StudioArtifact> {
         let art = self.get(id)?;
+        self.clear_thoughts(id)?;
         self.db.write(|conn| {
             conn.execute(
-                "UPDATE studio_artifacts SET status='PENDING', stage='QUEUED', progress=0.0, error_code=NULL, error_detail=NULL, updated_at=?1 WHERE id=?2",
+                "UPDATE studio_artifacts SET status='PENDING', stage='QUEUED', progress=0.0, error_code=NULL, error_detail=NULL, error_log=NULL, updated_at=?1 WHERE id=?2",
                 params![now_ms(), id],
             ).map_err(map_sql_err)?;
             Ok(())
         })?;
         self.jobs
             .enqueue("studio_generate", Some(&art.notebook_id), id, 100)?;
+        self.emit_status_event(id, "PENDING", "QUEUED", 0.0, None, None);
+        self.get(id)
+    }
+
+    /// Regenerate an existing artifact on user demand using updated requirements (`config`) and/or
+    /// the notebook's currently selected ready sources.
+    pub fn regenerate(
+        &self,
+        id: &str,
+        config: Option<Value>,
+        use_selected_sources: bool,
+    ) -> LnaResult<StudioArtifact> {
+        let art = self.get(id)?;
+        let (source_ids, fp) = if use_selected_sources {
+            let (selected_ids, cur_fp) = self.current_sources_fingerprint(&art.notebook_id)?;
+            if selected_ids.is_empty() {
+                return Err(LnaError::new(
+                    ErrorCode::NoSourceSelected,
+                    "Please select at least one ready source",
+                ));
+            }
+            (selected_ids, cur_fp)
+        } else {
+            (art.source_ids.clone(), art.sources_fingerprint.clone())
+        };
+        let cfg_val = config.unwrap_or(art.config);
+        let cfg_json = serde_json::to_string(&cfg_val).unwrap_or_else(|_| "{}".into());
+        let sids_json = serde_json::to_string(&source_ids).unwrap_or_else(|_| "[]".into());
+        let now = now_ms();
+
+        self.clear_thoughts(id)?;
+        self.db.write(|conn| {
+            conn.execute(
+                "DELETE FROM artifact_checkpoints WHERE artifact_id = ?1",
+                params![id],
+            )
+            .map_err(map_sql_err)?;
+            conn.execute(
+                "UPDATE studio_artifacts
+                 SET status='PENDING', stage='QUEUED', progress=0.0, config_json=?1,
+                     source_ids_json=?2, sources_fingerprint=?3, draft_json=NULL,
+                     error_code=NULL, error_detail=NULL, error_log=NULL, updated_at=?4
+                 WHERE id=?5",
+                params![cfg_json, sids_json, fp, now, id],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })?;
+        self.jobs
+            .enqueue("studio_generate", Some(&art.notebook_id), id, 100)?;
+        self.emit_status_event(id, "PENDING", "QUEUED", 0.0, None, None);
         self.get(id)
     }
 
@@ -845,6 +1584,274 @@ impl StudioService {
         })
     }
 
+    fn rollback_checkpoints(&self, artifact_id: &str, from_stage: &str) -> LnaResult<()> {
+        let keys: &[&str] = match from_stage {
+            "COLLECT" => &["collect", "generate", "render"],
+            "RENDER" => &["render"],
+            _ => &["generate", "render"],
+        };
+        let keys_json = serde_json::to_string(keys).unwrap_or_else(|_| "[]".into());
+        self.db.write(|conn| {
+            conn.execute(
+                "DELETE FROM artifact_checkpoints
+                 WHERE artifact_id = ?1 AND step_key IN (SELECT value FROM json_each(?2))",
+                params![artifact_id, keys_json],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })
+    }
+
+    fn clear_thoughts(&self, artifact_id: &str) -> LnaResult<()> {
+        self.db.write(|conn| {
+            conn.execute(
+                "DELETE FROM artifact_thoughts WHERE artifact_id = ?1",
+                [artifact_id],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })
+    }
+
+    fn append_thought(
+        &self,
+        artifact_id: &str,
+        notebook_id: &str,
+        kind: &str,
+        title: &str,
+        body: &str,
+    ) -> i32 {
+        let now = now_ms();
+        let inserted = self.db.write(|conn| {
+            let next_seq: i32 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM artifact_thoughts WHERE artifact_id = ?1",
+                    [artifact_id],
+                    |r| r.get(0),
+                )
+                .map_err(map_sql_err)?;
+            conn.execute(
+                "INSERT INTO artifact_thoughts (artifact_id, seq, kind, title, body, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![artifact_id, next_seq, kind, title, body, now],
+            )
+            .map_err(map_sql_err)?;
+            Ok(next_seq)
+        });
+        let Ok(seq) = inserted else {
+            return 0;
+        };
+        self.emit(
+            &format!("studio:{notebook_id}"),
+            "studio.thought",
+            json!({
+                "artifact_id": artifact_id,
+                "seq": seq,
+                "kind": kind,
+                "title": title,
+                "body": body,
+                "created_at": now,
+            }),
+        );
+        seq
+    }
+
+    fn update_thought_body(&self, artifact_id: &str, seq: i32, body: &str) {
+        if seq <= 0 {
+            return;
+        }
+        let _ = self.db.write(|conn| {
+            conn.execute(
+                "UPDATE artifact_thoughts SET body = ?1 WHERE artifact_id = ?2 AND seq = ?3",
+                params![body, artifact_id, seq],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        });
+    }
+
+    fn emit_thought_delta(&self, artifact_id: &str, notebook_id: &str, seq: i32, delta: &str) {
+        if seq <= 0 || delta.is_empty() {
+            return;
+        }
+        self.emit(
+            &format!("studio:{notebook_id}"),
+            "studio.thought_delta",
+            json!({
+                "artifact_id": artifact_id,
+                "seq": seq,
+                "delta": delta,
+            }),
+        );
+    }
+
+    async fn run_text_with_thought(
+        &self,
+        artifact_id: &str,
+        notebook_id: &str,
+        thought_title: &str,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        cancel: CancellationToken,
+    ) -> LnaResult<(String, Usage)> {
+        let mut seq: Option<i32> = None;
+        let mut full_thought = String::new();
+        let mut pending = String::new();
+        let mut last_flush = std::time::Instant::now();
+        let res = self
+            .llm
+            .complete_text_with_thinking(profile, req, cancel, |delta| {
+                if delta.is_empty() {
+                    return;
+                }
+                if seq.is_none() {
+                    let s = self.append_thought(
+                        artifact_id,
+                        notebook_id,
+                        "reasoning",
+                        thought_title,
+                        "",
+                    );
+                    if s > 0 {
+                        seq = Some(s);
+                    }
+                }
+                full_thought.push_str(delta);
+                pending.push_str(delta);
+                if last_flush.elapsed() >= std::time::Duration::from_millis(150)
+                    || pending.len() >= 80
+                {
+                    if let Some(s) = seq {
+                        self.emit_thought_delta(artifact_id, notebook_id, s, &pending);
+                    }
+                    pending.clear();
+                    last_flush = std::time::Instant::now();
+                }
+            })
+            .await;
+        if let Some(s) = seq {
+            if !pending.is_empty() {
+                self.emit_thought_delta(artifact_id, notebook_id, s, &pending);
+            }
+            self.update_thought_body(artifact_id, s, &full_thought);
+        }
+        res
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_structured_with_thought(
+        &self,
+        artifact_id: &str,
+        notebook_id: &str,
+        thought_title: &str,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        schema_name: &str,
+        schema: &Value,
+        max_repairs: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<(Value, Usage)> {
+        let mut seq: Option<i32> = None;
+        let mut full_thought = String::new();
+        let mut pending = String::new();
+        let mut last_flush = std::time::Instant::now();
+        let res = self
+            .llm
+            .complete_structured_with_thinking(
+                profile,
+                req,
+                schema_name,
+                schema,
+                cancel,
+                max_repairs,
+                |delta| {
+                    if delta.is_empty() {
+                        return;
+                    }
+                    if seq.is_none() {
+                        let s = self.append_thought(
+                            artifact_id,
+                            notebook_id,
+                            "reasoning",
+                            thought_title,
+                            "",
+                        );
+                        if s > 0 {
+                            seq = Some(s);
+                        }
+                    }
+                    full_thought.push_str(delta);
+                    pending.push_str(delta);
+                    if last_flush.elapsed() >= std::time::Duration::from_millis(150)
+                        || pending.len() >= 80
+                    {
+                        if let Some(s) = seq {
+                            self.emit_thought_delta(artifact_id, notebook_id, s, &pending);
+                        }
+                        pending.clear();
+                        last_flush = std::time::Instant::now();
+                    }
+                },
+                |status_msg| {
+                    self.append_thought(
+                        artifact_id,
+                        notebook_id,
+                        "stage",
+                        "结构化输出自动修复",
+                        status_msg,
+                    );
+                },
+            )
+            .await;
+        if let Some(s) = seq {
+            if !pending.is_empty() {
+                self.emit_thought_delta(artifact_id, notebook_id, s, &pending);
+            }
+            self.update_thought_body(artifact_id, s, &full_thought);
+        }
+        res
+    }
+
+    fn load_cached_source_digests(
+        &self,
+        source_ids: &[String],
+        requested_language: &str,
+        limit: usize,
+    ) -> LnaResult<Vec<(String, String, String)>> {
+        let ids_json = serde_json::to_string(source_ids).unwrap_or_else(|_| "[]".into());
+        let preferred_lang = if requested_language.to_lowercase().starts_with("en") {
+            "en"
+        } else {
+            "zh"
+        };
+        self.db.read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.title, d.section_key, d.digest_md
+                     FROM source_digests d
+                     JOIN sources s ON s.id = d.source_id
+                     WHERE d.source_id IN (SELECT value FROM json_each(?1))
+                     ORDER BY CASE WHEN d.language = ?2 THEN 0 ELSE 1 END, d.rowid ASC
+                     LIMIT ?3",
+                )
+                .map_err(map_sql_err)?;
+            let mapped = stmt
+                .query_map(params![ids_json, preferred_lang, limit as i64], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row.map_err(map_sql_err)?);
+            }
+            Ok(out)
+        })
+    }
+
     async fn collect_evidence_text(
         &self,
         art: &StudioArtifact,
@@ -899,6 +1906,13 @@ impl StudioService {
                     }
                     Ok(out)
                 })?;
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                "整理来源正文",
+                &format!("共加载 {} 个来源正文片段（可直接放入模型上下文）。", rows.len()),
+            );
             return Ok(rows
                 .iter()
                 .enumerate()
@@ -927,9 +1941,83 @@ impl StudioService {
             .get("lang")
             .and_then(|v| v.as_str())
             .unwrap_or("zh-CN");
+        if let Some(query) = topic_query.as_ref() {
+            let related = self
+                .retrieval
+                .search(
+                    &art.notebook_id,
+                    std::slice::from_ref(query),
+                    &art.source_ids,
+                    evidence_budget.saturating_mul(65) / 100,
+                    20,
+                )
+                .await?;
+            let related_text = if !related.evidences.is_empty() {
+                related
+                    .evidences
+                    .iter()
+                    .map(|e| format!("[{}] ({}) {}", e.citation_no, e.source_title, e.content))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            } else {
+                let fallback_rows: Vec<(String, String)> = self.db.read(|conn| {
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT s.title, c.content
+                             FROM source_chunks c JOIN sources s ON s.id=c.source_id
+                             WHERE c.source_id IN (SELECT value FROM json_each(?1))
+                             ORDER BY s.title, c.chunk_index
+                             LIMIT 12",
+                        )
+                        .map_err(map_sql_err)?;
+                    let mapped = stmt
+                        .query_map([&selected_json], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                        })
+                        .map_err(map_sql_err)?;
+                    let mut out = Vec::new();
+                    for r in mapped {
+                        out.push(r.map_err(map_sql_err)?);
+                    }
+                    Ok(out)
+                })?;
+                fallback_rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (title, content))| format!("[{}] ({}) {}", i + 1, title, content))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            };
+            let cached_digests =
+                self.load_cached_source_digests(&art.source_ids, language, 16)?;
+            let digest_text = cached_digests
+                .iter()
+                .map(|(title, section, digest)| format!("### {title} / {section}\n{digest}"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                "按主题快速检索资料",
+                &format!(
+                    "已针对主题「{}」直接检索 {} 条相关片段（快速检索模式，避免对全书逐章重做摘要卡顿）。",
+                    query,
+                    related.evidences.len()
+                ),
+            );
+            if digest_text.is_empty() {
+                return Ok(format!("主题相关证据：\n{related_text}"));
+            }
+            return Ok(format!(
+                "主题相关证据：\n{related_text}\n\n章节摘要：\n{digest_text}"
+            ));
+        }
+
         let digests = self
             .get_or_create_source_digests(
                 &art.notebook_id,
+                artifact_id,
                 &art.source_ids,
                 language,
                 &profile.id,
@@ -947,30 +2035,20 @@ impl StudioService {
             .cloned()
             .collect::<Vec<_>>()
             .join("\n\n");
-        if let Some(query) = topic_query.as_ref() {
-            let related = self
-                .retrieval
-                .search(
-                    &art.notebook_id,
-                    std::slice::from_ref(query),
-                    &art.source_ids,
-                    evidence_budget.saturating_mul(55) / 100,
-                    12,
-                )
-                .await?;
-            let related_text = related
-                .evidences
-                .iter()
-                .map(|e| format!("[{}] ({}) {}", e.citation_no, e.source_title, e.content))
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            return Ok(format!(
-                "主题相关证据：\n{related_text}\n\n章节摘要：\n{digest_text}"
-            ));
-        }
+
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "stage",
+            "合并全局章节大纲",
+            &format!("已整理 {} 组章节摘要，正在提炼全局结构与关键细节…", digest_entries.len()),
+        );
 
         let mut reduced_batches = Vec::new();
         for (batch_index, batch) in digest_entries.chunks(20).enumerate() {
+            if cancel.is_cancelled() {
+                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+            }
             let batch_text = batch.join("\n\n");
             if digest_entries.len() <= 20 {
                 reduced_batches.push(batch_text);
@@ -1030,6 +2108,9 @@ impl StudioService {
         let mut details = Vec::new();
         let mut next_citation = 1usize;
         for (title, section, _) in digests.iter().take(12) {
+            if cancel.is_cancelled() {
+                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+            }
             let section_query = format!("{title} {section}");
             if let Ok(found) = self
                 .retrieval
@@ -1051,9 +2132,11 @@ impl StudioService {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn get_or_create_source_digests(
         &self,
         notebook_id: &str,
+        artifact_id: &str,
         source_ids: &[String],
         requested_language: &str,
         profile_id: &str,
@@ -1124,8 +2207,13 @@ impl StudioService {
                 .or_default()
                 .push((chunk_id, content));
         }
+        let total_groups = groups.len();
         let mut out = Vec::new();
-        for ((source_id, section_key), chunks) in groups {
+        let mut uncached_done = 0usize;
+        for (idx, ((source_id, section_key), chunks)) in groups.into_iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+            }
             let Some((title, content_hash, language)) = source_meta.get(&source_id).cloned() else {
                 continue;
             };
@@ -1141,6 +2229,22 @@ impl StudioService {
             {
                 cached_digest
             } else {
+                uncached_done += 1;
+                if uncached_done == 1 || uncached_done % 3 == 0 || idx + 1 == total_groups {
+                    self.append_thought(
+                        artifact_id,
+                        notebook_id,
+                        "stage",
+                        "提取来源章节摘要",
+                        &format!(
+                            "来源较长，正在按章节分段提取摘要（第 {}/{} 段：{} / {}）…",
+                            idx + 1,
+                            total_groups,
+                            title,
+                            section_key
+                        ),
+                    );
+                }
                 let chunk_text = chunks
                     .iter()
                     .map(|(id, content)| format!("[chunk {id}] {content}"))
@@ -1199,22 +2303,73 @@ impl StudioService {
         status: &str,
         stage: &str,
         progress: f64,
-        topic: &str,
+        _topic: &str,
     ) -> LnaResult<()> {
         self.db.write(|conn| {
             conn.execute(
-                "UPDATE studio_artifacts SET status=?1, stage=?2, progress=?3, updated_at=?4 WHERE id=?5",
+                "UPDATE studio_artifacts SET status=?1, stage=?2, progress=?3, updated_at=?4
+                 WHERE id=?5 AND status != 'CANCELLED'",
                 params![status, stage, progress, now_ms(), id],
             )
             .map_err(map_sql_err)?;
             Ok(())
         })?;
-        self.emit(
-            topic,
-            "studio.status",
-            json!({ "artifact_id": id, "status": status, "stage": stage, "progress": progress }),
-        );
+        self.emit_status_event(id, status, stage, progress, None, None);
         Ok(())
+    }
+
+    fn emit_status_event(
+        &self,
+        id: &str,
+        status: &str,
+        stage: &str,
+        progress: f64,
+        error_code: Option<&str>,
+        error_detail: Option<&str>,
+    ) {
+        let meta: Option<(String, bool, Option<String>)> = self
+            .db
+            .read(|conn| {
+                conn.query_row(
+                    "SELECT notebook_id, in_studio, origin_message_id FROM studio_artifacts WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get(2)?)),
+                )
+                .optional()
+                .map_err(map_sql_err)
+            })
+            .ok()
+            .flatten();
+
+        let Some((nid, in_studio, origin_message_id)) = meta else {
+            return;
+        };
+        let mut payload = json!({
+            "artifact_id": id,
+            "status": status,
+            "stage": stage,
+            "progress": progress,
+            "in_studio": in_studio,
+            "origin_message_id": origin_message_id,
+        });
+        if let Some(ec) = error_code {
+            payload["error_code"] = json!(ec);
+        }
+        if let Some(ed) = error_detail {
+            payload["error_detail"] = json!(ed);
+        }
+        self.emit(&format!("studio:{nid}"), "studio.status", payload);
+
+        if let Some(ref mid) = origin_message_id {
+            if let Ok(mut art) = self.get(id) {
+                art.thoughts.clear();
+                self.emit(
+                    &format!("chat:{nid}"),
+                    "chat.artifact",
+                    json!({ "message_id": mid, "artifact": art }),
+                );
+            }
+        }
     }
 
     fn current_sources_fingerprint(&self, notebook_id: &str) -> LnaResult<(Vec<String>, String)> {
@@ -1243,7 +2398,86 @@ impl StudioService {
     }
 }
 
-fn map_artifact_row(r: &rusqlite::Row<'_>, cur_fp: &str) -> rusqlite::Result<StudioArtifact> {
+fn is_non_retryable_config_error(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::NoSourceSelected
+            | ErrorCode::ModelNotConfigured
+            | ErrorCode::ModelAuthFailed
+            | ErrorCode::ModelNotFound
+            | ErrorCode::StorageFull
+            | ErrorCode::KeychainUnavailable
+    )
+}
+
+fn stage_progress(stage: &str) -> f64 {
+    match stage {
+        "COLLECT" => 0.15,
+        "PLAN" => 0.35,
+        "GENERATE" => 0.55,
+        "RENDER" => 0.85,
+        _ => 0.1,
+    }
+}
+
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    let trimmed = s.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(max_chars).collect();
+    out.push('…');
+    out
+}
+
+fn format_error_log(
+    art: &StudioArtifact,
+    profile: Option<&ModelProfile>,
+    records: &[AttemptFailureRecord],
+) -> String {
+    let mut lines = Vec::new();
+    lines.push("=== Local Notebook Studio Diagnostic Log ===".to_string());
+    lines.push(format!("TimestampMs: {}", now_ms()));
+    lines.push(format!("ArtifactId: {}", art.id));
+    lines.push(format!("NotebookId: {}", art.notebook_id));
+    lines.push(format!("Type: {}", art.artifact_type.as_str()));
+    lines.push(format!("Title: {}", art.title));
+    lines.push(format!("InStudio: {}", art.in_studio));
+    if let Some(ref mid) = art.origin_message_id {
+        lines.push(format!("OriginMessageId: {mid}"));
+    }
+    lines.push(format!("SourceCount: {}", art.source_ids.len()));
+    lines.push(format!("Config: {}", art.config));
+    if let Some(p) = profile {
+        lines.push(format!(
+            "Profile: id={} name={} protocol={:?} model={} base_url={} window={} max_output={} show_thinking={} effort={:?} cap_json_schema={} cap_reasoning={}",
+            p.id,
+            p.display_name,
+            p.protocol,
+            p.model_id,
+            p.base_url,
+            p.context_window,
+            p.max_output_tokens,
+            p.show_thinking,
+            p.effort,
+            p.capabilities.json_schema,
+            p.capabilities.reasoning_summary
+        ));
+    } else {
+        lines.push("Profile: <none configured>".to_string());
+    }
+    lines.push(String::new());
+    lines.push(format!("Attempts ({} recorded):", records.len()));
+    for rec in records {
+        lines.push(format!(
+            "  - Attempt #{} | stage={} | elapsed={}ms | code={} | retryable={} | error={}",
+            rec.attempt, rec.stage, rec.elapsed_ms, rec.code, rec.retryable, rec.message
+        ));
+    }
+    lines.join("\n")
+}
+
+fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<StudioArtifact> {
     let t_s: String = r.get(2)?;
     let artifact_type = match t_s.as_str() {
         "audio" => ArtifactType::Audio,
@@ -1268,6 +2502,9 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, cur_fp: &str) -> rusqlite::Result<Stu
     let fp: String = r.get(9)?;
     let draft_s: Option<String> = r.get(11)?;
     let payload_s: Option<String> = r.get(12)?;
+    let in_studio: i64 = r.get(22)?;
+    let origin_message_id: Option<String> = r.get(23)?;
+    let error_log: Option<String> = r.get(24)?;
 
     Ok(StudioArtifact {
         id: r.get(0)?,
@@ -1279,7 +2516,9 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, cur_fp: &str) -> rusqlite::Result<Stu
         progress: r.get(6)?,
         config: serde_json::from_str(&cfg_s).unwrap_or_else(|_| json!({})),
         source_ids: serde_json::from_str(&sids_s).unwrap_or_default(),
-        sources_stale: fp != cur_fp,
+        sources_stale: false,
+        in_studio: in_studio != 0,
+        origin_message_id,
         sources_fingerprint: fp,
         profile_id: r.get(10)?,
         draft: draft_s.and_then(|s| serde_json::from_str(&s).ok()),
@@ -1289,6 +2528,8 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, cur_fp: &str) -> rusqlite::Result<Stu
         estimated_output_tokens: r.get(15)?,
         error_code: r.get(16)?,
         error_detail: r.get(17)?,
+        error_log,
+        thoughts: Vec::new(),
         feedback: r.get(18)?,
         created_at: r.get(19)?,
         updated_at: r.get(20)?,

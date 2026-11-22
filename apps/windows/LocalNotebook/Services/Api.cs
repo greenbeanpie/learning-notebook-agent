@@ -93,7 +93,7 @@ public static class Api
         "MODEL_NOT_CONFIGURED" => "请先在“模型协议配置”中配置模型。",
         "NO_SOURCE_SELECTED" => "请在左侧勾选至少一个已就绪的来源。",
         "FETCH_FAILED" => "无法连接服务，请检查网络或接口地址。",
-        "SOURCE_NEEDS_OCR" => "这个 PDF 是扫描件，目前不支持识别图片中的文字。",
+        "SOURCE_NEEDS_OCR" => "这个 PDF 为图片/扫描件，本地未识别到文字。可在“模型协议配置”中为多模态模型勾选“用于处理图文”后重试。",
         "SOURCE_ENCRYPTED" => "这个 PDF 有密码保护，请先解除保护再导入。",
         "SOURCE_UNSUPPORTED" => "无法解析这个文件。",
         "SOURCE_TOO_LARGE" => "文件或文本超出大小限制。",

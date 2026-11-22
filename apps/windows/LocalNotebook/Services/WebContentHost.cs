@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Web.WebView2.Core;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
@@ -12,6 +13,7 @@ public sealed record MathRenderResult(
     byte[]? PngBytes,
     int Width,
     int Height,
+    int Descent,
     bool Overflow,
     string? Error);
 
@@ -23,8 +25,7 @@ public sealed record MathRenderResult(
 public sealed class WebContentHost : IDisposable
 {
     public const int MaxFormulaLength = 2000;
-    public const int MaxFormulasPerMessage = 30;
-    private const int MaxCacheEntries = 250;
+    private const int MaxCacheEntries = 1000;
     private const int RenderTimeoutMs = 5000;
     private const string HostName = "katex.local";
 
@@ -33,6 +34,7 @@ public sealed class WebContentHost : IDisposable
     private bool _disposed;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, MathRenderResult> _cache = new();
+    private readonly Dictionary<string, BitmapImage> _bitmapCache = new();
     private readonly LinkedList<string> _cacheOrder = new();
     private readonly DispatcherTimer _idleTimer;
 
@@ -44,6 +46,40 @@ public sealed class WebContentHost : IDisposable
 
     public bool IsLoaded => _webView != null;
 
+    private static string CacheKey(string latex, bool displayMode) => $"{(displayMode ? 'D' : 'I')}:{latex}";
+
+    /// <summary>
+    /// Looks up a previously rendered and decoded formula bitmap synchronously on the UI thread.
+    /// </summary>
+    public bool TryGetCachedBitmap(
+        string latex,
+        bool displayMode,
+        out MathRenderResult result,
+        out BitmapImage? bitmap)
+    {
+        var key = CacheKey(latex, displayMode);
+        if (_cache.TryGetValue(key, out var cached))
+        {
+            result = cached;
+            return _bitmapCache.TryGetValue(key, out bitmap);
+        }
+        result = new MathRenderResult(false, null, 0, 0, 0, false, null);
+        bitmap = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Stores a decoded formula <see cref="BitmapImage"/> for synchronous reuse across re-renders.
+    /// </summary>
+    public void CacheBitmap(string latex, bool displayMode, BitmapImage bitmap)
+    {
+        var key = CacheKey(latex, displayMode);
+        if (_cache.ContainsKey(key))
+        {
+            _bitmapCache[key] = bitmap;
+        }
+    }
+
     /// <summary>
     /// Renders a single LaTeX expression to a cached transparent PNG.
     /// Must be called on the UI thread (WinUI DispatcherQueue).
@@ -51,13 +87,13 @@ public sealed class WebContentHost : IDisposable
     public async Task<MathRenderResult> RenderFormulaAsync(Panel hostContainer, string latex, bool displayMode)
     {
         if (_disposed)
-            return new MathRenderResult(false, null, 0, 0, false, "公式渲染器已释放");
+            return new MathRenderResult(false, null, 0, 0, 0, false, "公式渲染器已释放");
         if (string.IsNullOrWhiteSpace(latex))
-            return new MathRenderResult(false, null, 0, 0, false, "公式内容为空");
+            return new MathRenderResult(false, null, 0, 0, 0, false, "公式内容为空");
         if (latex.Length > MaxFormulaLength)
-            return new MathRenderResult(false, null, 0, 0, false, $"公式长度超过 {MaxFormulaLength} 字符上限");
+            return new MathRenderResult(false, null, 0, 0, 0, false, $"公式长度超过 {MaxFormulaLength} 字符上限");
 
-        var cacheKey = $"{(displayMode ? 'D' : 'I')}:{latex}";
+        var cacheKey = CacheKey(latex, displayMode);
         if (_cache.TryGetValue(cacheKey, out var cached))
             return cached;
 
@@ -71,7 +107,7 @@ public sealed class WebContentHost : IDisposable
             var ready = await EnsureReadyAsync(hostContainer);
             if (!ready || _webView?.CoreWebView2 == null)
             {
-                return new MathRenderResult(false, null, 0, 0, false, "WebView2 公式引擎未就绪");
+                return new MathRenderResult(false, null, 0, 0, 0, false, "WebView2 公式引擎未就绪");
             }
 
             var jsonArg = JsonSerializer.Serialize(latex, Interop.LnaJsonContext.Default.String);
@@ -79,7 +115,7 @@ public sealed class WebContentHost : IDisposable
             var evalTask = _webView.CoreWebView2.ExecuteScriptAsync($"window.lnaRenderFormula({jsonArg}, {dmArg})").AsTask();
             if (await Task.WhenAny(evalTask, Task.Delay(RenderTimeoutMs)) != evalTask)
             {
-                return new MathRenderResult(false, null, 0, 0, false, "公式渲染超时");
+                return new MathRenderResult(false, null, 0, 0, 0, false, "公式渲染超时");
             }
 
             var rawJsonString = await evalTask;
@@ -87,20 +123,21 @@ public sealed class WebContentHost : IDisposable
             var innerJson = JsonSerializer.Deserialize(rawJsonString, Interop.LnaJsonContext.Default.String);
             if (string.IsNullOrEmpty(innerJson))
             {
-                return new MathRenderResult(false, null, 0, 0, false, "公式测量返回空结果");
+                return new MathRenderResult(false, null, 0, 0, 0, false, "公式测量返回空结果");
             }
 
             var measure = JsonSerializer.Deserialize(innerJson, Interop.LnaJsonContext.Default.MathMeasureDto);
             if (measure == null || !measure.Ok)
             {
                 var err = measure?.Error ?? "KaTeX 解析失败";
-                var failRes = new MathRenderResult(false, null, 0, 0, false, err);
+                var failRes = new MathRenderResult(false, null, 0, 0, 0, false, err);
                 CachePut(cacheKey, failRes);
                 return failRes;
             }
 
             var w = Math.Clamp(measure.Width, 4, 1600);
             var h = Math.Clamp(measure.Height, 4, 800);
+            var descent = Math.Clamp(measure.Descent, 0, h);
             _webView.Width = w;
             _webView.Height = h;
             _webView.UpdateLayout();
@@ -111,26 +148,26 @@ public sealed class WebContentHost : IDisposable
             var capTask = _webView.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, mem).AsTask();
             if (await Task.WhenAny(capTask, Task.Delay(RenderTimeoutMs)) != capTask)
             {
-                return new MathRenderResult(false, null, 0, 0, false, "公式截图超时");
+                return new MathRenderResult(false, null, 0, 0, 0, false, "公式截图超时");
             }
             await capTask;
 
             var size = (uint)mem.Size;
             if (size == 0)
             {
-                return new MathRenderResult(false, null, 0, 0, false, "公式截图为空");
+                return new MathRenderResult(false, null, 0, 0, 0, false, "公式截图为空");
             }
             var bytes = new byte[size];
             mem.Seek(0);
             await mem.ReadAsync(bytes.AsBuffer(), size, InputStreamOptions.None);
 
-            var okRes = new MathRenderResult(true, bytes, w, h, measure.Overflow, null);
+            var okRes = new MathRenderResult(true, bytes, w, h, descent, measure.Overflow, null);
             CachePut(cacheKey, okRes);
             return okRes;
         }
         catch (Exception ex)
         {
-            return new MathRenderResult(false, null, 0, 0, false, $"公式渲染异常：{ex.Message}");
+            return new MathRenderResult(false, null, 0, 0, 0, false, $"公式渲染异常：{ex.Message}");
         }
         finally
         {
@@ -219,6 +256,7 @@ public sealed class WebContentHost : IDisposable
         if (_cacheOrder.Count >= MaxCacheEntries && _cacheOrder.First is { } oldest)
         {
             _cache.Remove(oldest.Value);
+            _bitmapCache.Remove(oldest.Value);
             _cacheOrder.RemoveFirst();
         }
         _cache[key] = value;
@@ -241,6 +279,7 @@ public sealed class WebContentHost : IDisposable
     {
         _disposed = true;
         Release();
+        _bitmapCache.Clear();
         _gate.Dispose();
     }
 }

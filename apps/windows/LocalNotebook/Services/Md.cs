@@ -19,6 +19,33 @@ public static class Md
 {
     public static bool HasMath(string text) => text.Contains('$') || text.Contains("\\(") || text.Contains("\\[");
 
+    public static Inline SuperscriptCitation(int no, string? tooltip = null, Action? onClick = null)
+    {
+        var accent = (Brush)Application.Current.Resources["AccentBlueBrush"];
+        var tb = new TextBlock
+        {
+            Text = $"[{no}]",
+            FontSize = 10.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = accent,
+            Margin = new Thickness(1, 0, 1, 0),
+            RenderTransform = new TranslateTransform { Y = -5 },
+        };
+        if (!string.IsNullOrEmpty(tooltip))
+        {
+            ToolTipService.SetToolTip(tb, tooltip);
+        }
+        if (onClick != null)
+        {
+            tb.Tapped += (_, e) =>
+            {
+                e.Handled = true;
+                onClick();
+            };
+        }
+        return new InlineUIContainer { Child = tb };
+    }
+
     public static UIElement Render(
         string markdown,
         Func<int, Inline?>? citationChip = null,
@@ -26,7 +53,13 @@ public static class Md
         WebContentHost? math = null,
         Panel? mathHost = null)
     {
-        var panel = new StackPanel { Spacing = 6 };
+        var rtb = new RichTextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+            FontSize = fontSize,
+            LineHeight = fontSize * 1.55,
+        };
         var lines = markdown.Replace("\r\n", "\n").Split('\n');
         var para = new StringBuilder();
         var i = 0;
@@ -37,7 +70,7 @@ public static class Md
             if (para.Length == 0) return;
             var text = para.ToString().TrimEnd();
             para.Clear();
-            AddParagraphWithDisplayMath(panel, text, citationChip, fontSize, math, mathHost, ref formulaCount);
+            AddParagraphWithDisplayMath(rtb, text, citationChip, fontSize, math, mathHost, ref formulaCount);
         }
 
         while (i < lines.Length)
@@ -55,20 +88,15 @@ public static class Md
                     i++;
                 }
                 i++; // closing fence
-                panel.Children.Add(new Border
+                var codePara = new Paragraph
                 {
-                    Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 19, 19, 20)),
-                    CornerRadius = new CornerRadius(8),
-                    Padding = new Thickness(10),
-                    Child = new TextBlock
-                    {
-                        Text = code.ToString().TrimEnd(),
-                        FontFamily = new FontFamily("Consolas"),
-                        FontSize = fontSize - 1,
-                        IsTextSelectionEnabled = true,
-                        TextWrapping = TextWrapping.Wrap,
-                    },
-                });
+                    FontFamily = new FontFamily("Consolas"),
+                    FontSize = fontSize - 1,
+                    Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 210, 224, 245)),
+                    Margin = new Thickness(12, 4, 0, 8),
+                };
+                codePara.Inlines.Add(new Run { Text = code.ToString().TrimEnd() });
+                rtb.Blocks.Add(codePara);
                 continue;
             }
             // Multi-line display math block: $$ ... $$ or \[ ... \]
@@ -99,11 +127,15 @@ public static class Md
                 var expr = mathBuf.ToString().Trim();
                 if (closed && expr.Length > 0)
                 {
-                    panel.Children.Add(CreateMathBlock(expr, displayMode: true, fontSize, math, mathHost, ref formulaCount));
+                    var mathPara = new Paragraph { TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 6, 0, 8) };
+                    mathPara.Inlines.Add(new InlineUIContainer { Child = CreateMathBlock(expr, displayMode: true, fontSize, math, mathHost, ref formulaCount) });
+                    rtb.Blocks.Add(mathPara);
                 }
                 else
                 {
-                    panel.Children.Add(Inline(trimmed + "\n" + expr, citationChip, fontSize, math, mathHost, ref formulaCount));
+                    var p = new Paragraph { Margin = new Thickness(0, 0, 0, 8) };
+                    AppendInlines(p, trimmed + "\n" + expr, citationChip, fontSize, math, mathHost, ref formulaCount);
+                    rtb.Blocks.Add(p);
                 }
                 continue;
             }
@@ -117,15 +149,14 @@ public static class Md
             if (level > 0)
             {
                 FlushPara();
-                panel.Children.Add(new TextBlock
+                var hp = new Paragraph
                 {
-                    Text = trimmed.TrimStart('#').Trim(),
                     FontSize = level == 1 ? fontSize + 6 : level == 2 ? fontSize + 3 : fontSize + 1,
                     FontWeight = FontWeights.SemiBold,
-                    TextWrapping = TextWrapping.Wrap,
-                    IsTextSelectionEnabled = true,
-                    Margin = new Thickness(0, 6, 0, 0),
-                });
+                    Margin = new Thickness(0, 10, 0, 4),
+                };
+                AppendInlines(hp, trimmed.TrimStart('#').Trim(), citationChip, hp.FontSize, math, mathHost, ref formulaCount);
+                rtb.Blocks.Add(hp);
                 i++;
                 continue;
             }
@@ -133,28 +164,30 @@ public static class Md
             {
                 FlushPara();
                 var marker = IsOrdered(trimmed, out var rest) ? trimmed[..(trimmed.Length - rest.Length)].Trim() : "•";
-                var item = new Grid { ColumnSpacing = 8 };
-                item.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                item.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                item.Children.Add(new TextBlock { Text = marker, FontSize = fontSize });
-                var body = Inline(trimmed.StartsWith("- ") || trimmed.StartsWith("* ") ? trimmed[2..] : rest, citationChip, fontSize, math, mathHost, ref formulaCount);
-                Grid.SetColumn(body, 1);
-                item.Children.Add(body);
-                item.Margin = new Thickness(Math.Min(line.Length - trimmed.Length, 12) * 2, 0, 0, 0);
-                panel.Children.Add(item);
+                var indent = Math.Min(line.Length - trimmed.Length, 12) * 2;
+                var lp = new Paragraph
+                {
+                    Margin = new Thickness(18 + indent, 0, 0, 4),
+                    TextIndent = -18,
+                };
+                lp.Inlines.Add(new Run { Text = $"{marker} " });
+                var bodyText = trimmed.StartsWith("- ") || trimmed.StartsWith("* ") ? trimmed[2..] : rest;
+                AppendInlines(lp, bodyText, citationChip, fontSize, math, mathHost, ref formulaCount);
+                rtb.Blocks.Add(lp);
                 i++;
                 continue;
             }
             if (trimmed.StartsWith("> "))
             {
                 FlushPara();
-                panel.Children.Add(new Border
+                var qp = new Paragraph
                 {
-                    BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 100, 100, 110)),
-                    BorderThickness = new Thickness(3, 0, 0, 0),
-                    Padding = new Thickness(10, 2, 0, 2),
-                    Child = Inline(trimmed[2..], citationChip, fontSize, math, mathHost, ref formulaCount),
-                });
+                    Margin = new Thickness(12, 2, 0, 6),
+                    Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 196, 199, 197)),
+                };
+                qp.Inlines.Add(new Run { Text = "│ ", Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 110, 118, 130)) });
+                AppendInlines(qp, trimmed[2..], citationChip, fontSize, math, mathHost, ref formulaCount);
+                rtb.Blocks.Add(qp);
                 i++;
                 continue;
             }
@@ -163,11 +196,11 @@ public static class Md
             i++;
         }
         FlushPara();
-        return panel;
+        return rtb;
     }
 
     private static void AddParagraphWithDisplayMath(
-        StackPanel panel,
+        RichTextBlock rtb,
         string text,
         Func<int, Inline?>? citationChip,
         double fontSize,
@@ -200,13 +233,17 @@ public static class Md
                 var before = text[pos..nextIdx].Trim();
                 if (before.Length > 0)
                 {
-                    panel.Children.Add(Inline(before, citationChip, fontSize, math, mathHost, ref formulaCount));
+                    var p = new Paragraph { Margin = new Thickness(0, 0, 0, 8) };
+                    AppendInlines(p, before, citationChip, fontSize, math, mathHost, ref formulaCount);
+                    rtb.Blocks.Add(p);
                 }
             }
             var expr = text[(nextIdx + 2)..closeIdx].Trim();
             if (expr.Length > 0)
             {
-                panel.Children.Add(CreateMathBlock(expr, displayMode: true, fontSize, math, mathHost, ref formulaCount));
+                var mp = new Paragraph { TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 6, 0, 8) };
+                mp.Inlines.Add(new InlineUIContainer { Child = CreateMathBlock(expr, displayMode: true, fontSize, math, mathHost, ref formulaCount) });
+                rtb.Blocks.Add(mp);
             }
             pos = closeIdx + 2;
         }
@@ -216,19 +253,21 @@ public static class Md
             var tail = text[pos..].Trim();
             if (tail.Length > 0)
             {
-                panel.Children.Add(Inline(tail, citationChip, fontSize, math, mathHost, ref formulaCount));
+                var p = new Paragraph { Margin = new Thickness(0, 0, 0, 8) };
+                AppendInlines(p, tail, citationChip, fontSize, math, mathHost, ref formulaCount);
+                rtb.Blocks.Add(p);
             }
         }
     }
 
-    private static int HeadingLevel(string t)
+    internal static int HeadingLevel(string t)
     {
         var n = 0;
         while (n < t.Length && t[n] == '#') n++;
         return n is >= 1 and <= 6 && n < t.Length && t[n] == ' ' ? n : 0;
     }
 
-    private static bool IsOrdered(string t, out string rest)
+    internal static bool IsOrdered(string t, out string rest)
     {
         var n = 0;
         while (n < t.Length && char.IsDigit(t[n])) n++;
@@ -264,7 +303,19 @@ public static class Md
         };
         var p = new Paragraph();
         rtb.Blocks.Add(p);
+        AppendInlines(p, text, citationChip, fontSize, math, mathHost, ref formulaCount);
+        return rtb;
+    }
 
+    private static void AppendInlines(
+        Paragraph p,
+        string text,
+        Func<int, Inline?>? citationChip,
+        double fontSize,
+        WebContentHost? math,
+        Panel? mathHost,
+        ref int formulaCount)
+    {
         var buf = new StringBuilder();
         void Flush()
         {
@@ -351,6 +402,8 @@ public static class Md
                 var citeEnd = text.IndexOf(']', i + 1);
                 if (citeEnd > i + 1 && citeEnd - i <= 4 && int.TryParse(text.AsSpan(i + 1, citeEnd - i - 1), out var n) && n > 0 && citationChip(n) is { } chip)
                 {
+                    // Trim a single space before citation so superscript sits cleanly next to the text
+                    if (buf.Length > 0 && buf[^1] == ' ') buf.Length--;
                     Flush();
                     p.Inlines.Add(chip);
                     i = citeEnd + 1;
@@ -361,10 +414,9 @@ public static class Md
             i++;
         }
         Flush();
-        return rtb;
     }
 
-    private static bool TryFindInlineDollarEnd(string text, int start, out int end)
+    internal static bool TryFindInlineDollarEnd(string text, int start, out int end)
     {
         end = -1;
         if (start >= text.Length || char.IsWhiteSpace(text[start])) return false;
@@ -395,13 +447,27 @@ public static class Md
         ref int formulaCount)
     {
         formulaCount++;
+        _ = formulaCount;
+
+        if (latex.Length <= WebContentHost.MaxFormulaLength
+            && math != null
+            && math.TryGetCachedBitmap(latex, displayMode, out var cachedRes, out var cachedBmp)
+            && cachedRes.Success
+            && cachedBmp != null)
+        {
+            return BuildRenderedMathContainer(cachedBmp, cachedRes, latex, displayMode);
+        }
+
+        var canRenderAsync = math != null && mathHost != null && latex.Length <= WebContentHost.MaxFormulaLength;
+        var rawText = displayMode ? $"$${latex}$$" : $"${latex}$";
         var fallback = new TextBlock
         {
-            Text = displayMode ? $"$${latex}$$" : $"${latex}$",
+            Text = canRenderAsync ? "…" : rawText,
             FontFamily = new FontFamily("Consolas"),
             FontSize = Math.Max(12, fontSize - 1),
             TextWrapping = displayMode ? TextWrapping.Wrap : TextWrapping.NoWrap,
-            IsTextSelectionEnabled = true,
+            IsTextSelectionEnabled = !canRenderAsync,
+            Opacity = canRenderAsync ? 0.55 : 1.0,
             Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 210, 220, 235)),
         };
 
@@ -424,14 +490,9 @@ public static class Md
                 : (UIElement)fallback,
         };
 
-        if (formulaCount > WebContentHost.MaxFormulasPerMessage)
-        {
-            ApplyErrorStyle(container, fallback, $"单条消息公式数量超过 {WebContentHost.MaxFormulasPerMessage} 个上限，已回退显示原文");
-            return container;
-        }
         if (latex.Length > WebContentHost.MaxFormulaLength)
         {
-            ApplyErrorStyle(container, fallback, $"公式长度超过 {WebContentHost.MaxFormulaLength} 字符上限，已回退显示原文");
+            ApplyErrorStyle(container, fallback, rawText, $"公式长度超过 {WebContentHost.MaxFormulaLength} 字符上限，已回退显示原文");
             return container;
         }
         if (math == null || mathHost == null)
@@ -439,13 +500,14 @@ public static class Md
             return container;
         }
 
-        _ = RenderMathIntoAsync(container, fallback, latex, displayMode, math, mathHost);
+        _ = RenderMathIntoAsync(container, fallback, rawText, latex, displayMode, math, mathHost);
         return container;
     }
 
     private static async Task RenderMathIntoAsync(
         Border container,
         TextBlock fallback,
+        string rawText,
         string latex,
         bool displayMode,
         WebContentHost math,
@@ -454,7 +516,7 @@ public static class Md
         var res = await math.RenderFormulaAsync(mathHost, latex, displayMode);
         if (!res.Success || res.PngBytes == null)
         {
-            ApplyErrorStyle(container, fallback, $"公式渲染失败：{res.Error ?? "未知错误"}");
+            ApplyErrorStyle(container, fallback, rawText, $"公式渲染失败：{res.Error ?? "未知错误"}");
             return;
         }
 
@@ -465,45 +527,82 @@ public static class Md
             mem.Seek(0);
             var bmp = new BitmapImage();
             await bmp.SetSourceAsync(mem);
+            math.CacheBitmap(latex, displayMode, bmp);
 
-            var img = new Image
-            {
-                Source = bmp,
-                Width = res.Width,
-                Height = res.Height,
-                Stretch = Stretch.Uniform,
-                VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = displayMode ? HorizontalAlignment.Center : HorizontalAlignment.Left,
-            };
-            ToolTipService.SetToolTip(
-                img,
-                res.Overflow ? $"{latex}（公式过宽已裁剪至 1600px，可横向滚动）" : latex);
-
-            if (displayMode)
-            {
-                container.Child = new ScrollViewer
-                {
-                    HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-                    VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                    Content = img,
-                };
-            }
-            else
-            {
-                container.Child = img;
-            }
+            ApplyRenderedMath(container, bmp, res, latex, displayMode);
         }
         catch (Exception ex)
         {
-            ApplyErrorStyle(container, fallback, $"公式图像解码失败：{ex.Message}");
+            ApplyErrorStyle(container, fallback, rawText, $"公式图像解码失败：{ex.Message}");
         }
     }
 
-    private static void ApplyErrorStyle(Border container, TextBlock fallback, string reason)
+    private static Border BuildRenderedMathContainer(
+        BitmapImage bmp,
+        MathRenderResult res,
+        string latex,
+        bool displayMode)
+    {
+        var container = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            Padding = displayMode ? new Thickness(8, 6, 8, 6) : new Thickness(1, 0, 1, 0),
+            Margin = displayMode ? new Thickness(0, 4, 0, 4) : new Thickness(1, 0, 1, -res.Descent),
+            Background = displayMode
+                ? new SolidColorBrush(Windows.UI.Color.FromArgb(60, 19, 19, 20))
+                : new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)),
+        };
+        ApplyRenderedMath(container, bmp, res, latex, displayMode);
+        return container;
+    }
+
+    private static void ApplyRenderedMath(
+        Border container,
+        BitmapImage bmp,
+        MathRenderResult res,
+        string latex,
+        bool displayMode)
+    {
+        var img = new Image
+        {
+            Source = bmp,
+            Width = res.Width,
+            Height = res.Height,
+            Stretch = Stretch.Uniform,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = displayMode ? HorizontalAlignment.Center : HorizontalAlignment.Left,
+        };
+        ToolTipService.SetToolTip(
+            img,
+            res.Overflow ? $"{latex}（公式过宽已裁剪至 1600px，可横向滚动）" : latex);
+
+        if (displayMode)
+        {
+            container.VerticalAlignment = VerticalAlignment.Center;
+            container.Child = new ScrollViewer
+            {
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = img,
+            };
+        }
+        else
+        {
+            container.Padding = new Thickness(1, 0, 1, 0);
+            container.VerticalAlignment = VerticalAlignment.Bottom;
+            container.Margin = new Thickness(1, 0, 1, -res.Descent);
+            container.Child = img;
+        }
+    }
+
+    private static void ApplyErrorStyle(Border container, TextBlock fallback, string rawText, string reason)
     {
         container.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(160, 240, 120, 120));
         container.BorderThickness = new Thickness(1);
         container.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(40, 180, 60, 60));
+        fallback.Text = rawText;
+        fallback.Opacity = 1.0;
+        fallback.IsTextSelectionEnabled = true;
         fallback.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 190, 190));
         ToolTipService.SetToolTip(container, reason);
     }

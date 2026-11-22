@@ -141,7 +141,7 @@ fn quiz_with_out_of_range_citation_fails_validation() {
     assert_eq!(art["error_code"], json!("OUTPUT_INVALID"), "{art}");
 }
 
-/// E1: unparseable output is repaired at most twice, then fails with OUTPUT_INVALID.
+/// E1: unparseable output is repaired at most twice on the initial run, then retried 3 times with rollback before failing.
 #[test]
 fn unparseable_output_is_repaired_twice_then_fails() {
     let mock = MockLlm::start(|_| Reply::Text("这不是 JSON".into()));
@@ -151,7 +151,10 @@ fn unparseable_output_is_repaired_twice_then_fails() {
     let id = create(&env, &nid, "flashcards", json!({}));
     let art = studio_wait(&env, &id, "FAILED", 30);
     assert_eq!(art["error_code"], json!("OUTPUT_INVALID"), "{art}");
-    // 1 generation + 2 repair turns
+    let log = art["error_log"].as_str().unwrap_or("");
+    assert!(log.contains("OUTPUT_INVALID"), "missing OUTPUT_INVALID in log: {log}");
+    assert!(log.contains("Attempts (4 recorded)"), "expected 4 recorded attempts: {log}");
+    // Attempt 1: 1 generation + 2 repair turns (3 calls); Retries 1..=3: 1 generation each (3 calls) => 6 calls total.
     let n = mock
         .requests
         .lock()
@@ -159,7 +162,7 @@ fn unparseable_output_is_repaired_twice_then_fails() {
         .iter()
         .filter(|r| r.kind == Kind::Studio || r.system.contains("JSON 修复器"))
         .count();
-    assert_eq!(n, 3);
+    assert_eq!(n, 6);
 }
 
 /// E9: estimates carry prices when configured, and large inputs need explicit confirmation.
@@ -419,20 +422,30 @@ fn cancel_during_generation_stays_cancelled() {
     assert_eq!(art["status"], json!("CANCELLED"), "{art}");
 }
 
-/// E11: after a source is added, finished artifacts report that their sources changed.
+/// Finished artifacts do not auto-flag as stale when sources change, and can be regenerated
+/// on user demand with updated config and the currently selected sources.
 #[test]
-fn artifacts_report_stale_sources_after_the_source_set_changes() {
+fn artifacts_regenerate_on_demand_with_selected_sources_and_config() {
     let mock = studio_mock();
-    let env = Env::new("stale");
+    let env = Env::new("regen");
     let nid = small_notebook(&env);
     env.profile(&mock, 32000, false);
-    let id = create(&env, &nid, "flashcards", json!({}));
+    let id = create(&env, &nid, "flashcards", json!({ "topic": "原主题" }));
     let art = studio_wait(&env, &id, "READY", 30);
     assert_eq!(art["sources_stale"], json!(false));
     env.add_text(&nid, "新增.md", "# 新增\n\n零空间。");
     env.wait_sources_ready(&nid, 2);
     let art = env.ok("studio.get", json!({ "artifact_id": id }));
-    assert_eq!(art["sources_stale"], json!(true), "{art}");
+    assert_eq!(art["sources_stale"], json!(false), "{art}");
+
+    let regen = env.ok(
+        "studio.regenerate",
+        json!({ "artifact_id": id, "config": { "topic": "新要求" }, "use_selected_sources": true }),
+    );
+    assert_eq!(regen["config"]["topic"], json!("新要求"));
+    assert_eq!(regen["source_ids"].as_array().map(|a| a.len()), Some(2));
+    let ready = studio_wait(&env, &id, "READY", 30);
+    assert_eq!(ready["status"], json!("READY"));
 }
 
 /// E2: grade_answer through the API for each question type.

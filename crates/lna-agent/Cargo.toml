@@ -10,6 +10,8 @@ lna-storage = { path = "../lna-storage" }
 lna-secrets = { path = "../lna-secrets" }
 lna-llm = { path = "../lna-llm" }
 lna-retrieval = { path = "../lna-retrieval" }
+lna-ingest = { path = "../lna-ingest" }
+lna-studio = { path = "../lna-studio" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

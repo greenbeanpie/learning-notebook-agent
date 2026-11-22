@@ -23,14 +23,20 @@ window.lnaRenderFormula = function (latex, displayMode) {
       maxExpand: 1000
     });
     var rect = el.getBoundingClientRect();
+    var probe = document.getElementById('probe');
+    var probeRect = probe ? probe.getBoundingClientRect() : null;
     var rawW = Math.ceil(rect.width);
     var rawH = Math.ceil(rect.height);
     var width = Math.min(Math.max(rawW, 4), 1600);
     var height = Math.min(Math.max(rawH, 4), 800);
+    var descent = probeRect
+      ? Math.max(0, Math.min(height, Math.round(rect.bottom - probeRect.top)))
+      : 0;
     return JSON.stringify({
       ok: true,
       width: width,
       height: height,
+      descent: descent,
       overflow: rawW > 1600 || rawH > 800
     });
   } catch (err) {

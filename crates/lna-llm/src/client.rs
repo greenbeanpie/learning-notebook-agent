@@ -2,8 +2,10 @@ use crate::adapters::adapter_for;
 use crate::sse::SseParser;
 use crate::types::*;
 use futures_util::StreamExt;
-use lna_types::{ErrorCode, LnaError, LnaResult, ModelCapabilities};
+use lna_types::{ErrorCode, LnaError, LnaResult, ModelCapabilities, ProtocolKind};
 use rand::Rng;
+use secrecy::ExposeSecret;
+use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -245,9 +247,24 @@ impl LlmClient {
         req: &LlmRequest,
         cancel: CancellationToken,
     ) -> LnaResult<(String, Usage)> {
+        self.complete_text_with_thinking(profile, req, cancel, |_| {})
+            .await
+    }
+
+    pub async fn complete_text_with_thinking<F>(
+        &self,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        cancel: CancellationToken,
+        mut on_thinking: F,
+    ) -> LnaResult<(String, Usage)>
+    where
+        F: FnMut(&str),
+    {
         let mut text = String::new();
         let mut usage = Usage::default();
         self.stream(profile, req, cancel, |ev| match ev {
+            LlmEvent::ThoughtDelta(t) => on_thinking(&t),
             LlmEvent::TextDelta(t) => text.push_str(&t),
             LlmEvent::Usage(u) => usage = u,
             _ => {}
@@ -265,6 +282,35 @@ impl LlmClient {
         schema: &serde_json::Value,
         cancel: CancellationToken,
     ) -> LnaResult<(serde_json::Value, Usage)> {
+        self.complete_structured_with_thinking(
+            profile,
+            base_req,
+            schema_name,
+            schema,
+            cancel,
+            2,
+            |_| {},
+            |_| {},
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_structured_with_thinking<F, G>(
+        &self,
+        profile: &ResolvedProfile,
+        base_req: &LlmRequest,
+        schema_name: &str,
+        schema: &serde_json::Value,
+        cancel: CancellationToken,
+        max_repairs: usize,
+        mut on_thinking: F,
+        mut on_status: G,
+    ) -> LnaResult<(serde_json::Value, Usage)>
+    where
+        F: FnMut(&str),
+        G: FnMut(&str),
+    {
         let validator = jsonschema::validator_for(schema)
             .map_err(|e| LnaError::invalid(format!("Invalid JSON schema: {e}")))?;
 
@@ -289,26 +335,45 @@ impl LlmClient {
         }
 
         let mut total_usage = Usage::default();
-        let (raw, u) = self.complete_text(profile, &req, cancel.clone()).await?;
+        let (raw, u) = self
+            .complete_text_with_thinking(profile, &req, cancel.clone(), &mut on_thinking)
+            .await?;
         add_usage(&mut total_usage, &u);
 
         let mut candidate = strip_code_fences(&raw);
-        for repair_attempt in 0..=2 {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&candidate) {
-                if validator.is_valid(&val) {
-                    return Ok((val, total_usage));
+        let mut last_reason = String::new();
+        for repair_attempt in 0..=max_repairs {
+            match serde_json::from_str::<serde_json::Value>(&candidate) {
+                Ok(val) => {
+                    let errs: Vec<String> = validator
+                        .iter_errors(&val)
+                        .take(3)
+                        .map(|e| format!("{}: {}", e.instance_path, e))
+                        .collect();
+                    if errs.is_empty() {
+                        return Ok((val, total_usage));
+                    }
+                    last_reason = format!("Schema validation error: {}", errs.join("; "));
+                }
+                Err(e) => {
+                    last_reason = format!("JSON parse error: {e}");
                 }
             }
-            if repair_attempt == 2 {
+            if repair_attempt == max_repairs {
                 break;
             }
+            on_status(&format!(
+                "结构化输出未通过 Schema 校验，正在进行第 {}/{} 次修复…",
+                repair_attempt + 1,
+                max_repairs
+            ));
             let repair_req = LlmRequest {
                 system: "你是 JSON 修复器，只输出符合给定 Schema 的合法 JSON。".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
-                        "以下 JSON 未通过 Schema 校验，请修复并只输出合法 JSON：\nSchema:\n{}\n\n原输出:\n{}",
-                        schema, candidate
+                        "以下 JSON 未通过 Schema 校验（{}），请修复并只输出合法 JSON：\nSchema:\n{}\n\n原输出:\n{}",
+                        last_reason, schema, candidate
                     ))],
                 }],
                 tools: vec![],
@@ -318,16 +383,200 @@ impl LlmClient {
                 reasoning: ReasoningOptions::default(),
             };
             let (repaired, ru) = self
-                .complete_text(profile, &repair_req, cancel.clone())
+                .complete_text_with_thinking(profile, &repair_req, cancel.clone(), &mut on_thinking)
                 .await?;
             add_usage(&mut total_usage, &ru);
             candidate = strip_code_fences(&repaired);
         }
 
+        let snippet: String = last_reason.chars().take(400).collect();
         Err(LnaError::new(
             ErrorCode::OutputInvalid,
-            "Structured output failed schema validation after 2 repair attempts",
+            if snippet.is_empty() {
+                format!("Structured output failed schema validation after {max_repairs} repair attempts")
+            } else {
+                format!("Structured output failed schema validation after {max_repairs} repair attempts: {snippet}")
+            },
         ))
+    }
+
+    /// Uploads a large audio/video file via the Gemini Files resumable upload API and waits until `ACTIVE`.
+    /// Returns `(file_uri, file_name)` so the caller can clean up via `delete_gemini_file`.
+    pub async fn upload_gemini_file(
+        &self,
+        profile: &ResolvedProfile,
+        path: &Path,
+        mime_type: &str,
+        display_name: &str,
+    ) -> LnaResult<(String, String)> {
+        if profile.protocol != ProtocolKind::Gemini {
+            return Err(LnaError::new(
+                ErrorCode::CapabilityMissing,
+                "Files API upload is only supported for the Gemini protocol",
+            ));
+        }
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| LnaError::internal(format!("Failed to read media file: {e}")))?;
+        let trimmed = profile.trimmed_base();
+        let upload_url = gemini_upload_url(trimmed);
+        let apply_headers = |mut b: reqwest::RequestBuilder| -> reqwest::RequestBuilder {
+            if let Some(ref key) = profile.api_key {
+                let s = key.expose_secret();
+                if !s.is_empty() {
+                    b = b.header("x-goog-api-key", s);
+                }
+            }
+            for (k, v) in &profile.extra_headers {
+                b = b.header(k, v);
+            }
+            b
+        };
+
+        let meta_body = serde_json::json!({
+            "file": { "display_name": display_name }
+        });
+        let start_resp = apply_headers(
+            self.http
+                .post(&upload_url)
+                .header("X-Goog-Upload-Protocol", "resumable")
+                .header("X-Goog-Upload-Command", "start")
+                .header("X-Goog-Upload-Header-Content-Length", bytes.len().to_string())
+                .header("X-Goog-Upload-Header-Content-Type", mime_type)
+                .json(&meta_body),
+        )
+        .send()
+        .await
+        .map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?;
+
+        if !start_resp.status().is_success() {
+            let st = start_resp.status();
+            let err_body = start_resp.text().await.unwrap_or_default();
+            return Err(map_http_status(st, &err_body));
+        }
+
+        let session_uri = start_resp
+            .headers()
+            .get("x-goog-upload-url")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                LnaError::new(
+                    ErrorCode::OutputInvalid,
+                    "Gemini Files API did not return x-goog-upload-url header",
+                )
+            })?;
+
+        let up_resp = apply_headers(
+            self.http
+                .post(&session_uri)
+                .header("X-Goog-Upload-Offset", "0")
+                .header("X-Goog-Upload-Command", "upload, finalize")
+                .header("Content-Type", mime_type)
+                .body(bytes),
+        )
+        .send()
+        .await
+        .map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?;
+
+        let up_status = up_resp.status();
+        let up_text = up_resp.text().await.unwrap_or_default();
+        if !up_status.is_success() {
+            return Err(map_http_status(up_status, &up_text));
+        }
+
+        let val: serde_json::Value = serde_json::from_str(&up_text)
+            .map_err(|e| LnaError::new(ErrorCode::OutputInvalid, e.to_string()))?;
+        let file_obj = val.get("file").unwrap_or(&val);
+        let file_name = file_obj
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut file_uri = file_obj
+            .get("uri")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut state = file_obj
+            .get("state")
+            .and_then(|x| x.as_str())
+            .unwrap_or("ACTIVE")
+            .to_string();
+
+        if !file_name.is_empty() && state == "PROCESSING" {
+            let poll_url = format!("{trimmed}/{}", file_name.trim_start_matches('/'));
+            for _ in 0..60 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let pr = apply_headers(self.http.get(&poll_url))
+                    .send()
+                    .await
+                    .map_err(|e| LnaError::new(ErrorCode::FetchFailed, e.to_string()))?;
+                if !pr.status().is_success() {
+                    continue;
+                }
+                if let Ok(pv) = pr.json::<serde_json::Value>().await {
+                    let fo = pv.get("file").unwrap_or(&pv);
+                    if let Some(u) = fo.get("uri").and_then(|x| x.as_str()) {
+                        file_uri = u.to_string();
+                    }
+                    state = fo
+                        .get("state")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("ACTIVE")
+                        .to_string();
+                    if state != "PROCESSING" {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if state == "FAILED" {
+            return Err(LnaError::new(
+                ErrorCode::ModelBadRequest,
+                "Gemini Files API reported FAILED processing state",
+            ));
+        }
+        if file_uri.is_empty() {
+            return Err(LnaError::new(
+                ErrorCode::OutputInvalid,
+                "Gemini Files API did not return a file uri",
+            ));
+        }
+        Ok((file_uri, file_name))
+    }
+
+    pub async fn delete_gemini_file(&self, profile: &ResolvedProfile, file_name: &str) {
+        if file_name.is_empty() || profile.protocol != ProtocolKind::Gemini {
+            return;
+        }
+        let url = format!(
+            "{}/{}",
+            profile.trimmed_base(),
+            file_name.trim_start_matches('/')
+        );
+        let mut req = self.http.delete(url);
+        if let Some(ref key) = profile.api_key {
+            let s = key.expose_secret();
+            if !s.is_empty() {
+                req = req.header("x-goog-api-key", s);
+            }
+        }
+        for (k, v) in &profile.extra_headers {
+            req = req.header(k, v);
+        }
+        let _ = req.send().await;
+    }
+}
+
+fn gemini_upload_url(trimmed_base: &str) -> String {
+    if let Some(prefix) = trimmed_base.strip_suffix("/v1beta") {
+        format!("{prefix}/upload/v1beta/files")
+    } else if let Some(prefix) = trimmed_base.strip_suffix("/v1") {
+        format!("{prefix}/upload/v1/files")
+    } else {
+        format!("{trimmed_base}/upload/v1beta/files")
     }
 }
 

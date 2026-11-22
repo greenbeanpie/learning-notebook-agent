@@ -65,9 +65,9 @@ fn tool_loop_stops_after_three_rounds_and_sums_usage() {
     assert_eq!(msg["status"], json!("COMPLETE"), "{msg}");
 
     let chat = mock.of_kind(Kind::Chat);
-    assert_eq!(chat.len(), 4, "3 tool rounds + 1 final request");
-    assert!(chat[..3].iter().all(|r| r.has_tools()));
-    assert!(!chat[3].has_tools(), "4th request must not offer tools");
+    assert_eq!(chat.len(), 7, "6 tool rounds + 1 final request");
+    assert!(chat[..6].iter().all(|r| r.has_tools()));
+    assert!(!chat[6].has_tools(), "7th request must not offer tools");
     // tool results are wrapped as untrusted
     assert!(chat[1].user_text().contains("untrusted"));
     let kinds = thought_kinds(&msg);
@@ -76,16 +76,16 @@ fn tool_loop_stops_after_three_rounds_and_sums_usage() {
             .iter()
             .filter(|k| *k == "tool_list_sources" || *k == "tool_call")
             .count(),
-        3
+        6
     );
 
     let usage = env.ok("usage.summary", json!({ "notebook_id": nid }));
     assert_eq!(
         usage["input_tokens"],
-        json!(400),
-        "100 per round x 4: {usage}"
+        json!(700),
+        "100 per round x 7: {usage}"
     );
-    assert_eq!(usage["output_tokens"], json!(80));
+    assert_eq!(usage["output_tokens"], json!(140));
     assert!(env
         .history(&nid)
         .iter()
@@ -739,4 +739,128 @@ fn notebook_summary_generated_after_model_configured_and_cached_by_fingerprint()
 矩阵的秩等于列空间的维数。",
     );
     env.wait(15, || mock.of_kind(Kind::NotebookSummary).len() == 2);
+}
+
+#[test]
+fn chat_tool_generates_studio_quiz_and_imports_to_studio() {
+    let mock = MockLlm::start(|r| match r.kind {
+        Kind::Followups => followups_ok(),
+        Kind::Studio => {
+            let Reply::Text(t) = studio_reply(r) else {
+                unreachable!()
+            };
+            Reply::SlowText(t, 120)
+        }
+        Kind::Chat if r.has_tools() && r.nth == 0 => Reply::Tool {
+            id: "studio_call_1".into(),
+            name: "generate_studio_artifact".into(),
+            args: json!({
+                "artifact_type": "quiz",
+                "title": "对话测试测验",
+                "topic": "基与维数",
+                "count": 3,
+                "types": ["single"]
+            }),
+        },
+        _ => Reply::Text("已为你启动后台生成关于基与维数的知识测验。".into()),
+    });
+    let env = Env::new("chatstudio");
+    let nid = notebook_with_sources(&env, 1);
+    env.profile(&mock, 32000, true);
+
+    let msg = env.ok(
+        "chat.send",
+        json!({ "notebook_id": nid, "text": "帮我根据资料生成一套测验" }),
+    );
+    assert_eq!(msg["status"], json!("COMPLETE"), "{msg}");
+    let artifacts = msg["artifacts"].as_array().expect("artifacts array");
+    assert_eq!(artifacts.len(), 1, "{msg}");
+    let art = &artifacts[0];
+    let aid = art["id"].as_str().unwrap().to_string();
+    assert_eq!(art["artifact_type"], json!("quiz"));
+    assert_eq!(art["title"], json!("对话测试测验"));
+    // Non-blocking: chat.send returns immediately while Studio generation may still be PENDING or RUNNING.
+    assert!(
+        matches!(art["status"].as_str(), Some("PENDING" | "RUNNING" | "READY")),
+        "{art}"
+    );
+    assert_eq!(art["in_studio"], json!(false));
+
+    // Wait for background Studio worker to complete the chat-originated artifact.
+    env.wait(15, || {
+        env.ok("studio.get", json!({ "artifact_id": aid }))["status"] == json!("READY")
+    });
+    let ready = env.ok("studio.get", json!({ "artifact_id": aid }));
+    assert!(
+        !ready["thoughts"].as_array().unwrap().is_empty(),
+        "thoughts should be recorded: {ready}"
+    );
+
+    // History also returns the attached artifact in its updated READY state.
+    let hist = env.history(&nid);
+    let hist_art = &hist.last().unwrap()["artifacts"].as_array().unwrap()[0];
+    assert_eq!(hist_art["status"], json!("READY"));
+
+    // Before import, Studio sidebar list does not include the chat-only artifact.
+    let before = env.ok("studio.list", json!({ "notebook_id": nid }));
+    assert_eq!(before["artifacts"].as_array().unwrap().len(), 0);
+
+    // Interactive grading works directly against the chat artifact.
+    let graded = env.ok(
+        "studio.grade_answer",
+        json!({ "artifact_id": aid, "question_id": "q1", "answer": [0] }),
+    );
+    assert_eq!(graded["correct"], json!(true), "{graded}");
+
+    // Import moves it into the right-side Studio list.
+    let imported = env.ok("studio.import_to_studio", json!({ "artifact_id": aid }));
+    assert_eq!(imported["in_studio"], json!(true));
+    let after = env.ok("studio.list", json!({ "notebook_id": nid }));
+    assert_eq!(after["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(after["artifacts"][0]["id"], json!(aid));
+
+    // Clearing chat keeps the imported Studio artifact intact.
+    env.ok("chat.clear", json!({ "notebook_id": nid }));
+    let persisted = env.ok("studio.list", json!({ "notebook_id": nid }));
+    assert_eq!(persisted["artifacts"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn studio_retries_three_times_and_records_error_log() {
+    let mock = MockLlm::start(|r| match r.kind {
+        Kind::Studio => Reply::Status(400, r#"{"error":{"message":"synthetic studio failure"}}"#.into()),
+        _ => Reply::Text("OK".into()),
+    });
+    let env = Env::new("studioretrylog");
+    let nid = notebook_with_sources(&env, 1);
+    env.profile(&mock, 32000, false);
+
+    let created = env.ok(
+        "studio.create",
+        json!({ "notebook_id": nid, "artifact_type": "quiz", "config": { "count": 5 } }),
+    );
+    let aid = created["id"].as_str().unwrap().to_string();
+
+    env.wait(20, || {
+        env.ok("studio.get", json!({ "artifact_id": aid }))["status"] == json!("FAILED")
+    });
+    let failed = env.ok("studio.get", json!({ "artifact_id": aid }));
+    assert_eq!(failed["status"], json!("FAILED"), "{failed}");
+    assert_eq!(mock.of_kind(Kind::Studio).len(), 4, "1 initial + 3 rollback retries");
+
+    let thoughts = failed["thoughts"].as_array().expect("thoughts array");
+    let retry_count = thoughts
+        .iter()
+        .filter(|t| t["kind"] == json!("retry"))
+        .count();
+    assert_eq!(retry_count, 3, "expected 3 retry thought entries: {thoughts:?}");
+    assert!(
+        thoughts.iter().any(|t| t["kind"] == json!("error")),
+        "expected terminal error thought: {thoughts:?}"
+    );
+
+    let log = failed["error_log"].as_str().expect("error_log string");
+    assert!(log.contains("Attempts (4 recorded)"), "{log}");
+    assert!(log.contains("synthetic studio failure"), "{log}");
+    assert!(!log.contains("Authorization"), "{log}");
 }

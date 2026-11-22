@@ -165,10 +165,18 @@ public sealed partial class MainWindow : Window
             {
                 var id = Str(nb, "id");
                 var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-                row.Children.Add(new PathIcon
+                row.Children.Add(new Viewbox
                 {
-                    Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M18,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V4A2,2 0 0,0 18,2M18,20H6V4H8V12L10.5,9.75L13,12V4H18V20Z"),
-                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"],
+                    Width = 16,
+                    Height = 16,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Child = new PathIcon
+                    {
+                        Width = 24,
+                        Height = 24,
+                        Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M18,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V4A2,2 0 0,0 18,2M18,20H6V4H8V12L10.5,9.75L13,12V4H18V20Z"),
+                        Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"],
+                    },
                 });
                 row.Children.Add(new TextBlock { Text = Str(nb, "title"), VerticalAlignment = VerticalAlignment.Center });
                 var item = new ComboBoxItem { Content = row, Tag = id };
@@ -191,6 +199,8 @@ public sealed partial class MainWindow : Window
 
     private async Task SwitchNotebookAsync(string id)
     {
+        CloseSourcePreview();
+        CloseArtifactInline();
         _activeNotebookId = id;
         _streaming = null;
         var nb = await CoreAsync("notebook.get", Args(("notebook_id", id)), "读取笔记本");
@@ -323,6 +333,13 @@ public sealed partial class MainWindow : Window
         if (art is { } a) RenderArtifacts(a);
     }
 
+    private async Task RefreshStudioArtifactsAsync()
+    {
+        if (_activeNotebookId == null) return;
+        var art = await CoreAsync("studio.list", Args(("notebook_id", _activeNotebookId)), "读取 Studio 产物");
+        if (art is { } a) RenderArtifacts(a);
+    }
+
     private void RenderSummary(JsonElement nb)
     {
         var md = Str(nb, "summary_md");
@@ -387,8 +404,11 @@ public sealed partial class MainWindow : Window
             {
                 switch (ev.Event)
                 {
-                    case "source.status":
                     case "studio.status":
+                        if (!ev.Data.TryGetProperty("in_studio", out var inSt) || inSt.GetBoolean())
+                            await RefreshStudioArtifactsAsync();
+                        break;
+                    case "source.status":
                     case "notebook.summary_updated":
                         await RefreshNotebookDataAsync();
                         break;

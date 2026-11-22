@@ -81,11 +81,19 @@ public sealed partial class MainWindow
             Convert.ToByte(kindIconData.Item1.Substring(1, 2), 16),
             Convert.ToByte(kindIconData.Item1.Substring(3, 2), 16),
             Convert.ToByte(kindIconData.Item1.Substring(5, 2), 16));
-        var kindIcon = new PathIcon
+        var kindIcon = new Viewbox
         {
-            Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), kindIconData.Item2),
-            Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(iconColor),
+            Width = 18,
+            Height = 18,
             VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Child = new PathIcon
+            {
+                Width = 24,
+                Height = 24,
+                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), kindIconData.Item2),
+                Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(iconColor),
+            },
         };
         Grid.SetColumn(kindIcon, 0);
         row.Children.Add(kindIcon);
@@ -93,7 +101,13 @@ public sealed partial class MainWindow
         var titleStack = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         titleStack.Children.Add(new TextBlock { Text = $"{title}", FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.Medium, TextWrapping = TextWrapping.Wrap });
         var stage = Str(a, "stage");
-        titleStack.Children.Add(new TextBlock { Text = $"{KindName(kind)} · {ArtifactStatusLabel(status, stage)}", FontSize = 11, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"] });
+        var hintSuffix = status switch
+        {
+            "PENDING" or "RUNNING" => " · 点击查看思考过程",
+            "FAILED" => " · 点击查看错误与日志",
+            _ => "",
+        };
+        titleStack.Children.Add(new TextBlock { Text = $"{KindName(kind)} · {ArtifactStatusLabel(status, stage)}{hintSuffix}", FontSize = 11, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"] });
         Grid.SetColumn(titleStack, 1);
         row.Children.Add(titleStack);
         head.Children.Add(row);
@@ -112,25 +126,45 @@ public sealed partial class MainWindow
         });
         if (status is "PENDING" or "RUNNING") Add("取消", async () => { await CoreAsync("studio.cancel", Args(("artifact_id", id)), "取消"); });
         if (status is "FAILED" or "CANCELLED") Add("重试", async () => { await CoreAsync("studio.retry", Args(("artifact_id", id)), "重试"); });
-        if (status == "READY") Add("重新生成", async () => { await CoreAsync("studio.retry", Args(("artifact_id", id)), "重新生成"); });
+        if (status == "READY")
+        {
+            var existingCfg = a.TryGetProperty("config", out var cfgEl) && cfgEl.ValueKind == JsonValueKind.Object ? cfgEl : (JsonElement?)null;
+            Add("按当前来源与要求更新", async () =>
+            {
+                var updated = await ConfigureArtifactAsync(kind, existingCfg, isUpdate: true);
+                if (updated is not { } cfg) return;
+                await CoreAsync("studio.regenerate", Args(("artifact_id", id), ("config", cfg), ("use_selected_sources", true)), "更新产物");
+            });
+        }
         Add("删除", async () =>
         {
             if (await ConfirmAsync("删除产物", $"确定删除“{title}”吗？", "删除")) await CoreAsync("studio.delete", Args(("artifact_id", id)), "删除");
         });
         var more = new Button
         {
-            Content = new PathIcon
+            Content = new Viewbox
             {
-                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M6,10A2,2 0 0,0 4,12A2,2 0 0,0 6,14A2,2 0 0,0 8,12A2,2 0 0,0 6,10M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M18,10A2,2 0 0,0 16,12A2,2 0 0,0 18,14A2,2 0 0,0 20,12A2,2 0 0,0 18,10Z"),
-                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                Width = 18,
+                Height = 18,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new PathIcon
+                {
+                    Width = 24,
+                    Height = 24,
+                    Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Microsoft.UI.Xaml.Media.Geometry), "M6,10A2,2 0 0,0 4,12A2,2 0 0,0 6,14A2,2 0 0,0 8,12A2,2 0 0,0 6,10M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M18,10A2,2 0 0,0 16,12A2,2 0 0,0 18,14A2,2 0 0,0 20,12A2,2 0 0,0 18,10Z"),
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                },
             },
             Flyout = menu,
-            MinWidth = 38,
-            Width = 38,
-            MinHeight = 38,
-            Height = 38,
+            MinWidth = 36,
+            Width = 36,
+            MinHeight = 36,
+            Height = 36,
             Padding = new Thickness(0),
-            CornerRadius = new CornerRadius(19),
+            CornerRadius = new CornerRadius(18),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center,
@@ -148,8 +182,6 @@ public sealed partial class MainWindow
             var advice = Advice(err);
             col.Children.Add(new TextBlock { Text = advice.Length > 0 ? advice : Str(a, "error_detail"), TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 160, 140)) });
         }
-        if (status == "READY" && Bool(a, "sources_stale"))
-            col.Children.Add(new TextBlock { Text = "来源已更新，可重新生成", FontSize = 12, Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 200, 120)) });
         if (status == "DRAFT_REVIEW")
         {
             var open = new Button
@@ -166,10 +198,7 @@ public sealed partial class MainWindow
             open.Click += (_, _) => OpenArtifact(id);
             col.Children.Add(open);
         }
-        if (status is "READY" or "DRAFT_REVIEW")
-        {
-            card.Tapped += (_, _) => OpenArtifact(id);
-        }
+        card.Tapped += (_, _) => OpenArtifact(id);
         card.Child = col;
         return card;
     }
@@ -179,63 +208,109 @@ public sealed partial class MainWindow
 
     private void OpenArtifact(string id)
     {
-        _activeArtifactPane?.Dispose();
+        var old = _activeArtifactPane;
+        _activeArtifactPane = null;
+        old?.Dispose();
         _studioFullscreen = false;
+        if (_sourceFullscreen)
+        {
+            _sourceFullscreen = false;
+            if (_sourceFullscreenIcon != null)
+            {
+                _sourceFullscreenIcon.Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
+                    typeof(Microsoft.UI.Xaml.Media.Geometry), SourceFullscreenIconPath);
+            }
+        }
         var pane = new ArtifactViewerPane(
             id,
             this,
             onClose: CloseArtifactInline,
             onToggleFullscreen: ToggleStudioFullscreen);
         _activeArtifactPane = pane;
-        StudioDetailHost.Content = pane;
+        StudioDetailHost.Content = pane.Root;
         StudioHomeView.Visibility = Visibility.Collapsed;
         StudioDetailHost.Visibility = Visibility.Visible;
-        ApplyStudioLayout(opened: true, fullscreen: false);
+        ApplyPaneLayout();
     }
 
     private void CloseArtifactInline()
     {
-        _activeArtifactPane?.Dispose();
+        var old = _activeArtifactPane;
         _activeArtifactPane = null;
         _studioFullscreen = false;
-        StudioDetailHost.Content = null;
+        old?.Dispose();
         StudioDetailHost.Visibility = Visibility.Collapsed;
+        StudioDetailHost.Content = null;
         StudioHomeView.Visibility = Visibility.Visible;
-        ApplyStudioLayout(opened: false, fullscreen: false);
+        ApplyPaneLayout();
     }
 
     private void ToggleStudioFullscreen()
     {
         _studioFullscreen = !_studioFullscreen;
+        if (_studioFullscreen)
+        {
+            _sourceFullscreen = false;
+            if (_sourceFullscreenIcon != null)
+            {
+                _sourceFullscreenIcon.Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
+                    typeof(Microsoft.UI.Xaml.Media.Geometry), SourceFullscreenIconPath);
+            }
+        }
         _activeArtifactPane?.SetFullscreenIcon(_studioFullscreen);
-        ApplyStudioLayout(opened: true, fullscreen: _studioFullscreen);
+        ApplyPaneLayout();
     }
 
-    private void ApplyStudioLayout(bool opened, bool fullscreen)
+    private void ApplyPaneLayout()
     {
-        if (fullscreen)
+        var studioOpened = _activeArtifactPane != null;
+        if (_sourceFullscreen && _sourcePreviewOpen)
+        {
+            SourcesPaneBorder.Visibility = Visibility.Visible;
+            ChatPaneBorder.Visibility = Visibility.Collapsed;
+            StudioPaneBorder.Visibility = Visibility.Collapsed;
+            SourcesCol.Width = new GridLength(1, GridUnitType.Star);
+            ChatCol.Width = new GridLength(0);
+            StudioCol.Width = new GridLength(0);
+        }
+        else if (_studioFullscreen && studioOpened)
         {
             SourcesPaneBorder.Visibility = Visibility.Collapsed;
             ChatPaneBorder.Visibility = Visibility.Collapsed;
+            StudioPaneBorder.Visibility = Visibility.Visible;
             SourcesCol.Width = new GridLength(0);
             ChatCol.Width = new GridLength(0);
             StudioCol.Width = new GridLength(1, GridUnitType.Star);
-        }
-        else if (opened)
-        {
-            SourcesPaneBorder.Visibility = Visibility.Visible;
-            ChatPaneBorder.Visibility = Visibility.Visible;
-            SourcesCol.Width = new GridLength(260);
-            ChatCol.Width = new GridLength(1, GridUnitType.Star);
-            StudioCol.Width = new GridLength(1.65, GridUnitType.Star);
         }
         else
         {
             SourcesPaneBorder.Visibility = Visibility.Visible;
             ChatPaneBorder.Visibility = Visibility.Visible;
-            SourcesCol.Width = new GridLength(320);
-            ChatCol.Width = new GridLength(1, GridUnitType.Star);
-            StudioCol.Width = new GridLength(340);
+            StudioPaneBorder.Visibility = Visibility.Visible;
+            if (_sourcePreviewOpen && studioOpened)
+            {
+                SourcesCol.Width = new GridLength(1, GridUnitType.Star);
+                ChatCol.Width = new GridLength(1, GridUnitType.Star);
+                StudioCol.Width = new GridLength(1.2, GridUnitType.Star);
+            }
+            else if (_sourcePreviewOpen)
+            {
+                SourcesCol.Width = new GridLength(1.2, GridUnitType.Star);
+                ChatCol.Width = new GridLength(1.2, GridUnitType.Star);
+                StudioCol.Width = new GridLength(300);
+            }
+            else if (studioOpened)
+            {
+                SourcesCol.Width = new GridLength(260);
+                ChatCol.Width = new GridLength(1, GridUnitType.Star);
+                StudioCol.Width = new GridLength(1.65, GridUnitType.Star);
+            }
+            else
+            {
+                SourcesCol.Width = new GridLength(320);
+                ChatCol.Width = new GridLength(1, GridUnitType.Star);
+                StudioCol.Width = new GridLength(340);
+            }
         }
     }
 
@@ -247,22 +322,39 @@ public sealed partial class MainWindow
         var cfg = await ConfigureArtifactAsync(kind);
         if (cfg is not { } config) return;
         var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", kind), ("config", config)), $"生成{KindName(kind)}");
-        if (res != null) ShowStatus(InfoBarSeverity.Success, "已提交", $"{KindName(kind)}已加入生成队列，完成后点击“打开”查看。");
+        if (res != null) ShowStatus(InfoBarSeverity.Success, "已提交", $"{KindName(kind)}已加入后台生成队列，点击右侧卡片可实时查看思考过程。");
         await RefreshNotebookDataAsync();
     }
 
-    private async Task<JsonElement?> ConfigureArtifactAsync(string kind)
+    private async Task<JsonElement?> ConfigureArtifactAsync(string kind, JsonElement? initialConfig = null, bool isUpdate = false)
     {
         var panel = new StackPanel { Spacing = 10, MinWidth = 440 };
-        var topic = new TextBox { Header = "主题或要求（可选）", PlaceholderText = "例如：只关注第三章的基与维数" };
+        if (isUpdate)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = "将按以下要求与当前已勾选的来源重新生成此产物。",
+                FontSize = 12,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+        var topic = new TextBox
+        {
+            Header = "主题或要求（可选）",
+            PlaceholderText = "例如：只关注第三章的基与维数",
+            Text = initialConfig is { } ic0 ? Str(ic0, "topic") : "",
+        };
         var lang = new ComboBox { Header = "语言", HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var (label, tag) in new[] { ("跟随来源", ""), ("中文", "zh-CN"), ("English", "en") })
+        var initLang = initialConfig is { } ic1 ? Str(ic1, "lang") : "";
+        var langTags = new[] { ("跟随来源", ""), ("中文", "zh-CN"), ("English", "en") };
+        foreach (var (label, tag) in langTags)
             lang.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
-        lang.SelectedIndex = 0;
+        lang.SelectedIndex = Math.Max(0, Array.FindIndex(langTags, x => x.Item2 == initLang));
         panel.Children.Add(topic);
         panel.Children.Add(lang);
 
-        var count = new NumberBox { Header = kind == "flashcards" ? "卡片数量" : "题目数量", Value = kind == "flashcards" ? 20 : 10, Minimum = 3, Maximum = 50, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var count = new NumberBox { Header = kind == "flashcards" ? "卡片数量" : "题目数量", Value = kind == "flashcards" ? 10 : 5, Minimum = 3, Maximum = 50, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
         var difficulty = new ComboBox { Header = "难度", HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var (label, tag) in new[] { ("混合", "mixed"), ("简单", "easy"), ("中等", "medium"), ("困难", "hard") }) difficulty.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
         difficulty.SelectedIndex = 0;
@@ -294,7 +386,7 @@ public sealed partial class MainWindow
                 panel.Children.Add(variant);
                 break;
             case "slides":
-                slidePages = new NumberBox { Header = "页数（简短 8 页，默认 15 页）", Value = 15, Minimum = 4, Maximum = 40, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+                slidePages = new NumberBox { Header = "页数（默认 8 页，建议 6~12 页）", Value = 8, Minimum = 4, Maximum = 40, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
                 review = new CheckBox { Content = "先审核大纲再生成", IsChecked = true };
                 panel.Children.Add(slidePages);
                 panel.Children.Add(review);
@@ -320,7 +412,7 @@ public sealed partial class MainWindow
         panel.Children.Add(confirmBox);
 
         var needsConfirm = false;
-        var dlg = new ContentDialog { Title = $"生成{KindName(kind)}", Content = new ScrollViewer { Content = panel, MaxHeight = 560 }, PrimaryButtonText = "生成", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };
+        var dlg = new ContentDialog { Title = isUpdate ? $"更新{KindName(kind)}" : $"生成{KindName(kind)}", Content = new ScrollViewer { Content = panel, MaxHeight = 560 }, PrimaryButtonText = isUpdate ? "更新生成" : "生成", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };
         dlg.Opened += async (_, _) =>
         {
             var est = await Api.CallAsync("studio.estimate", Args(("notebook_id", _activeNotebookId), ("artifact_type", kind)));

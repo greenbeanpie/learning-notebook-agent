@@ -1,15 +1,23 @@
+pub mod ai_indexer;
 pub mod chunker;
+pub mod formats;
+pub mod media;
+pub mod office;
 pub mod parser;
 pub mod ssrf;
+pub mod win_ocr;
 
 use lna_embedding::EmbeddingService;
 use lna_jobs::JobQueue;
+use lna_llm::LlmClient;
 use lna_retrieval::tokenize_for_fts;
+use lna_secrets::SecretStore;
 use lna_storage::{db::map_sql_err, Database};
 use lna_types::{new_ulid, now_ms, ErrorCode, LnaError, LnaResult, Source, SourceKind};
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const MAX_SOURCES_PER_NOTEBOOK: i64 = 300;
 const MAX_FILE_BYTES: u64 = 200 * 1024 * 1024;
@@ -20,14 +28,24 @@ pub struct IngestService {
     db: Database,
     jobs: JobQueue,
     embedding: EmbeddingService,
+    llm: LlmClient,
+    secrets: Arc<dyn SecretStore>,
 }
 
 impl IngestService {
-    pub fn new(db: Database, jobs: JobQueue, embedding: EmbeddingService) -> Self {
+    pub fn new(
+        db: Database,
+        jobs: JobQueue,
+        embedding: EmbeddingService,
+        llm: LlmClient,
+        secrets: Arc<dyn SecretStore>,
+    ) -> Self {
         Self {
             db,
             jobs,
             embedding,
+            llm,
+            secrets,
         }
     }
 
@@ -44,11 +62,12 @@ impl IngestService {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
-        let kind = match ext.as_str() {
-            "pdf" => SourceKind::Pdf,
-            "md" | "markdown" => SourceKind::Md,
-            "txt" => SourceKind::Txt,
-            _ => {
+        let bytes = std::fs::read(file_path).map_err(|e| LnaError::internal(e.to_string()))?;
+
+        let kind = match formats::classify_extension(&ext) {
+            Some(k) => k,
+            None if formats::is_probably_plain_text(&bytes) => SourceKind::Txt,
+            None => {
                 return Err(LnaError::new(
                     ErrorCode::SourceUnsupported,
                     format!("Unsupported file extension: .{ext}"),
@@ -56,14 +75,21 @@ impl IngestService {
             }
         };
 
-        let bytes = std::fs::read(file_path).map_err(|e| LnaError::internal(e.to_string()))?;
+        if formats::is_audio_or_video(kind) && !media::is_audio_video_enabled(&self.db) {
+            return Err(LnaError::new(
+                ErrorCode::SourceUnsupported,
+                "已在设置中关闭音视频文件处理，如需导入请在“模型协议配置”中开启。",
+            ));
+        }
+
         let title = file_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("Untitled")
             .to_string();
+        let blob_ext = if ext.is_empty() { "txt" } else { ext.as_str() };
 
-        self.enqueue_bytes(notebook_id, &title, kind, &ext, None, &bytes)
+        self.enqueue_bytes(notebook_id, &title, kind, blob_ext, None, &bytes)
     }
 
     pub fn add_text(
@@ -151,13 +177,7 @@ impl IngestService {
         std::fs::write(&blob_path, bytes).map_err(|e| LnaError::internal(e.to_string()))?;
 
         let now = now_ms();
-        let kind_str = match kind {
-            SourceKind::Pdf => "pdf",
-            SourceKind::Md => "md",
-            SourceKind::Txt => "txt",
-            SourceKind::Web => "web",
-            SourceKind::Note => "note",
-        };
+        let kind_str = kind.as_str();
         let bp_str = blob_path.to_string_lossy().to_string();
 
         self.db.write(|conn| {
@@ -198,44 +218,274 @@ impl IngestService {
         self.update_status(source_id, "PARSING", None, None)?;
 
         let bp = PathBuf::from(blob_path);
+        let ext = bp
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let kind = src.kind;
-        let parsed = tokio::task::spawn_blocking(move || match kind {
-            SourceKind::Pdf => parser::parse_pdf(&bp),
-            SourceKind::Md | SourceKind::Note => {
-                let bytes = std::fs::read(&bp).map_err(|e| LnaError::internal(e.to_string()))?;
-                Ok(parser::parse_markdown(&parser::decode_text_bytes(&bytes)))
-            }
-            SourceKind::Txt => {
-                let bytes = std::fs::read(&bp).map_err(|e| LnaError::internal(e.to_string()))?;
-                Ok(parser::parse_plain_text(&parser::decode_text_bytes(&bytes)))
-            }
-            SourceKind::Web => {
-                let bytes = std::fs::read(&bp).map_err(|e| LnaError::internal(e.to_string()))?;
-                Ok(parser::parse_html(&parser::decode_text_bytes(&bytes)))
-            }
-        })
-        .await
-        .map_err(|e| {
-            let msg = format!("Parser worker panicked or was cancelled: {e}");
-            let _ = self.update_status(source_id, "FAILED", Some("INTERNAL"), Some(&msg));
-            LnaError::internal(msg)
-        })?;
 
-        let doc = match parsed {
-            Ok(d) => d,
-            Err(e) => {
-                let _ = self.update_status(
-                    source_id,
-                    "FAILED",
-                    Some(e.code.as_str()),
-                    Some(&e.message),
+        let mut precomputed_ai_index: Option<ai_indexer::AiIndexOutput> = None;
+
+        let parsed: LnaResult<parser::ParsedDoc> = match kind {
+            SourceKind::Pdf => {
+                let bp_clone = bp.clone();
+                let ext_res = tokio::task::spawn_blocking(move || parser::parse_pdf_detailed(&bp_clone))
+                    .await
+                    .map_err(|e| LnaError::internal(format!("Parser worker panicked or was cancelled: {e}")))
+                    .and_then(|r| r);
+
+                match ext_res {
+                    Ok(mut extract) => {
+                        media::write_media_index(
+                            &bp,
+                            &media::MediaIndex {
+                                source_id: src.id.clone(),
+                                kind: "pdf".into(),
+                                page_count: extract.doc.page_count,
+                                ocr_pages: extract.ocr_needed_pages.clone(),
+                                pdf_pages: extract.page_meta.clone(),
+                                embedded_images: Vec::new(),
+                            },
+                        );
+                        // For pure-scanned PDFs (no selectable text layer):
+                        // Use low-token AI Vision TOC indexing (front pages only for large books;
+                        // body pages are read on-demand during chat and permanently cached).
+                        if extract.doc.blocks.is_empty() && !extract.ocr_needed_pages.is_empty() {
+                            let total_pages = extract.doc.page_count.unwrap_or(extract.page_meta.len() as i64).max(1) as u32;
+                            match ai_indexer::run_ai_vision_toc_index(
+                                &self.db,
+                                &self.secrets,
+                                &self.llm,
+                                &src,
+                                &bp,
+                                total_pages,
+                                &extract.ocr_needed_pages,
+                            )
+                            .await
+                            {
+                                Ok(Some(ai_out)) => {
+                                    if !ai_out.scanned_page_texts.is_empty() {
+                                        let mut cur = 0usize;
+                                        for (pno, txt) in &ai_out.scanned_page_texts {
+                                            let start = cur;
+                                            cur += txt.len();
+                                            extract.doc.blocks.push(parser::Block {
+                                                kind: parser::BlockKind::Paragraph,
+                                                text: txt.clone(),
+                                                page: Some(*pno),
+                                                section_path: vec![],
+                                                char_range: start..cur,
+                                            });
+                                        }
+                                    } else {
+                                        extract.doc.blocks = ai_indexer::build_scanned_stub_blocks(
+                                            &ai_out.nodes,
+                                            &extract.page_meta,
+                                        );
+                                    }
+                                    precomputed_ai_index = Some(ai_out);
+                                }
+                                Ok(None) | Err(_) => {
+                                    // Fallback to local OCR when no vision model is configured
+                                    if let Ok(ocr_blocks) = media::ocr_pdf_pages(
+                                        &self.db,
+                                        &self.secrets,
+                                        &self.llm,
+                                        &src,
+                                        &bp,
+                                        &extract.ocr_needed_pages,
+                                        &extract.page_meta,
+                                    )
+                                    .await
+                                    {
+                                        extract.doc.blocks.extend(ocr_blocks);
+                                    }
+                                }
+                            }
+                            if !extract.doc.blocks.is_empty() {
+                                extract.doc.blocks.sort_by_key(|b| b.page.unwrap_or(0));
+                                let sample = extract
+                                    .doc
+                                    .blocks
+                                    .iter()
+                                    .take(5)
+                                    .map(|b| b.text.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                if !sample.is_empty() {
+                                    extract.doc.language = Some(parser::detect_language(&sample));
+                                }
+                            }
+                        }
+                        if extract.doc.blocks.is_empty() && !extract.ocr_needed_pages.is_empty() {
+                            Err(LnaError::new(
+                                ErrorCode::SourceNeedsOcr,
+                                "扫描版 PDF 未提取到文字，请在“模型协议配置”中为视觉模型勾选“用于处理图文”后重试",
+                            ))
+                        } else {
+                            Ok(extract.doc)
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            SourceKind::Image => {
+                media::write_media_index(
+                    &bp,
+                    &media::MediaIndex {
+                        source_id: src.id.clone(),
+                        kind: "image".into(),
+                        page_count: Some(1),
+                        ocr_pages: vec![],
+                        pdf_pages: vec![],
+                        embedded_images: vec![],
+                    },
                 );
-                return Err(e);
+                media::ingest_image(&self.db, &self.secrets, &self.llm, &src, &bp, &ext).await
+            }
+            SourceKind::Audio | SourceKind::Video => {
+                media::ingest_audio_video(&self.db, &self.secrets, &self.llm, &src, &bp, &ext).await
+            }
+            SourceKind::Docx
+            | SourceKind::Pptx
+            | SourceKind::Epub
+            | SourceKind::Odt
+            | SourceKind::Hwpx => {
+                let bp_clone = bp.clone();
+                let rich_res = tokio::task::spawn_blocking(move || match kind {
+                    SourceKind::Docx => office::parse_docx(&bp_clone),
+                    SourceKind::Pptx => office::parse_pptx(&bp_clone),
+                    SourceKind::Epub => office::parse_epub(&bp_clone),
+                    SourceKind::Odt => office::parse_odt(&bp_clone),
+                    SourceKind::Hwpx => office::parse_hwpx(&bp_clone),
+                    _ => unreachable!(),
+                })
+                .await
+                .map_err(|e| LnaError::internal(format!("Parser worker panicked: {e}")))
+                .and_then(|r| r);
+
+                match rich_res {
+                    Ok(mut rich) => {
+                        let imgs = rich.embedded_images.clone();
+                        media::write_media_index(
+                            &bp,
+                            &media::MediaIndex {
+                                source_id: src.id.clone(),
+                                kind: kind.as_str().into(),
+                                page_count: rich.doc.page_count,
+                                ocr_pages: vec![],
+                                pdf_pages: vec![],
+                                embedded_images: imgs.clone(),
+                            },
+                        );
+                        if rich.doc.blocks.is_empty() && !imgs.is_empty() {
+                            let mut image_payloads = Vec::new();
+                            for im in imgs.iter().take(6) {
+                                if let Ok(bytes) =
+                                    office::extract_zip_embedded_image(&bp, &im.zip_entry)
+                                {
+                                    let im_ext = im
+                                        .zip_entry
+                                        .rsplit('.')
+                                        .next()
+                                        .unwrap_or("png")
+                                        .to_string();
+                                    let label = im
+                                        .page
+                                        .map(|p| format!("第 {p} 页图片 {}", im.id))
+                                        .unwrap_or_else(|| format!("图片 {}", im.id));
+                                    image_payloads.push((label, im_ext, bytes));
+                                }
+                            }
+                            if !image_payloads.is_empty() {
+                                if let Ok(vis_txt) = media::vision_inspect_images(
+                                    &self.db,
+                                    &self.secrets,
+                                    &self.llm,
+                                    &src.notebook_id,
+                                    image_payloads,
+                                    "请提取以上文档图片中的全部文字与关键内容摘要。",
+                                )
+                                .await
+                                {
+                                    let parsed_md = parser::parse_markdown(&vis_txt);
+                                    rich.doc.blocks = parsed_md.blocks;
+                                    rich.doc.language = parsed_md.language;
+                                }
+                            }
+                        }
+                        Ok(rich.doc)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            SourceKind::Csv | SourceKind::Rtf | SourceKind::Hwp | SourceKind::Md | SourceKind::Note
+            | SourceKind::Txt | SourceKind::Web => {
+                let bp_clone = bp.clone();
+                let ext_clone = ext.clone();
+                tokio::task::spawn_blocking(move || match kind {
+                    SourceKind::Csv => {
+                        let bytes =
+                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        office::parse_csv(&bytes)
+                    }
+                    SourceKind::Rtf => {
+                        let bytes =
+                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        office::parse_rtf(&bytes)
+                    }
+                    SourceKind::Hwp => office::parse_hwp(&bp_clone),
+                    SourceKind::Md | SourceKind::Note => {
+                        let bytes =
+                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        Ok(parser::parse_markdown(&parser::decode_text_bytes(&bytes)))
+                    }
+                    SourceKind::Txt => {
+                        let bytes =
+                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        let text = parser::decode_text_bytes(&bytes);
+                        if matches!(ext_clone.as_str(), "html" | "htm" | "xhtml") {
+                            Ok(parser::parse_html(&text))
+                        } else if matches!(ext_clone.as_str(), "md" | "markdown" | "mdx") {
+                            Ok(parser::parse_markdown(&text))
+                        } else {
+                            Ok(parser::parse_plain_text(&text))
+                        }
+                    }
+                    SourceKind::Web => {
+                        let bytes =
+                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        Ok(parser::parse_html(&parser::decode_text_bytes(&bytes)))
+                    }
+                    _ => unreachable!(),
+                })
+                .await
+                .map_err(|e| LnaError::internal(format!("Parser worker panicked or was cancelled: {e}")))
+                .and_then(|r| r)
             }
         };
 
+        let doc = match parsed {
+            Ok(d) => d,
+            Err(e) => return Err(self.fail_ingest(source_id, e)),
+        };
+
         self.update_status(source_id, "CHUNKING", None, None)?;
-        let drafts = chunker::chunk_document(&doc);
+
+        // Stage 1: AI-driven structural indexing & Source Guide (1 low-token call)
+        let ai_index = match precomputed_ai_index {
+            Some(pre) => Some(pre),
+            None => match ai_indexer::run_ai_index_for_doc(&self.db, &self.secrets, &self.llm, &src, &doc).await {
+                Ok(opt) => opt,
+                Err(e) => {
+                    tracing::warn!(source_id, error = %e.message, "AI structural indexing failed; continuing with physical anchors");
+                    None
+                }
+            },
+        };
+
+        let mut drafts = chunker::chunk_document(&doc);
         if drafts.is_empty() {
             let e = LnaError::new(
                 ErrorCode::SourceUnsupported,
@@ -245,6 +495,18 @@ impl IngestService {
                 self.update_status(source_id, "FAILED", Some(e.code.as_str()), Some(&e.message));
             return Err(e);
         }
+
+        if let Some(ref ai) = ai_index {
+            ai_indexer::align_chunks_to_nodes(&mut drafts, &ai.nodes);
+            let _ = lna_storage::replace_source_index_nodes(&self.db, source_id, &ai.nodes);
+            let guide_md = if ai.guide_summary_md.trim().is_empty() {
+                None
+            } else {
+                Some(ai.guide_summary_md.as_str())
+            };
+            let _ = lna_storage::update_source_guide(&self.db, source_id, guide_md, &ai.guide_topics, true);
+        }
+
         let total_tokens: i64 = drafts.iter().map(|c| c.token_count as i64).sum();
 
         self.db.write(|conn| {
@@ -254,8 +516,8 @@ impl IngestService {
             for c in &drafts {
                 tx.execute(
                     "INSERT INTO source_chunks
-                     (source_id, notebook_id, chunk_index, section_path, page_start, page_end, char_start, char_end, content, token_count)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                     (source_id, notebook_id, chunk_index, section_path, page_start, page_end, char_start, char_end, content, token_count, node_id)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                     params![
                         source_id,
                         src.notebook_id,
@@ -266,7 +528,8 @@ impl IngestService {
                         c.char_start,
                         c.char_end,
                         c.content,
-                        c.token_count
+                        c.token_count,
+                        c.node_id
                     ],
                 )
                 .map_err(map_sql_err)?;
@@ -409,6 +672,95 @@ impl IngestService {
         })
     }
 
+    /// On-demand AI Source Guide & Hierarchical Index generation (useful for legacy sources
+    /// imported before an AI model was configured).
+    pub async fn regenerate_source_guide(&self, source_id: &str) -> LnaResult<Source> {
+        let src = lna_storage::get_source(&self.db, source_id)?;
+        let chunks = self.source_preview(source_id, None)?;
+        if chunks.is_empty() {
+            return Err(LnaError::invalid("该来源暂无已索引内容，无法生成来源指南"));
+        }
+        let blocks: Vec<parser::Block> = chunks
+            .iter()
+            .map(|c| parser::Block {
+                kind: parser::BlockKind::Paragraph,
+                text: c.content.clone(),
+                page: c.page_start.map(|p| p.max(1) as u32),
+                section_path: c
+                    .section_path
+                    .as_deref()
+                    .map(|s| s.split(" > ").map(str::to_string).collect())
+                    .unwrap_or_default(),
+                char_range: (c.char_start.max(0) as usize)..(c.char_end.max(0) as usize),
+            })
+            .collect();
+        let doc = parser::ParsedDoc {
+            title: Some(src.title.clone()),
+            language: src.language.clone(),
+            page_count: src.page_count,
+            blocks,
+        };
+        let ai = ai_indexer::run_ai_index_for_doc(&self.db, &self.secrets, &self.llm, &src, &doc)
+            .await?
+            .ok_or_else(|| {
+                LnaError::new(
+                    ErrorCode::ModelNotConfigured,
+                    "请先在“模型协议配置”中配置并启用可用的 AI 模型",
+                )
+            })?;
+        lna_storage::replace_source_index_nodes(&self.db, source_id, &ai.nodes)?;
+        let guide_md = if ai.guide_summary_md.trim().is_empty() {
+            None
+        } else {
+            Some(ai.guide_summary_md.as_str())
+        };
+        lna_storage::update_source_guide(&self.db, source_id, guide_md, &ai.guide_topics, true)?;
+
+        // Backfill node_id on existing chunks
+        let mut drafts: Vec<chunker::ChunkDraft> = chunks
+            .iter()
+            .map(|c| chunker::ChunkDraft {
+                chunk_index: c.chunk_index,
+                section_path: c.section_path.clone(),
+                node_id: None,
+                page_start: c.page_start,
+                page_end: c.page_end,
+                char_start: c.char_start,
+                char_end: c.char_end,
+                content: c.content.clone(),
+                token_count: c.token_count,
+            })
+            .collect();
+        ai_indexer::align_chunks_to_nodes(&mut drafts, &ai.nodes);
+        self.db.write(|conn| {
+            let tx = conn.transaction().map_err(map_sql_err)?;
+            for (c, d) in chunks.iter().zip(drafts.iter()) {
+                tx.execute(
+                    "UPDATE source_chunks SET node_id = ?1, section_path = COALESCE(?2, section_path) WHERE id = ?3",
+                    params![d.node_id, d.section_path, c.id],
+                )
+                .map_err(map_sql_err)?;
+            }
+            tx.commit().map_err(map_sql_err)?;
+            Ok(())
+        })?;
+
+        lna_storage::get_source(&self.db, source_id)
+    }
+
+    /// Returns (and lazily generates) a local HTML preview path for Office / EPUB / CSV / RTF sources.
+    pub fn ensure_preview_html(&self, source_id: &str) -> LnaResult<Option<PathBuf>> {
+        let src = lna_storage::get_source(&self.db, source_id)?;
+        let Some(bp) = src.blob_path.as_deref() else {
+            return Ok(None);
+        };
+        let path = Path::new(bp);
+        if !path.exists() {
+            return Ok(None);
+        }
+        ai_indexer::ensure_preview_html(&src, path)
+    }
+
     /// B6/S3: Remove orphan blob directories whose source_id no longer exists in DB.
     pub fn cleanup_orphan_files(db: &Database) -> LnaResult<usize> {
         let mut removed = 0usize;
@@ -441,6 +793,16 @@ impl IngestService {
             }
         }
         Ok(removed)
+    }
+
+    fn fail_ingest(&self, source_id: &str, e: LnaError) -> LnaError {
+        let _ = self.update_status(
+            source_id,
+            "FAILED",
+            Some(e.code.as_str()),
+            Some(&e.message),
+        );
+        e
     }
 
     fn update_status(

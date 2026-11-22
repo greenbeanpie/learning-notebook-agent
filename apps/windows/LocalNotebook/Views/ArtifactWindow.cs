@@ -18,7 +18,7 @@ namespace LocalNotebook.Views;
 /// Supports fullscreen toggle, Infographic zoomable canvas (Requirement 4), Report TOC+Content (Requirement 4),
 /// Slides Markdown outline review without raw JSON (Requirement 5), and zero emojis (Requirement 6).
 /// </summary>
-public sealed class ArtifactViewerPane : Grid, IDisposable
+public sealed class ArtifactViewerPane : IDisposable
 {
     private const string FullscreenIconPath = "M5,5H10V7H7V10H5V5M14,5H19V10H17V7H14V5M17,14H19V19H14V17H17V14M10,17V19H5V14H7V17H10Z";
     private const string ExitFullscreenIconPath = "M14,14H19V16H16V19H14V14M5,14H10V19H8V16H5V14M8,5H10V10H5V8H8V5M19,8V10H14V5H16V8H19Z";
@@ -29,6 +29,10 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
     private const string CrossIconPath = "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
     private const string PrevIconPath = "M15.41,16.58L10.83,12L15.41,7.41L14,6L8,12L14,18L15.41,16.58Z";
     private const string NextIconPath = "M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z";
+    private const string PlusIconPath = "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z";
+    private const string MinusIconPath = "M19,13H5V11H19V13Z";
+
+    public Grid Root { get; } = new();
 
     private readonly string _id;
     private readonly Window _hostWindow;
@@ -37,13 +41,23 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
     private readonly TextBlock _title = new() { FontSize = 17, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _sourceBadge = new() { FontSize = 11, Foreground = (Brush)Application.Current.Resources["TextMutedBrush"], VerticalAlignment = VerticalAlignment.Center };
     private readonly StackPanel _tools = new() { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
-    private readonly PathIcon _fullscreenIcon = new() { Data = Geom(FullscreenIconPath) };
+    private PathIcon? _fullscreenIcon;
+    private bool _isFullscreen;
     private readonly ContentControl _body = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
     private readonly InfoBar _bar = new() { IsOpen = false, IsClosable = true };
     private JsonElement _art;
     private string _builtFor = "";
-    private Windows.Media.Playback.MediaPlayer? _player;
-    private DispatcherTimer? _audioTimer;
+    private string _builtStatus = "";
+    private bool _showingThoughts;
+    private InteractiveArtifactView? _interactiveView;
+    private TextBlock? _genStageText;
+    private ProgressBar? _genProgressBar;
+    private Button? _genCancelBtn;
+    private ScrollViewer? _thoughtScroll;
+    private StackPanel? _thoughtPanel;
+    private TextBlock? _thoughtEmptyHint;
+    private readonly Dictionary<int, TextBlock> _thoughtBodyBySeq = new();
+    private bool _disposed;
 
     private static Geometry Geom(string path) =>
         (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), path);
@@ -55,10 +69,10 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
         _onClose = onClose;
         _onToggleFullscreen = onToggleFullscreen;
 
-        RowSpacing = 10;
-        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Root.RowSpacing = 10;
+        Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var head = new Grid { ColumnSpacing = 10 };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -71,13 +85,13 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
 
         Grid.SetColumn(_tools, 1);
         head.Children.Add(_tools);
-        Children.Add(head);
+        Root.Children.Add(head);
 
         Grid.SetRow(_body, 1);
-        Children.Add(_body);
+        Root.Children.Add(_body);
 
         Grid.SetRow(_bar, 2);
-        Children.Add(_bar);
+        Root.Children.Add(_bar);
 
         App.Core.EventReceived += OnEvent;
         _ = LoadAsync();
@@ -85,21 +99,72 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
 
     public void SetFullscreenIcon(bool isFullscreen)
     {
-        _fullscreenIcon.Data = Geom(isFullscreen ? ExitFullscreenIconPath : FullscreenIconPath);
+        _isFullscreen = isFullscreen;
+        if (_fullscreenIcon != null)
+        {
+            _fullscreenIcon.Data = Geom(isFullscreen ? ExitFullscreenIconPath : FullscreenIconPath);
+        }
     }
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         App.Core.EventReceived -= OnEvent;
-        _audioTimer?.Stop();
-        _player?.Dispose();
-        _player = null;
+        _interactiveView?.Dispose();
+        _interactiveView = null;
+        _thoughtBodyBySeq.Clear();
+        _thoughtPanel = null;
+        _thoughtScroll = null;
+        _thoughtEmptyHint = null;
+        _genStageText = null;
+        _genProgressBar = null;
+        _genCancelBtn = null;
+        try { _body.Content = null; } catch { }
+        try { Root.Children.Clear(); } catch { }
     }
 
     private void OnEvent(Interop.ApiEventDto ev)
     {
-        if (ev.Event != "studio.status" || Str(ev.Data, "artifact_id") != _id) return;
-        DispatcherQueue.TryEnqueue(async () => await LoadAsync());
+        if (_disposed || Str(ev.Data, "artifact_id") != _id) return;
+        if (ev.Event == "studio.thought")
+        {
+            var data = ev.Data.Clone();
+            _hostWindow.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!_disposed) HandleThoughtAdded(data);
+            });
+            return;
+        }
+        if (ev.Event == "studio.thought_delta")
+        {
+            var data = ev.Data.Clone();
+            _hostWindow.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!_disposed) HandleThoughtDelta(data);
+            });
+            return;
+        }
+        if (ev.Event != "studio.status") return;
+        var stData = ev.Data.Clone();
+        _hostWindow.DispatcherQueue.TryEnqueue(async () =>
+        {
+            if (_disposed) return;
+            var status = Str(stData, "status");
+            var stage = Str(stData, "stage");
+            var progress = Num(stData, "progress");
+            if (_builtStatus is "PENDING" or "RUNNING"
+                && status is "PENDING" or "RUNNING"
+                && _genStageText != null
+                && _genProgressBar != null)
+            {
+                _genStageText.Text = FormatGenStage(status, stage);
+                _genProgressBar.IsIndeterminate = progress <= 0.01;
+                _genProgressBar.Value = progress * 100;
+                return;
+            }
+            await LoadAsync();
+        });
     }
 
     private void Say(InfoBarSeverity sev, string title, string msg)
@@ -123,8 +188,9 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
 
     private async Task LoadAsync()
     {
+        if (_disposed) return;
         var res = await Core("studio.get", Args(("artifact_id", _id)), "读取产物");
-        if (res is not { } a) return;
+        if (_disposed || res is not { } a) return;
         _art = a;
         _title.Text = Str(a, "title");
         var srcCount = Arr(a, "source_ids").Count();
@@ -135,30 +201,417 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
         var key = $"{status}:{Str(a, "updated_at")}:{Int(a, "updated_at")}";
         if (key == _builtFor) return;
         _builtFor = key;
+        if (_builtStatus != status) _showingThoughts = false;
+        _builtStatus = status;
+
         BuildTools(kind, status);
+        RenderCurrentBody(kind, status, a);
+    }
+
+    private void RenderCurrentBody(string kind, string status, JsonElement a)
+    {
+        _interactiveView?.Dispose();
+        _interactiveView = null;
+        _thoughtBodyBySeq.Clear();
+        _thoughtPanel = null;
+        _thoughtScroll = null;
+        _thoughtEmptyHint = null;
+        _genStageText = null;
+        _genProgressBar = null;
+        _genCancelBtn = null;
+
+        if (status == "READY")
+        {
+            if (_showingThoughts)
+            {
+                _body.Content = BuildRecordedThoughtsView(a, headerText: "生成思考与执行过程");
+                return;
+            }
+            _interactiveView = new InteractiveArtifactView(
+                _id, kind, a, _hostWindow, Say, compact: false, feedbackBar: BuildFeedbackBar());
+            _body.Content = _interactiveView.Root;
+            return;
+        }
+
         _body.Content = status switch
         {
-            "READY" => BuildViewer(kind, Obj(a, "payload")),
             "DRAFT_REVIEW" => BuildDraftReview(a),
-            "FAILED" => Message($"生成失败：{(Advice(Str(a, "error_code")) is { Length: > 0 } adv ? adv : Str(a, "error_detail"))}"),
-            "CANCELLED" => Message("已取消。"),
-            _ => Message("正在生成，请稍候…完成后这里会自动显示。"),
+            "FAILED" => BuildFailedView(a),
+            "CANCELLED" => BuildCancelledView(a),
+            _ => BuildGeneratingView(a),
         };
     }
 
-    private static FrameworkElement Message(string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 20, 0, 0) };
-
-    private static Button IconBtn(string path, string tip, RoutedEventHandler onClick, PathIcon? iconOverride = null)
+    private static string FormatGenStage(string status, string stage) => status switch
     {
-        var icon = iconOverride ?? new PathIcon { Data = Geom(path) };
-        icon.Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"];
+        "PENDING" => "正在排队等待后台工作线程处理…",
+        _ => stage switch
+        {
+            "COLLECT" => "步骤 1/3 · 正在检索与整理来源资料…",
+            "PLAN" => "步骤 2/3 · 正在规划大纲结构…",
+            "GENERATE" => "步骤 2/3 · 正在思考并生成结构化内容…",
+            "RENDER" => "步骤 3/3 · 正在渲染输出文件…",
+            _ => "正在后台处理中…",
+        },
+    };
+
+    private FrameworkElement BuildGeneratingView(JsonElement art)
+    {
+        var grid = new Grid { RowSpacing = 12 };
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        var status = Str(art, "status");
+        var stage = Str(art, "stage");
+        var progress = Num(art, "progress");
+
+        var topCard = new Border
+        {
+            Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14),
+        };
+        var topStack = new StackPanel { Spacing = 8 };
+        var topRow = new Grid { ColumnSpacing = 10 };
+        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        _genStageText = new TextBlock
+        {
+            Text = FormatGenStage(status, stage),
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        topRow.Children.Add(_genStageText);
+
+        _genCancelBtn = new Button
+        {
+            Content = "取消生成",
+            Style = (Style)Application.Current.Resources["PillButtonStyle"],
+            MinHeight = 30,
+            Padding = new Thickness(12, 4, 12, 4),
+            FontSize = 12,
+        };
+        _genCancelBtn.Click += async (_, _) =>
+        {
+            if (_genCancelBtn != null) _genCancelBtn.IsEnabled = false;
+            await Core("studio.cancel", Args(("artifact_id", _id)), "取消");
+            await LoadAsync();
+        };
+        Grid.SetColumn(_genCancelBtn, 1);
+        topRow.Children.Add(_genCancelBtn);
+        topStack.Children.Add(topRow);
+
+        _genProgressBar = new ProgressBar
+        {
+            IsIndeterminate = progress <= 0.01,
+            Value = progress * 100,
+            Maximum = 100,
+        };
+        topStack.Children.Add(_genProgressBar);
+        topCard.Child = topStack;
+        grid.Children.Add(topCard);
+
+        var processGrid = new Grid { RowSpacing = 8 };
+        processGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        processGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        processGrid.Children.Add(new TextBlock
+        {
+            Text = "思考与执行过程",
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
+        });
+
+        _thoughtPanel = new StackPanel { Spacing = 8, Margin = new Thickness(0, 0, 8, 8) };
+        foreach (var t in Arr(art, "thoughts"))
+        {
+            AppendThoughtCard((int)Int(t, "seq"), Str(t, "kind"), Str(t, "title"), Str(t, "body"), scroll: false);
+        }
+        if (_thoughtPanel.Children.Count == 0)
+        {
+            _thoughtEmptyHint = new TextBlock
+            {
+                Text = "等待后台任务开始输出过程与思考内容…",
+                FontSize = 12,
+                Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
+            };
+            _thoughtPanel.Children.Add(_thoughtEmptyHint);
+        }
+
+        _thoughtScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = _thoughtPanel,
+        };
+        Grid.SetRow(_thoughtScroll, 1);
+        processGrid.Children.Add(_thoughtScroll);
+
+        Grid.SetRow(processGrid, 1);
+        grid.Children.Add(processGrid);
+        return grid;
+    }
+
+    private void HandleThoughtAdded(JsonElement data)
+    {
+        if (_thoughtPanel == null)
+        {
+            if (_builtStatus is "PENDING" or "RUNNING")
+                _ = LoadAsync();
+            return;
+        }
+        var seq = (int)Int(data, "seq");
+        var kind = Str(data, "kind");
+        var title = Str(data, "title");
+        var body = Str(data, "body");
+        AppendThoughtCard(seq, kind, title, body, scroll: true);
+    }
+
+    private void HandleThoughtDelta(JsonElement data)
+    {
+        var seq = (int)Int(data, "seq");
+        var delta = Str(data, "delta");
+        if (delta.Length == 0) return;
+        if (_thoughtBodyBySeq.TryGetValue(seq, out var tb))
+        {
+            tb.Text += delta;
+            tb.Visibility = Visibility.Visible;
+            if (_thoughtScroll != null)
+            {
+                _thoughtScroll.UpdateLayout();
+                _thoughtScroll.ChangeView(null, _thoughtScroll.ScrollableHeight, null, disableAnimation: true);
+            }
+            return;
+        }
+        if (_builtStatus is "PENDING" or "RUNNING")
+            _ = LoadAsync();
+    }
+
+    private void AppendThoughtCard(int seq, string kind, string title, string body, bool scroll)
+    {
+        if (_thoughtPanel == null) return;
+        if (_thoughtEmptyHint != null)
+        {
+            _thoughtPanel.Children.Remove(_thoughtEmptyHint);
+            _thoughtEmptyHint = null;
+        }
+        if (seq > 0 && _thoughtBodyBySeq.TryGetValue(seq, out var existingBody))
+        {
+            if (body.Length > existingBody.Text.Length)
+            {
+                existingBody.Text = body;
+                existingBody.Visibility = Visibility.Visible;
+            }
+            return;
+        }
+
+        var (card, bodyTb) = BuildThoughtCard(kind, title, body);
+        if (seq > 0) _thoughtBodyBySeq[seq] = bodyTb;
+        _thoughtPanel.Children.Add(card);
+        if (scroll && _thoughtScroll != null)
+        {
+            _thoughtScroll.UpdateLayout();
+            _thoughtScroll.ChangeView(null, _thoughtScroll.ScrollableHeight, null, disableAnimation: true);
+        }
+    }
+
+    private static (Border Card, TextBlock BodyBlock) BuildThoughtCard(string kind, string title, string body)
+    {
+        var accentColor = kind switch
+        {
+            "retry" => Windows.UI.Color.FromArgb(255, 253, 214, 99),
+            "error" => Windows.UI.Color.FromArgb(255, 242, 139, 130),
+            "reasoning" => Windows.UI.Color.FromArgb(255, 168, 199, 250),
+            _ => Windows.UI.Color.FromArgb(255, 129, 201, 149),
+        };
+        var bodyTb = new TextBlock
+        {
+            Text = body,
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+            Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
+            Visibility = body.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
+        };
+
+        var stack = new StackPanel { Spacing = 4 };
+        var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        head.Children.Add(new Border
+        {
+            Width = 6,
+            Height = 6,
+            CornerRadius = new CornerRadius(3),
+            Background = new SolidColorBrush(accentColor),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        head.Children.Add(new TextBlock
+        {
+            Text = title.Length > 0 ? title : kind,
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        stack.Children.Add(head);
+        stack.Children.Add(bodyTb);
+
+        var card = new Border
+        {
+            Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12, 8, 12, 8),
+            Child = stack,
+        };
+        return (card, bodyTb);
+    }
+
+    private FrameworkElement BuildRecordedThoughtsView(JsonElement art, string headerText)
+    {
+        var root = new StackPanel { Spacing = 10, Margin = new Thickness(0, 4, 8, 8) };
+        root.Children.Add(new TextBlock
+        {
+            Text = headerText,
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
+        });
+        var thoughts = Arr(art, "thoughts").ToList();
+        if (thoughts.Count == 0)
+        {
+            root.Children.Add(new TextBlock
+            {
+                Text = "该产物未记录详细思考步骤。",
+                FontSize = 12,
+                Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
+            });
+        }
+        else
+        {
+            foreach (var t in thoughts)
+            {
+                root.Children.Add(BuildThoughtCard(Str(t, "kind"), Str(t, "title"), Str(t, "body")).Card);
+            }
+        }
+        return new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = root,
+        };
+    }
+
+    private FrameworkElement BuildFailedView(JsonElement art)
+    {
+        var root = new StackPanel { Spacing = 14, Margin = new Thickness(0, 4, 8, 8) };
+        var errBox = new Border
+        {
+            Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14),
+            Child = ArtifactErrorPanel.Build(art, Say, RetryAsync, onViewProcess: null, compact: false),
+        };
+        root.Children.Add(errBox);
+
+        var thoughts = Arr(art, "thoughts").ToList();
+        if (thoughts.Count > 0)
+        {
+            root.Children.Add(new TextBlock
+            {
+                Text = "执行与回退重试记录",
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
+            });
+            foreach (var t in thoughts)
+            {
+                root.Children.Add(BuildThoughtCard(Str(t, "kind"), Str(t, "title"), Str(t, "body")).Card);
+            }
+        }
+
+        return new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = root,
+        };
+    }
+
+    private FrameworkElement BuildCancelledView(JsonElement art)
+    {
+        var root = new StackPanel { Spacing = 12, Margin = new Thickness(0, 8, 8, 8) };
+        root.Children.Add(new TextBlock
+        {
+            Text = "已停止生成。",
+            FontSize = 13,
+            Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
+        });
+        var retryBtn = new Button
+        {
+            Content = "重新生成",
+            Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"],
+            MinHeight = 32,
+            Padding = new Thickness(14, 4, 14, 4),
+            FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        retryBtn.Click += async (_, _) => await RetryAsync();
+        root.Children.Add(retryBtn);
+
+        foreach (var t in Arr(art, "thoughts"))
+        {
+            root.Children.Add(BuildThoughtCard(Str(t, "kind"), Str(t, "title"), Str(t, "body")).Card);
+        }
+
+        return new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = root,
+        };
+    }
+
+    private async Task RetryAsync()
+    {
+        if (_disposed) return;
+        var res = await Core("studio.retry", Args(("artifact_id", _id)), "重试");
+        if (res != null && !_disposed)
+        {
+            _builtFor = "";
+            await LoadAsync();
+        }
+    }
+
+    private static Button IconBtn(string path, string tip, RoutedEventHandler onClick, out PathIcon iconRef)
+    {
+        iconRef = new PathIcon
+        {
+            Width = 24,
+            Height = 24,
+            Data = Geom(path),
+            Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
+        };
         var btn = new Button
         {
-            Content = new Viewbox { Width = 16, Height = 16, Child = icon },
+            Content = new Viewbox
+            {
+                Width = 16,
+                Height = 16,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = iconRef,
+            },
+            MinWidth = 34,
             Width = 34,
+            MinHeight = 34,
             Height = 34,
             Padding = new Thickness(0),
             CornerRadius = new CornerRadius(17),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
         };
@@ -175,6 +628,25 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
         _tools.Children.Clear();
         if (status == "READY")
         {
+            if (Arr(_art, "thoughts").Any())
+            {
+                var thoughtsBtn = new Button
+                {
+                    Content = _showingThoughts ? "返回成品" : "思考过程",
+                    Style = (Style)Application.Current.Resources["PillButtonStyle"],
+                    MinHeight = 34,
+                    Padding = new Thickness(12, 4, 12, 4),
+                    FontSize = 12,
+                };
+                thoughtsBtn.Click += (_, _) =>
+                {
+                    _showingThoughts = !_showingThoughts;
+                    thoughtsBtn.Content = _showingThoughts ? "返回成品" : "思考过程";
+                    RenderCurrentBody(kind, status, _art);
+                };
+                _tools.Children.Add(thoughtsBtn);
+            }
+
             var formats = kind switch
             {
                 "quiz" => new[] { ("Markdown", "markdown", ".md"), ("JSON", "json", ".json") },
@@ -203,8 +675,8 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
             });
         }
 
-        _tools.Children.Add(IconBtn(FullscreenIconPath, "全屏显示 / 还原", (_, _) => _onToggleFullscreen(), _fullscreenIcon));
-        _tools.Children.Add(IconBtn(CloseIconPath, "关闭详情", (_, _) => _onClose()));
+        _tools.Children.Add(IconBtn(_isFullscreen ? ExitFullscreenIconPath : FullscreenIconPath, "全屏显示 / 还原", (_, _) => _onToggleFullscreen(), out _fullscreenIcon));
+        _tools.Children.Add(IconBtn(CloseIconPath, "关闭详情", (_, _) => _onClose(), out _));
     }
 
     private async Task ExportAsync(string fmt, string ext, string label)
@@ -224,7 +696,7 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
         Button MkFb(string path, string text, int val)
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-            sp.Children.Add(new Viewbox { Width = 14, Height = 14, Child = new PathIcon { Data = Geom(path), Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"] } });
+            sp.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = new PathIcon { Width = 24, Height = 24, Data = Geom(path), Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"] } });
             sp.Children.Add(new TextBlock { Text = text, FontSize = 12, Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"] });
             var b = new Button
             {
@@ -243,367 +715,6 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
         bar.Children.Add(MkFb(ThumbUpPath, "优质内容", 1));
         bar.Children.Add(MkFb(ThumbDownPath, "劣质内容", -1));
         return bar;
-    }
-
-    // ---------- viewers ----------
-
-    private FrameworkElement BuildViewer(string kind, JsonElement payload) => kind switch
-    {
-        "quiz" => BuildQuiz(payload),
-        "flashcards" => BuildFlashcards(payload),
-        "mindmap" => BuildMindmap(payload),
-        "report" => BuildReport(payload),
-        "slides" => BuildSlides(payload),
-        "infographic" => BuildInfographic(payload),
-        "audio" => BuildAudio(payload),
-        _ => Message("暂不支持查看这种产物。"),
-    };
-
-    private static string CiteText(JsonElement item)
-    {
-        var nums = Arr(item, "citations").Where(c => c.ValueKind == JsonValueKind.Number).Select(c => $"[{c.GetInt32()}]").ToArray();
-        return nums.Length > 0 ? " " + string.Join("", nums) : "";
-    }
-
-    // quiz ------------------------------------------------------------------
-
-    private FrameworkElement BuildQuiz(JsonElement payload)
-    {
-        var panel = new StackPanel { Spacing = 14 };
-        var questions = Arr(payload, "questions").ToList();
-        var score = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, Text = $"共 {questions.Count} 题，作答后点击“提交”查看结果。" };
-        panel.Children.Add(score);
-        var correct = 0;
-        var answered = new HashSet<string>();
-        var number = 0;
-        foreach (var q in questions)
-        {
-            number++;
-            var qid = Str(q, "id");
-            var type = Str(q, "type");
-            var card = new Border { Background = (Brush)Application.Current.Resources["ElevatedBgBrush"], CornerRadius = new CornerRadius(12), Padding = new Thickness(14) };
-            var col = new StackPanel { Spacing = 8 };
-            col.Children.Add(new TextBlock { Text = $"{number}. {Str(q, "prompt")}{CiteText(q)}", TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold, IsTextSelectionEnabled = true });
-            col.Children.Add(new TextBlock { Text = type switch { "single" => "单选", "multi" => "多选", "fill" => "填空", _ => "简答" }, FontSize = 11, Opacity = 0.6 });
-            var options = Arr(q, "options").Select(o => o.GetString() ?? "").ToList();
-            RadioButtons? radios = null;
-            var checks = new List<CheckBox>();
-            TextBox? text = null;
-            if (type == "single")
-            {
-                radios = new RadioButtons();
-                foreach (var o in options) radios.Items.Add(o);
-                col.Children.Add(radios);
-            }
-            else if (type == "multi")
-            {
-                foreach (var o in options)
-                {
-                    var cb = new CheckBox { Content = o };
-                    checks.Add(cb);
-                    col.Children.Add(cb);
-                }
-            }
-            else
-            {
-                text = new TextBox { PlaceholderText = type == "fill" ? "输入答案" : "写下你的回答", AcceptsReturn = type == "short", TextWrapping = TextWrapping.Wrap, MinHeight = type == "short" ? 90 : 0 };
-                col.Children.Add(text);
-            }
-            var result = new StackPanel { Spacing = 4 };
-            var submit = new Button { Content = "提交", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-            submit.Click += async (_, _) =>
-            {
-                JsonElement answer;
-                if (type == "single") answer = Api.Args(("a", radios!.SelectedIndex)).GetProperty("a");
-                else if (type == "multi") answer = Api.Args(("a", checks.Select((c, i) => (c, i)).Where(t => t.c.IsChecked == true).Select(t => t.i).ToArray())).GetProperty("a");
-                else answer = Api.Args(("a", text!.Text)).GetProperty("a");
-                if (type == "single" && radios!.SelectedIndex < 0) { Say(InfoBarSeverity.Warning, "请先选择一个选项", ""); return; }
-                var res = await Core("studio.grade_answer", Args(("artifact_id", _id), ("question_id", qid), ("answer", answer)), "评分");
-                if (res is not { } g) return;
-                result.Children.Clear();
-                var isSelfEval = Bool(g, "self_eval");
-                var ok = Bool(g, "correct");
-                if (isSelfEval)
-                {
-                    result.Children.Add(new TextBlock { Text = $"评分要点：{Str(g, "rubric")}", TextWrapping = TextWrapping.Wrap });
-                    result.Children.Add(new TextBlock { Text = "请对照要点自评。", Opacity = 0.7, FontSize = 12 });
-                }
-                else
-                {
-                    var resBrush = new SolidColorBrush(ok ? Windows.UI.Color.FromArgb(255, 120, 220, 140) : Windows.UI.Color.FromArgb(255, 255, 140, 130));
-                    var statusRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-                    statusRow.Children.Add(new Viewbox { Width = 14, Height = 14, Child = new PathIcon { Data = Geom(ok ? CheckIconPath : CrossIconPath), Foreground = resBrush } });
-                    statusRow.Children.Add(new TextBlock { Text = ok ? "回答正确" : "回答错误", Foreground = resBrush, FontWeight = FontWeights.SemiBold });
-                    result.Children.Add(statusRow);
-                    var ans = Arr(q, "answer_indices").Select(i => i.GetInt32()).Where(i => i < options.Count).Select(i => $"{(char)('A' + i)}. {options[i]}").ToList();
-                    var accepted = Arr(q, "accepted_answers").Select(a => a.GetString() ?? "");
-                    var reference = ans.Count > 0 ? string.Join("；", ans) : string.Join(" / ", accepted);
-                    if (!ok && reference.Length > 0) result.Children.Add(new TextBlock { Text = $"参考答案：{reference}", TextWrapping = TextWrapping.Wrap });
-                    if (answered.Add(qid) && ok) correct++;
-                    score.Text = $"已作答 {answered.Count}/{questions.Count}，答对 {correct}";
-                }
-                if (Str(q, "explanation").Length > 0) result.Children.Add(new TextBlock { Text = $"解析：{Str(q, "explanation")}", TextWrapping = TextWrapping.Wrap, Opacity = 0.9 });
-            };
-            col.Children.Add(submit);
-            col.Children.Add(result);
-            card.Child = col;
-            panel.Children.Add(card);
-        }
-        panel.Children.Add(BuildFeedbackBar());
-        return new ScrollViewer { Content = panel };
-    }
-
-    // flashcards --------------------------------------------------------------
-
-    private FrameworkElement BuildFlashcards(JsonElement payload)
-    {
-        var cards = Arr(payload, "cards").ToList();
-        if (cards.Count == 0) return Message("没有卡片。");
-        var order = Enumerable.Range(0, cards.Count).ToList();
-        var index = 0;
-        var flipped = false;
-        var known = 0;
-        var unknown = new List<int>();
-
-        var progress = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, Opacity = 0.8 };
-        var face = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 20, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Center, IsTextSelectionEnabled = true };
-        var hint = new TextBlock { Opacity = 0.6, HorizontalAlignment = HorizontalAlignment.Center, TextWrapping = TextWrapping.Wrap };
-        var card = new Border { Background = (Brush)Application.Current.Resources["ElevatedBgBrush"], CornerRadius = new CornerRadius(16), Padding = new Thickness(28), MinHeight = 220, Child = face };
-        var flip = new Button { Content = "翻转", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        var yes = new Button { Content = "认识", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        var no = new Button { Content = "不认识", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Center };
-        row.Children.Add(no);
-        row.Children.Add(flip);
-        row.Children.Add(yes);
-        var root = new StackPanel { Spacing = 14, MaxWidth = 640, HorizontalAlignment = HorizontalAlignment.Center };
-        root.Children.Add(progress);
-        root.Children.Add(card);
-        root.Children.Add(hint);
-        root.Children.Add(row);
-        root.Children.Add(BuildFeedbackBar());
-
-        void Show()
-        {
-            if (index >= order.Count)
-            {
-                face.Text = unknown.Count == 0 ? $"全部完成！认识 {known}/{cards.Count}" : $"本轮结束：认识 {known}，不认识 {unknown.Count}";
-                hint.Text = "";
-                progress.Text = "";
-                flip.Content = unknown.Count > 0 ? "只复习不认识的" : "重新开始";
-                yes.Visibility = no.Visibility = Visibility.Collapsed;
-                return;
-            }
-            var c = cards[order[index]];
-            progress.Text = $"{index + 1} / {order.Count}";
-            face.Text = flipped ? Str(c, "back") : Str(c, "front");
-            hint.Text = !flipped && Str(c, "hint").Length > 0 ? $"提示：{Str(c, "hint")}" : "";
-            flip.Content = flipped ? "看正面" : "翻转";
-            yes.Visibility = no.Visibility = Visibility.Visible;
-        }
-        void Next(bool knew) { if (knew) known++; else unknown.Add(order[index]); index++; flipped = false; Show(); }
-        flip.Click += (_, _) =>
-        {
-            if (index >= order.Count) { order = unknown.Count > 0 ? unknown.ToList() : Enumerable.Range(0, cards.Count).ToList(); unknown.Clear(); known = 0; index = 0; }
-            else flipped = !flipped;
-            Show();
-        };
-        yes.Click += (_, _) => Next(true);
-        no.Click += (_, _) => Next(false);
-        Show();
-        return new ScrollViewer { Content = root };
-    }
-
-    // mind map ----------------------------------------------------------------
-
-    private FrameworkElement BuildMindmap(JsonElement payload)
-    {
-        var nodes = Arr(payload, "nodes").ToList();
-        var byParent = nodes.GroupBy(n => n.TryGetProperty("parent_id", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : "").ToDictionary(g => g.Key, g => g.ToList());
-        var tree = new TreeView { SelectionMode = TreeViewSelectionMode.None };
-        void Fill(string parentKey, TreeViewNode? parentNode)
-        {
-            if (!byParent.TryGetValue(parentKey, out var children)) return;
-            foreach (var n in children)
-            {
-                var node = new TreeViewNode { Content = $"{Str(n, "label")}{CiteText(n)}", IsExpanded = true };
-                if (parentNode == null) tree.RootNodes.Add(node); else parentNode.Children.Add(node);
-                Fill(Str(n, "id"), node);
-            }
-        }
-        Fill("", null);
-        var scale = new ScaleTransform { ScaleX = 1, ScaleY = 1 };
-        var host = new Grid { RenderTransform = scale, RenderTransformOrigin = new Windows.Foundation.Point(0, 0) };
-        host.Children.Add(tree);
-        var zoom = new Slider { Minimum = 0.6, Maximum = 2.0, Value = 1, StepFrequency = 0.1, Width = 140, Header = "缩放" };
-        zoom.ValueChanged += (_, e) => { scale.ScaleX = scale.ScaleY = e.NewValue; };
-        void SetAll(bool expand) { foreach (var r in tree.RootNodes) Expand(r, expand); }
-        var expandAll = new Button { Content = "全部展开", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        expandAll.Click += (_, _) => SetAll(true);
-        var collapseAll = new Button { Content = "全部折叠", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        collapseAll.Click += (_, _) => SetAll(false);
-        var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        bar.Children.Add(expandAll);
-        bar.Children.Add(collapseAll);
-        bar.Children.Add(zoom);
-        var grid = new Grid { RowSpacing = 8 };
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.Children.Add(bar);
-        var scroll = new ScrollViewer { Content = host, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        Grid.SetRow(scroll, 1);
-        grid.Children.Add(scroll);
-        return grid;
-    }
-
-    private static void Expand(TreeViewNode n, bool expand)
-    {
-        n.IsExpanded = expand;
-        foreach (var c in n.Children) Expand(c, expand);
-    }
-
-    // report (Requirement 4: TOC sidebar + rendered content) ------------------
-
-    private FrameworkElement BuildReport(JsonElement payload)
-    {
-        var split = new Grid { ColumnSpacing = 14 };
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        var tocPanel = new StackPanel { Spacing = 4 };
-        tocPanel.Children.Add(new TextBlock
-        {
-            Text = "目录",
-            FontSize = 13,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
-            Margin = new Thickness(8, 4, 8, 8),
-        });
-
-        var contentPanel = new StackPanel { Spacing = 14 };
-        var sections = Arr(payload, "sections").ToList();
-        var sectionIndex = 0;
-        foreach (var s in sections)
-        {
-            sectionIndex++;
-            var headingText = Str(s, "heading");
-            var headingBlock = new TextBlock
-            {
-                Text = headingText,
-                FontSize = 19,
-                FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(0, 8, 0, 0),
-                TextWrapping = TextWrapping.Wrap,
-                IsTextSelectionEnabled = true,
-            };
-            contentPanel.Children.Add(headingBlock);
-            contentPanel.Children.Add(Md.Render(Str(s, "body_md"), n => new Microsoft.UI.Xaml.Documents.Run { Text = $"[{n}]", FontSize = 11 }, 14));
-            var takeaways = Arr(s, "key_takeaways").Select(t => t.GetString() ?? "").Where(t => t.Length > 0).ToList();
-            if (takeaways.Count > 0)
-            {
-                var box = new Border { Background = (Brush)Application.Current.Resources["ElevatedBgBrush"], CornerRadius = new CornerRadius(10), Padding = new Thickness(12) };
-                var col = new StackPanel { Spacing = 4 };
-                col.Children.Add(new TextBlock { Text = "核心要点", FontWeight = FontWeights.SemiBold, FontSize = 13 });
-                foreach (var t in takeaways) col.Children.Add(new TextBlock { Text = $"- {t}", TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, FontSize = 13 });
-                box.Child = col;
-                contentPanel.Children.Add(box);
-            }
-
-            var target = headingBlock;
-            var tocBtn = new Button
-            {
-                Content = new TextBlock
-                {
-                    Text = $"{sectionIndex}. {headingText}",
-                    FontSize = 12,
-                    TextWrapping = TextWrapping.Wrap,
-                    Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
-                },
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-                BorderThickness = new Thickness(0),
-                Padding = new Thickness(8, 6, 8, 6),
-                CornerRadius = new CornerRadius(8),
-            };
-            tocBtn.Click += (_, _) => target.StartBringIntoView();
-            tocPanel.Children.Add(tocBtn);
-        }
-        contentPanel.Children.Add(BuildFeedbackBar());
-
-        var tocBorder = new Border
-        {
-            Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(6),
-            Child = new ScrollViewer { Content = tocPanel },
-        };
-        Grid.SetColumn(tocBorder, 0);
-        split.Children.Add(tocBorder);
-
-        var contentScroll = new ScrollViewer { Content = contentPanel, Padding = new Thickness(0, 0, 8, 0) };
-        Grid.SetColumn(contentScroll, 1);
-        split.Children.Add(contentScroll);
-        return split;
-    }
-
-    // slides ------------------------------------------------------------------
-
-    private FrameworkElement BuildSlides(JsonElement payload)
-    {
-        var slides = Arr(payload, "slides").ToList();
-        if (slides.Count == 0) return Message("没有幻灯片。");
-        var index = 0;
-        var title = new TextBlock { FontSize = 26, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
-        var bullets = new StackPanel { Spacing = 8 };
-        var notes = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.8, IsTextSelectionEnabled = true };
-        var counter = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-        var slide = new Border { Background = (Brush)Application.Current.Resources["ElevatedBgBrush"], CornerRadius = new CornerRadius(16), Padding = new Thickness(28), MinHeight = 280 };
-        var inner = new StackPanel { Spacing = 14 };
-        inner.Children.Add(title);
-        inner.Children.Add(bullets);
-        slide.Child = inner;
-
-        var prevSp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        prevSp.Children.Add(new Viewbox { Width = 14, Height = 14, Child = new PathIcon { Data = Geom(PrevIconPath) } });
-        prevSp.Children.Add(new TextBlock { Text = "上一页" });
-        var prev = new Button { Content = prevSp, Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-
-        var nextSp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        nextSp.Children.Add(new TextBlock { Text = "下一页" });
-        nextSp.Children.Add(new Viewbox { Width = 14, Height = 14, Child = new PathIcon { Data = Geom(NextIconPath) } });
-        var next = new Button { Content = nextSp, Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-
-        void Show()
-        {
-            var s = slides[index];
-            var layout = Str(s, "layout");
-            title.Text = Str(s, "title");
-            title.FontSize = layout is "title" or "section" ? 32 : 24;
-            bullets.Children.Clear();
-            foreach (var b in Arr(s, "bullets"))
-            {
-                var isQuote = layout == "quote";
-                bullets.Children.Add(new TextBlock { Text = isQuote ? $"“{b.GetString()}”" : $"- {b.GetString()}", TextWrapping = TextWrapping.Wrap, FontSize = 16, IsTextSelectionEnabled = true, FontStyle = isQuote ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal });
-            }
-            notes.Text = Str(s, "speaker_notes").Length > 0 ? Str(s, "speaker_notes") : "（没有讲稿）";
-            counter.Text = $"{index + 1} / {slides.Count}";
-            prev.IsEnabled = index > 0;
-            next.IsEnabled = index < slides.Count - 1;
-        }
-        prev.Click += (_, _) => { index--; Show(); };
-        next.Click += (_, _) => { index++; Show(); };
-        Show();
-        var nav = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, HorizontalAlignment = HorizontalAlignment.Center };
-        nav.Children.Add(prev);
-        nav.Children.Add(counter);
-        nav.Children.Add(next);
-        var root = new StackPanel { Spacing = 12 };
-        root.Children.Add(slide);
-        root.Children.Add(nav);
-        root.Children.Add(new Expander { Header = "讲稿", Content = notes, HorizontalAlignment = HorizontalAlignment.Stretch });
-        root.Children.Add(BuildFeedbackBar());
-        return new ScrollViewer { Content = root };
     }
 
     // slides / outline draft review (Requirement 5: Rendered Markdown ONLY, NEVER raw JSON)
@@ -731,8 +842,552 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
         col.Children.Add(approveBtn);
         return new ScrollViewer { Content = col };
     }
+}
 
-    // infographic (Requirement 4: image_c93c68 zoomable canvas + feedback) ----
+/// <summary>
+/// Reusable interactive viewer component shared by <see cref="ArtifactViewerPane"/> (right Studio panel)
+/// and <see cref="ChatArtifactCard"/> (in-chat inline preview &amp; interactive quiz/flashcards/slides/mindmap/report/audio).
+/// </summary>
+internal sealed class InteractiveArtifactView : IDisposable
+{
+    private const string CheckIconPath = "M9,16.17L4.83,12L3.41,13.41L9,19L21,7L19.59,5.59L9,16.17Z";
+    private const string CrossIconPath = "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z";
+    private const string PrevIconPath = "M15.41,16.58L10.83,12L15.41,7.41L14,6L8,12L14,18L15.41,16.58Z";
+    private const string NextIconPath = "M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z";
+    private const string PlusIconPath = "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z";
+    private const string MinusIconPath = "M19,13H5V11H19V13Z";
+
+    public FrameworkElement Root { get; }
+
+    private readonly string _artifactId;
+    private readonly Window _hostWindow;
+    private readonly Action<InfoBarSeverity, string, string> _notify;
+    private readonly bool _compact;
+    private readonly WebContentHost? _math;
+    private readonly Panel? _mathHost;
+    private readonly FrameworkElement? _feedbackBar;
+    private readonly JsonElement _art;
+
+    private Windows.Media.Playback.MediaPlayer? _player;
+    private Windows.Media.Core.MediaSource? _mediaSource;
+    private MediaPlayerElement? _mediaElement;
+    private DispatcherTimer? _audioTimer;
+    private bool _disposed;
+
+    public InteractiveArtifactView(
+        string artifactId,
+        string kind,
+        JsonElement artifact,
+        Window hostWindow,
+        Action<InfoBarSeverity, string, string> notify,
+        bool compact,
+        FrameworkElement? feedbackBar = null,
+        WebContentHost? math = null,
+        Panel? mathHost = null)
+    {
+        _artifactId = artifactId;
+        _art = artifact;
+        _hostWindow = hostWindow;
+        _notify = notify;
+        _compact = compact;
+        _feedbackBar = feedbackBar;
+        _math = math;
+        _mathHost = mathHost;
+
+        var payload = Obj(artifact, "payload");
+        Root = kind switch
+        {
+            "quiz" => BuildQuiz(payload),
+            "flashcards" => BuildFlashcards(payload),
+            "mindmap" => BuildMindmap(payload),
+            "report" => BuildReport(payload),
+            "slides" => BuildSlides(payload),
+            "infographic" => BuildInfographic(payload),
+            "audio" => BuildAudio(payload),
+            _ => Message("暂不支持查看这种产物。"),
+        };
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        DisposeAudio();
+    }
+
+    private static Geometry Geom(string path) =>
+        (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), path);
+
+    private static FrameworkElement Message(string text) =>
+        new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 12) };
+
+    private static string CiteText(JsonElement item)
+    {
+        var nums = Arr(item, "citations").Where(c => c.ValueKind == JsonValueKind.Number).Select(c => $"[{c.GetInt32()}]").ToArray();
+        return nums.Length > 0 ? " " + string.Join("", nums) : "";
+    }
+
+    private void AppendFeedbackIfPresent(Panel panel)
+    {
+        if (_feedbackBar != null) panel.Children.Add(_feedbackBar);
+    }
+
+    private ScrollViewer WrapScroll(FrameworkElement content, double compactMaxHeight = 520)
+    {
+        var sv = new ScrollViewer { Content = content };
+        if (_compact)
+        {
+            sv.MaxHeight = compactMaxHeight;
+            sv.Padding = new Thickness(0, 0, 8, 0);
+        }
+        return sv;
+    }
+
+    private async Task<JsonElement?> CallGradeAsync(string method, JsonElement args, string what)
+    {
+        var (res, err) = await Api.CallAsync(method, args);
+        if (err is { } e)
+        {
+            _notify(InfoBarSeverity.Error, $"{what}失败", Advice(e.Code) is { Length: > 0 } a ? $"{a}（{e.Code}）" : $"{e.Message}（{e.Code}）");
+            return null;
+        }
+        return res;
+    }
+
+    private void DisposeAudio()
+    {
+        if (_audioTimer != null)
+        {
+            _audioTimer.Stop();
+            _audioTimer = null;
+        }
+        if (_mediaElement != null)
+        {
+            try { _mediaElement.AreTransportControlsEnabled = false; } catch { }
+            try { _mediaElement.SetMediaPlayer(null); } catch { }
+            try { _mediaElement.Source = null; } catch { }
+            if (_mediaElement.Parent is Panel parent)
+                parent.Children.Remove(_mediaElement);
+            _mediaElement = null;
+        }
+        var player = _player;
+        _player = null;
+        var source = _mediaSource;
+        _mediaSource = null;
+        if (player != null)
+        {
+            try { player.Pause(); } catch { }
+            try { player.Source = null; } catch { }
+            _hostWindow.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                try { player.Dispose(); } catch { }
+                try { source?.Dispose(); } catch { }
+            });
+        }
+        else if (source != null)
+        {
+            try { source.Dispose(); } catch { }
+        }
+    }
+
+    // quiz ------------------------------------------------------------------
+
+    private FrameworkElement BuildQuiz(JsonElement payload)
+    {
+        var panel = new StackPanel { Spacing = _compact ? 10 : 14 };
+        var questions = Arr(payload, "questions").ToList();
+        if (questions.Count == 0) return Message("没有测验题目。");
+        var score = new TextBlock { FontSize = _compact ? 13 : 14, FontWeight = FontWeights.SemiBold, Text = $"共 {questions.Count} 题，作答后点击“提交”查看结果。" };
+        panel.Children.Add(score);
+        var correct = 0;
+        var answered = new HashSet<string>();
+        var number = 0;
+        var cardBg = (Brush)Application.Current.Resources[_compact ? "PanelBgBrush" : "ElevatedBgBrush"];
+        foreach (var q in questions)
+        {
+            number++;
+            var qid = Str(q, "id");
+            var type = Str(q, "type");
+            var card = new Border
+            {
+                Background = cardBg,
+                BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(_compact ? 12 : 14),
+            };
+            var col = new StackPanel { Spacing = 8 };
+            col.Children.Add(new TextBlock { Text = $"{number}. {Str(q, "prompt")}{CiteText(q)}", TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold, IsTextSelectionEnabled = true });
+            col.Children.Add(new TextBlock { Text = type switch { "single" => "单选", "multi" => "多选", "fill" => "填空", _ => "简答" }, FontSize = 11, Opacity = 0.6 });
+            var options = Arr(q, "options").Select(o => o.GetString() ?? "").ToList();
+            RadioButtons? radios = null;
+            var checks = new List<CheckBox>();
+            TextBox? text = null;
+            if (type == "single")
+            {
+                radios = new RadioButtons();
+                foreach (var o in options) radios.Items.Add(o);
+                col.Children.Add(radios);
+            }
+            else if (type == "multi")
+            {
+                foreach (var o in options)
+                {
+                    var cb = new CheckBox { Content = o };
+                    checks.Add(cb);
+                    col.Children.Add(cb);
+                }
+            }
+            else
+            {
+                text = new TextBox { PlaceholderText = type == "fill" ? "输入答案" : "写下你的回答", AcceptsReturn = type == "short", TextWrapping = TextWrapping.Wrap, MinHeight = type == "short" ? 76 : 0 };
+                col.Children.Add(text);
+            }
+            var result = new StackPanel { Spacing = 4 };
+            var submit = new Button { Content = "提交", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+            submit.Click += async (_, _) =>
+            {
+                JsonElement answer;
+                if (type == "single") answer = Api.Args(("a", radios!.SelectedIndex)).GetProperty("a");
+                else if (type == "multi") answer = Api.Args(("a", checks.Select((c, i) => (c, i)).Where(t => t.c.IsChecked == true).Select(t => t.i).ToArray())).GetProperty("a");
+                else answer = Api.Args(("a", text!.Text)).GetProperty("a");
+                if (type == "single" && radios!.SelectedIndex < 0) { _notify(InfoBarSeverity.Warning, "请先选择一个选项", ""); return; }
+                var res = await CallGradeAsync("studio.grade_answer", Args(("artifact_id", _artifactId), ("question_id", qid), ("answer", answer)), "评分");
+                if (res is not { } g) return;
+                result.Children.Clear();
+                var isSelfEval = Bool(g, "self_eval");
+                var ok = Bool(g, "correct");
+                if (isSelfEval)
+                {
+                    result.Children.Add(new TextBlock { Text = $"评分要点：{Str(g, "rubric")}", TextWrapping = TextWrapping.Wrap });
+                    result.Children.Add(new TextBlock { Text = "请对照要点自评。", Opacity = 0.7, FontSize = 12 });
+                }
+                else
+                {
+                    var resBrush = new SolidColorBrush(ok ? Windows.UI.Color.FromArgb(255, 120, 220, 140) : Windows.UI.Color.FromArgb(255, 255, 140, 130));
+                    var statusRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                    statusRow.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = new PathIcon { Width = 24, Height = 24, Data = Geom(ok ? CheckIconPath : CrossIconPath), Foreground = resBrush } });
+                    statusRow.Children.Add(new TextBlock { Text = ok ? "回答正确" : "回答错误", Foreground = resBrush, FontWeight = FontWeights.SemiBold });
+                    result.Children.Add(statusRow);
+                    var ans = Arr(q, "answer_indices").Select(i => i.GetInt32()).Where(i => i < options.Count).Select(i => $"{(char)('A' + i)}. {options[i]}").ToList();
+                    var accepted = Arr(q, "accepted_answers").Select(a => a.GetString() ?? "");
+                    var reference = ans.Count > 0 ? string.Join("；", ans) : string.Join(" / ", accepted);
+                    if (!ok && reference.Length > 0) result.Children.Add(new TextBlock { Text = $"参考答案：{reference}", TextWrapping = TextWrapping.Wrap });
+                    if (answered.Add(qid) && ok) correct++;
+                    score.Text = $"已作答 {answered.Count}/{questions.Count}，答对 {correct}";
+                }
+                if (Str(q, "explanation").Length > 0) result.Children.Add(new TextBlock { Text = $"解析：{Str(q, "explanation")}", TextWrapping = TextWrapping.Wrap, Opacity = 0.9 });
+            };
+            col.Children.Add(submit);
+            col.Children.Add(result);
+            card.Child = col;
+            panel.Children.Add(card);
+        }
+        AppendFeedbackIfPresent(panel);
+        return WrapScroll(panel);
+    }
+
+    // flashcards --------------------------------------------------------------
+
+    private FrameworkElement BuildFlashcards(JsonElement payload)
+    {
+        var cards = Arr(payload, "cards").ToList();
+        if (cards.Count == 0) return Message("没有卡片。");
+        var order = Enumerable.Range(0, cards.Count).ToList();
+        var index = 0;
+        var flipped = false;
+        var known = 0;
+        var unknown = new List<int>();
+
+        var progress = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, Opacity = 0.8 };
+        var face = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = _compact ? 18 : 20, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Center, IsTextSelectionEnabled = true };
+        var hint = new TextBlock { Opacity = 0.6, HorizontalAlignment = HorizontalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+        var card = new Border
+        {
+            Background = (Brush)Application.Current.Resources[_compact ? "PanelBgBrush" : "ElevatedBgBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(_compact ? 20 : 28),
+            MinHeight = _compact ? 150 : 220,
+            Child = face,
+        };
+        var flip = new Button { Content = "翻转", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var yes = new Button { Content = "认识", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var no = new Button { Content = "不认识", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Center };
+        row.Children.Add(no);
+        row.Children.Add(flip);
+        row.Children.Add(yes);
+        var root = new StackPanel { Spacing = 12, MaxWidth = 640, HorizontalAlignment = HorizontalAlignment.Center };
+        root.Children.Add(progress);
+        root.Children.Add(card);
+        root.Children.Add(hint);
+        root.Children.Add(row);
+        AppendFeedbackIfPresent(root);
+
+        void Show()
+        {
+            if (index >= order.Count)
+            {
+                face.Text = unknown.Count == 0 ? $"全部完成！认识 {known}/{cards.Count}" : $"本轮结束：认识 {known}，不认识 {unknown.Count}";
+                hint.Text = "";
+                progress.Text = "";
+                flip.Content = unknown.Count > 0 ? "只复习不认识的" : "重新开始";
+                yes.Visibility = no.Visibility = Visibility.Collapsed;
+                return;
+            }
+            var c = cards[order[index]];
+            progress.Text = $"{index + 1} / {order.Count}";
+            face.Text = flipped ? Str(c, "back") : Str(c, "front");
+            hint.Text = !flipped && Str(c, "hint").Length > 0 ? $"提示：{Str(c, "hint")}" : "";
+            flip.Content = flipped ? "看正面" : "翻转";
+            yes.Visibility = no.Visibility = Visibility.Visible;
+        }
+        void Next(bool knew) { if (knew) known++; else unknown.Add(order[index]); index++; flipped = false; Show(); }
+        flip.Click += (_, _) =>
+        {
+            if (index >= order.Count) { order = unknown.Count > 0 ? unknown.ToList() : Enumerable.Range(0, cards.Count).ToList(); unknown.Clear(); known = 0; index = 0; }
+            else flipped = !flipped;
+            Show();
+        };
+        yes.Click += (_, _) => Next(true);
+        no.Click += (_, _) => Next(false);
+        Show();
+        return WrapScroll(root, 460);
+    }
+
+    // mind map ----------------------------------------------------------------
+
+    private FrameworkElement BuildMindmap(JsonElement payload)
+    {
+        var nodes = Arr(payload, "nodes").ToList();
+        if (nodes.Count == 0) return Message("没有导图节点。");
+        var byParent = nodes.GroupBy(n => n.TryGetProperty("parent_id", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : "").ToDictionary(g => g.Key, g => g.ToList());
+        var tree = new TreeView { SelectionMode = TreeViewSelectionMode.None };
+        void Fill(string parentKey, TreeViewNode? parentNode)
+        {
+            if (!byParent.TryGetValue(parentKey, out var children)) return;
+            foreach (var n in children)
+            {
+                var node = new TreeViewNode { Content = $"{Str(n, "label")}{CiteText(n)}", IsExpanded = true };
+                if (parentNode == null) tree.RootNodes.Add(node); else parentNode.Children.Add(node);
+                Fill(Str(n, "id"), node);
+            }
+        }
+        Fill("", null);
+        var scale = new ScaleTransform { ScaleX = 1, ScaleY = 1 };
+        var host = new Grid { RenderTransform = scale, RenderTransformOrigin = new Windows.Foundation.Point(0, 0) };
+        host.Children.Add(tree);
+        var zoom = new Slider { Minimum = 0.6, Maximum = 2.0, Value = 1, StepFrequency = 0.1, Width = 140, Header = "缩放" };
+        zoom.ValueChanged += (_, e) => { scale.ScaleX = scale.ScaleY = e.NewValue; };
+        void SetAll(bool expand) { foreach (var r in tree.RootNodes) Expand(r, expand); }
+        var expandAll = new Button { Content = "全部展开", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        expandAll.Click += (_, _) => SetAll(true);
+        var collapseAll = new Button { Content = "全部折叠", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        collapseAll.Click += (_, _) => SetAll(false);
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        bar.Children.Add(expandAll);
+        bar.Children.Add(collapseAll);
+        bar.Children.Add(zoom);
+        var grid = new Grid { RowSpacing = 8 };
+        if (_compact) grid.Height = 380;
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.Children.Add(bar);
+        var scroll = new ScrollViewer { Content = host, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        Grid.SetRow(scroll, 1);
+        grid.Children.Add(scroll);
+        return grid;
+    }
+
+    private static void Expand(TreeViewNode n, bool expand)
+    {
+        n.IsExpanded = expand;
+        foreach (var c in n.Children) Expand(c, expand);
+    }
+
+    // report ------------------------------------------------------------------
+
+    private FrameworkElement BuildReport(JsonElement payload)
+    {
+        var tocPanel = new StackPanel { Spacing = 4 };
+        if (!_compact)
+        {
+            tocPanel.Children.Add(new TextBlock
+            {
+                Text = "目录",
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
+                Margin = new Thickness(8, 4, 8, 8),
+            });
+        }
+
+        var contentPanel = new StackPanel { Spacing = 14 };
+        var sections = Arr(payload, "sections").ToList();
+        if (sections.Count == 0) return Message("没有报告内容。");
+        var compactTocHost = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        if (_compact && sections.Count > 1) contentPanel.Children.Add(compactTocHost);
+
+        var sectionIndex = 0;
+        foreach (var s in sections)
+        {
+            sectionIndex++;
+            var headingText = Str(s, "heading");
+            var headingBlock = new TextBlock
+            {
+                Text = headingText,
+                FontSize = _compact ? 17 : 19,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 6, 0, 0),
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+            };
+            contentPanel.Children.Add(headingBlock);
+            contentPanel.Children.Add(Md.Render(Str(s, "body_md"), n => Md.SuperscriptCitation(n), 14, _math, _mathHost));
+            var takeaways = Arr(s, "key_takeaways").Select(t => t.GetString() ?? "").Where(t => t.Length > 0).ToList();
+            if (takeaways.Count > 0)
+            {
+                var box = new Border
+                {
+                    Background = (Brush)Application.Current.Resources[_compact ? "PanelBgBrush" : "ElevatedBgBrush"],
+                    BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(12),
+                };
+                var col = new StackPanel { Spacing = 4 };
+                col.Children.Add(new TextBlock { Text = "核心要点", FontWeight = FontWeights.SemiBold, FontSize = 13 });
+                foreach (var t in takeaways) col.Children.Add(new TextBlock { Text = $"- {t}", TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, FontSize = 13 });
+                box.Child = col;
+                contentPanel.Children.Add(box);
+            }
+
+            var target = headingBlock;
+            var tocBtn = new Button
+            {
+                Content = new TextBlock
+                {
+                    Text = $"{sectionIndex}. {headingText}",
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
+                },
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(8, 6, 8, 6),
+                CornerRadius = new CornerRadius(8),
+            };
+            tocBtn.Click += (_, _) => target.StartBringIntoView();
+            tocPanel.Children.Add(tocBtn);
+        }
+        AppendFeedbackIfPresent(contentPanel);
+
+        if (_compact)
+        {
+            if (sections.Count > 1)
+            {
+                compactTocHost.Content = new Expander
+                {
+                    Header = $"目录（共 {sections.Count} 节）",
+                    Content = tocPanel,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                };
+            }
+            return WrapScroll(contentPanel);
+        }
+
+        var split = new Grid { ColumnSpacing = 14 };
+        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
+        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var tocBorder = new Border
+        {
+            Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(6),
+            Child = new ScrollViewer { Content = tocPanel },
+        };
+        Grid.SetColumn(tocBorder, 0);
+        split.Children.Add(tocBorder);
+
+        var contentScroll = new ScrollViewer { Content = contentPanel, Padding = new Thickness(0, 0, 8, 0) };
+        Grid.SetColumn(contentScroll, 1);
+        split.Children.Add(contentScroll);
+        return split;
+    }
+
+    // slides ------------------------------------------------------------------
+
+    private FrameworkElement BuildSlides(JsonElement payload)
+    {
+        var slides = Arr(payload, "slides").ToList();
+        if (slides.Count == 0) return Message("没有幻灯片。");
+        var index = 0;
+        var title = new TextBlock { FontSize = _compact ? 22 : 26, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+        var bullets = new StackPanel { Spacing = 8 };
+        var notes = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.8, IsTextSelectionEnabled = true };
+        var counter = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        var slide = new Border
+        {
+            Background = (Brush)Application.Current.Resources[_compact ? "PanelBgBrush" : "ElevatedBgBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(_compact ? 20 : 28),
+            MinHeight = _compact ? 200 : 280,
+        };
+        var inner = new StackPanel { Spacing = 12 };
+        inner.Children.Add(title);
+        inner.Children.Add(bullets);
+        slide.Child = inner;
+
+        var prevSp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        prevSp.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = new PathIcon { Width = 24, Height = 24, Data = Geom(PrevIconPath) } });
+        prevSp.Children.Add(new TextBlock { Text = "上一页" });
+        var prev = new Button { Content = prevSp, Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+
+        var nextSp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        nextSp.Children.Add(new TextBlock { Text = "下一页" });
+        nextSp.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = new PathIcon { Width = 24, Height = 24, Data = Geom(NextIconPath) } });
+        var next = new Button { Content = nextSp, Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+
+        void Show()
+        {
+            var s = slides[index];
+            var layout = Str(s, "layout");
+            title.Text = Str(s, "title");
+            title.FontSize = layout is "title" or "section" ? (_compact ? 24 : 32) : (_compact ? 20 : 24);
+            bullets.Children.Clear();
+            foreach (var b in Arr(s, "bullets"))
+            {
+                var isQuote = layout == "quote";
+                bullets.Children.Add(new TextBlock { Text = isQuote ? $"“{b.GetString()}”" : $"- {b.GetString()}", TextWrapping = TextWrapping.Wrap, FontSize = _compact ? 14 : 16, IsTextSelectionEnabled = true, FontStyle = isQuote ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal });
+            }
+            notes.Text = Str(s, "speaker_notes").Length > 0 ? Str(s, "speaker_notes") : "（没有讲稿）";
+            counter.Text = $"{index + 1} / {slides.Count}";
+            prev.IsEnabled = index > 0;
+            next.IsEnabled = index < slides.Count - 1;
+        }
+        prev.Click += (_, _) => { index--; Show(); };
+        next.Click += (_, _) => { index++; Show(); };
+        Show();
+        var nav = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, HorizontalAlignment = HorizontalAlignment.Center };
+        nav.Children.Add(prev);
+        nav.Children.Add(counter);
+        nav.Children.Add(next);
+        var root = new StackPanel { Spacing = 12 };
+        root.Children.Add(slide);
+        root.Children.Add(nav);
+        root.Children.Add(new Expander { Header = "讲稿", Content = notes, HorizontalAlignment = HorizontalAlignment.Stretch });
+        AppendFeedbackIfPresent(root);
+        return WrapScroll(root);
+    }
+
+    // infographic -------------------------------------------------------------
 
     private FrameworkElement BuildInfographic(JsonElement payload)
     {
@@ -780,11 +1435,43 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        // Floating +/- zoom buttons (bottom-right, matching image_c93c68.jpg)
-        var zoomIn = new Button { Content = "+", Width = 34, Height = 34, Padding = new Thickness(0), CornerRadius = new CornerRadius(17), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        var zoomOut = new Button { Content = "-", Width = 34, Height = 34, Padding = new Thickness(0), CornerRadius = new CornerRadius(17), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        zoomIn.Click += (_, _) => { scale.ScaleX = scale.ScaleY = Math.Min(2.4, scale.ScaleX + 0.15); };
-        zoomOut.Click += (_, _) => { scale.ScaleX = scale.ScaleY = Math.Max(0.5, scale.ScaleX - 0.15); };
+        Button MakeZoomBtn(string path, string tip, RoutedEventHandler onClick)
+        {
+            var b = new Button
+            {
+                Content = new Viewbox
+                {
+                    Width = 16,
+                    Height = 16,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Child = new PathIcon
+                    {
+                        Width = 24,
+                        Height = 24,
+                        Data = Geom(path),
+                        Foreground = (Brush)Application.Current.Resources["TextPrimaryBrush"],
+                    },
+                },
+                MinWidth = 34,
+                Width = 34,
+                MinHeight = 34,
+                Height = 34,
+                Padding = new Thickness(0),
+                CornerRadius = new CornerRadius(17),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
+                BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+                BorderThickness = new Thickness(1),
+            };
+            ToolTipService.SetToolTip(b, tip);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, tip);
+            b.Click += onClick;
+            return b;
+        }
+        var zoomIn = MakeZoomBtn(PlusIconPath, "放大", (_, _) => { scale.ScaleX = scale.ScaleY = Math.Min(2.4, scale.ScaleX + 0.15); });
+        var zoomOut = MakeZoomBtn(MinusIconPath, "缩小", (_, _) => { scale.ScaleX = scale.ScaleY = Math.Max(0.5, scale.ScaleX - 0.15); });
         var zoomBox = new Border
         {
             Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
@@ -803,12 +1490,15 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
         stage.Children.Add(zoomBox);
 
         var outer = new Grid { RowSpacing = 8 };
+        if (_compact) outer.Height = 420;
         outer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        outer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         outer.Children.Add(stage);
-        var fb = BuildFeedbackBar();
-        Grid.SetRow(fb, 1);
-        outer.Children.Add(fb);
+        if (_feedbackBar != null)
+        {
+            outer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(_feedbackBar, 1);
+            outer.Children.Add(_feedbackBar);
+        }
         return outer;
     }
 
@@ -823,17 +1513,20 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
         var lines = new List<TextBlock>();
         if (wav.Length > 0 && File.Exists(wav))
         {
-            _player?.Dispose();
-            _player = new Windows.Media.Playback.MediaPlayer { Source = Windows.Media.Core.MediaSource.CreateFromUri(new Uri(wav)) };
-            var element = new MediaPlayerElement { AreTransportControlsEnabled = true, Height = 90, HorizontalAlignment = HorizontalAlignment.Stretch };
-            element.SetMediaPlayer(_player);
-            root.Children.Add(element);
+            DisposeAudio();
+            _mediaSource = Windows.Media.Core.MediaSource.CreateFromUri(new Uri(wav));
+            _player = new Windows.Media.Playback.MediaPlayer { Source = _mediaSource };
+            _mediaElement = new MediaPlayerElement { AreTransportControlsEnabled = true, Height = 90, HorizontalAlignment = HorizontalAlignment.Stretch };
+            _mediaElement.SetMediaPlayer(_player);
+            root.Children.Add(_mediaElement);
             var total = Math.Max(1, turns.Sum(t => Str(t, "text").Length));
-            _audioTimer?.Stop();
             _audioTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
             _audioTimer.Tick += (_, _) =>
             {
-                var session = _player?.PlaybackSession;
+                if (_disposed || _player == null) return;
+                Windows.Media.Playback.MediaPlaybackSession? session;
+                try { session = _player.PlaybackSession; }
+                catch { return; }
                 if (session == null || session.NaturalDuration.TotalSeconds <= 0) return;
                 var spoken = session.Position.TotalSeconds / session.NaturalDuration.TotalSeconds * total;
                 var acc = 0.0;
@@ -855,7 +1548,7 @@ public sealed class ArtifactViewerPane : Grid, IDisposable
             lines.Add(tb);
             root.Children.Add(tb);
         }
-        root.Children.Add(BuildFeedbackBar());
-        return new ScrollViewer { Content = root };
+        AppendFeedbackIfPresent(root);
+        return WrapScroll(root, 480);
     }
 }
