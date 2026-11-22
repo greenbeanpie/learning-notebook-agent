@@ -99,14 +99,41 @@ impl StudioService {
     }
 
     pub fn estimate(&self, notebook_id: &str, artifact_type: ArtifactType) -> LnaResult<Value> {
-        let total_source_tokens: i64 = self.db.read(|conn| {
-            conn.query_row(
-                "SELECT COALESCE(SUM(token_count),0) FROM sources WHERE notebook_id = ?1 AND is_selected = 1 AND status = 'READY'",
-                [notebook_id],
-                |r| r.get(0),
-            )
-            .map_err(map_sql_err)
-        })?;
+        self.estimate_with_config(notebook_id, artifact_type, &json!({}))
+    }
+
+    pub fn estimate_with_config(
+        &self,
+        notebook_id: &str,
+        artifact_type: ArtifactType,
+        config: &Value,
+    ) -> LnaResult<Value> {
+        let is_kg = artifact_type == ArtifactType::Mindmap
+            && config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        let total_source_tokens: i64 = if is_kg {
+            // Knowledge Graph builds from compact AI structural index + source guides + sampled key chunks,
+            // never passing an entire 600-page book at once.
+            let index_chars: i64 = self.db.read(|conn| {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(LENGTH(title) + LENGTH(summary) + LENGTH(keywords_json)), 0)
+                     FROM source_index_nodes
+                     WHERE source_id IN (SELECT id FROM sources WHERE notebook_id = ?1 AND is_selected = 1 AND status = 'READY')",
+                    [notebook_id],
+                    |r| r.get(0),
+                )
+                .map_err(map_sql_err)
+            })?;
+            ((index_chars / 3).max(1800)).min(14_000)
+        } else {
+            self.db.read(|conn| {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(token_count),0) FROM sources WHERE notebook_id = ?1 AND is_selected = 1 AND status = 'READY'",
+                    [notebook_id],
+                    |r| r.get(0),
+                )
+                .map_err(map_sql_err)
+            })?
+        };
         let active_profile = lna_storage::get_active_profile(&self.db)?;
         let est_input =
             (((total_source_tokens.max(0) as f64) * 1.1).ceil() as i64).saturating_add(600);
@@ -153,7 +180,7 @@ impl StudioService {
             LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured")
         })?;
 
-        let est = self.estimate(notebook_id, artifact_type)?;
+        let est = self.estimate_with_config(notebook_id, artifact_type, &config)?;
         let req_conf = est
             .get("requires_confirmation")
             .and_then(|x| x.as_bool())
@@ -172,14 +199,53 @@ impl StudioService {
 
         let id = new_ulid();
         let now = now_ms();
-        let default_title = match artifact_type {
-            ArtifactType::Audio => "音频概览",
-            ArtifactType::Slides => "演示文稿",
-            ArtifactType::Mindmap => "思维导图",
-            ArtifactType::Report => "研究报告",
-            ArtifactType::Flashcards => "学习闪卡",
-            ArtifactType::Quiz => "知识测验",
-            ArtifactType::Infographic => "信息图",
+        let is_kg = artifact_type == ArtifactType::Mindmap
+            && config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        let ui_lang = config
+            .get("lang")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or_else(|| {
+                self.db
+                    .read(|conn| {
+                        conn.query_row(
+                            "SELECT value_json FROM app_settings WHERE key = 'ui.preferences'",
+                            [],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .optional()
+                        .map_err(map_sql_err)
+                    })
+                    .ok()
+                    .flatten()
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .and_then(|v| v.get("language").and_then(Value::as_str).map(String::from))
+            })
+            .unwrap_or_default();
+        let use_en = ui_lang.to_lowercase().starts_with("en");
+        let default_title = if use_en {
+            match artifact_type {
+                ArtifactType::Audio => "Audio Overview",
+                ArtifactType::Slides => "Slides",
+                ArtifactType::Mindmap if is_kg => "Knowledge Graph",
+                ArtifactType::Mindmap => "Mind Map",
+                ArtifactType::Report => "Report",
+                ArtifactType::Flashcards => "Flashcards",
+                ArtifactType::Quiz => "Quiz",
+                ArtifactType::Infographic => "Infographic",
+            }
+        } else {
+            match artifact_type {
+                ArtifactType::Audio => "音频概览",
+                ArtifactType::Slides => "演示文稿",
+                ArtifactType::Mindmap if is_kg => "知识点图谱",
+                ArtifactType::Mindmap => "思维导图",
+                ArtifactType::Report => "研究报告",
+                ArtifactType::Flashcards => "学习闪卡",
+                ArtifactType::Quiz => "知识测验",
+                ArtifactType::Infographic => "信息图",
+            }
         };
         let title = title.unwrap_or(default_title);
         let cfg_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".into());
@@ -1896,6 +1962,171 @@ impl StudioService {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        let is_kg = art.artifact_type == ArtifactType::Mindmap
+            && art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        if is_kg {
+            let target_ids: Vec<String> = if let Some(sid) = art
+                .config
+                .get("source_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                vec![sid.to_string()]
+            } else {
+                art.source_ids.clone()
+            };
+            let target_json = serde_json::to_string(&target_ids).unwrap_or_else(|_| "[]".into());
+            let mut evidence_blocks: Vec<String> = Vec::new();
+            let sources_meta: Vec<(String, String, Option<String>, String)> = self.db.read(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, title, guide_summary_md, COALESCE(guide_topics_json, '[]')
+                         FROM sources WHERE id IN (SELECT value FROM json_each(?1)) AND status='READY'
+                         ORDER BY title",
+                    )
+                    .map_err(map_sql_err)?;
+                let rows = stmt
+                    .query_map([&target_json], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, String>(3)?,
+                        ))
+                    })
+                    .map_err(map_sql_err)?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row.map_err(map_sql_err)?);
+                }
+                Ok(out)
+            })?;
+
+            for (sid, stitle, guide_md, topics_json) in &sources_meta {
+                if let Some(gmd) = guide_md.as_deref().filter(|s| !s.trim().is_empty()) {
+                    let topics: Vec<String> = serde_json::from_str(topics_json).unwrap_or_default();
+                    let topic_str = if topics.is_empty() {
+                        String::new()
+                    } else {
+                        format!("
+Core Topics: {}", topics.join(", "))
+                    };
+                    evidence_blocks.push(format!(
+                        "[{}] {} (Overview)
+{}{}",
+                        evidence_blocks.len() + 1,
+                        stitle,
+                        truncate_str(gmd, 900),
+                        topic_str
+                    ));
+                }
+
+                let nodes: Vec<(i32, String, String, String, Option<i32>, Option<i32>)> =
+                    self.db.read(|conn| {
+                        let mut stmt = conn
+                            .prepare(
+                                "SELECT level, title, summary, COALESCE(keywords_json, '[]'), page_start, page_end
+                                 FROM source_index_nodes WHERE source_id = ?1
+                                 ORDER BY order_index ASC LIMIT 60",
+                            )
+                            .map_err(map_sql_err)?;
+                        let rows = stmt
+                            .query_map([sid], |r| {
+                                Ok((
+                                    r.get::<_, i32>(0)?,
+                                    r.get::<_, String>(1)?,
+                                    r.get::<_, String>(2)?,
+                                    r.get::<_, String>(3)?,
+                                    r.get::<_, Option<i32>>(4)?,
+                                    r.get::<_, Option<i32>>(5)?,
+                                ))
+                            })
+                            .map_err(map_sql_err)?;
+                        let mut out = Vec::new();
+                        for row in rows {
+                            out.push(row.map_err(map_sql_err)?);
+                        }
+                        Ok(out)
+                    })?;
+
+                if !nodes.is_empty() {
+                    for (lvl, ntitle, summary, kw_json, pstart, pend) in nodes {
+                        let kws: Vec<String> = serde_json::from_str(&kw_json).unwrap_or_default();
+                        let pg = match (pstart, pend) {
+                            (Some(a), Some(b)) if b > a => format!(" (p.{a}-{b})"),
+                            (Some(a), _) => format!(" (p.{a})"),
+                            _ => String::new(),
+                        };
+                        let kw_part = if kws.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" | Keywords: {}", kws.join(", "))
+                        };
+                        evidence_blocks.push(format!(
+                            "[{}] {} · L{} {}{}: {}{}",
+                            evidence_blocks.len() + 1,
+                            stitle,
+                            lvl,
+                            ntitle,
+                            pg,
+                            truncate_str(&summary, 280),
+                            kw_part
+                        ));
+                    }
+                } else {
+                    // Fallback when no AI index exists: sample up to 16 evenly spaced chunks (never full book)
+                    let chunks: Vec<(Option<i32>, Option<String>, String)> = self.db.read(|conn| {
+                        let mut stmt = conn
+                            .prepare(
+                                "SELECT page_start, section_path, content FROM source_chunks
+                                 WHERE source_id = ?1 ORDER BY chunk_index ASC",
+                            )
+                            .map_err(map_sql_err)?;
+                        let rows = stmt
+                            .query_map([sid], |r| {
+                                Ok((
+                                    r.get::<_, Option<i32>>(0)?,
+                                    r.get::<_, Option<String>>(1)?,
+                                    r.get::<_, String>(2)?,
+                                ))
+                            })
+                            .map_err(map_sql_err)?;
+                        let mut out = Vec::new();
+                        for row in rows {
+                            out.push(row.map_err(map_sql_err)?);
+                        }
+                        Ok(out)
+                    })?;
+                    let step = (chunks.len() / 16).max(1);
+                    for (ps, sec, content) in chunks.into_iter().step_by(step).take(16) {
+                        let pg = ps.map(|p| format!(" (p.{p})")).unwrap_or_default();
+                        let sec_s = sec.filter(|s| !s.is_empty()).map(|s| format!(" · {s}")).unwrap_or_default();
+                        evidence_blocks.push(format!(
+                            "[{}] {}{}{}
+{}",
+                            evidence_blocks.len() + 1,
+                            stitle,
+                            sec_s,
+                            pg,
+                            truncate_str(&content, 480)
+                        ));
+                    }
+                }
+            }
+            if !evidence_blocks.is_empty() {
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    "Collecting structural outline for Knowledge Graph",
+                    &format!("Prepared {} compact structural items without sending full book text.", evidence_blocks.len()),
+                );
+                return Ok(evidence_blocks.join("
+
+"));
+            }
+        }
+
         let selected_json = serde_json::to_string(&art.source_ids).unwrap_or_else(|_| "[]".into());
         let total_source_tokens: i64 = self.db.read(|conn| {
             conn.query_row(

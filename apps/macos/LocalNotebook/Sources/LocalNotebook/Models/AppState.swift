@@ -112,6 +112,13 @@ final class AppState: ObservableObject {
             "key": "ui.preferences",
             "value": prefs.toDict()
         ])
+        if !activeNotebookId.isEmpty {
+            _ = try? await core.call(method: "i18n.translate_notebook_content", params: [
+                "notebook_id": activeNotebookId,
+                "target_lang": isEnglish ? "en-US" : "zh-CN"
+            ])
+            await refreshAll()
+        }
         statusMessage = t("settings.saved")
     }
 

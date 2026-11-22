@@ -130,7 +130,7 @@ public sealed partial class MainWindow
     {
         var v = new MessageView { Id = id, Role = role };
         var isUser = role == "user";
-        var header = new TextBlock { Text = isUser ? "你" : "助手", FontSize = 12, Opacity = 0.6 };
+        var header = new TextBlock { Text = isUser ? L10n.T("chat.you") : L10n.T("chat.assistant"), FontSize = 12, Opacity = 0.6 };
         v.Root.Children.Add(header);
         v.Body.Content = v.StreamText;
         v.Root.Children.Add(v.Body);
@@ -146,10 +146,10 @@ public sealed partial class MainWindow
     private Microsoft.UI.Xaml.Documents.Inline? CitationChip(MessageView v, int no)
     {
         var tip = v.Citations.TryGetValue(no, out var c)
-            ? $"{c.Title}{(c.Page > 0 ? $" · 第 {c.Page} 页" : "")}{Environment.NewLine}{c.Quote}"
-            : "引用";
+            ? $"{c.Title}{(c.Page > 0 ? $" · {L10n.Fmt("cite.page", c.Page)}" : "")} ({L10n.T("cite.click_hint")})"
+            : L10n.T("cite.header");
         var messageId = v.Id;
-        return Md.SuperscriptCitation(no, tip, () => _ = ShowCitationAsync(messageId, no));
+        return Md.SuperscriptCitation(no, tip, anchor => _ = ShowCitationPopoverAsync(anchor, messageId, no));
     }
 
     private void RenderFinal(MessageView v, string markdown)
@@ -762,44 +762,194 @@ public sealed partial class MainWindow
 
     // ---------- citations ----------
 
-    private async Task ShowCitationAsync(string messageId, int no)
+    /// <summary>Sanitizes OCR/PDF dot-leader noise and collapses redundant whitespace in citation excerpts.</summary>
+    private static string SanitizeCitationExcerpt(string raw)
     {
-        var detail = await CoreAsync("chat.citation_detail", Args(("message_id", messageId), ("citation_no", no)), "读取引用");
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(raw, @"[·.…•․…]{3,}", " ");
+        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"(\s*[.·]\s*){4,}", " ");
+        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
+        return cleaned;
+    }
+
+    /// <summary>Detects whether a citation text snippet is unclear (e.g., dot leaders, garbled OCR, figure/image page).</summary>
+    private static bool IsCitationExcerptUnclear(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+        var meaningful = 0;
+        var dotOrNoise = 0;
+        foreach (var ch in raw)
+        {
+            if (char.IsLetterOrDigit(ch) || ch >= 0x4E00 && ch <= 0x9FFF) meaningful++;
+            else if (ch is '.' or '·' or '…' or '•' or '_' or '-') dotOrNoise++;
+        }
+        if (meaningful < 22) return true;
+        var total = meaningful + dotOrNoise;
+        if (total > 0 && (double)dotOrNoise / total > 0.32) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Shows a compact Wikipedia-style Reference Card Flyout anchored to the clicked citation pill.
+    /// When the text excerpt is unclear/figure-only on a PDF, opens the PDF directly and jumps to that exact page.
+    /// </summary>
+    private async Task ShowCitationPopoverAsync(FrameworkElement anchor, string messageId, int no)
+    {
+        var detail = await CoreAsync("chat.citation_detail", Args(("message_id", messageId), ("citation_no", no)), L10n.T("cite.header"));
         if (detail is not { } d) return;
-        var panel = new StackPanel { Spacing = 8, MinWidth = 480, MaxWidth = 640 };
+
         var removed = Bool(d, "source_removed");
         var page = Int(d, "page_start");
-        panel.Children.Add(new TextBlock
+        var sourceTitle = Str(d, "source_title");
+        var sectionPath = Str(d, "section_path");
+        var rawContent = Str(d, "content");
+        var cleanExcerpt = SanitizeCitationExcerpt(rawContent);
+        var isUnclear = IsCitationExcerptUnclear(rawContent);
+        var sourceId = !removed ? await FindSourceIdByTitleAsync(sourceTitle) : "";
+        var isPdf = sourceTitle.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase);
+
+        // For unclear text or image/figure PDF pages, immediately display the PDF and jump to the exact page!
+        if (isUnclear && isPdf && !removed && sourceId.Length > 0 && page > 0)
         {
-            Text = $"{Str(d, "source_title")}{(page > 0 ? $" · 第 {page} 页" : "")}{(Str(d, "section_path").Length > 0 ? $" · {Str(d, "section_path")}" : "")}",
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            TextWrapping = TextWrapping.Wrap,
-        });
-        if (removed) panel.Children.Add(new TextBlock { Text = "来源已移除，以下是当时保存的引用片段。", Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 180, 120)) });
-        foreach (var p in Arr(d, "prev_chunks")) panel.Children.Add(new TextBlock { Text = Str(p, "content"), Opacity = 0.5, TextWrapping = TextWrapping.Wrap, MaxLines = 4, TextTrimming = TextTrimming.CharacterEllipsis });
-        panel.Children.Add(new Border
-        {
-            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 40, 60, 90)),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(10),
-            Child = Line(Str(d, "content")),
-        });
-        foreach (var n in Arr(d, "next_chunks")) panel.Children.Add(new TextBlock { Text = Str(n, "content"), Opacity = 0.5, TextWrapping = TextWrapping.Wrap, MaxLines = 4, TextTrimming = TextTrimming.CharacterEllipsis });
-        var scroll = new ScrollViewer { Content = panel, MaxHeight = 520 };
-        var dlg = new ContentDialog { Title = $"引用 [{no}]", Content = scroll, CloseButtonText = "关闭", XamlRoot = Content.XamlRoot };
-        if (!removed)
-        {
-            dlg.PrimaryButtonText = "在来源中查看";
-            var sourceId = "";
-            if (_views.TryGetValue(messageId, out _)) sourceId = await FindSourceIdByTitleAsync(Str(d, "source_title"));
-            dlg.IsPrimaryButtonEnabled = sourceId.Length > 0;
-            if (await dlg.ShowAsync() == ContentDialogResult.Primary && sourceId.Length > 0)
-            {
-                await ShowSourcePreviewAsync(sourceId, page > 0 ? (int)page : null, Str(d, "content"));
-            }
-            return;
+            await ShowSourcePreviewAsync(sourceId, (int)page, null, sourceTitle);
         }
-        await dlg.ShowAsync();
+
+        var flyout = new Flyout
+        {
+            Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft,
+        };
+
+        var card = new StackPanel { Spacing = 10, MinWidth = 330, MaxWidth = 400 };
+
+        // Header row: document icon + "Source Reference" + page pill
+        var headRow = new Grid { ColumnSpacing = 8 };
+        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var headLeft = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        headLeft.Children.Add(new Viewbox
+        {
+            Width = 16,
+            Height = 16,
+            Child = new PathIcon
+            {
+                Width = 24,
+                Height = 24,
+                Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
+                    typeof(Microsoft.UI.Xaml.Media.Geometry),
+                    "M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"),
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextPrimaryBrush"],
+            },
+        });
+        headLeft.Children.Add(new TextBlock
+        {
+            Text = L10n.T("cite.header"),
+            FontFamily = Md.BodyFontFamily,
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        headRow.Children.Add(headLeft);
+
+        if (page > 0)
+        {
+            var pagePill = new Border
+            {
+                Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["PanelBgBrush"],
+                BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"],
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(8, 2, 8, 2),
+                Child = new TextBlock
+                {
+                    Text = L10n.Fmt("cite.page", page),
+                    FontFamily = Md.BodyFontFamily,
+                    FontSize = 11.5,
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                },
+            };
+            Grid.SetColumn(pagePill, 1);
+            headRow.Children.Add(pagePill);
+        }
+        card.Children.Add(headRow);
+
+        // Clickable source title link (matches reference card blue link styling)
+        var titleLink = new HyperlinkButton
+        {
+            Content = new TextBlock
+            {
+                Text = sectionPath.Length > 0 ? $"{sourceTitle} · {sectionPath}" : sourceTitle,
+                FontFamily = Md.BodyFontFamily,
+                FontSize = 13.5,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"],
+            },
+            Padding = new Thickness(0),
+            IsEnabled = !removed && sourceId.Length > 0,
+        };
+        titleLink.Click += async (_, _) =>
+        {
+            flyout.Hide();
+            if (sourceId.Length > 0)
+                await ShowSourcePreviewAsync(sourceId, page > 0 ? (int)page : null, isUnclear ? null : cleanExcerpt, sourceTitle);
+        };
+        card.Children.Add(titleLink);
+
+        if (removed)
+        {
+            card.Children.Add(new TextBlock
+            {
+                Text = L10n.T("cite.removed"),
+                FontFamily = Md.BodyFontFamily,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 180, 120)),
+            });
+        }
+
+        // Body: either clean excerpt OR clear notice that PDF jumped directly to page N
+        var bodyText = isUnclear && isPdf && page > 0
+            ? L10n.Fmt("cite.unclear_pdf", page)
+            : (cleanExcerpt.Length > 260 ? cleanExcerpt[..260] + "…" : cleanExcerpt);
+        if (bodyText.Length > 0)
+        {
+            card.Children.Add(new TextBlock
+            {
+                Text = bodyText,
+                FontFamily = Md.BodyFontFamily,
+                FontSize = 13,
+                LineHeight = 22,
+                TextWrapping = TextWrapping.Wrap,
+                MaxLines = 6,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                IsTextSelectionEnabled = true,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+            });
+        }
+
+        // Footer action button to open PDF / source at exact page
+        if (!removed && sourceId.Length > 0)
+        {
+            var jumpBtn = new Button
+            {
+                Content = page > 0 ? L10n.Fmt("cite.open_page", page) : L10n.T("cite.open_source"),
+                Style = (Style)Application.Current.Resources["PillButtonStyle"],
+                MinHeight = 30,
+                Padding = new Thickness(12, 4, 12, 4),
+                FontSize = 12,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            };
+            jumpBtn.Click += async (_, _) =>
+            {
+                flyout.Hide();
+                await ShowSourcePreviewAsync(sourceId, page > 0 ? (int)page : null, isUnclear ? null : cleanExcerpt, sourceTitle);
+            };
+            card.Children.Add(jumpBtn);
+        }
+
+        flyout.Content = card;
+        flyout.ShowAt(anchor);
     }
 
     private async Task<string> FindSourceIdByTitleAsync(string title)

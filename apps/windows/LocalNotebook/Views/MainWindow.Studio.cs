@@ -55,7 +55,7 @@ public sealed partial class MainWindow
     {
         var id = Str(a, "id");
         var status = Str(a, "status");
-        var title = Str(a, "title");
+        var title = L10n.LocalizeDefaultArtifactTitle(Str(a, "title"));
         var kind = Str(a, "artifact_type");
         var card = new Border
         {
@@ -418,7 +418,7 @@ public sealed partial class MainWindow
         var topic = L10n.IsEnglish
             ? $"Build a structured Knowledge Graph for '{sourceTitle}' covering core concepts, prerequisites, and relationships."
             : $"基于《{sourceTitle}》构建知识点图谱，梳理核心概念、前置依赖与定理体系。";
-        var cfg = Args(("mode", "knowledge_graph"), ("topic", topic), ("source_id", sourceId));
+        var cfg = Args(("mode", "knowledge_graph"), ("topic", topic), ("source_id", sourceId), ("lang", L10n.TargetLangCode));
         var title = L10n.IsEnglish ? $"{sourceTitle} - Knowledge Graph" : $"{sourceTitle} · 知识点图谱";
         var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", "mindmap"), ("title", title), ("config", cfg)), L10n.T("kg.title"));
         if (res != null) ShowStatus(InfoBarSeverity.Success, L10n.T("kg.title"), L10n.IsEnglish ? "Building Knowledge Graph in background." : "已开始在后台构建知识点图谱。");
@@ -555,7 +555,9 @@ public sealed partial class MainWindow
         var dlg = new ContentDialog { Title = isUpdate ? $"更新{KindName(kind)}" : $"生成{KindName(kind)}", Content = new ScrollViewer { Content = panel, MaxHeight = 560 }, PrimaryButtonText = isUpdate ? "更新生成" : "生成", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };
         dlg.Opened += async (_, _) =>
         {
-            var est = await Api.CallAsync("studio.estimate", Args(("notebook_id", _activeNotebookId), ("artifact_type", kind)));
+            var estType = kind == "knowledge_graph" ? "mindmap" : kind;
+            var estCfg = kind == "knowledge_graph" ? Args(("mode", "knowledge_graph")) : Args();
+            var est = await Api.CallAsync("studio.estimate", Args(("notebook_id", _activeNotebookId), ("artifact_type", estType), ("config", estCfg)));
             if (est.Result is { } r)
             {
                 var cost = r.TryGetProperty("estimated_cost_usd", out var c) && c.ValueKind == JsonValueKind.Number ? $"，约 ${c.GetDouble():0.000}" : "（未配置单价，不显示金额）";

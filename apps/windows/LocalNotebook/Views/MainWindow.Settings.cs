@@ -90,6 +90,7 @@ public sealed partial class MainWindow
 
         async Task SaveUiPrefsAsync()
         {
+            var prevEn = L10n.IsEnglish;
             L10n.Prefs.Language = (langBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "auto";
             L10n.Prefs.Theme = (themeBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "dark";
             L10n.Prefs.FontSize = (fontBox.SelectedItem as ComboBoxItem)?.Tag is int fsz ? fsz : 15;
@@ -99,7 +100,19 @@ public sealed partial class MainWindow
             L10n.Prefs.DefaultStudioLang = (studioLangBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
             await Api.CallAsync("settings.set", Args(("key", "ui.preferences"), ("value", L10n.Prefs.ToJson())));
             ApplyUiPreferences();
-            prefStatus.Text = L10n.T("settings.saved");
+            if (prevEn != L10n.IsEnglish && _activeNotebookId != null)
+            {
+                prefStatus.Text = L10n.T("settings.translating_ui");
+                _ = Task.Run(async () =>
+                {
+                    await Api.CallAsync("i18n.translate_notebook_content", Args(("notebook_id", _activeNotebookId), ("target_lang", L10n.TargetLangCode)));
+                    DispatcherQueue.TryEnqueue(async () => await RefreshNotebookDataAsync());
+                });
+            }
+            else
+            {
+                prefStatus.Text = L10n.T("settings.saved");
+            }
         }
 
         langBox.SelectionChanged += async (_, _) => await SaveUiPrefsAsync();

@@ -49,11 +49,11 @@
                 <Setter Property="BorderBrush" Value="{StaticResource SubtleBorderBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="CornerRadius" Value="14" />
-                <Setter Property="Padding" Value="14,12" />
-                <Setter Property="MinHeight" Value="56" />
+                <Setter Property="Padding" Value="10,10" />
+                <Setter Property="MinHeight" Value="54" />
                 <Setter Property="HorizontalAlignment" Value="Stretch" />
                 <Setter Property="HorizontalContentAlignment" Value="Left" />
-                <Setter Property="FontSize" Value="13" />
+                <Setter Property="FontSize" Value="12" />
                 <Setter Property="FontWeight" Value="Medium" />
             </Style>
 

@@ -784,7 +784,13 @@ impl CoreRuntime {
                         .ok_or_else(|| LnaError::invalid("artifact_type required"))?,
                 )
                 .map_err(|e| LnaError::invalid(e.to_string()))?;
-                self.studio.estimate(nid, at)
+                let cfg = p.get("config").cloned().unwrap_or_else(|| json!({}));
+                self.studio.estimate_with_config(nid, at, &cfg)
+            }
+            "i18n.translate_notebook_content" => {
+                let nid = req_str(p, "notebook_id")?;
+                let target_lang = req_str(p, "target_lang")?;
+                self.translate_notebook_ui_content(nid, target_lang)
             }
             "studio.create" => {
                 let nid = req_str(p, "notebook_id")?;
@@ -1215,6 +1221,185 @@ impl CoreRuntime {
 
             _ => Err(LnaError::invalid(format!("Unknown method: {}", req.method))),
         }
+    }
+
+    /// Translates AI-generated notebook summary, suggested questions, source guides, and
+    /// Studio artifact titles into `target_lang` (`zh-CN` or `en-US`) while leaving chat history untouched.
+    fn translate_notebook_ui_content(&self, notebook_id: &str, target_lang: &str) -> LnaResult<Value> {
+        let to_en = target_lang.to_lowercase().starts_with("en");
+        let lang_name = if to_en { "English" } else { "Simplified Chinese (简体中文)" };
+
+        // 1. Deterministically localize built-in Studio default titles immediately
+        let title_pairs: &[(&str, &str)] = &[
+            ("音频概览", "Audio Overview"),
+            ("演示文稿", "Slides"),
+            ("思维导图", "Mind Map"),
+            ("知识点图谱", "Knowledge Graph"),
+            ("研究报告", "Report"),
+            ("报告", "Report"),
+            ("学习闪卡", "Flashcards"),
+            ("闪卡", "Flashcards"),
+            ("知识测验", "Quiz"),
+            ("测验", "Quiz"),
+            ("信息图", "Infographic"),
+        ];
+        let now = now_ms();
+        self.db.write(|conn| {
+            for (zh, en) in title_pairs {
+                let (from, to) = if to_en { (*zh, *en) } else { (*en, *zh) };
+                let _ = conn.execute(
+                    "UPDATE studio_artifacts SET title = ?1, updated_at = ?2 WHERE notebook_id = ?3 AND title = ?4",
+                    params![to, now, notebook_id, from],
+                );
+            }
+            Ok(())
+        })?;
+
+        // 2. If an active LLM is configured, translate notebook summary/questions and source guides via LLM
+        let Some(prof) = lna_storage::get_active_profile(&self.db)? else {
+            let _ = self.events.send(ApiEvent { event: "notebook.summary_updated".into(), topic: format!("notebook:{notebook_id}"), seq: 0, data: json!({ "notebook_id": notebook_id }) });
+            return Ok(json!({ "ok": true, "translated_with_llm": false }));
+        };
+        let api_key = match prof.keychain_ref.as_deref() {
+            Some(kref) => self.secrets.get(kref)?,
+            None => None,
+        };
+        let resolved = lna_llm::ResolvedProfile {
+            id: prof.id,
+            display_name: prof.display_name,
+            protocol: prof.protocol,
+            base_url: prof.base_url,
+            model_id: prof.model_id,
+            api_key,
+            show_thinking: false,
+            effort: None,
+            context_window: prof.context_window,
+            max_output_tokens: prof.max_output_tokens,
+            capabilities: prof.capabilities,
+            extra_headers: prof.extra_headers,
+            anthropic_version: "2023-06-01".into(),
+        };
+
+        let (summary_md, sq_json): (Option<String>, Option<String>) = self.db.read(|conn| {
+            Ok(conn.query_row(
+                "SELECT summary_md, suggested_questions_json FROM notebooks WHERE id = ?1",
+                [notebook_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok()
+            .unwrap_or((None, None)))
+        })?;
+        let suggested_questions: Vec<String> = sq_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+
+        let sources: Vec<(String, Option<String>, Vec<String>)> = self.db.read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, guide_summary_md, COALESCE(guide_topics_json, '[]') FROM sources WHERE notebook_id = ?1 AND status = 'READY'")
+                .map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map([notebook_id], |r| {
+                    let t_s: String = r.get(2)?;
+                    let topics: Vec<String> = serde_json::from_str(&t_s).unwrap_or_default();
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, topics))
+                })
+                .map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(map_sql_err)?);
+            }
+            Ok(out)
+        })?;
+
+        let source_items: Vec<Value> = sources
+            .iter()
+            .filter(|(_, g, t)| g.as_deref().is_some_and(|x| !x.trim().is_empty()) || !t.is_empty())
+            .map(|(id, g, t)| json!({ "id": id, "guide_summary_md": g.clone().unwrap_or_default(), "guide_topics": t }))
+            .collect();
+
+        if summary_md.as_deref().unwrap_or("").trim().is_empty() && suggested_questions.is_empty() && source_items.is_empty() {
+            let _ = self.events.send(ApiEvent { event: "notebook.summary_updated".into(), topic: format!("notebook:{notebook_id}"), seq: 0, data: json!({ "notebook_id": notebook_id }) });
+            return Ok(json!({ "ok": true, "translated_with_llm": false }));
+        }
+
+        let input_payload = json!({
+            "summary_md": summary_md.unwrap_or_default(),
+            "suggested_questions": suggested_questions,
+            "sources": source_items,
+        });
+
+        let req = lna_llm::LlmRequest {
+            system: format!(
+                "You are a UI content translator. Translate all text values in the provided JSON into {lang_name}. Keep JSON keys and source IDs strictly unchanged, preserve Markdown **bold** emphasis, and output valid JSON only with no code fences."
+            ),
+            messages: vec![lna_llm::LlmMessage {
+                role: lna_llm::Role::User,
+                parts: vec![lna_llm::Part::Text(input_payload.to_string())],
+            }],
+            tools: vec![],
+            tool_mode: lna_llm::ToolMode::None,
+            output: lna_llm::OutputMode::JsonObject,
+            max_output_tokens: 2048.min(resolved.max_output_tokens.max(1024)),
+            reasoning: lna_llm::ReasoningOptions::default(),
+        };
+
+        let llm = self.llm.clone();
+        let translated_res = self.rt.block_on(async move {
+            llm.complete_text(&resolved, &req, tokio_util::sync::CancellationToken::new()).await
+        });
+
+        if let Ok((raw, _)) = translated_res {
+            let trimmed = raw
+                .trim()
+                .trim_start_matches("```json")
+                .trim_start_matches("```")
+                .trim_end_matches("```")
+                .trim();
+            if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                let new_sum = parsed.get("summary_md").and_then(Value::as_str).map(String::from);
+                let new_sq: Option<String> = parsed
+                    .get("suggested_questions")
+                    .and_then(Value::as_array)
+                    .map(|a| serde_json::to_string(a).unwrap_or_else(|_| "[]".into()));
+                let new_sources = parsed.get("sources").and_then(Value::as_array).cloned().unwrap_or_default();
+                let ts = now_ms();
+                let _ = self.db.write(|conn| {
+                    if let Some(ref sm) = new_sum {
+                        if !sm.trim().is_empty() {
+                            let _ = conn.execute(
+                                "UPDATE notebooks SET summary_md = ?1, updated_at = ?2 WHERE id = ?3",
+                                params![sm, ts, notebook_id],
+                            );
+                        }
+                    }
+                    if let Some(ref sq) = new_sq {
+                        let _ = conn.execute(
+                            "UPDATE notebooks SET suggested_questions_json = ?1, updated_at = ?2 WHERE id = ?3",
+                            params![sq, ts, notebook_id],
+                        );
+                    }
+                    for s in &new_sources {
+                        if let Some(sid) = s.get("id").and_then(Value::as_str) {
+                            let gmd = s.get("guide_summary_md").and_then(Value::as_str).unwrap_or("");
+                            let topics_s = s
+                                .get("guide_topics")
+                                .and_then(Value::as_array)
+                                .map(|a| serde_json::to_string(a).unwrap_or_else(|_| "[]".into()))
+                                .unwrap_or_else(|| "[]".into());
+                            let _ = conn.execute(
+                                "UPDATE sources SET guide_summary_md = ?1, guide_topics_json = ?2, updated_at = ?3 WHERE id = ?4",
+                                params![gmd, topics_s, ts, sid],
+                            );
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let _ = self.events.send(ApiEvent { event: "notebook.summary_updated".into(), topic: format!("notebook:{notebook_id}"), seq: 0, data: json!({ "notebook_id": notebook_id }) });
+        Ok(json!({ "ok": true, "translated_with_llm": true }))
     }
 
     pub fn shutdown(&self) {

@@ -71,6 +71,22 @@ public static class L10n
     public static string Fmt(string key, params object[] args) =>
         string.Format(CultureInfo.CurrentCulture, T(key), args);
 
+    public static string TargetLangCode => IsEnglish ? "en-US" : "zh-CN";
+
+    /// <summary>Maps built-in default Studio artifact titles to the active UI language.</summary>
+    public static string LocalizeDefaultArtifactTitle(string title) => title switch
+    {
+        "音频概览" or "Audio Overview" => T("studio.audio"),
+        "演示文稿" or "Slides" => T("studio.slides"),
+        "思维导图" or "Mind Map" => T("studio.mindmap"),
+        "知识点图谱" or "Knowledge Graph" => T("kg.title"),
+        "研究报告" or "报告" or "Report" => T("studio.report"),
+        "学习闪卡" or "闪卡" or "Flashcards" => T("studio.flashcards"),
+        "知识测验" or "测验" or "Quiz" => T("studio.quiz"),
+        "信息图" or "Infographic" => T("studio.infographic"),
+        _ => title,
+    };
+
     public static string Advice(string code) => code switch
     {
         "MODEL_AUTH_FAILED" => T("err.model_auth_failed"),
@@ -117,11 +133,33 @@ public static class L10n
         ["sources.add_url"] = "网页地址",
         ["sources.add_paste"] = "粘贴文本",
         ["sources.create_note"] = "+ 创建笔记",
+        ["sources.select_all"] = "全选来源",
+        ["sources.notes_header"] = "笔记",
+        ["sources.guide_title"] = "来源指南",
+        ["sources.index_toc"] = "索引目录",
+        ["sources.original_file"] = "原文件",
+        ["sources.click_to_view"] = "点击查看材料",
+        ["sources.rename"] = "重命名",
+        ["sources.retry_import"] = "重试导入",
+        ["sources.delete"] = "删除来源",
+        ["sources.gen_guide"] = "AI 生成指南",
+        ["sources.pages_summary"] = "共 {0} 页",
+        ["sources.ai_nodes_summary"] = "{0} 个 AI 索引节点",
 
         ["chat.empty_summary"] = "请添加来源或直接提问。",
         ["chat.placeholder"] = "提问或创作内容...",
         ["chat.send"] = "发送",
         ["chat.stop"] = "停止生成",
+        ["chat.you"] = "你",
+        ["chat.assistant"] = "助手",
+        ["cite.header"] = "来源引用",
+        ["cite.page"] = "第 {0} 页",
+        ["cite.open_page"] = "跳转到第 {0} 页",
+        ["cite.open_source"] = "在来源中查看",
+        ["cite.unclear_pdf"] = "该引用页包含图表、公式或排版内容，已在左侧 PDF 视图中直接跳转到第 {0} 页。",
+        ["cite.removed"] = "来源已移除，以下是当时保存的引用片段。",
+        ["cite.click_hint"] = "点击查看引用",
+        ["settings.translating_ui"] = "正在将 AI 摘要与来源指南翻译为当前语言…",
 
         ["studio.title"] = "Studio",
         ["studio.audio"] = "音频概览",
@@ -266,11 +304,33 @@ public static class L10n
         ["sources.add_url"] = "Web URL",
         ["sources.add_paste"] = "Paste text",
         ["sources.create_note"] = "+ New note",
+        ["sources.select_all"] = "Select all sources",
+        ["sources.notes_header"] = "Notes",
+        ["sources.guide_title"] = "Source Guide",
+        ["sources.index_toc"] = "Index",
+        ["sources.original_file"] = "Original",
+        ["sources.click_to_view"] = "Click to view source",
+        ["sources.rename"] = "Rename",
+        ["sources.retry_import"] = "Retry import",
+        ["sources.delete"] = "Delete source",
+        ["sources.gen_guide"] = "Generate Guide",
+        ["sources.pages_summary"] = "{0} pages",
+        ["sources.ai_nodes_summary"] = "{0} AI index nodes",
 
         ["chat.empty_summary"] = "Add sources or start asking questions.",
         ["chat.placeholder"] = "Ask a question or create content...",
         ["chat.send"] = "Send",
         ["chat.stop"] = "Stop generating",
+        ["chat.you"] = "You",
+        ["chat.assistant"] = "Assistant",
+        ["cite.header"] = "Source Reference",
+        ["cite.page"] = "Page {0}",
+        ["cite.open_page"] = "Jump to Page {0}",
+        ["cite.open_source"] = "View in Source",
+        ["cite.unclear_pdf"] = "This cited page contains figures, equations, or layout content. Opened PDF directly at page {0}.",
+        ["cite.removed"] = "This source was removed; showing the saved excerpt below.",
+        ["cite.click_hint"] = "Click to view reference",
+        ["settings.translating_ui"] = "Translating AI summaries & source guides to current language...",
 
         ["studio.title"] = "Studio",
         ["studio.audio"] = "Audio Overview",

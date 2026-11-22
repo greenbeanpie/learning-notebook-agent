@@ -1139,6 +1139,11 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         }
         st_p.apply_preferences();
         let en_now = st_p.is_en();
+        let nid_tr = st_p.active_notebook_id.borrow().clone();
+        if !nid_tr.is_empty() {
+            let target_lang = if en_now { "en-US" } else { "zh-CN" };
+            let _ = call_core(&st_p.core, "i18n.translate_notebook_content", json!({ "notebook_id": nid_tr, "target_lang": target_lang }));
+        }
         st_p.status_label.set_text(tr(en_now, "settings.saved"));
         refresh_all(&st_p);
     });

@@ -21,7 +21,10 @@ public static class Md
 
     public static readonly FontFamily BodyFontFamily = new("Microsoft YaHei UI, Segoe UI");
 
-    public static Inline SuperscriptCitation(int no, string? tooltip = null, Action? onClick = null)
+    public static Inline SuperscriptCitation(int no, string? tooltip = null, Action? onClick = null) =>
+        SuperscriptCitation(no, tooltip, onClick == null ? null : (Action<FrameworkElement>)(_ => onClick()));
+
+    public static Inline SuperscriptCitation(int no, string? tooltip, Action<FrameworkElement>? onClick)
     {
         var pill = new Border
         {
@@ -53,7 +56,7 @@ public static class Md
             pill.Tapped += (_, e) =>
             {
                 e.Handled = true;
-                onClick();
+                onClick(pill);
             };
         }
         return new InlineUIContainer { Child = pill };

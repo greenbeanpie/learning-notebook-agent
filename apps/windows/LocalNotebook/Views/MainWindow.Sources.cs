@@ -75,7 +75,7 @@ public sealed partial class MainWindow
                 selectAllRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 selectAllRow.Children.Add(new TextBlock
                 {
-                    Text = "全选来源",
+                    Text = L10n.T("sources.select_all"),
                     FontSize = 12,
                     Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
                     VerticalAlignment = VerticalAlignment.Center,
@@ -120,7 +120,7 @@ public sealed partial class MainWindow
             {
                 SourcesList.Items.Add(new TextBlock
                 {
-                    Text = "笔记",
+                    Text = L10n.T("sources.notes_header"),
                     FontSize = 13,
                     FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                     Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
@@ -256,7 +256,7 @@ public sealed partial class MainWindow
                 MaxLines = 1,
             });
         }
-        ToolTipService.SetToolTip(titleStack, subtext != null ? $"{title}\n{subtext}" : $"{title}（点击查看材料）");
+        ToolTipService.SetToolTip(titleStack, subtext != null ? $"{title}\n{subtext}" : $"{title} ({L10n.T("sources.click_to_view")})");
 
         // 3. Actions (three dots: rename, retry, delete — preview is triggered by clicking the row)
         var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
@@ -266,9 +266,9 @@ public sealed partial class MainWindow
             item.Click += h;
             menu.Items.Add(item);
         }
-        Add("重命名", OnRenameSourceClick);
-        if (status == "FAILED") Add("重试导入", OnRetrySourceClick);
-        Add("删除来源", OnDeleteSourceClick);
+        Add(L10n.T("sources.rename"), OnRenameSourceClick);
+        if (status == "FAILED") Add(L10n.T("sources.retry_import"), OnRetrySourceClick);
+        Add(L10n.T("sources.delete"), OnDeleteSourceClick);
 
         var more = new Button
         {
@@ -576,7 +576,7 @@ public sealed partial class MainWindow
         });
         leftHead.Children.Add(new TextBlock
         {
-            Text = "来源指南",
+            Text = L10n.T("sources.guide_title"),
             FontSize = 14,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 241, 243, 244)),
@@ -736,7 +736,7 @@ public sealed partial class MainWindow
             });
             var genBtn = new Button
             {
-                Content = "AI 生成指南",
+                Content = L10n.T("sources.gen_guide"),
                 FontSize = 12,
                 Padding = new Thickness(10, 4, 10, 4),
                 CornerRadius = new CornerRadius(12),
@@ -1111,7 +1111,7 @@ public sealed partial class MainWindow
         var showingIndex = false;
         var modeBtn = new Button
         {
-            Content = "索引目录",
+            Content = L10n.T("sources.index_toc"),
             FontSize = 11.5,
             Padding = new Thickness(9, 4, 9, 4),
             CornerRadius = new CornerRadius(12),
@@ -1122,7 +1122,7 @@ public sealed partial class MainWindow
         async Task LoadOriginalAsync(int? targetPage)
         {
             showingIndex = false;
-            modeBtn.Content = "索引目录";
+            modeBtn.Content = L10n.T("sources.index_toc");
             contentHost.Content = await BuildOriginalFileViewAsync(kind, blobPath, previewHtmlPath, targetPage, focusText, chunks);
         }
 
@@ -1135,7 +1135,7 @@ public sealed partial class MainWindow
             else
             {
                 showingIndex = true;
-                modeBtn.Content = "原文件";
+                modeBtn.Content = L10n.T("sources.original_file");
                 DisposeSourcePreviewWebView();
                 contentHost.Content = BuildIndexTreeView(indexNodes, chunks, p => _ = LoadOriginalAsync(p));
             }
