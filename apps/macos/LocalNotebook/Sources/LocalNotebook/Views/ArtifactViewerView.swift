@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ArtifactViewerView: View {
     @EnvironmentObject var state: AppState
@@ -7,44 +8,83 @@ struct ArtifactViewerView: View {
     @State private var draftText: String = ""
     @State private var editingDraft: Bool = false
     @State private var selectedSectionId: Int = 0
+    @State private var showPromptPopover: Bool = false
+    @State private var showDiagLog: Bool = false
+
+    private var promptPillText: String {
+        if artifact.sourceCount > 0 {
+            return state.isEnglish
+                ? "View prompt and \(artifact.sourceCount) sources"
+                : "查看提示和 \(artifact.sourceCount) 个来源"
+        }
+        return state.isEnglish ? "View prompt" : "查看提示"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Header with Fullscreen toggle + Close button (Requirement 3)
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(artifact.title).font(.headline)
-                    if artifact.sourceCount > 0 {
-                        Text("基于 \(artifact.sourceCount) 个来源")
+                    Button {
+                        showPromptPopover.toggle()
+                    } label: {
+                        Text(promptPillText)
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.08))
+                            .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showPromptPopover, arrowEdge: .bottom) {
+                        promptAndSourcesPopover
                     }
                 }
                 Spacer()
                 Button {
-                    state.studioFullscreen.toggle()
+                    if state.prefs.fullscreenAnimation {
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+                            state.studioFullscreen.toggle()
+                        }
+                    } else {
+                        state.studioFullscreen.toggle()
+                    }
                 } label: {
                     Image(systemName: state.studioFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                 }
                 .buttonStyle(.plain)
-                .help("全屏显示 / 还原")
+                .help(state.t("studio.fullscreen"))
 
                 Button {
-                    state.studioFullscreen = false
-                    state.activeArtifact = nil
+                    if state.prefs.fullscreenAnimation {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            state.studioFullscreen = false
+                            state.activeArtifact = nil
+                        }
+                    } else {
+                        state.studioFullscreen = false
+                        state.activeArtifact = nil
+                    }
                 } label: {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.plain)
-                .help("关闭详情")
+                .help(state.t("studio.close"))
             }
 
             Divider()
 
-            if artifact.status == "DRAFT_REVIEW" {
+            if artifact.status == "FAILED" {
+                failedBody
+            } else if artifact.status == "DRAFT_REVIEW" {
                 draftReviewBody
+            } else if artifact.artifactType == "mindmap" {
+                MindmapTreeView(payload: artifact.payload, en: state.isEnglish)
+                feedbackBar
             } else if artifact.artifactType == "report" {
                 reportBody
+                feedbackBar
             } else if artifact.artifactType == "infographic" {
                 infographicBody
             } else {
@@ -54,18 +94,146 @@ struct ArtifactViewerView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                feedbackBar
             }
         }
         .onAppear { draftText = artifact.draftMarkdown }
     }
 
-    // Requirement 5: Rendered Markdown outline preview & editor (NEVER raw JSON)
+    private var promptAndSourcesPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(state.t("studio.prompt_header"), systemImage: "sparkles")
+                    .font(.subheadline.bold())
+                Spacer()
+                Button {
+                    showPromptPopover = false
+                    Task { await state.regenerateArtifact(artifact) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help(state.t("studio.regenerate"))
+
+                Button {
+                    let txt = artifact.promptTopic.isEmpty ? artifact.title : artifact.promptTopic
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(txt, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.plain)
+                .help(state.t("studio.copy_prompt"))
+            }
+
+            Text(artifact.promptTopic.isEmpty ? state.t("studio.prompt_empty") : artifact.promptTopic)
+                .font(.callout)
+                .foregroundColor(artifact.promptTopic.isEmpty ? .secondary : .primary)
+                .textSelection(.enabled)
+
+            Label(state.t("studio.sources_header"), systemImage: "folder")
+                .font(.caption.bold())
+                .foregroundColor(.secondary)
+
+            if artifact.sourceRefs.isEmpty {
+                Text(state.t("studio.sources_empty"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], alignment: .leading, spacing: 8) {
+                    ForEach(artifact.sourceRefs) { src in
+                        HStack(spacing: 6) {
+                            Text(src.kind.uppercased().prefix(4))
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(src.kind.lowercased() == "pdf" ? Color.red.opacity(0.85) : Color.blue.opacity(0.8))
+                                .foregroundColor(.white)
+                                .cornerRadius(4)
+                            Text(src.title)
+                                .font(.caption)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.white.opacity(0.06))
+                        .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
+                        .clipShape(Capsule())
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 380)
+    }
+
+    private var failedBody: some View {
+        let msg = L10n.advice(artifact.errorCode, en: state.isEnglish) ?? state.t("studio.failed")
+        let logText = artifact.errorLog.isEmpty
+            ? "ArtifactId: \(artifact.id)\nErrorCode: \(artifact.errorCode)\nDetail: \(artifact.errorDetail)"
+            : artifact.errorLog
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(msg)
+                    .font(.callout.weight(.medium))
+                    .foregroundColor(Color(red: 1.0, green: 0.63, blue: 0.55))
+
+                Button(state.t("studio.retry")) {
+                    Task { await state.retryArtifact(artifactId: artifact.id) }
+                }
+                .buttonStyle(.borderedProminent)
+
+                DisclosureGroup(state.t("studio.diag_log"), isExpanded: $showDiagLog) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button(state.t("studio.copy_log")) {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(logText, forType: .string)
+                        }
+                        .buttonStyle(.bordered)
+                        ScrollView {
+                            Text(logText)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 220)
+                        .padding(8)
+                        .background(Color.black.opacity(0.25))
+                        .cornerRadius(8)
+                    }
+                    .padding(.top, 6)
+                }
+            }
+            .padding(14)
+            .background(Color.white.opacity(0.05))
+            .cornerRadius(12)
+        }
+    }
+
+    private var feedbackBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                Task { _ = try? await state.core.call(method: "studio.set_feedback", params: ["artifact_id": artifact.id, "feedback": 1]) }
+            } label: {
+                Label(state.t("studio.good"), systemImage: "hand.thumbsup")
+            }
+            .buttonStyle(.bordered)
+            Button {
+                Task { _ = try? await state.core.call(method: "studio.set_feedback", params: ["artifact_id": artifact.id, "feedback": -1]) }
+            } label: {
+                Label(state.t("studio.bad"), systemImage: "hand.thumbsdown")
+            }
+            .buttonStyle(.bordered)
+            Spacer()
+        }
+    }
+
     private var draftReviewBody: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Button("预览提纲") { editingDraft = false }
+                Button(state.t("studio.preview_draft")) { editingDraft = false }
                     .buttonStyle(.borderedProminent)
-                Button("编辑提纲") { editingDraft = true }
+                Button(state.t("studio.edit_draft")) { editingDraft = true }
                     .buttonStyle(.bordered)
             }
             if editingDraft {
@@ -74,27 +242,26 @@ struct ArtifactViewerView: View {
                     .frame(maxHeight: .infinity)
             } else {
                 ScrollView {
-                    Text(LocalizedStringKey(draftText.isEmpty ? "（暂无提纲内容）" : draftText))
+                    Text(LocalizedStringKey(draftText))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                 }
                 .background(Color(white: 0.16))
                 .cornerRadius(12)
             }
-            Button("批准并生成演示文稿") {
+            Button(state.t("studio.approve_draft")) {
                 Task { await state.approveDraft(artifactId: artifact.id, markdown: draftText) }
             }
             .buttonStyle(.borderedProminent)
         }
     }
 
-    // Requirement 4: Report TOC + Content split view
     private var reportBody: some View {
         let sections = artifact.payload["sections"] as? [[String: Any]] ?? []
         return HStack(alignment: .top, spacing: 12) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("目录").font(.caption.bold()).foregroundColor(.secondary)
+                    Text(state.t("studio.toc")).font(.caption.bold()).foregroundColor(.secondary)
                     ForEach(Array(sections.enumerated()), id: \.offset) { idx, sec in
                         Button {
                             selectedSectionId = idx
@@ -137,7 +304,6 @@ struct ArtifactViewerView: View {
         }
     }
 
-    // Requirement 4: Infographic zoomable card canvas + bottom feedback bar
     private var infographicBody: some View {
         let blocks = artifact.payload["blocks"] as? [[String: Any]] ?? []
         return VStack(spacing: 8) {
@@ -180,21 +346,7 @@ struct ArtifactViewerView: View {
                 .padding(12)
             }
 
-            HStack(spacing: 10) {
-                Button {
-                    Task { _ = try? await state.core.call(method: "studio.set_feedback", params: ["artifact_id": artifact.id, "feedback": 1]) }
-                } label: {
-                    Label("优质内容", systemImage: "hand.thumbsup")
-                }
-                .buttonStyle(.bordered)
-                Button {
-                    Task { _ = try? await state.core.call(method: "studio.set_feedback", params: ["artifact_id": artifact.id, "feedback": -1]) }
-                } label: {
-                    Label("劣质内容", systemImage: "hand.thumbsdown")
-                }
-                .buttonStyle(.bordered)
-                Spacer()
-            }
+            feedbackBar
         }
     }
 

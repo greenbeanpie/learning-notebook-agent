@@ -38,13 +38,13 @@ def pick_reply(body):
             system += str(m.get("content"))
     if '"standalone"' in system:
         return json.dumps({"standalone": "向量空间的基与维数有什么关系", "queries": ["基 维数", "basis dimension"]}, ensure_ascii=False)
-    if '"questions"' in system and "追问" in system:
+    if '"questions"' in system and ("follow-up" in system or "追问" in system):
         return json.dumps({"questions": ["什么是线性无关？", "如何求维数？", "秩与维数有何联系？"]}, ensure_ascii=False)
-    if '"summary"' in system and "不超过 300 字" in system:
+    if '"summary"' in system and ("under 300 characters" in system or "不超过 300 字" in system):
         return json.dumps({"summary": "用户在讨论基与维数。"}, ensure_ascii=False)
-    if "Studio 生成器" in system:
+    if "Local Notebook Studio generator" in system or "Studio 生成器" in system:
         for kind, payload in STUDIO_EXTRA.items():
-            if f"生成 {kind} " in system:
+            if f"for {kind}," in system or f"生成 {kind} " in system:
                 return json.dumps(payload, ensure_ascii=False)
     if "quiz" in system:
         return json.dumps(QUIZ, ensure_ascii=False)

@@ -10,24 +10,31 @@ public sealed partial class MainWindow
 {
     private static string KindName(string kind) => kind switch
     {
-        "audio" => "音频概览",
-        "slides" => "演示文稿",
-        "mindmap" => "思维导图",
-        "report" => "报告",
-        "flashcards" => "闪卡",
-        "quiz" => "测验",
-        "infographic" => "信息图",
+        "audio" => L10n.T("studio.audio"),
+        "slides" => L10n.T("studio.slides"),
+        "mindmap" => L10n.T("studio.mindmap"),
+        "report" => L10n.T("studio.report"),
+        "flashcards" => L10n.T("studio.flashcards"),
+        "quiz" => L10n.T("studio.quiz"),
+        "infographic" => L10n.T("studio.infographic"),
         _ => kind,
     };
 
     private static string ArtifactStatusLabel(string status, string stage) => status switch
     {
-        "PENDING" => "排队中",
-        "RUNNING" => stage switch { "COLLECT" => "收集资料", "PLAN" => "规划大纲", "GENERATE" => "生成中", "RENDER" => "渲染中", _ => "处理中" },
-        "DRAFT_REVIEW" => "等待审核大纲",
-        "READY" => "已完成",
-        "FAILED" => "失败",
-        "CANCELLED" => "已取消",
+        "PENDING" => L10n.T("studio.status_pending"),
+        "RUNNING" => stage switch
+        {
+            "COLLECT" => L10n.T("studio.status_collect"),
+            "PLAN" => L10n.T("studio.status_plan"),
+            "GENERATE" => L10n.T("studio.status_generate"),
+            "RENDER" => L10n.T("studio.status_render"),
+            _ => L10n.T("studio.status_processing"),
+        },
+        "DRAFT_REVIEW" => L10n.T("studio.status_draft"),
+        "READY" => L10n.T("studio.status_ready"),
+        "FAILED" => L10n.T("studio.status_failed"),
+        "CANCELLED" => L10n.T("studio.status_cancelled"),
         _ => status,
     };
 
@@ -245,6 +252,8 @@ public sealed partial class MainWindow
         ApplyPaneLayout();
     }
 
+    private DispatcherTimer? _paneAnimTimer;
+
     private void ToggleStudioFullscreen()
     {
         _studioFullscreen = !_studioFullscreen;
@@ -258,7 +267,90 @@ public sealed partial class MainWindow
             }
         }
         _activeArtifactPane?.SetFullscreenIcon(_studioFullscreen);
-        ApplyPaneLayout();
+        AnimatePaneLayout(StudioPaneBorder, _studioFullscreen);
+    }
+
+    /// <summary>Smoothly animates pane width expansion or shrinking (~190ms cubic ease-out) when toggling fullscreen.</summary>
+    private void AnimatePaneLayout(Border targetPane, bool expanding)
+    {
+        if (!L10n.Prefs.FullscreenAnimation || RootGrid == null || RootGrid.ActualWidth <= 100)
+        {
+            ApplyPaneLayout();
+            return;
+        }
+
+        _paneAnimTimer?.Stop();
+        var startS = SourcesPaneBorder.Visibility == Visibility.Visible ? SourcesPaneBorder.ActualWidth : 0.0;
+        var startC = ChatPaneBorder.Visibility == Visibility.Visible ? ChatPaneBorder.ActualWidth : 0.0;
+        var startT = StudioPaneBorder.Visibility == Visibility.Visible ? StudioPaneBorder.ActualWidth : 0.0;
+
+        var totalW = Math.Max(300.0, RootGrid.ActualWidth - 56.0);
+        double targetS, targetC, targetT;
+        var studioOpened = _activeArtifactPane != null;
+
+        if (_sourceFullscreen && _sourcePreviewOpen)
+        {
+            targetS = totalW; targetC = 0; targetT = 0;
+        }
+        else if (_studioFullscreen && studioOpened)
+        {
+            targetS = 0; targetC = 0; targetT = totalW;
+        }
+        else if (_sourcePreviewOpen && studioOpened)
+        {
+            targetS = totalW * (1.0 / 3.2); targetC = totalW * (1.0 / 3.2); targetT = totalW * (1.2 / 3.2);
+        }
+        else if (_sourcePreviewOpen)
+        {
+            targetT = 300;
+            var rem = Math.Max(100, totalW - targetT);
+            targetS = rem * 0.5; targetC = rem * 0.5;
+        }
+        else if (studioOpened)
+        {
+            targetS = 260;
+            var rem = Math.Max(100, totalW - targetS);
+            targetC = rem * (1.0 / 2.65); targetT = rem * (1.65 / 2.65);
+        }
+        else
+        {
+            targetS = 320; targetT = 340; targetC = Math.Max(100, totalW - targetS - targetT);
+        }
+
+        SourcesPaneBorder.Visibility = Visibility.Visible;
+        ChatPaneBorder.Visibility = Visibility.Visible;
+        StudioPaneBorder.Visibility = Visibility.Visible;
+
+        var scale = new Microsoft.UI.Xaml.Media.ScaleTransform { ScaleX = expanding ? 0.96 : 1.02, ScaleY = expanding ? 0.96 : 1.02 };
+        targetPane.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+        targetPane.RenderTransform = scale;
+
+        var started = DateTime.UtcNow;
+        const double durationMs = 190.0;
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+        _paneAnimTimer = timer;
+        timer.Tick += (_, _) =>
+        {
+            var elapsed = (DateTime.UtcNow - started).TotalMilliseconds;
+            var rawT = Math.Clamp(elapsed / durationMs, 0.0, 1.0);
+            var ease = 1.0 - Math.Pow(1.0 - rawT, 3.0);
+
+            SourcesCol.Width = new GridLength(Math.Max(0, startS + (targetS - startS) * ease), GridUnitType.Pixel);
+            ChatCol.Width = new GridLength(Math.Max(0, startC + (targetC - startC) * ease), GridUnitType.Pixel);
+            StudioCol.Width = new GridLength(Math.Max(0, startT + (targetT - startT) * ease), GridUnitType.Pixel);
+
+            var curScale = (expanding ? 0.96 : 1.02) + (1.0 - (expanding ? 0.96 : 1.02)) * ease;
+            scale.ScaleX = curScale;
+            scale.ScaleY = curScale;
+
+            if (rawT >= 1.0)
+            {
+                timer.Stop();
+                targetPane.RenderTransform = null;
+                ApplyPaneLayout();
+            }
+        };
+        timer.Start();
     }
 
     private void ApplyPaneLayout()

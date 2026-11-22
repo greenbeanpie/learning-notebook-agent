@@ -5,6 +5,7 @@ struct NotebookItem: Identifiable, Hashable {
     let id: String
     let title: String
     let summaryMd: String
+    let suggestedQuestions: [String]
 }
 
 struct SourceItem: Identifiable {
@@ -13,6 +14,12 @@ struct SourceItem: Identifiable {
     let kind: String
     let status: String
     var isSelected: Bool
+}
+
+struct ArtifactSourceRefItem: Identifiable {
+    let id: String
+    let title: String
+    let kind: String
 }
 
 struct ThoughtStepItem: Identifiable {
@@ -38,17 +45,25 @@ struct StudioArtifactItem: Identifiable {
     let title: String
     let status: String
     let sourceCount: Int
+    let sourceRefs: [ArtifactSourceRefItem]
+    let promptTopic: String
+    let config: [String: Any]
     let draftMarkdown: String
     let payload: [String: Any]
+    let errorCode: String
+    let errorDetail: String
+    let errorLog: String
 }
 
 @MainActor
 final class AppState: ObservableObject {
     let core = CoreClient()
 
+    @Published var prefs: UiPreferences = UiPreferences()
     @Published var notebooks: [NotebookItem] = []
     @Published var activeNotebookId: String = ""
-    @Published var summaryText: String = "请添加来源或直接提问。"
+    @Published var summaryText: String = ""
+    @Published var suggestedQuestions: [String] = []
     @Published var sources: [SourceItem] = []
     @Published var messages: [ChatMessageItem] = []
     @Published var artifacts: [StudioArtifactItem] = []
@@ -56,7 +71,9 @@ final class AppState: ObservableObject {
     @Published var studioFullscreen: Bool = false
     @Published var statusMessage: String = ""
     @Published var showSettingsSheet: Bool = false
-    @Published var showEmbeddingSheet: Bool = false
+
+    var isEnglish: Bool { prefs.isEnglish }
+    func t(_ key: String) -> String { L10n.t(key, en: isEnglish) }
 
     func start() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -70,10 +87,31 @@ final class AppState: ObservableObject {
                     }
                 }
             }
-            Task { await loadInitialNotebook() }
+            Task {
+                await loadPreferences()
+                await loadInitialNotebook()
+            }
         } catch {
-            statusMessage = "核心启动失败: \(error.localizedDescription)"
+            statusMessage = error.localizedDescription
         }
+    }
+
+    func loadPreferences() async {
+        if let res = try? await core.call(method: "settings.get", params: ["key": "ui.preferences"]),
+           let val = res["value"] as? [String: Any] {
+            prefs = UiPreferences.from(val)
+        }
+        if summaryText.isEmpty {
+            summaryText = t("chat.empty_summary")
+        }
+    }
+
+    func savePreferences() async {
+        _ = try? await core.call(method: "settings.set", params: [
+            "key": "ui.preferences",
+            "value": prefs.toDict()
+        ])
+        statusMessage = t("settings.saved")
     }
 
     func loadInitialNotebook() async {
@@ -83,7 +121,7 @@ final class AppState: ObservableObject {
             if let first = rawList.first, let id = first["id"] as? String {
                 activeNotebookId = id
             } else {
-                let created = try await core.call(method: "notebook.create", params: ["title": "未命名笔记本"])
+                let created = try await core.call(method: "notebook.create", params: ["title": t("nb.untitled")])
                 activeNotebookId = created["id"] as? String ?? ""
             }
             await refreshAll()
@@ -97,10 +135,16 @@ final class AppState: ObservableObject {
         do {
             let nbList = try await core.call(method: "notebook.list")
             notebooks = (nbList["notebooks"] as? [[String: Any]] ?? []).map {
-                NotebookItem(id: $0["id"] as? String ?? "", title: $0["title"] as? String ?? "", summaryMd: $0["summary_md"] as? String ?? "")
+                NotebookItem(
+                    id: $0["id"] as? String ?? "",
+                    title: $0["title"] as? String ?? "",
+                    summaryMd: $0["summary_md"] as? String ?? "",
+                    suggestedQuestions: $0["suggested_questions"] as? [String] ?? []
+                )
             }
-            if let cur = notebooks.first(where: { $0.id == activeNotebookId }), !cur.summaryMd.isEmpty {
-                summaryText = cur.summaryMd
+            if let cur = notebooks.first(where: { $0.id == activeNotebookId }) {
+                summaryText = cur.summaryMd.isEmpty ? t("chat.empty_summary") : cur.summaryMd
+                suggestedQuestions = cur.suggestedQuestions
             }
 
             let srcRes = try await core.call(method: "source.list", params: ["notebook_id": activeNotebookId])
@@ -117,12 +161,14 @@ final class AppState: ObservableObject {
             let chatRes = try await core.call(method: "chat.history", params: ["notebook_id": activeNotebookId])
             messages = (chatRes["messages"] as? [[String: Any]] ?? []).map { m in
                 let rawTh = m["thoughts"] as? [[String: Any]] ?? []
-                let ths = rawTh.map {
-                    ThoughtStepItem(
-                        id: $0["step_id"] as? String ?? UUID().uuidString,
-                        kind: $0["kind"] as? String ?? "thought_stage",
-                        title: $0["title"] as? String ?? "",
-                        detail: $0["detail"] as? String ?? ""
+                let ths = rawTh.compactMap { th -> ThoughtStepItem? in
+                    let kind = th["kind"] as? String ?? "thought_stage"
+                    if kind == "retry" { return nil }
+                    return ThoughtStepItem(
+                        id: th["step_id"] as? String ?? UUID().uuidString,
+                        kind: kind,
+                        title: th["title"] as? String ?? "",
+                        detail: th["detail"] as? String ?? ""
                     )
                 }
                 return ChatMessageItem(
@@ -134,15 +180,31 @@ final class AppState: ObservableObject {
             }
 
             let artRes = try await core.call(method: "studio.list", params: ["notebook_id": activeNotebookId])
-            artifacts = (artRes["artifacts"] as? [[String: Any]] ?? []).map { a in
-                StudioArtifactItem(
+            artifacts = (artRes["artifacts"] as? [[String: Any]] ?? []).reversed().map { a in
+                let cfg = a["config"] as? [String: Any] ?? [:]
+                let rawRefs = a["source_refs"] as? [[String: Any]] ?? []
+                let refs = rawRefs.map {
+                    ArtifactSourceRefItem(
+                        id: $0["id"] as? String ?? UUID().uuidString,
+                        title: $0["title"] as? String ?? "",
+                        kind: $0["kind"] as? String ?? "file"
+                    )
+                }
+                let srcCount = refs.isEmpty ? ((a["source_ids"] as? [Any])?.count ?? 0) : refs.count
+                return StudioArtifactItem(
                     id: a["id"] as? String ?? "",
                     artifactType: a["artifact_type"] as? String ?? "report",
-                    title: a["title"] as? String ?? "产物",
+                    title: a["title"] as? String ?? "Artifact",
                     status: a["status"] as? String ?? "PENDING",
-                    sourceCount: (a["source_ids"] as? [Any])?.count ?? 0,
+                    sourceCount: srcCount,
+                    sourceRefs: refs,
+                    promptTopic: (cfg["topic"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                    config: cfg,
                     draftMarkdown: a["draft"] as? String ?? "",
-                    payload: a["payload"] as? [String: Any] ?? [:]
+                    payload: a["payload"] as? [String: Any] ?? [:],
+                    errorCode: a["error_code"] as? String ?? "",
+                    errorDetail: a["error_detail"] as? String ?? "",
+                    errorLog: a["error_log"] as? String ?? ""
                 )
             }
             if let openId = activeArtifact?.id, let updated = artifacts.first(where: { $0.id == openId }) {
@@ -159,29 +221,53 @@ final class AppState: ObservableObject {
             _ = try await core.call(method: "chat.send", params: ["notebook_id": activeNotebookId, "text": text])
             await refreshAll()
         } catch {
-            statusMessage = "对话失败: \(error.localizedDescription)"
+            statusMessage = error.localizedDescription
         }
     }
 
     func createStudio(kind: String) async {
         guard !activeNotebookId.isEmpty else { return }
-        let cfg: [String: Any] = kind == "slides" ? ["pages": 12, "reviewOutline": true] : [:]
+        var cfg: [String: Any] = kind == "slides" ? ["pages": 8, "reviewOutline": true] : [:]
+        if !prefs.defaultStudioLang.isEmpty {
+            cfg["lang"] = prefs.defaultStudioLang
+        }
         do {
             _ = try await core.call(method: "studio.create", params: ["notebook_id": activeNotebookId, "artifact_type": kind, "config": cfg])
-            statusMessage = "已提交生成任务。"
+            statusMessage = t("studio.submitted")
             await refreshAll()
         } catch {
-            statusMessage = "生成失败: \(error.localizedDescription)"
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func regenerateArtifact(_ art: StudioArtifactItem) async {
+        do {
+            _ = try await core.call(method: "studio.regenerate", params: [
+                "artifact_id": art.id,
+                "config": art.config,
+                "use_selected_sources": true
+            ])
+            await refreshAll()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func retryArtifact(artifactId: String) async {
+        do {
+            _ = try await core.call(method: "studio.retry", params: ["artifact_id": artifactId])
+            await refreshAll()
+        } catch {
+            statusMessage = error.localizedDescription
         }
     }
 
     func approveDraft(artifactId: String, markdown: String) async {
         do {
             _ = try await core.call(method: "studio.approve_draft", params: ["artifact_id": artifactId, "draft": markdown])
-            statusMessage = "已批准提纲，正在生成最终文稿。"
             await refreshAll()
         } catch {
-            statusMessage = "批准失败: \(error.localizedDescription)"
+            statusMessage = error.localizedDescription
         }
     }
 }

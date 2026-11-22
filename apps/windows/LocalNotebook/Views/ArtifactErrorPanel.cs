@@ -1,3 +1,4 @@
+using LocalNotebook.Services;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -9,8 +10,8 @@ using static LocalNotebook.Services.Api;
 namespace LocalNotebook.Views;
 
 /// <summary>
-/// Shared Studio error display with one-click retry and a collapsed-by-default
-/// developer diagnostic log that can be expanded and copied.
+/// Shared Studio error display with clean user-facing copy, one-click retry,
+/// and a collapsed-by-default diagnostic log that can be expanded and copied.
 /// </summary>
 internal static class ArtifactErrorPanel
 {
@@ -26,9 +27,7 @@ internal static class ArtifactErrorPanel
         var advice = code.Length > 0 ? Advice(code) : "";
         var headline = advice.Length > 0
             ? advice
-            : detail.Length > 0
-                ? detail
-                : "生成失败（已尝试回退重试 3 次），请重试或查看诊断日志。";
+            : L10n.T("studio.gen_failed_msg");
 
         var errorLog = Str(artifact, "error_log");
         if (errorLog.Length == 0)
@@ -40,23 +39,12 @@ internal static class ArtifactErrorPanel
 
         root.Children.Add(new TextBlock
         {
-            Text = $"生成失败：{headline}",
+            Text = headline,
             FontSize = compact ? 12 : 13,
             FontWeight = FontWeights.Medium,
             TextWrapping = TextWrapping.Wrap,
             Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 160, 140)),
         });
-
-        if (detail.Length > 0 && advice.Length > 0 && detail != advice)
-        {
-            root.Children.Add(new TextBlock
-            {
-                Text = $"错误摘要（{code}）：{detail}",
-                FontSize = 11,
-                TextWrapping = TextWrapping.Wrap,
-                Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
-            });
-        }
 
         var actions = new StackPanel
         {
@@ -66,7 +54,7 @@ internal static class ArtifactErrorPanel
 
         var retryBtn = new Button
         {
-            Content = "重试",
+            Content = L10n.T("studio.retry"),
             Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"],
             MinHeight = compact ? 30 : 34,
             Padding = new Thickness(14, 4, 14, 4),
@@ -75,7 +63,7 @@ internal static class ArtifactErrorPanel
         retryBtn.Click += async (_, _) =>
         {
             retryBtn.IsEnabled = false;
-            retryBtn.Content = "重试中...";
+            retryBtn.Content = L10n.T("studio.retrying");
             try
             {
                 await onRetry();
@@ -83,7 +71,7 @@ internal static class ArtifactErrorPanel
             finally
             {
                 retryBtn.IsEnabled = true;
-                retryBtn.Content = "重试";
+                retryBtn.Content = L10n.T("studio.retry");
             }
         };
         actions.Children.Add(retryBtn);
@@ -92,7 +80,7 @@ internal static class ArtifactErrorPanel
         {
             var procBtn = new Button
             {
-                Content = "查看思考过程",
+                Content = L10n.T("studio.view_process"),
                 Style = (Style)Application.Current.Resources["PillButtonStyle"],
                 MinHeight = compact ? 30 : 34,
                 Padding = new Thickness(12, 4, 12, 4),
@@ -106,7 +94,7 @@ internal static class ArtifactErrorPanel
 
         var copyBtn = new Button
         {
-            Content = "复制日志",
+            Content = L10n.T("studio.copy_log"),
             Style = (Style)Application.Current.Resources["PillButtonStyle"],
             MinHeight = 28,
             Padding = new Thickness(12, 3, 12, 3),
@@ -118,7 +106,7 @@ internal static class ArtifactErrorPanel
             var dp = new DataPackage();
             dp.SetText(errorLog);
             Clipboard.SetContent(dp);
-            notify(InfoBarSeverity.Success, "已复制日志", "完整诊断日志已复制到剪贴板，可发送给开发者排查。");
+            notify(InfoBarSeverity.Success, L10n.T("studio.log_copied"), L10n.T("studio.log_copied_msg"));
         };
 
         var logBox = new Border
@@ -151,7 +139,7 @@ internal static class ArtifactErrorPanel
 
         root.Children.Add(new Expander
         {
-            Header = "开发者日志（点击展开）",
+            Header = L10n.T("studio.diag_log"),
             IsExpanded = false,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,

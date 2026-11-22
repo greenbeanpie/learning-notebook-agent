@@ -321,7 +321,7 @@ impl IngestService {
                         if extract.doc.blocks.is_empty() && !extract.ocr_needed_pages.is_empty() {
                             Err(LnaError::new(
                                 ErrorCode::SourceNeedsOcr,
-                                "扫描版 PDF 未提取到文字，请在“模型协议配置”中为视觉模型勾选“用于处理图文”后重试",
+                                "扫描版 PDF 未提取到文字，请在“设置 → AI 模型”中启用图文视觉模型后再试",
                             ))
                         } else {
                             Ok(extract.doc)

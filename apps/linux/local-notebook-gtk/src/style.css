@@ -3,11 +3,31 @@ window {
     color: #e3e3e3;
 }
 
+window.lna-light {
+    background-color: #f4f6f9;
+    color: #1f2328;
+}
+
+window.lna-light .lna-panel {
+    background-color: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    color: #1f2328;
+}
+
+window.lna-light .lna-card,
+window.lna-light .lna-pill-btn,
+window.lna-light .lna-studio-tile {
+    background-color: #f0f3f8;
+    color: #1f2328;
+    border: 1px solid rgba(0, 0, 0, 0.10);
+}
+
 .lna-panel {
     background-color: #1e1f20;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 16px;
     padding: 14px;
+    transition: all 180ms ease-out;
 }
 
 .lna-card {
@@ -47,6 +67,15 @@ window {
 
 .lna-studio-tile:hover {
     background-color: #333537;
+}
+
+.lna-source-chip {
+    background-color: #1b1c1e;
+    color: #e3e3e3;
+    border: 1px solid #3c4043;
+    border-radius: 14px;
+    padding: 4px 10px;
+    font-size: 12px;
 }
 
 .lna-thoughts-btn {

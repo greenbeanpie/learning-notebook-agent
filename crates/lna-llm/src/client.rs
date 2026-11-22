@@ -368,11 +368,11 @@ impl LlmClient {
                 max_repairs
             ));
             let repair_req = LlmRequest {
-                system: "你是 JSON 修复器，只输出符合给定 Schema 的合法 JSON。".into(),
+                system: "You are a strict JSON repairer. Output only valid JSON that strictly conforms to the provided JSON Schema, with no commentary or code fences.".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
-                        "以下 JSON 未通过 Schema 校验（{}），请修复并只输出合法 JSON：\nSchema:\n{}\n\n原输出:\n{}",
+                        "The following JSON failed schema validation ({}). Fix it and output valid JSON only:\nSchema:\n{}\n\nOriginal output:\n{}",
                         last_reason, schema, candidate
                     ))],
                 }],

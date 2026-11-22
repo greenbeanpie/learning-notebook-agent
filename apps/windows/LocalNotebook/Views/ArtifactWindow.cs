@@ -31,6 +31,10 @@ public sealed class ArtifactViewerPane : IDisposable
     private const string NextIconPath = "M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z";
     private const string PlusIconPath = "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z";
     private const string MinusIconPath = "M19,13H5V11H19V13Z";
+    private const string SparkleEditIconPath = "M12,2L14.4,8.6L21,11L14.4,13.4L12,20L9.6,13.4L3,11L9.6,8.6L12,2Z";
+    private const string FolderIconPath = "M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z";
+    private const string RegenerateIconPath = "M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z";
+    private const string CopyIconPath = "M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z";
 
     public Grid Root { get; } = new();
 
@@ -39,7 +43,16 @@ public sealed class ArtifactViewerPane : IDisposable
     private readonly Action _onClose;
     private readonly Action _onToggleFullscreen;
     private readonly TextBlock _title = new() { FontSize = 17, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock _sourceBadge = new() { FontSize = 11, Foreground = (Brush)Application.Current.Resources["TextMutedBrush"], VerticalAlignment = VerticalAlignment.Center };
+    private readonly Button _promptSourcesBtn = new()
+    {
+        Style = (Style)Application.Current.Resources["PillButtonStyle"],
+        MinHeight = 28,
+        Padding = new Thickness(12, 3, 12, 3),
+        FontSize = 12,
+        HorizontalAlignment = HorizontalAlignment.Left,
+        Margin = new Thickness(0, 4, 0, 0),
+        Visibility = Visibility.Collapsed,
+    };
     private readonly StackPanel _tools = new() { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
     private PathIcon? _fullscreenIcon;
     private bool _isFullscreen;
@@ -80,7 +93,7 @@ public sealed class ArtifactViewerPane : IDisposable
 
         var titleCol = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         titleCol.Children.Add(_title);
-        titleCol.Children.Add(_sourceBadge);
+        titleCol.Children.Add(_promptSourcesBtn);
         head.Children.Add(titleCol);
 
         Grid.SetColumn(_tools, 1);
@@ -180,7 +193,7 @@ public sealed class ArtifactViewerPane : IDisposable
         var (res, err) = await Api.CallAsync(method, args);
         if (err is { } e)
         {
-            Say(InfoBarSeverity.Error, $"{what}失败", Advice(e.Code) is { Length: > 0 } a ? $"{a}（{e.Code}）" : $"{e.Message}（{e.Code}）");
+            Say(InfoBarSeverity.Error, L10n.Fmt("common.failed", what), Advice(e.Code) is { Length: > 0 } a ? a : e.Message);
             return null;
         }
         return res;
@@ -193,8 +206,7 @@ public sealed class ArtifactViewerPane : IDisposable
         if (_disposed || res is not { } a) return;
         _art = a;
         _title.Text = Str(a, "title");
-        var srcCount = Arr(a, "source_ids").Count();
-        _sourceBadge.Text = srcCount > 0 ? $"基于 {srcCount} 个来源" : "";
+        UpdatePromptAndSourcesPopover(a);
 
         var status = Str(a, "status");
         var kind = Str(a, "artifact_type");
@@ -224,11 +236,12 @@ public sealed class ArtifactViewerPane : IDisposable
         {
             if (_showingThoughts)
             {
-                _body.Content = BuildRecordedThoughtsView(a, headerText: "生成思考与执行过程");
+                _body.Content = BuildRecordedThoughtsView(a, headerText: L10n.T("studio.process_records"));
                 return;
             }
             _interactiveView = new InteractiveArtifactView(
-                _id, kind, a, _hostWindow, Say, compact: false, feedbackBar: BuildFeedbackBar());
+                _id, kind, a, _hostWindow, Say, compact: false, feedbackBar: BuildFeedbackBar(),
+                onExportSvg: () => _ = ExportAsync("svg", ".svg", "SVG"));
             _body.Content = _interactiveView.Root;
             return;
         }
@@ -492,7 +505,7 @@ public sealed class ArtifactViewerPane : IDisposable
         }
         else
         {
-            foreach (var t in thoughts)
+            foreach (var t in thoughts.Where(x => Str(x, "kind") != "retry"))
             {
                 root.Children.Add(BuildThoughtCard(Str(t, "kind"), Str(t, "title"), Str(t, "body")).Card);
             }
@@ -518,12 +531,12 @@ public sealed class ArtifactViewerPane : IDisposable
         };
         root.Children.Add(errBox);
 
-        var thoughts = Arr(art, "thoughts").ToList();
+        var thoughts = Arr(art, "thoughts").Where(x => Str(x, "kind") != "retry").ToList();
         if (thoughts.Count > 0)
         {
             root.Children.Add(new TextBlock
             {
-                Text = "执行与回退重试记录",
+                Text = L10n.T("studio.process_records"),
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
@@ -571,6 +584,146 @@ public sealed class ArtifactViewerPane : IDisposable
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             Content = root,
+        };
+    }
+
+    /// <summary>Builds the NotebookLM-style "查看提示和 N 个来源" pill button and rich popover flyout.</summary>
+    private void UpdatePromptAndSourcesPopover(JsonElement art)
+    {
+        var cfg = Obj(art, "config");
+        var promptText = Str(cfg, "topic").Trim();
+        var srcRefs = Arr(art, "source_refs").ToList();
+        var srcCount = srcRefs.Count > 0 ? srcRefs.Count : Arr(art, "source_ids").Count();
+
+        _promptSourcesBtn.Content = srcCount > 0
+            ? L10n.Fmt("studio.view_prompt_sources", srcCount)
+            : L10n.T("studio.view_prompt");
+        _promptSourcesBtn.Visibility = Visibility.Visible;
+
+        var flyoutBody = new StackPanel { Spacing = 14, MinWidth = 340, MaxWidth = 440 };
+
+        // Prompt section
+        var promptHead = new Grid { ColumnSpacing = 8 };
+        promptHead.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        promptHead.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var promptTitleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        promptTitleRow.Children.Add(new Viewbox
+        {
+            Width = 16, Height = 16,
+            Child = new PathIcon { Width = 24, Height = 24, Data = Geom(SparkleEditIconPath), Foreground = (Brush)Application.Current.Resources["TextPrimaryBrush"] },
+        });
+        promptTitleRow.Children.Add(new TextBlock { Text = L10n.T("studio.prompt_header"), FontSize = 14, FontWeight = FontWeights.SemiBold });
+        promptHead.Children.Add(promptTitleRow);
+
+        var promptActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var regenBtn = IconBtn(RegenerateIconPath, L10n.T("studio.regenerate"), async (_, _) =>
+        {
+            (_promptSourcesBtn.Flyout as Flyout)?.Hide();
+            var res = await Core("studio.regenerate", Args(("artifact_id", _id), ("config", cfg.ValueKind == JsonValueKind.Object ? cfg : Args()), ("use_selected_sources", true)), L10n.T("studio.regenerate"));
+            if (res != null) { _builtFor = ""; await LoadAsync(); }
+        }, out _);
+        var copyBtn = IconBtn(CopyIconPath, L10n.T("studio.copy_prompt"), (_, _) =>
+        {
+            var dp = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            dp.SetText(promptText.Length > 0 ? promptText : Str(art, "title"));
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(dp);
+            Say(InfoBarSeverity.Success, L10n.T("studio.prompt_copied"), "");
+        }, out _);
+        promptActions.Children.Add(regenBtn);
+        promptActions.Children.Add(copyBtn);
+        Grid.SetColumn(promptActions, 1);
+        promptHead.Children.Add(promptActions);
+        flyoutBody.Children.Add(promptHead);
+
+        flyoutBody.Children.Add(new TextBlock
+        {
+            Text = promptText.Length > 0 ? promptText : L10n.T("studio.prompt_empty"),
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+            Foreground = (Brush)Application.Current.Resources[promptText.Length > 0 ? "TextPrimaryBrush" : "TextMutedBrush"],
+        });
+
+        // Sources section
+        var srcTitleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 4, 0, 0) };
+        srcTitleRow.Children.Add(new Viewbox
+        {
+            Width = 15, Height = 15,
+            Child = new PathIcon { Width = 24, Height = 24, Data = Geom(FolderIconPath), Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"] },
+        });
+        srcTitleRow.Children.Add(new TextBlock { Text = L10n.T("studio.sources_header"), FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"] });
+        flyoutBody.Children.Add(srcTitleRow);
+
+        if (srcRefs.Count > 0)
+        {
+            var chipsGrid = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var chipsWrap = new StackPanel { Spacing = 6 };
+            var rowPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            int colCount = 0;
+            foreach (var sr in srcRefs)
+            {
+                var stitle = Str(sr, "title");
+                var skind = Str(sr, "kind").ToUpperInvariant();
+                var badgeColor = skind switch
+                {
+                    "PDF" => Windows.UI.Color.FromArgb(255, 229, 83, 75),
+                    "MD" or "MARKDOWN" => Windows.UI.Color.FromArgb(255, 108, 158, 248),
+                    "DOCX" or "DOC" => Windows.UI.Color.FromArgb(255, 76, 141, 246),
+                    _ => Windows.UI.Color.FromArgb(255, 130, 140, 155),
+                };
+                var badgeTag = skind.Length > 4 ? skind[..4] : (skind.Length > 0 ? skind : "FILE");
+                var chipRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                chipRow.Children.Add(new Border
+                {
+                    Background = new SolidColorBrush(badgeColor),
+                    CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(4, 1, 4, 1),
+                    Child = new TextBlock { Text = badgeTag, FontSize = 9, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) },
+                });
+                chipRow.Children.Add(new TextBlock
+                {
+                    Text = stitle,
+                    FontSize = 12,
+                    MaxWidth = 165,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+                var chip = new Border
+                {
+                    Background = (Brush)Application.Current.Resources["PanelBgBrush"],
+                    BorderBrush = (Brush)Application.Current.Resources["StrongBorderBrush"],
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(14),
+                    Padding = new Thickness(10, 5, 12, 5),
+                    Child = chipRow,
+                };
+                ToolTipService.SetToolTip(chip, stitle);
+                rowPanel.Children.Add(chip);
+                colCount++;
+                if (colCount % 2 == 0)
+                {
+                    chipsWrap.Children.Add(rowPanel);
+                    rowPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                }
+            }
+            if (rowPanel.Children.Count > 0) chipsWrap.Children.Add(rowPanel);
+            flyoutBody.Children.Add(chipsWrap);
+        }
+        else
+        {
+            flyoutBody.Children.Add(new TextBlock
+            {
+                Text = srcCount > 0 ? L10n.Fmt("studio.view_prompt_sources", srcCount) : L10n.T("studio.sources_empty"),
+                FontSize = 12,
+                Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
+            });
+        }
+
+        _promptSourcesBtn.Flyout = new Flyout
+        {
+            Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft,
+            Content = flyoutBody,
         };
     }
 
@@ -866,6 +1019,7 @@ internal sealed class InteractiveArtifactView : IDisposable
     private readonly WebContentHost? _math;
     private readonly Panel? _mathHost;
     private readonly FrameworkElement? _feedbackBar;
+    private readonly Action? _onExportSvg;
     private readonly JsonElement _art;
 
     private Windows.Media.Playback.MediaPlayer? _player;
@@ -883,7 +1037,8 @@ internal sealed class InteractiveArtifactView : IDisposable
         bool compact,
         FrameworkElement? feedbackBar = null,
         WebContentHost? math = null,
-        Panel? mathHost = null)
+        Panel? mathHost = null,
+        Action? onExportSvg = null)
     {
         _artifactId = artifactId;
         _art = artifact;
@@ -893,6 +1048,7 @@ internal sealed class InteractiveArtifactView : IDisposable
         _feedbackBar = feedbackBar;
         _math = math;
         _mathHost = mathHost;
+        _onExportSvg = onExportSvg;
 
         var payload = Obj(artifact, "payload");
         Root = kind switch
@@ -948,7 +1104,7 @@ internal sealed class InteractiveArtifactView : IDisposable
         var (res, err) = await Api.CallAsync(method, args);
         if (err is { } e)
         {
-            _notify(InfoBarSeverity.Error, $"{what}失败", Advice(e.Code) is { Length: > 0 } a ? $"{a}（{e.Code}）" : $"{e.Message}（{e.Code}）");
+            _notify(InfoBarSeverity.Error, L10n.Fmt("common.failed", what), Advice(e.Code) is { Length: > 0 } a ? a : e.Message);
             return null;
         }
         return res;
@@ -1159,53 +1315,8 @@ internal sealed class InteractiveArtifactView : IDisposable
 
     // mind map ----------------------------------------------------------------
 
-    private FrameworkElement BuildMindmap(JsonElement payload)
-    {
-        var nodes = Arr(payload, "nodes").ToList();
-        if (nodes.Count == 0) return Message("没有导图节点。");
-        var byParent = nodes.GroupBy(n => n.TryGetProperty("parent_id", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : "").ToDictionary(g => g.Key, g => g.ToList());
-        var tree = new TreeView { SelectionMode = TreeViewSelectionMode.None };
-        void Fill(string parentKey, TreeViewNode? parentNode)
-        {
-            if (!byParent.TryGetValue(parentKey, out var children)) return;
-            foreach (var n in children)
-            {
-                var node = new TreeViewNode { Content = $"{Str(n, "label")}{CiteText(n)}", IsExpanded = true };
-                if (parentNode == null) tree.RootNodes.Add(node); else parentNode.Children.Add(node);
-                Fill(Str(n, "id"), node);
-            }
-        }
-        Fill("", null);
-        var scale = new ScaleTransform { ScaleX = 1, ScaleY = 1 };
-        var host = new Grid { RenderTransform = scale, RenderTransformOrigin = new Windows.Foundation.Point(0, 0) };
-        host.Children.Add(tree);
-        var zoom = new Slider { Minimum = 0.6, Maximum = 2.0, Value = 1, StepFrequency = 0.1, Width = 140, Header = "缩放" };
-        zoom.ValueChanged += (_, e) => { scale.ScaleX = scale.ScaleY = e.NewValue; };
-        void SetAll(bool expand) { foreach (var r in tree.RootNodes) Expand(r, expand); }
-        var expandAll = new Button { Content = "全部展开", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        expandAll.Click += (_, _) => SetAll(true);
-        var collapseAll = new Button { Content = "全部折叠", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        collapseAll.Click += (_, _) => SetAll(false);
-        var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        bar.Children.Add(expandAll);
-        bar.Children.Add(collapseAll);
-        bar.Children.Add(zoom);
-        var grid = new Grid { RowSpacing = 8 };
-        if (_compact) grid.Height = 380;
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.Children.Add(bar);
-        var scroll = new ScrollViewer { Content = host, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        Grid.SetRow(scroll, 1);
-        grid.Children.Add(scroll);
-        return grid;
-    }
-
-    private static void Expand(TreeViewNode n, bool expand)
-    {
-        n.IsExpanded = expand;
-        foreach (var c in n.Children) Expand(c, expand);
-    }
+    private FrameworkElement BuildMindmap(JsonElement payload) =>
+        new MindmapTreeView(payload, _onExportSvg, _compact, _feedbackBar).Root;
 
     // report ------------------------------------------------------------------
 

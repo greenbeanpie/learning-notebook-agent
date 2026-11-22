@@ -159,7 +159,7 @@ pub unsafe extern "C" fn lna_close(core: *mut LnaCore) {
                 let _ = h.join();
             }
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + Duration::from_millis(1800);
         while !join_close.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }

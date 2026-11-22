@@ -320,7 +320,7 @@ pub async fn ingest_audio_video(
     };
 
     let req = LlmRequest {
-        system: "你是高精度多模态媒体理解助手。请严格依据媒体中的真实语音与视觉内容输出清晰、可检索的结构化 Markdown。".into(),
+        system: "You are a high-precision multimodal media understanding assistant. Strictly based on the actual speech and visual content in the media, output clear, searchable structured Markdown in the primary language of the media.".into(),
         messages: vec![LlmMessage {
             role: Role::User,
             parts: vec![media_part, Part::Text(prompt)],
@@ -385,7 +385,7 @@ pub async fn ingest_image(
                 src.title
             );
             let req = LlmRequest {
-                system: "你是高精度图文解析与 OCR 助手，只输出从图片中直接观察到的文字与视觉事实。".into(),
+                system: "You are a high-precision image analysis and OCR assistant. Output only text and visual facts directly observed in the image, using Markdown tables and LaTeX formulas where appropriate.".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![
@@ -531,7 +531,7 @@ pub async fn ocr_pdf_pages(
             )));
 
             let req = LlmRequest {
-                system: "你是专业文档 OCR 助手，只忠实转录页面上的文字、表格、公式以及必要的图表简注。".into(),
+                system: "You are a professional document OCR assistant. Faithfully transcribe text, Markdown tables, LaTeX formulas, and brief figure annotations visible on each page without fabrication.".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts,
@@ -716,7 +716,7 @@ pub async fn vision_inspect_images(
         )));
 
         let req = LlmRequest {
-            system: "你是严谨的视觉阅读子助手。请只根据图片内容提取准确事实，不要臆测未出现的文字或数字。".into(),
+            system: "You are a rigorous visual reading assistant. Extract only accurate facts visible in the provided images, including exact text, chart values, and LaTeX equations, without guessing missing text or numbers.".into(),
             messages: vec![LlmMessage {
                 role: Role::User,
                 parts,

@@ -338,6 +338,13 @@ pub struct ArtifactThought {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactSourceRef {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudioArtifact {
     pub id: String,
     pub notebook_id: String,
@@ -348,6 +355,8 @@ pub struct StudioArtifact {
     pub progress: f64,
     pub config: serde_json::Value,
     pub source_ids: Vec<String>,
+    #[serde(default)]
+    pub source_refs: Vec<ArtifactSourceRef>,
     pub sources_fingerprint: String,
     pub profile_id: Option<String>,
     pub draft: Option<serde_json::Value>,

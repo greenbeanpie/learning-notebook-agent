@@ -1,3 +1,3 @@
 <!-- version: history_summary_v1 -->
-把下面的对话压缩成一段不超过 300 字的摘要，保留用户的目标、已确认的结论和仍未解决的问题。不要加入对话中没有出现的事实。使用与对话相同的语言。
-只输出 JSON：{"summary":"..."}
+Compress the conversation below into a concise summary (under 300 characters/150 words), preserving the user's goals, confirmed conclusions, and open questions. Do not add any facts not present in the conversation. Write in the same language as the conversation.
+Output JSON only: {"summary":"..."}

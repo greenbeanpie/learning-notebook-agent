@@ -536,7 +536,7 @@ public sealed partial class MainWindow
                 typeof(Microsoft.UI.Xaml.Media.Geometry),
                 _sourceFullscreen ? SourceExitFullscreenIconPath : SourceFullscreenIconPath);
         }
-        ApplyPaneLayout();
+        AnimatePaneLayout(SourcesPaneBorder, _sourceFullscreen);
     }
 
     /// <summary>Builds the collapsible NotebookLM-style "来源指南" card with bolded summary and clickable topic pills.</summary>

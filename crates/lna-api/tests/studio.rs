@@ -160,7 +160,7 @@ fn unparseable_output_is_repaired_twice_then_fails() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|r| r.kind == Kind::Studio || r.system.contains("JSON 修复器"))
+        .filter(|r| r.kind == Kind::Studio || r.system.contains("JSON repairer") || r.system.contains("JSON 修复器"))
         .count();
     assert_eq!(n, 6);
 }

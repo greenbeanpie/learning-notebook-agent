@@ -1,3 +1,3 @@
 <!-- version: query_rewrite_v1 -->
-根据对话历史和当前问题，将其改写为独立、完整的检索问题，并生成最多 3 条适合词法与语义检索的查询词（如来源为英文而提问为中文，请同时给出中英文查询）。
-只输出 JSON：{"standalone":"...","queries":["..."]}
+Based on the conversation history and current question, rewrite the question into a standalone, self-contained retrieval query, and generate up to 3 search queries suitable for both lexical and semantic retrieval (if the sources and question are in different languages, include queries in both languages).
+Output JSON only: {"standalone":"...","queries":["..."]}

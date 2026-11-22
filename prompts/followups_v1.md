@@ -1,3 +1,3 @@
 <!-- version: followups_v1 -->
-根据下面的问题与回答，生成 3 条用户接下来最可能追问的简短问题。要求：与已选来源相关；使用与用户提问相同的语言；每条不超过 30 个字。
-只输出 JSON：{"questions":["...","...","..."]}
+Based on the question and answer below, generate 3 concise follow-up questions the user is most likely to ask next. Requirements: grounded in the selected sources; written in the same language as the user's question; concise (under 30 characters/15 words each).
+Output JSON only: {"questions":["...","...","..."]}

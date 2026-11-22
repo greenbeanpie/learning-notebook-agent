@@ -1,4 +1,6 @@
+mod i18n;
 mod icons;
+mod mindmap_view;
 mod ui;
 
 use gtk4::gdk::Display;

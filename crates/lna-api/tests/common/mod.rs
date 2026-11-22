@@ -83,21 +83,21 @@ pub enum Reply {
 pub fn classify(system: &str, body: &Value) -> Kind {
     if system.contains("\"standalone\"") {
         Kind::Rewrite
-    } else if system.contains("\"questions\"") && system.contains("追问") {
+    } else if system.contains("\"questions\"") && (system.contains("follow-up") || system.contains("追问")) {
         Kind::Followups
-    } else if system.contains("不超过 300 字") {
+    } else if system.contains("under 300 characters") || system.contains("不超过 300 字") {
         Kind::HistorySummary
     } else if system.contains("guide_summary_md") {
         Kind::SourceIndex
     } else if system.contains("title_suggestion") || system.contains("summary_md") {
         Kind::NotebookSummary
-    } else if system.contains("章节摘要助手") {
+    } else if system.contains("section summarization assistant") || system.contains("章节摘要助手") {
         Kind::Digest
-    } else if system.contains("资料结构整理助手") {
+    } else if system.contains("document structure synthesis assistant") || system.contains("资料结构整理助手") {
         Kind::Reduce
-    } else if system.contains("内容大纲规划助手") {
+    } else if system.contains("content outline planner") || system.contains("内容大纲规划助手") {
         Kind::Plan
-    } else if system.contains("Studio 生成器") {
+    } else if system.contains("Local Notebook Studio generator") || system.contains("Studio 生成器") {
         Kind::Studio
     } else if system.contains("<sources>")
         || system.contains("来源")
@@ -608,20 +608,20 @@ pub const ZH_DOC: &str = "# 第三章 向量空间\n\n## 3.5 基与维数\n\n向
 /// Valid payloads for every Studio modality, chosen from the system prompt.
 pub fn studio_reply(r: &Req) -> Reply {
     let s = &r.system;
-    let json = if s.contains("生成 quiz") {
+    let json = if (s.contains("for quiz,") || s.contains("生成 quiz")) {
         json!({"title":"测验","questions":[
             {"id":"q1","type":"single","difficulty":"medium","prompt":"n+1 个向量必然？","options":["线性相关","线性无关"],"answer_indices":[0],"accepted_answers":[],"rubric":"","explanation":"维数定理","citations":[1]}]})
-    } else if s.contains("生成 flashcards") {
+    } else if (s.contains("for flashcards,") || s.contains("生成 flashcards")) {
         json!({"title":"闪卡","cards":[{"id":"c1","front":"基是什么","back":"线性无关的生成组","hint":"","citations":[1]}]})
-    } else if s.contains("生成 mindmap") {
+    } else if (s.contains("for mindmap,") || s.contains("生成 mindmap")) {
         json!({"title":"导图","nodes":[{"id":"n1","parent_id":null,"label":"根","citations":[1]},{"id":"n2","parent_id":"n1","label":"枝","citations":[1]}]})
-    } else if s.contains("生成 report") {
+    } else if (s.contains("for report,") || s.contains("生成 report")) {
         json!({"title":"报告","format":"document","sections":[{"heading":"概述","body_md":"基与维数[1]","key_takeaways":["要点"]}],"citations":[1]})
-    } else if s.contains("生成 slides") {
+    } else if (s.contains("for slides,") || s.contains("生成 slides")) {
         json!({"title":"幻灯片","slides":[{"layout":"title","title":"封面","bullets":[],"speaker_notes":"","citations":[]},{"layout":"bullets","title":"基","bullets":["线性无关"],"speaker_notes":"讲稿","citations":[1]}]})
-    } else if s.contains("生成 infographic") {
+    } else if (s.contains("for infographic,") || s.contains("生成 infographic")) {
         json!({"title":"信息图","subtitle":"副标题","orientation":"landscape","style":"clean","blocks":[{"heading":"维数","metric":"3","summary":"基的个数","citations":[1]}]})
-    } else if s.contains("生成 audio") {
+    } else if (s.contains("for audio,") || s.contains("生成 audio")) {
         json!({"title":"音频","speakers":[{"id":"A","role":"host"},{"id":"B","role":"guest"}],"turns":[{"speaker":"A","text":"今天聊基与维数。","citations":[1]},{"speaker":"B","text":"好的。","citations":[]}]})
     } else {
         return Reply::Text("{}".into());

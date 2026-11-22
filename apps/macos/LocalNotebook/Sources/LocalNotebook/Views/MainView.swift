@@ -4,9 +4,18 @@ struct MainView: View {
     @EnvironmentObject var state: AppState
     @State private var chatInput = ""
 
-    private let canvasBg = Color(red: 0x13/255, green: 0x13/255, blue: 0x14/255)
-    private let panelBg = Color(red: 0x1E/255, green: 0x1F/255, blue: 0x20/255)
-    private let elevatedBg = Color(red: 0x28/255, green: 0x2A/255, blue: 0x2C/255)
+    private var isLight: Bool { state.prefs.theme == "light" }
+    private var canvasBg: Color { isLight ? Color(white: 0.96) : Color(red: 0x13/255, green: 0x13/255, blue: 0x14/255) }
+    private var panelBg: Color { isLight ? Color.white : Color(red: 0x1E/255, green: 0x1F/255, blue: 0x20/255) }
+    private var elevatedBg: Color { isLight ? Color(white: 0.94) : Color(red: 0x28/255, green: 0x2A/255, blue: 0x2C/255) }
+
+    private var resolvedColorScheme: ColorScheme? {
+        switch state.prefs.theme {
+        case "light": return .light
+        case "system": return nil
+        default: return .dark
+        }
+    }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -16,8 +25,10 @@ struct MainView: View {
                     if !state.studioFullscreen {
                         sourcesPane
                             .frame(width: state.activeArtifact != nil ? 250 : 300)
+                            .transition(.opacity.combined(with: .move(edge: .leading)))
                         chatPane
                             .frame(maxWidth: .infinity)
+                            .transition(.opacity)
                     }
                     studioPane
                         .frame(
@@ -26,14 +37,15 @@ struct MainView: View {
                                 : (state.activeArtifact != nil ? max(460, geo.size.width * 0.48) : 340)
                         )
                 }
+                .animation(state.prefs.fullscreenAnimation ? .spring(response: 0.22, dampingFraction: 0.86) : nil, value: state.studioFullscreen)
             }
             if !state.statusMessage.isEmpty {
                 HStack {
                     Text(state.statusMessage)
                         .font(.caption)
-                        .foregroundColor(Color(white: 0.78))
+                        .foregroundColor(.secondary)
                     Spacer()
-                    Button("关闭") { state.statusMessage = "" }
+                    Button(state.t("settings.close")) { state.statusMessage = "" }
                         .buttonStyle(.plain)
                         .font(.caption)
                 }
@@ -45,9 +57,9 @@ struct MainView: View {
         }
         .padding(14)
         .background(canvasBg)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(resolvedColorScheme)
         .sheet(isPresented: $state.showSettingsSheet) {
-            ModelSettingsSheet().environmentObject(state)
+            UnifiedSettingsSheet().environmentObject(state)
         }
     }
 
@@ -55,7 +67,6 @@ struct MainView: View {
         HStack(spacing: 12) {
             Text("Local Notebook Agent")
                 .font(.headline)
-                .foregroundColor(.white)
             Picker("", selection: $state.activeNotebookId) {
                 ForEach(state.notebooks) { nb in
                     Text(nb.title).tag(nb.id)
@@ -66,9 +77,9 @@ struct MainView: View {
                 Task { await state.refreshAll() }
             }
             Spacer()
-            Button("新建笔记本") {
+            Button(state.t("nb.new")) {
                 Task {
-                    if let res = try? await state.core.call(method: "notebook.create", params: ["title": "新笔记本"]),
+                    if let res = try? await state.core.call(method: "notebook.create", params: ["title": state.t("nb.new")]),
                        let id = res["id"] as? String {
                         state.activeNotebookId = id
                         await state.refreshAll()
@@ -76,23 +87,28 @@ struct MainView: View {
                 }
             }
             .buttonStyle(.bordered)
-            Button("模型协议配置") { state.showSettingsSheet = true }
-                .buttonStyle(.bordered)
+
+            Button {
+                state.showSettingsSheet = true
+            } label: {
+                Label(state.t("settings.title"), systemImage: "gearshape")
+            }
+            .buttonStyle(.bordered)
         }
     }
 
     private var sourcesPane: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("来源").font(.subheadline.bold())
+            Text(state.t("sources.title")).font(.subheadline.bold())
             HStack(spacing: 8) {
-                Menu("+ 添加来源") {
-                    Button("本地文件 (PDF / Markdown / 文本)") { pickAndAddFile() }
-                    Button("粘贴文本") {
+                Menu(state.t("sources.add")) {
+                    Button(state.t("sources.add_file")) { pickAndAddFile() }
+                    Button(state.t("sources.add_paste")) {
                         Task {
                             _ = try? await state.core.call(method: "source.add_text", params: [
                                 "notebook_id": state.activeNotebookId,
-                                "title": "粘贴文本.txt",
-                                "text": "示例来源正文。"
+                                "title": "pasted-note.txt",
+                                "text": "Sample source content."
                             ])
                             await state.refreshAll()
                         }
@@ -104,11 +120,11 @@ struct MainView: View {
                 .background(elevatedBg)
                 .cornerRadius(16)
 
-                Button("+ 创建笔记") {
+                Button(state.t("sources.create_note")) {
                     Task {
                         _ = try? await state.core.call(method: "note.save", params: [
                             "notebook_id": state.activeNotebookId,
-                            "title": "新笔记",
+                            "title": "Note",
                             "body_md": ""
                         ])
                         await state.refreshAll()
@@ -149,11 +165,22 @@ struct MainView: View {
 
     private var chatPane: some View {
         VStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(state.summaryText)
-                    .font(.callout)
-                    .foregroundColor(Color(white: 0.78))
+                    .font(.system(size: state.prefs.fontSize))
+                    .foregroundColor(.secondary)
                     .lineLimit(5)
+                if state.prefs.showSuggestedQuestions && !state.suggestedQuestions.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(state.suggestedQuestions.prefix(3), id: \.self) { q in
+                            Button(q) {
+                                Task { await state.sendChat(q) }
+                            }
+                            .buttonStyle(.bordered)
+                            .font(.caption)
+                        }
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
@@ -163,14 +190,15 @@ struct MainView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(state.messages) { msg in
-                        ChatMessageRow(message: msg)
+                        ChatMessageRow(message: msg, defaultExpanded: state.prefs.expandThoughtsByDefault, en: state.isEnglish, fontSize: state.prefs.fontSize)
                     }
                 }
             }
 
             HStack(spacing: 8) {
-                TextField("提问或创作内容...", text: $chatInput)
+                TextField(state.t("chat.placeholder"), text: $chatInput)
                     .textFieldStyle(.plain)
+                    .font(.system(size: state.prefs.fontSize))
                     .onSubmit { submitChat() }
                 Button(action: submitChat) {
                     Image(systemName: "arrow.up")
@@ -199,13 +227,13 @@ struct MainView: View {
             } else {
                 Text("Studio").font(.subheadline.bold())
                 let tiles: [(String, String, String)] = [
-                    ("audio", "音频概览", "waveform"),
-                    ("slides", "演示文稿", "rectangle.stack"),
-                    ("mindmap", "思维导图", "point.3.connected.trianglepath.dotted"),
-                    ("report", "报告", "doc.richtext"),
-                    ("flashcards", "闪卡", "square.on.square"),
-                    ("quiz", "测验", "checkmark.circle"),
-                    ("infographic", "信息图", "chart.bar.xaxis"),
+                    ("audio", state.t("studio.audio"), "waveform"),
+                    ("slides", state.t("studio.slides"), "rectangle.stack"),
+                    ("mindmap", state.t("studio.mindmap"), "point.3.connected.trianglepath.dotted"),
+                    ("report", state.t("studio.report"), "doc.richtext"),
+                    ("flashcards", state.t("studio.flashcards"), "square.on.square"),
+                    ("quiz", state.t("studio.quiz"), "checkmark.circle"),
+                    ("infographic", state.t("studio.infographic"), "chart.bar.xaxis"),
                 ]
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(tiles, id: \.0) { kind, label, icon in
@@ -233,7 +261,7 @@ struct MainView: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(art.title).font(.callout.weight(.medium))
-                                        Text("\(art.artifactType) · \(art.status)")
+                                        Text("\(state.t("studio.\(art.artifactType)")) · \(art.status)")
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                     }
@@ -279,11 +307,14 @@ struct MainView: View {
 
 struct ChatMessageRow: View {
     let message: ChatMessageItem
-    @State private var expanded = false
+    let defaultExpanded: Bool
+    let en: Bool
+    let fontSize: Double
+    @State private var expanded: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(message.role == "user" ? "你" : "助手")
+            Text(message.role == "user" ? L10n.t("chat.you", en: en) : L10n.t("chat.assistant", en: en))
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -299,7 +330,7 @@ struct ChatMessageRow: View {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")
                             .font(.caption)
                     }
-                    .foregroundColor(Color(white: 0.78))
+                    .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
 
@@ -309,19 +340,19 @@ struct ChatMessageRow: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 8) {
                                     Image(systemName: step.isTool ? "doc.text.magnifyingglass" : "brain")
-                                        .foregroundColor(Color(white: 0.78))
+                                        .foregroundColor(.secondary)
                                     Text(step.title)
                                         .font(.callout.weight(step.isTool ? .regular : .medium))
                                 }
                                 if !step.isTool && !step.detail.isEmpty {
                                     HStack(spacing: 10) {
                                         Rectangle()
-                                            .fill(Color(white: 0.25))
+                                            .fill(Color.secondary.opacity(0.35))
                                             .frame(width: 1)
                                             .padding(.leading, 7)
                                         Text(step.detail)
                                             .font(.callout)
-                                            .foregroundColor(Color(white: 0.62))
+                                            .foregroundColor(.secondary)
                                     }
                                 }
                             }
@@ -333,7 +364,8 @@ struct ChatMessageRow: View {
 
             Text(message.content)
                 .textSelection(.enabled)
-                .font(.body)
+                .font(.system(size: fontSize))
         }
+        .onAppear { expanded = defaultExpanded }
     }
 }

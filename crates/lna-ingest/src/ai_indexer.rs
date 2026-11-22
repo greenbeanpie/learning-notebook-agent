@@ -241,29 +241,29 @@ pub fn build_structural_probe(src: &Source, doc: &ParsedDoc) -> (String, bool) {
     (truncate_chars(&out, PROBE_MAX_CHARS), false)
 }
 
-const AI_INDEX_SYSTEM_PROMPT: &str = r#"你是专业的文档结构化索引与知识导览引擎。
-请根据提供的文档内容（或结构探针），一次性输出严格合法的 JSON 对象，不要包含 Markdown 代码块围栏之外的任何多余文字。
-JSON 结构如下：
+const AI_INDEX_SYSTEM_PROMPT: &str = r#"You are a document structural indexing and knowledge guide engine.
+Based on the provided document content (or structural probe), output a single strictly valid JSON object with no extra text outside the JSON.
+JSON schema:
 {
-  "guide_summary_md": "120~220字的中文导览简介（若原文为英文也请用中文概述核心内容，保留关键英文专有名词）。必须使用 **加粗** 突出 5~8 个最核心的概念、主题或方法，使其像教材/资料导读一样清晰凝练。",
-  "guide_topics": ["主题标签1", "主题标签2", "主题标签3", "主题标签4", "主题标签5"],
+  "guide_summary_md": "A concise 120-220 character/word overview matching the document's primary language, highlighting 5-8 core concepts, themes, or methods in **bold** like a textbook study guide.",
+  "guide_topics": ["Topic 1", "Topic 2", "Topic 3", "Topic 4", "Topic 5"],
   "nodes": [
     {
       "id": "n1",
       "parent_id": null,
       "level": 1,
-      "title": "章节或主题标题",
-      "summary": "1句话精准概括本节核心内容",
-      "keywords": ["关键词1", "关键词2", "关键词3"],
+      "title": "Section or chapter title",
+      "summary": "One concise sentence summarizing this section's core content",
+      "keywords": ["keyword1", "keyword2", "keyword3"],
       "page_start": 1,
       "page_end": 12
     }
   ]
 }
-要求：
-1. guide_topics 输出 4~6 个高价值主题短语（每个 4~12 字），方便用户点击直接提问。
-2. nodes 构建清晰的层次结构树（大书保留 8~30 个主要章节节点，短文保留 2~8 个核心段落主题节点）；若文档有页码请准确填写 page_start 与 page_end（整数），无页码则填 null。
-3. 严格输出 JSON，不编造不存在的章节。"#;
+Requirements:
+1. Output 4-6 high-value topic phrases in guide_topics that users can click to ask follow-up questions.
+2. Build a clean hierarchical tree in nodes (8-30 major chapter/section nodes for long books, 2-8 topic nodes for short documents). Fill integer page_start and page_end when page numbers exist, otherwise null.
+3. Output strictly valid JSON and never fabricate nonexistent sections."#;
 
 /// Runs a single low-token AI indexing pass to generate Source Guide + Hierarchical Index Tree.
 pub async fn run_ai_index_for_doc(

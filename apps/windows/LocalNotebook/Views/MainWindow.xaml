@@ -3,7 +3,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Local Notebook Agent">
-    <Grid Background="{StaticResource CanvasBgBrush}" Padding="14" ColumnSpacing="14" RowSpacing="12">
+    <Grid x:Name="RootGrid" Background="{StaticResource CanvasBgBrush}" Padding="14" ColumnSpacing="14" RowSpacing="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="52" />
             <RowDefinition Height="*" />
@@ -26,30 +26,36 @@
                         <SvgImageSource UriSource="ms-appx:///Assets/logo.svg" />
                     </Image.Source>
                 </Image>
-                <TextBlock x:Name="NotebookTitleText" Text="Local Notebook Agent" FontSize="18" FontWeight="SemiBold" Foreground="#E3E3E3" VerticalAlignment="Center" />
+                <TextBlock x:Name="NotebookTitleText" Text="Local Notebook Agent" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center" />
                 <ComboBox x:Name="NotebookPicker" MinWidth="190" MinHeight="38" Padding="12,8" VerticalAlignment="Center" PlaceholderText="切换笔记本"
                           AutomationProperties.Name="切换笔记本" SelectionChanged="OnNotebookPicked" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right" VerticalAlignment="Center">
                 <Button x:Name="NewNotebookBtn" Content="新建笔记本" Style="{StaticResource PillButtonStyle}" Click="OnNewNotebookClick" />
-                <Button x:Name="EmbeddingBtn" Content="语义检索" Style="{StaticResource PillButtonStyle}" Click="OnOpenEmbeddingClick" AutomationProperties.Name="语义检索设置" />
-                <Button x:Name="ModelSettingsBtn" Content="模型协议配置" Style="{StaticResource PillButtonStyle}" Click="OnOpenSettingsClick" />
+                <Button x:Name="SettingsBtn" Style="{StaticResource PillButtonStyle}" Click="OnOpenSettingsClick" AutomationProperties.Name="设置">
+                    <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <Viewbox Width="16" Height="16" VerticalAlignment="Center">
+                            <PathIcon Width="24" Height="24" Data="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z" />
+                        </Viewbox>
+                        <TextBlock x:Name="SettingsBtnText" Text="设置" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
                 <Button x:Name="NotebookMenuBtn" Style="{StaticResource PillButtonStyle}" AutomationProperties.Name="笔记本菜单" MinWidth="38" Width="38" MinHeight="38" Height="38" CornerRadius="19" Padding="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center">
                     <Viewbox Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <PathIcon Width="24" Height="24" Data="M6,10A2,2 0 0,0 4,12A2,2 0 0,0 6,14A2,2 0 0,0 8,12A2,2 0 0,0 6,10M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M18,10A2,2 0 0,0 16,12A2,2 0 0,0 18,14A2,2 0 0,0 20,12A2,2 0 0,0 18,10Z" />
                     </Viewbox>
                     <Button.Flyout>
                         <MenuFlyout Placement="BottomEdgeAlignedRight">
-                            <MenuFlyoutItem Text="重命名笔记本" Click="OnRenameNotebookClick" />
-                            <MenuFlyoutItem Text="导出为 .lna" Click="OnExportLnaClick" />
-                            <MenuFlyoutItem Text="导出为 Markdown" Click="OnExportMarkdownClick" />
-                            <MenuFlyoutItem Text="导入 .lna" Click="OnImportLnaClick" />
+                            <MenuFlyoutItem x:Name="RenameNotebookItem" Text="重命名笔记本" Click="OnRenameNotebookClick" />
+                            <MenuFlyoutItem x:Name="ExportLnaItem" Text="导出为 .lna" Click="OnExportLnaClick" />
+                            <MenuFlyoutItem x:Name="ExportMdItem" Text="导出为 Markdown" Click="OnExportMarkdownClick" />
+                            <MenuFlyoutItem x:Name="ImportLnaItem" Text="导入 .lna" Click="OnImportLnaClick" />
                             <MenuFlyoutSeparator />
-                            <MenuFlyoutItem Text="清空对话" Click="OnClearChatClick" />
-                            <MenuFlyoutItem Text="删除笔记本" Click="OnDeleteNotebookClick" />
+                            <MenuFlyoutItem x:Name="ClearChatItem" Text="清空对话" Click="OnClearChatClick" />
+                            <MenuFlyoutItem x:Name="DeleteNotebookItem" Text="删除笔记本" Click="OnDeleteNotebookClick" />
                             <MenuFlyoutSeparator />
-                            <MenuFlyoutItem Text="导出诊断包" Click="OnExportDiagnosticsClick" />
-                            <MenuFlyoutItem Text="隐私说明" Click="OnShowPrivacyClick" />
+                            <MenuFlyoutItem x:Name="ExportDiagItem" Text="导出诊断包" Click="OnExportDiagnosticsClick" />
+                            <MenuFlyoutItem x:Name="PrivacyItem" Text="隐私说明" Click="OnShowPrivacyClick" />
                         </MenuFlyout>
                     </Button.Flyout>
                 </Button>
@@ -65,22 +71,22 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Text="来源" FontSize="15" FontWeight="SemiBold" Foreground="#E3E3E3" Margin="2,0,0,0" />
+                    <TextBlock x:Name="SourcesHeaderText" Grid.Row="0" Text="来源" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" Margin="2,0,0,0" />
                     <Grid Grid.Row="1" ColumnSpacing="10">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <DropDownButton Grid.Column="0" HorizontalAlignment="Stretch" Style="{StaticResource PillDropDownButtonStyle}" Content="+ 添加来源" AutomationProperties.Name="添加来源">
+                        <DropDownButton x:Name="AddSourceBtn" Grid.Column="0" HorizontalAlignment="Stretch" Style="{StaticResource PillDropDownButtonStyle}" Content="+ 添加来源" AutomationProperties.Name="添加来源">
                             <DropDownButton.Flyout>
                                 <MenuFlyout Placement="BottomEdgeAlignedLeft">
-                                    <MenuFlyoutItem Text="本地文件（文档 / 图片 / 音视频等）" Click="OnAddSourceClick" />
-                                    <MenuFlyoutItem Text="网页地址" Click="OnAddUrlClick" />
-                                    <MenuFlyoutItem Text="粘贴文本" Click="OnAddPasteClick" />
+                                    <MenuFlyoutItem x:Name="AddFileMenuItem" Text="本地文件（文档 / 图片 / 音视频等）" Click="OnAddSourceClick" />
+                                    <MenuFlyoutItem x:Name="AddUrlMenuItem" Text="网页地址" Click="OnAddUrlClick" />
+                                    <MenuFlyoutItem x:Name="AddPasteMenuItem" Text="粘贴文本" Click="OnAddPasteClick" />
                                 </MenuFlyout>
                             </DropDownButton.Flyout>
                         </DropDownButton>
-                        <Button Grid.Column="1" HorizontalAlignment="Stretch" Style="{StaticResource PillButtonStyle}" Content="+ 创建笔记" Click="OnCreateNoteClick" />
+                        <Button x:Name="CreateNoteBtn" Grid.Column="1" HorizontalAlignment="Stretch" Style="{StaticResource PillButtonStyle}" Content="+ 创建笔记" Click="OnCreateNoteClick" />
                     </Grid>
                     <ListView x:Name="SourcesList" Grid.Row="2" SelectionMode="None" ItemContainerStyle="{StaticResource StretchListViewItemStyle}" />
                 </Grid>
@@ -136,7 +142,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Text="Studio" FontSize="15" FontWeight="SemiBold" Foreground="#E3E3E3" Margin="2,0,0,0" />
+                    <TextBlock Grid.Row="0" Text="Studio" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" Margin="2,0,0,0" />
                     <Grid Grid.Row="1" ColumnSpacing="10" RowSpacing="10">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -153,7 +159,7 @@
                                 <Viewbox Width="18" Height="18" VerticalAlignment="Center">
                                     <PathIcon Width="24" Height="24" Foreground="#A8C7FA" Data="M12,14C13.66,14 15,12.66 15,11V5C15,3.34 13.66,2 12,2C10.34,2 9,3.34 9,5V11C9,12.66 10.34,14 12,14M17,11C17,13.76 14.76,16 12,16C9.24,16 7,13.76 7,11H5C5,14.53 7.61,17.43 11,17.92V21H13V17.92C16.39,17.43 19,14.53 19,11H17Z" />
                                 </Viewbox>
-                                <TextBlock Text="音频概览" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TileAudioText" Text="音频概览" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
                         <Button Grid.Row="0" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="slides" Click="OnStudioTileClick">
@@ -161,7 +167,7 @@
                                 <Viewbox Width="18" Height="18" VerticalAlignment="Center">
                                     <PathIcon Width="24" Height="24" Foreground="#FDD663" Data="M19,3H5C3.89,3 3,3.89 3,5V19C3,20.11 3.89,21 5,21H19C20.11,21 21,20.11 21,19V5C21,3.89 20.11,3 19,3M19,19H5V5H19V19M7,10H9V17H7V10M11,7H13V17H11V7M15,13H17V17H15V13Z" />
                                 </Viewbox>
-                                <TextBlock Text="演示文稿" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TileSlidesText" Text="演示文稿" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
                         <Button Grid.Row="1" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="mindmap" Click="OnStudioTileClick">
@@ -169,7 +175,7 @@
                                 <Viewbox Width="18" Height="18" VerticalAlignment="Center">
                                     <PathIcon Width="24" Height="24" Foreground="#C58AF9" Data="M12,2A3,3 0 0,1 15,5C15,6.28 14.19,7.38 13.06,7.81L14.5,10.5H16A3,3 0 0,1 19,13.5A3,3 0 0,1 16,16.5C14.68,16.5 13.56,15.66 13.16,14.5H10.84C10.44,15.66 9.32,16.5 8,16.5A3,3 0 0,1 5,13.5A3,3 0 0,1 8,10.5H9.5L10.94,7.81C9.81,7.38 9,6.28 9,5A3,3 0 0,1 12,2Z" />
                                 </Viewbox>
-                                <TextBlock Text="思维导图" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TileMindmapText" Text="思维导图" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
                         <Button Grid.Row="1" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="report" Click="OnStudioTileClick">
@@ -177,7 +183,7 @@
                                 <Viewbox Width="18" Height="18" VerticalAlignment="Center">
                                     <PathIcon Width="24" Height="24" Foreground="#81C995" Data="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M8,12H16V14H8V12M8,16H13V18H8V16Z" />
                                 </Viewbox>
-                                <TextBlock Text="报告" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TileReportText" Text="报告" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
                         <Button Grid.Row="2" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="flashcards" Click="OnStudioTileClick">
@@ -185,7 +191,7 @@
                                 <Viewbox Width="18" Height="18" VerticalAlignment="Center">
                                     <PathIcon Width="24" Height="24" Foreground="#F6AEA9" Data="M4,6H2V20A2,2 0 0,0 4,22H18V20H4V6M20,2H8A2,2 0 0,0 6,4V16A2,2 0 0,0 8,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M20,16H8V4H20V16Z" />
                                 </Viewbox>
-                                <TextBlock Text="闪卡" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TileFlashcardsText" Text="闪卡" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
                         <Button Grid.Row="2" Grid.Column="1" Style="{StaticResource StudioTileStyle}" Tag="quiz" Click="OnStudioTileClick">
@@ -193,7 +199,7 @@
                                 <Viewbox Width="18" Height="18" VerticalAlignment="Center">
                                     <PathIcon Width="24" Height="24" Foreground="#78D9EC" Data="M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M11,16.5L18,9.5L16.59,8.09L11,13.67L7.91,10.59L6.5,12L11,16.5Z" />
                                 </Viewbox>
-                                <TextBlock Text="测验" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TileQuizText" Text="测验" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
                         <Button Grid.Row="3" Grid.Column="0" Style="{StaticResource StudioTileStyle}" Tag="infographic" Click="OnStudioTileClick">
@@ -201,7 +207,7 @@
                                 <Viewbox Width="18" Height="18" VerticalAlignment="Center">
                                     <PathIcon Width="24" Height="24" Foreground="#FCAD70" Data="M3,3V21H21V19H5V3H3M9,17H7V10H9V17M13,17H11V7H13V17M17,17H15V13H17V17Z" />
                                 </Viewbox>
-                                <TextBlock Text="信息图" VerticalAlignment="Center" />
+                                <TextBlock x:Name="TileInfographicText" Text="信息图" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
                     </Grid>

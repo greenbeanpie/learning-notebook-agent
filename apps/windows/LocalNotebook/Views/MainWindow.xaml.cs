@@ -48,7 +48,7 @@ public sealed partial class MainWindow : Window
         if (err is { } e)
         {
             var advice = Advice(e.Code);
-            ShowStatus(InfoBarSeverity.Error, $"{what}失败", advice.Length > 0 ? $"{advice}（{e.Code}）" : $"{e.Message}（{e.Code}）");
+            ShowStatus(InfoBarSeverity.Error, L10n.Fmt("common.failed", what), advice.Length > 0 ? advice : e.Message);
             return null;
         }
         return result;
@@ -106,6 +106,62 @@ public sealed partial class MainWindow : Window
         return file?.Path;
     }
 
+    // ---------- preferences & localization ----------
+
+    private async Task LoadUiPreferencesAsync()
+    {
+        var res = await Api.CallAsync("settings.get", Args(("key", "ui.preferences")));
+        if (res.Result is { } r && r.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.Object)
+        {
+            L10n.Prefs = UiPreferences.FromJson(v);
+        }
+        ApplyUiPreferences();
+    }
+
+    private void ApplyUiPreferences()
+    {
+        var theme = L10n.Prefs.Theme switch
+        {
+            "light" => ElementTheme.Light,
+            "system" => ElementTheme.Default,
+            _ => ElementTheme.Dark,
+        };
+        if (RootGrid != null) RootGrid.RequestedTheme = theme;
+        ChatInputBox.FontSize = L10n.Prefs.FontSize;
+        ApplyLocalization();
+    }
+
+    private void ApplyLocalization()
+    {
+        NotebookPicker.PlaceholderText = L10n.T("nb.switch");
+        NewNotebookBtn.Content = L10n.T("nb.new");
+        SettingsBtnText.Text = L10n.T("settings.title");
+        RenameNotebookItem.Text = L10n.T("nb.rename");
+        ExportLnaItem.Text = L10n.T("nb.export_lna");
+        ExportMdItem.Text = L10n.T("nb.export_md");
+        ImportLnaItem.Text = L10n.T("nb.import_lna");
+        ClearChatItem.Text = L10n.T("nb.clear_chat");
+        DeleteNotebookItem.Text = L10n.T("nb.delete");
+        ExportDiagItem.Text = L10n.T("nb.export_diag");
+        PrivacyItem.Text = L10n.T("nb.privacy");
+
+        SourcesHeaderText.Text = L10n.T("sources.title");
+        AddSourceBtn.Content = L10n.T("sources.add");
+        AddFileMenuItem.Text = L10n.T("sources.add_file");
+        AddUrlMenuItem.Text = L10n.T("sources.add_url");
+        AddPasteMenuItem.Text = L10n.T("sources.add_paste");
+        CreateNoteBtn.Content = L10n.T("sources.create_note");
+
+        ChatInputBox.PlaceholderText = L10n.T("chat.placeholder");
+        TileAudioText.Text = L10n.T("studio.audio");
+        TileSlidesText.Text = L10n.T("studio.slides");
+        TileMindmapText.Text = L10n.T("studio.mindmap");
+        TileReportText.Text = L10n.T("studio.report");
+        TileFlashcardsText.Text = L10n.T("studio.flashcards");
+        TileQuizText.Text = L10n.T("studio.quiz");
+        TileInfographicText.Text = L10n.T("studio.infographic");
+    }
+
     // ---------- startup ----------
 
     public void ReportStartupFailure(string message) =>
@@ -113,6 +169,7 @@ public sealed partial class MainWindow : Window
 
     public async Task OnCoreReadyAsync()
     {
+        await LoadUiPreferencesAsync();
         var list = await CoreAsync("notebook.list", Args(), "读取笔记本");
         if (list is { } res && Arr(res, "notebooks").FirstOrDefault() is { ValueKind: JsonValueKind.Object } first)
         {
@@ -142,11 +199,11 @@ public sealed partial class MainWindow : Window
         var ok = Arr(p, "profiles").Any(prof => Bool(prof, "is_active"));
         if (!ok)
         {
-            ShowStatus(InfoBarSeverity.Warning, "尚未配置模型", "请点击右上角“模型协议配置”，填写协议、地址、模型与 API Key。");
+            ShowStatus(InfoBarSeverity.Warning, L10n.T("settings.no_model_title"), L10n.T("settings.no_model_msg"));
         }
-        else if (StatusBar.Title == "尚未配置模型")
+        else if (StatusBar.Title == L10n.T("settings.no_model_title") || StatusBar.Title == "尚未配置模型")
         {
-            StatusBar.IsOpen = false; // configured now; don't leave the stale warning up
+            StatusBar.IsOpen = false;
         }
         return ok;
     }
@@ -361,6 +418,8 @@ public sealed partial class MainWindow : Window
             }
             catch (JsonException) { }
         }
+        if (!L10n.Prefs.ShowSuggestedQuestions) return;
+        if (!L10n.Prefs.ShowSuggestedQuestions) return;
         var topQuestions = questions.Where(q => q.Length > 0).Take(3).ToList();
         for (int i = 0; i < topQuestions.Count; i++)
         {

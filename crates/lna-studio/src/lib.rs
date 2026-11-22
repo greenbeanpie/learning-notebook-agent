@@ -307,7 +307,7 @@ impl StudioService {
             "SELECT {ARTIFACT_SELECT_COLS}
              FROM studio_artifacts WHERE notebook_id = ?1 AND in_studio = 1 ORDER BY created_at DESC"
         );
-        self.db.read(|conn| {
+        let mut out = self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql).map_err(map_sql_err)?;
             let rows = stmt
                 .query_map([notebook_id], |r| map_artifact_row(r, &cur_fp))
@@ -317,7 +317,11 @@ impl StudioService {
                 out.push(r.map_err(map_sql_err)?);
             }
             Ok(out)
-        })
+        })?;
+        for art in &mut out {
+            art.source_refs = self.load_source_refs(&art.source_ids)?;
+        }
+        Ok(out)
     }
 
     pub fn list_by_message(&self, message_id: &str) -> LnaResult<Vec<StudioArtifact>> {
@@ -325,7 +329,7 @@ impl StudioService {
             "SELECT {ARTIFACT_SELECT_COLS}
              FROM studio_artifacts WHERE origin_message_id = ?1 ORDER BY created_at ASC"
         );
-        self.db.read(|conn| {
+        let mut out = self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql).map_err(map_sql_err)?;
             let rows = stmt
                 .query_map([message_id], |r| map_artifact_row(r, ""))
@@ -335,7 +339,11 @@ impl StudioService {
                 out.push(r.map_err(map_sql_err)?);
             }
             Ok(out)
-        })
+        })?;
+        for art in &mut out {
+            art.source_refs = self.load_source_refs(&art.source_ids)?;
+        }
+        Ok(out)
     }
 
     pub fn get(&self, id: &str) -> LnaResult<StudioArtifact> {
@@ -356,7 +364,36 @@ impl StudioService {
                 .map_err(map_sql_err)
         })?;
         art.thoughts = self.list_thoughts(id)?;
+        art.source_refs = self.load_source_refs(&art.source_ids)?;
         Ok(art)
+    }
+
+    fn load_source_refs(&self, source_ids: &[String]) -> LnaResult<Vec<ArtifactSourceRef>> {
+        if source_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.db.read(|conn| {
+            let mut out = Vec::with_capacity(source_ids.len());
+            let mut stmt = conn
+                .prepare("SELECT id, title, kind FROM sources WHERE id = ?1")
+                .map_err(map_sql_err)?;
+            for sid in source_ids {
+                if let Some(row) = stmt
+                    .query_row([sid], |r| {
+                        Ok(ArtifactSourceRef {
+                            id: r.get(0)?,
+                            title: r.get(1)?,
+                            kind: r.get(2)?,
+                        })
+                    })
+                    .optional()
+                    .map_err(map_sql_err)?
+                {
+                    out.push(row);
+                }
+            }
+            Ok(out)
+        })
     }
 
     pub fn list_thoughts(&self, artifact_id: &str) -> LnaResult<Vec<ArtifactThought>> {
@@ -603,8 +640,8 @@ impl StudioService {
                             artifact_id,
                             &fresh_art.notebook_id,
                             "error",
-                            "配置或权限错误，无法重试",
-                            &format!("阶段 {current_stage} 失败（{}）：{}", e.code.as_str(), e.message),
+                            "执行失败",
+                            "请检查模型配置或权限设置后重试。",
                         );
                         let log = format_error_log(&fresh_art, Some(&profile), &records);
                         let _ = self.mark_failed_with_log(artifact_id, &e, &log);
@@ -650,12 +687,8 @@ impl StudioService {
                             artifact_id,
                             &fresh_art.notebook_id,
                             "error",
-                            "多次回退重试后仍然失败",
-                            &format!(
-                                "已完成初始尝试及 {MAX_STUDIO_RETRIES} 次回退重试，最终错误（{}）：{}",
-                                e.code.as_str(),
-                                truncate_str(&e.message, 240)
-                            ),
+                            "执行失败",
+                            "未能完成生成，请稍后重试。",
                         );
                         let log = format_error_log(&fresh_art, Some(&profile), &records);
                         let _ = self.mark_failed_with_log(artifact_id, &e, &log);
@@ -737,11 +770,11 @@ impl StudioService {
                 "正在基于已选来源梳理章节结构与每页要点…",
             );
             let plan_req = LlmRequest {
-                system: "你是演示文稿与内容大纲规划助手。请严格输出清晰、可直接阅读的 Markdown 提纲（使用 `# 标题`、`## 第 N 页：页面标题`、`- 核心要点`、`> 讲稿提示`），内容精炼准确，严禁输出 JSON 或代码块。".into(),
+                system: "You are a presentation and content outline planner. Output a clean, human-readable Markdown outline (using `# Title`, `## Slide N: Slide Title`, `- Key points`, and `> Speaker notes`). Match the language requested in config or the primary language of the sources. Be concise and accurate; never output JSON or fenced code blocks.".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
-                        "生成类型：{}\n配置：{}\n资料：\n{}",
+                        "Artifact type: {}\nConfig: {}\nSources:\n{}",
                         art.artifact_type.as_str(), art.config, evidence_txt
                     ))],
                 }],
@@ -805,20 +838,8 @@ impl StudioService {
                     artifact_id,
                     &art.notebook_id,
                     "stage",
-                    if attempt == 1 {
-                        "生成结构化成品内容"
-                    } else {
-                        "重新生成结构化成品内容"
-                    },
-                    &format!(
-                        "正在调用模型生成「{}」{}…",
-                        art.title,
-                        if attempt == 1 {
-                            String::new()
-                        } else {
-                            format!("（第 {} 次尝试）", attempt)
-                        }
-                    ),
+                    "生成结构化成品内容",
+                    &format!("正在生成「{}」…", art.title),
                 );
                 let max_repairs = if attempt == 1 { 2 } else { 0 };
                 let (mut generated, usage) = self
@@ -1067,18 +1088,18 @@ impl StudioService {
                 }
                 let batch_req = LlmRequest {
                     system: format!(
-                        "你是 Local Notebook Studio 生成器。请严格依据给定资料生成 {} 的结构化 JSON，并保留引用编号 [n] 到 citations 数组。每道题的题干、选项、解析必须精炼准确、直击要点，不要冗余凑字。",
+                        "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep every prompt, option, and explanation concise and accurate.",
                         art.artifact_type.as_str()
                     ),
                     messages: vec![LlmMessage {
                         role: Role::User,
                         parts: vec![Part::Text(format!(
-                            "当前批次：第 {}/{} 批，只需生成 {} 道题目。\n生成参数：{}\n参考大纲：{}{}\n\n资料：\n{}",
+                            "Batch {}/{}: generate exactly {} questions.\nParameters: {}\nReference outline: {}{}\n\nSources:\n{}",
                             bi + 1,
                             batches,
                             batch_cnt,
                             batch_cfg,
-                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "无".into()),
+                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                             avoid_txt,
                             evidence_txt
                         ))],
@@ -1181,18 +1202,18 @@ impl StudioService {
                 }
                 let batch_req = LlmRequest {
                     system: format!(
-                        "你是 Local Notebook Studio 生成器。请严格依据给定资料生成 {} 的结构化 JSON，并保留引用编号 [n] 到 citations 数组。每张闪卡正反面务必精炼清晰、直击核心定义或结论，避免冗长正文。",
+                        "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep each flashcard front and back crisp and focused on core definitions or takeaways.",
                         art.artifact_type.as_str()
                     ),
                     messages: vec![LlmMessage {
                         role: Role::User,
                         parts: vec![Part::Text(format!(
-                            "当前批次：第 {}/{} 批，只需生成 {} 张闪卡。\n生成参数：{}\n参考大纲：{}{}\n\n资料：\n{}",
+                            "Batch {}/{}: generate exactly {} flashcards.\nParameters: {}\nReference outline: {}{}\n\nSources:\n{}",
                             bi + 1,
                             batches,
                             batch_cnt,
                             batch_cfg,
-                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "无".into()),
+                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                             avoid_txt,
                             evidence_txt
                         ))],
@@ -1254,15 +1275,15 @@ impl StudioService {
 
         let gen_req = LlmRequest {
             system: format!(
-                "你是 Local Notebook Studio 生成器。请严格依据给定资料生成 {} 的结构化 JSON，并保留引用编号 [n] 到 citations 数组。内容务必精炼、准确、直击要点，控制单次输出长度，避免冗长空洞的铺垫。",
+                "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep content concise, accurate, and well-structured without filler.",
                 art.artifact_type.as_str()
             ),
             messages: vec![LlmMessage {
                 role: Role::User,
                 parts: vec![Part::Text(format!(
-                    "生成参数：{}\n参考大纲：{}\n\n资料：\n{}",
+                    "Parameters: {}\nReference outline: {}\n\nSources:\n{}",
                     art.config,
-                    art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "无".into()),
+                    art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                     evidence_txt
                 ))],
             }],
@@ -2055,7 +2076,7 @@ impl StudioService {
                 continue;
             }
             let batch_req = LlmRequest {
-                system: "你是资料结构整理助手。合并本批章节摘要，保留章节层级与关键结论，不添加摘要中不存在的事实。".into(),
+                system: "You are a document structure synthesis assistant. Merge this batch of section summaries while preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.".into(),
                 messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(batch_text)] }],
                 tools: vec![], tool_mode: ToolMode::None, output: OutputMode::Text,
                 max_output_tokens: 1200, reasoning: ReasoningOptions::default(),
@@ -2084,7 +2105,7 @@ impl StudioService {
         }
         let reduced_text = reduced_batches.join("\n\n");
         let reduce_req = LlmRequest {
-            system: "你是资料结构整理助手。根据章节摘要合并出全局大纲，保留章节层级与关键结论，不添加摘要中不存在的事实。".into(),
+            system: "You are a document structure synthesis assistant. Merge the section summaries into a cohesive global outline preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.".into(),
             messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(reduced_text)] }],
             tools: vec![], tool_mode: ToolMode::None, output: OutputMode::Text,
             max_output_tokens: 2400, reasoning: ReasoningOptions::default(),
@@ -2251,7 +2272,7 @@ impl StudioService {
                     .collect::<Vec<_>>()
                     .join("\n\n");
                 let req = LlmRequest {
-                    system: format!("你是章节摘要助手。请用{}概括以下同一章节资料，保留关键概念、公式关系与结论，不添加资料中没有的内容。", language),
+                    system: format!("You are a section summarization assistant. Summarize the following content from the same section in {}, preserving key concepts, equations, relationships, and conclusions without adding any facts not present in the source.", language),
                     messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(chunk_text)] }],
                     tools: vec![], tool_mode: ToolMode::None, output: OutputMode::Text,
                     max_output_tokens: 700, reasoning: ReasoningOptions::default(),
@@ -2516,6 +2537,7 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<St
         progress: r.get(6)?,
         config: serde_json::from_str(&cfg_s).unwrap_or_else(|_| json!({})),
         source_ids: serde_json::from_str(&sids_s).unwrap_or_default(),
+        source_refs: Vec::new(),
         sources_stale: false,
         in_studio: in_studio != 0,
         origin_message_id,
