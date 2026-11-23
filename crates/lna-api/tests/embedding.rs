@@ -293,8 +293,30 @@ fn download_verifies_checksums_reports_progress_and_activates_the_model() {
         json!(false)
     );
     env.ok("embedding.download", json!({ "spec": sp }));
-    let done = wait_download_done(&env, &mut rx);
+    let mut progress_seen = Vec::new();
+    let mut done = None;
+    env.wait(30, || {
+        while let Ok(ev) = rx.try_recv() {
+            if ev.event == "embedding.download_progress" {
+                progress_seen.push(ev.data.clone());
+            }
+            if ev.event == "embedding.download_done" {
+                done = Some(ev.data);
+            }
+        }
+        done.is_some()
+    });
+    let done = done.unwrap();
     assert_eq!(done["ok"], json!(true), "{done}");
+    assert!(!progress_seen.is_empty());
+    let last_progress = progress_seen.last().unwrap();
+    assert_eq!(
+        last_progress["overall_done"], last_progress["overall_total"],
+        "{last_progress}"
+    );
+    assert!(progress_seen
+        .windows(2)
+        .all(|w| w[0]["overall_done"].as_u64() <= w[1]["overall_done"].as_u64()));
 
     let dir = env.dir.join("models").join("test-model");
     assert_eq!(std::fs::read(dir.join("model.onnx")).unwrap(), model);
@@ -322,37 +344,6 @@ fn download_verifies_checksums_reports_progress_and_activates_the_model() {
         hits,
         "intact files are not downloaded again"
     );
-}
-
-#[test]
-fn download_progress_events_are_emitted() {
-    let model = vec![1u8; 4 * 1024 * 1024];
-    let tok = b"tok".to_vec();
-    let server = FileServer::start(vec![("/model", model.clone()), ("/tok", tok.clone())]);
-    let env = Env::new("dl_progress");
-    let mut rx = env.core.events.subscribe();
-    env.ok(
-        "embedding.download",
-        json!({ "spec": spec(&server, &model, &tok), "activate": false }),
-    );
-    let mut seen = Vec::new();
-    env.wait(30, || {
-        while let Ok(ev) = rx.try_recv() {
-            if ev.event == "embedding.download_progress" {
-                seen.push(ev.data.clone());
-            }
-            if ev.event == "embedding.download_done" {
-                return true;
-            }
-        }
-        false
-    });
-    assert!(!seen.is_empty());
-    let last = seen.last().unwrap();
-    assert_eq!(last["overall_done"], last["overall_total"], "{last}");
-    assert!(seen
-        .windows(2)
-        .all(|w| w[0]["overall_done"].as_u64() <= w[1]["overall_done"].as_u64()));
 }
 
 #[test]

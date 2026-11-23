@@ -612,22 +612,22 @@ pub const ZH_DOC: &str = "# 第三章 向量空间\n\n## 3.5 基与维数\n\n向
 /// Valid payloads for every Studio modality, chosen from the system prompt.
 pub fn studio_reply(r: &Req) -> Reply {
     let s = &r.system;
-    let json = if (s.contains("for quiz,") || s.contains("生成 quiz")) {
+    let json = if s.contains("for quiz,") || s.contains("生成 quiz") {
         json!({"title":"测验","questions":[
             {"id":"q1","type":"single","difficulty":"medium","prompt":"n+1 个向量必然？","options":["线性相关","线性无关"],"answer_indices":[0],"accepted_answers":[],"rubric":"","explanation":"维数定理","citations":[1]}]})
-    } else if (s.contains("for flashcards,") || s.contains("生成 flashcards")) {
+    } else if s.contains("for flashcards,") || s.contains("生成 flashcards") {
         json!({"title":"闪卡","cards":[{"id":"c1","front":"基是什么","back":"线性无关的生成组","hint":"","citations":[1]}]})
-    } else if (s.contains("for mindmap") || s.contains("生成 mindmap")) {
+    } else if s.contains("for mindmap") || s.contains("生成 mindmap") {
         json!({"title":"导图","nodes":[{"id":"n1","parent_id":null,"label":"根","citations":[1]},{"id":"n2","parent_id":"n1","label":"枝","citations":[1]}]})
-    } else if (s.contains("for report,") || s.contains("生成 report")) {
+    } else if s.contains("for report,") || s.contains("生成 report") {
         json!({"title":"报告","format":"document","sections":[{"heading":"概述","body_md":"基与维数[1]","key_takeaways":["要点"]}],"citations":[1]})
     } else if s.contains("for slides,") || s.contains("生成 slides") || s.contains("SlidesPayload") {
         json!({"title":"幻灯片","theme":"executive_navy","slides":[{"layout":"title","title":"封面","bullets":[],"speaker_notes":"","citations":[]},{"layout":"cards","title":"基","bullets":["线性无关"],"cards":[{"tag":"定义","title":"基","body":"线性无关且张成空间"}],"speaker_notes":"讲稿","citations":[1]}]})
     } else if s.contains("presentation architect") {
         return Reply::Text("Slide 1: title - 封面\nSlide 2: cards - 基".into());
-    } else if (s.contains("for infographic,") || s.contains("生成 infographic")) {
+    } else if s.contains("for infographic,") || s.contains("生成 infographic") {
         json!({"title":"信息图","subtitle":"副标题","orientation":"landscape","style":"clean","blocks":[{"heading":"维数","metric":"3","summary":"基的个数","citations":[1]}]})
-    } else if (s.contains("for audio,") || s.contains("生成 audio")) {
+    } else if s.contains("for audio,") || s.contains("生成 audio") {
         json!({"title":"音频","speakers":[{"id":"A","role":"host"},{"id":"B","role":"guest"}],"turns":[{"speaker":"A","text":"今天聊基与维数。","citations":[1]},{"speaker":"B","text":"好的。","citations":[]}]})
     } else {
         return Reply::Text("{}".into());

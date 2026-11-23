@@ -195,33 +195,28 @@ fn probe_mock(tools_ok: bool, schema_ok: bool) -> MockLlm {
 /// D5: `profile.test` measures tools / JSON Schema / JSON mode / stream usage and stores them.
 #[test]
 fn profile_test_probes_capabilities_and_persists_them() {
-    let mock = probe_mock(true, true);
     let env = Env::new("probe");
-    let prof = env.profile(&mock, 32000, false);
-    let pid = prof["id"].as_str().unwrap().to_string();
-    let r = env.ok("profile.test", json!({ "profile_id": pid }));
-    let caps = &r["capabilities"];
-    assert_eq!(caps["tools"], json!(true), "{r}");
-    assert_eq!(caps["json_schema"], json!(true));
-    assert_eq!(caps["json_mode"], json!(true));
-    assert_eq!(caps["stream_usage"], json!(true));
-    let stored = env.ok("profile.list", json!({}));
-    assert_eq!(stored["profiles"][0]["capabilities"]["tools"], json!(true));
-}
-
-#[test]
-fn profile_test_marks_unsupported_features_as_false() {
-    let mock = probe_mock(false, false);
-    let env = Env::new("probe2");
-    let prof = env.profile(&mock, 32000, true);
-    let pid = prof["id"].as_str().unwrap().to_string();
-    let r = env.ok("profile.test", json!({ "profile_id": pid }));
-    let caps = &r["capabilities"];
-    assert_eq!(caps["tools"], json!(false), "{r}");
-    assert_eq!(caps["json_schema"], json!(false));
-    assert_eq!(caps["json_mode"], json!(true));
-    let stored = env.ok("profile.list", json!({}));
-    assert_eq!(stored["profiles"][0]["capabilities"]["tools"], json!(false));
+    for (tools_ok, schema_ok, json_mode_ok) in [(true, true, true), (false, false, true)] {
+        let mock = probe_mock(tools_ok, schema_ok);
+        let prof = env.profile(&mock, 32000, !tools_ok);
+        let pid = prof["id"].as_str().unwrap().to_string();
+        let r = env.ok("profile.test", json!({ "profile_id": pid }));
+        let caps = &r["capabilities"];
+        assert_eq!(caps["tools"], json!(tools_ok), "{r}");
+        assert_eq!(caps["json_schema"], json!(schema_ok));
+        assert_eq!(caps["json_mode"], json!(json_mode_ok));
+        if tools_ok {
+            assert_eq!(caps["stream_usage"], json!(true));
+        }
+        let stored = env.ok("profile.list", json!({}));
+        let found = stored["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == pid)
+            .unwrap();
+        assert_eq!(found["capabilities"]["tools"], json!(tools_ok));
+    }
 }
 
 /// D5: a 400 naming an unsupported parameter drops it, retries once, and remembers the result.
