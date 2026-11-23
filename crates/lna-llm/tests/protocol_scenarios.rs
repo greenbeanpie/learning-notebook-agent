@@ -536,3 +536,14 @@ fn d5_unsupported_parameter_errors_relax_the_request() {
         &mut req
     ));
 }
+
+#[test]
+fn hard_caps_reasoning_and_output_tokens_at_8192() {
+    use lna_llm::{clamp_reasoning_and_output_tokens, MAX_SINGLE_REQUEST_TOKENS};
+    assert_eq!(MAX_SINGLE_REQUEST_TOKENS, 8192);
+    assert_eq!(clamp_reasoning_and_output_tokens(0), 8192);
+    assert_eq!(clamp_reasoning_and_output_tokens(512), 512);
+    assert_eq!(clamp_reasoning_and_output_tokens(8192), 8192);
+    assert_eq!(clamp_reasoning_and_output_tokens(16384), 8192);
+    assert_eq!(clamp_reasoning_and_output_tokens(65536), 8192);
+}

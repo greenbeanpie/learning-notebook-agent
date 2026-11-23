@@ -82,7 +82,7 @@ impl StudioService {
             tts: Arc::new(SystemTtsProvider),
             events,
             seq,
-            text_generation_slots: Arc::new(Semaphore::new(2)),
+            text_generation_slots: Arc::new(Semaphore::new(6)),
             profile_generation_slots: Arc::new(Mutex::new(HashMap::new())),
             audio_render_slot: Arc::new(Semaphore::new(1)),
         }
@@ -108,11 +108,32 @@ impl StudioService {
         artifact_type: ArtifactType,
         config: &Value,
     ) -> LnaResult<Value> {
-        let is_kg = artifact_type == ArtifactType::Mindmap
-            && config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
-        let total_source_tokens: i64 = if is_kg {
-            // Knowledge Graph builds from compact AI structural index + source guides + sampled key chunks,
-            // never passing an entire 600-page book at once.
+        let raw_source_tokens: i64 = self.db.read(|conn| {
+            conn.query_row(
+                "SELECT COALESCE(SUM(token_count),0) FROM sources WHERE notebook_id = ?1 AND is_selected = 1 AND status = 'READY'",
+                [notebook_id],
+                |r| r.get(0),
+            )
+            .map_err(map_sql_err)
+        })?;
+        let detail = config
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or("standard");
+        let on_demand_cap: i64 = match artifact_type {
+            ArtifactType::Mindmap => match detail {
+                "concise" => 6_500,
+                "detailed" => 16_000,
+                _ => 11_000,
+            },
+            ArtifactType::Quiz | ArtifactType::Flashcards | ArtifactType::Infographic => 12_000,
+            ArtifactType::Report | ArtifactType::Slides | ArtifactType::Audio => 16_000,
+        };
+        // All Studio artifacts use on-demand reading (compact structural catalog + targeted section reads)
+        // for large sources instead of passing an entire book at once.
+        let total_source_tokens: i64 = if raw_source_tokens <= 12_000 {
+            raw_source_tokens
+        } else {
             let index_chars: i64 = self.db.read(|conn| {
                 conn.query_row(
                     "SELECT COALESCE(SUM(LENGTH(title) + LENGTH(summary) + LENGTH(keywords_json)), 0)
@@ -123,16 +144,8 @@ impl StudioService {
                 )
                 .map_err(map_sql_err)
             })?;
-            ((index_chars / 3).max(1800)).min(14_000)
-        } else {
-            self.db.read(|conn| {
-                conn.query_row(
-                    "SELECT COALESCE(SUM(token_count),0) FROM sources WHERE notebook_id = ?1 AND is_selected = 1 AND status = 'READY'",
-                    [notebook_id],
-                    |r| r.get(0),
-                )
-                .map_err(map_sql_err)
-            })?
+            let catalog_tokens = ((index_chars / 3).max(1_600)).min(5_500);
+            (catalog_tokens + on_demand_cap * 6 / 10).min(on_demand_cap).min(raw_source_tokens)
         };
         let active_profile = lna_storage::get_active_profile(&self.db)?;
         let est_input =
@@ -140,7 +153,12 @@ impl StudioService {
         let est_output = match artifact_type {
             ArtifactType::Quiz | ArtifactType::Flashcards => 2500,
             ArtifactType::Report | ArtifactType::Slides | ArtifactType::Audio => 4500,
-            ArtifactType::Mindmap | ArtifactType::Infographic => 1800,
+            ArtifactType::Mindmap => match detail {
+                "concise" => 1400,
+                "detailed" => 3600,
+                _ => 2200,
+            },
+            ArtifactType::Infographic => 1800,
         };
         let estimated_cost_usd = active_profile.as_ref().and_then(|profile| {
             match (profile.input_price_per_m, profile.output_price_per_m) {
@@ -158,7 +176,7 @@ impl StudioService {
             "input_price_per_m": active_profile.as_ref().and_then(|p| p.input_price_per_m),
             "output_price_per_m": active_profile.as_ref().and_then(|p| p.output_price_per_m),
             "is_estimated": true,
-            "requires_confirmation": est_input > 200_000
+            "requires_confirmation": false
         }))
     }
 
@@ -169,7 +187,21 @@ impl StudioService {
         title: Option<&str>,
         config: Value,
     ) -> LnaResult<StudioArtifact> {
-        let (selected_ids, fp) = self.current_sources_fingerprint(notebook_id)?;
+        let is_kg = artifact_type == ArtifactType::Mindmap
+            && config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        let explicit_source_id = config
+            .get("source_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let (mut selected_ids, mut fp) = self.current_sources_fingerprint(notebook_id)?;
+        if is_kg {
+            if let Some(sid) = explicit_source_id.as_ref() {
+                selected_ids = vec![sid.clone()];
+                fp = format!("source:{}", sid);
+            }
+        }
         if selected_ids.is_empty() {
             return Err(LnaError::new(
                 ErrorCode::NoSourceSelected,
@@ -181,26 +213,11 @@ impl StudioService {
         })?;
 
         let est = self.estimate_with_config(notebook_id, artifact_type, &config)?;
-        let req_conf = est
-            .get("requires_confirmation")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
-        let confirmed = config
-            .get("confirmed")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
-        if req_conf && !confirmed {
-            return Err(LnaError::invalid(
-                "Estimated input exceeds 200k tokens; pass config.confirmed=true to proceed",
-            ));
-        }
         let est_in = est.get("estimated_input_tokens").and_then(|x| x.as_i64());
         let est_out = est.get("estimated_output_tokens").and_then(|x| x.as_i64());
 
         let id = new_ulid();
         let now = now_ms();
-        let is_kg = artifact_type == ArtifactType::Mindmap
-            && config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
         let ui_lang = config
             .get("lang")
             .and_then(Value::as_str)
@@ -251,13 +268,14 @@ impl StudioService {
         let cfg_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".into());
         let sids_json = serde_json::to_string(&selected_ids).unwrap_or_else(|_| "[]".into());
 
+        let in_studio: i64 = if is_kg { 0 } else { 1 };
         self.db.write(|conn| {
             conn.execute(
                 "INSERT INTO studio_artifacts
                  (id, notebook_id, artifact_type, title, status, stage, progress, config_json,
                   source_ids_json, sources_fingerprint, profile_id, estimated_input_tokens,
-                  estimated_output_tokens, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,'PENDING','QUEUED',0.0,?5,?6,?7,?8,?9,?10,?11,?12)",
+                  estimated_output_tokens, in_studio, created_at, updated_at)
+                 VALUES (?1,?2,?3,?4,'PENDING','QUEUED',0.0,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                 params![
                     id,
                     notebook_id,
@@ -269,6 +287,7 @@ impl StudioService {
                     active_profile.id,
                     est_in,
                     est_out,
+                    in_studio,
                     now,
                     now
                 ],
@@ -371,7 +390,11 @@ impl StudioService {
         let (_, cur_fp) = self.current_sources_fingerprint(notebook_id)?;
         let sql = format!(
             "SELECT {ARTIFACT_SELECT_COLS}
-             FROM studio_artifacts WHERE notebook_id = ?1 AND in_studio = 1 ORDER BY created_at DESC"
+             FROM studio_artifacts
+             WHERE notebook_id = ?1
+               AND in_studio = 1
+               AND COALESCE(json_extract(config_json, '$.mode'), '') != 'knowledge_graph'
+             ORDER BY created_at DESC"
         );
         let mut out = self.db.read(|conn| {
             let mut stmt = conn.prepare(&sql).map_err(map_sql_err)?;
@@ -431,7 +454,22 @@ impl StudioService {
         })?;
         art.thoughts = self.list_thoughts(id)?;
         art.source_refs = self.load_source_refs(&art.source_ids)?;
+        art.progress_state = self.load_progress_state(id)?;
         Ok(art)
+    }
+
+    fn load_progress_state(&self, artifact_id: &str) -> LnaResult<Option<Value>> {
+        self.db.read(|conn| {
+            let raw: Option<String> = conn
+                .query_row(
+                    "SELECT state_json FROM artifact_progress WHERE artifact_id = ?1",
+                    [artifact_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(map_sql_err)?;
+            Ok(raw.and_then(|s| serde_json::from_str::<Value>(&s).ok()))
+        })
     }
 
     fn load_source_refs(&self, source_ids: &[String]) -> LnaResult<Vec<ArtifactSourceRef>> {
@@ -601,6 +639,136 @@ impl StudioService {
         self.get(id)
     }
 
+    pub async fn revise_draft(
+        &self,
+        id: &str,
+        instruction: &str,
+        current_draft: Option<&str>,
+    ) -> LnaResult<StudioArtifact> {
+        let art = self.get(id)?;
+        if art.status != ArtifactStatus::DraftReview {
+            return Err(LnaError::new(
+                ErrorCode::Conflict,
+                "Artifact is not in DRAFT_REVIEW state",
+            ));
+        }
+        let instr = instruction.trim();
+        if instr.is_empty() {
+            return Err(LnaError::invalid("Revision instruction cannot be empty"));
+        }
+        let profile = lna_storage::get_active_profile(&self.db)?
+            .ok_or_else(|| LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured"))?;
+        let api_key = match profile.keychain_ref.as_deref() {
+            Some(kref) => self.secrets.get(kref)?,
+            None => None,
+        };
+        let resolved = ResolvedProfile {
+            id: profile.id.clone(),
+            display_name: profile.display_name.clone(),
+            protocol: profile.protocol,
+            base_url: profile.base_url.clone(),
+            model_id: profile.model_id.clone(),
+            api_key,
+            show_thinking: profile.show_thinking,
+            effort: profile.effort.clone(),
+            context_window: profile.context_window,
+            max_output_tokens: profile.max_output_tokens,
+            capabilities: profile.capabilities.clone(),
+            extra_headers: profile.extra_headers.clone(),
+            anthropic_version: "2023-06-01".into(),
+        };
+
+        let existing_md = current_draft
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| match &art.draft {
+                Some(Value::String(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => String::new(),
+            });
+
+        self.append_thought(
+            id,
+            &art.notebook_id,
+            "tool",
+            "工具调用 · 按提示词迭代调整提纲",
+            instr,
+        );
+
+        let is_report = art.artifact_type == ArtifactType::Report;
+        let sys = if is_report {
+            "You are a research report outline editor. Revise the provided Markdown report outline strictly according to the user's instruction while preserving factual grounding and clean Markdown structure (`# Title`, `## Section N: Heading`, `- Key points`). Output ONLY the updated Markdown outline with no JSON or code fences."
+        } else {
+            "You are a presentation outline editor. Revise the provided Markdown slide outline strictly according to the user's instruction while preserving factual grounding and clean Markdown structure (`# Title`, `## Slide N: Slide Title`, `- Key points`, `> Speaker notes`). Output ONLY the updated Markdown outline with no JSON or code fences."
+        };
+        let req = LlmRequest {
+            system: sys.into(),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text(format!(
+                    "Artifact type: {}
+Config: {}
+
+Current Outline:
+{}
+
+User Revision Instruction:
+{}",
+                    art.artifact_type.as_str(),
+                    art.config,
+                    existing_md,
+                    instr
+                ))],
+            }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            max_output_tokens: 2400,
+            reasoning: ReasoningOptions {
+                show_summary: profile.show_thinking,
+                effort: profile.effort.clone(),
+            },
+        };
+
+        let _permits = self.acquire_llm_slots(&profile.id).await?;
+        let (revised_raw, usage) = self
+            .run_text_with_thought(
+                id,
+                &art.notebook_id,
+                "提纲迭代调整思考",
+                &resolved,
+                &req,
+                CancellationToken::new(),
+            )
+            .await?;
+        let _ = lna_storage::record_usage(
+            &self.db,
+            Some(&art.notebook_id),
+            Some(&profile.id),
+            "studio_revise_draft",
+            Some(id),
+            usage.input_tokens as i64,
+            usage.output_tokens as i64,
+            usage.cached_tokens as i64,
+            false,
+        );
+
+        let revised_md = revised_raw.trim().to_string();
+        let draft_md_json =
+            serde_json::to_string(&Value::String(revised_md)).unwrap_or_else(|_| String::from("\"\""));
+        self.db.write(|conn| {
+            conn.execute(
+                "UPDATE studio_artifacts SET draft_json=?1, updated_at=?2 WHERE id=?3 AND status='DRAFT_REVIEW'",
+                params![draft_md_json, now_ms(), id],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })?;
+        self.emit_status_event(id, "DRAFT_REVIEW", "DRAFT_REVIEW", 0.45, None, None);
+        self.get(id)
+    }
+
     pub fn save_progress(&self, id: &str, state: Value) -> LnaResult<()> {
         let s = state.to_string();
         self.db.write(|conn| {
@@ -612,6 +780,325 @@ impl StudioService {
             .map_err(map_sql_err)?;
             Ok(())
         })
+    }
+
+    pub fn get_source_knowledge_graph(&self, source_id: &str) -> LnaResult<Option<StudioArtifact>> {
+        let id: Option<String> = self.db.read(|conn| {
+            conn.query_row(
+                "SELECT id FROM studio_artifacts
+                 WHERE artifact_type = 'mindmap'
+                   AND COALESCE(json_extract(config_json, '$.mode'), '') = 'knowledge_graph'
+                   AND (
+                       COALESCE(json_extract(config_json, '$.source_id'), '') = ?1
+                       OR EXISTS (SELECT 1 FROM json_each(source_ids_json) WHERE value = ?1)
+                   )
+                 ORDER BY CASE WHEN COALESCE(json_extract(config_json, '$.source_id'), '') = ?1 THEN 0 ELSE 1 END,
+                          created_at DESC
+                 LIMIT 1",
+                [source_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(map_sql_err)
+        })?;
+        match id {
+            Some(aid) => Ok(Some(self.get(&aid)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_notebook_knowledge_graphs(&self, notebook_id: &str) -> LnaResult<Vec<StudioArtifact>> {
+        let ids: Vec<String> = self.db.read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM studio_artifacts
+                     WHERE notebook_id = ?1
+                       AND artifact_type = 'mindmap'
+                       AND COALESCE(json_extract(config_json, '$.mode'), '') = 'knowledge_graph'
+                     ORDER BY created_at DESC",
+                )
+                .map_err(map_sql_err)?;
+            let rows = stmt.query_map([notebook_id], |r| r.get::<_, String>(0)).map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(map_sql_err)?);
+            }
+            Ok(out)
+        })?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Ok(art) = self.get(&id) {
+                out.push(art);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn compute_kg_progress_summary(&self, notebook_id: &str, source_id: Option<&str>) -> LnaResult<Value> {
+        let graphs = if let Some(sid) = source_id.filter(|s| !s.trim().is_empty()) {
+            self.get_source_knowledge_graph(sid)?.into_iter().collect()
+        } else {
+            self.list_notebook_knowledge_graphs(notebook_id)?
+        };
+        let ready_graphs: Vec<StudioArtifact> = graphs
+            .into_iter()
+            .filter(|g| g.status == ArtifactStatus::Ready && g.payload.is_some())
+            .collect();
+        if ready_graphs.is_empty() {
+            return Ok(json!({
+                "has_knowledge_graph": false,
+                "graph_count": 0,
+                "total_concepts": 0,
+                "mastered": 0,
+                "learning": 0,
+                "weak": 0,
+                "unstarted": 0,
+                "mastery_percent": 0,
+                "recommended_difficulty": "mixed",
+                "weak_concepts": [],
+                "unstarted_concepts": [],
+                "mastered_concepts": [],
+            }));
+        }
+
+        let mut total = 0usize;
+        let mut mastered = 0usize;
+        let mut learning = 0usize;
+        let mut weak = 0usize;
+        let mut unstarted = 0usize;
+        let mut weak_concepts: Vec<String> = Vec::new();
+        let mut unstarted_concepts: Vec<String> = Vec::new();
+        let mut mastered_concepts: Vec<String> = Vec::new();
+
+        for g in &ready_graphs {
+            let Some(payload) = g.payload.as_ref() else { continue };
+            let Some(nodes) = payload.get("nodes").and_then(Value::as_array) else { continue };
+            let mastery_map = g
+                .progress_state
+                .as_ref()
+                .and_then(|ps| ps.get("mastery"))
+                .and_then(Value::as_object);
+            let concept_nodes: Vec<&Value> = if nodes.len() > 1 {
+                nodes.iter().filter(|n| !n.get("parent_id").map(Value::is_null).unwrap_or(true)).collect()
+            } else {
+                nodes.iter().collect()
+            };
+            for n in concept_nodes {
+                let nid = n.get("id").and_then(Value::as_str).unwrap_or("");
+                let label = n.get("label").and_then(Value::as_str).unwrap_or("").trim();
+                if nid.is_empty() || label.is_empty() {
+                    continue;
+                }
+                total += 1;
+                let status = mastery_map
+                    .and_then(|m| m.get(nid))
+                    .and_then(|v| v.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unstarted");
+                match status {
+                    "mastered" => {
+                        mastered += 1;
+                        if mastered_concepts.len() < 10 {
+                            mastered_concepts.push(label.to_string());
+                        }
+                    }
+                    "learning" => learning += 1,
+                    "weak" => {
+                        weak += 1;
+                        if weak_concepts.len() < 10 {
+                            weak_concepts.push(label.to_string());
+                        }
+                    }
+                    _ => {
+                        unstarted += 1;
+                        if unstarted_concepts.len() < 10 {
+                            unstarted_concepts.push(label.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mastery_percent = if total == 0 { 0 } else { (mastered * 100) / total };
+        let assessed = mastered + learning + weak;
+        let recommended_difficulty = if total == 0 || assessed == 0 {
+            "mixed"
+        } else if mastery_percent < 35 || weak > mastered {
+            "easy"
+        } else if mastery_percent < 75 {
+            "medium"
+        } else {
+            "hard"
+        };
+
+        Ok(json!({
+            "has_knowledge_graph": true,
+            "graph_count": ready_graphs.len(),
+            "total_concepts": total,
+            "mastered": mastered,
+            "learning": learning,
+            "weak": weak,
+            "unstarted": unstarted,
+            "mastery_percent": mastery_percent,
+            "recommended_difficulty": recommended_difficulty,
+            "weak_concepts": weak_concepts,
+            "unstarted_concepts": unstarted_concepts,
+            "mastered_concepts": mastered_concepts,
+        }))
+    }
+
+    pub fn apply_quiz_to_knowledge_graphs(
+        &self,
+        notebook_id: &str,
+        quiz_artifact_id: &str,
+        results: Value,
+    ) -> LnaResult<Value> {
+        let quiz = self.get(quiz_artifact_id)?;
+        let Some(quiz_payload) = quiz.payload.as_ref() else {
+            return Ok(json!({ "updated_graphs": 0, "updated_nodes": 0, "details": [] }));
+        };
+        let questions = quiz_payload
+            .get("questions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let result_items = results.as_array().cloned().unwrap_or_default();
+        if questions.is_empty() || result_items.is_empty() {
+            return Ok(json!({ "updated_graphs": 0, "updated_nodes": 0, "details": [] }));
+        }
+
+        let mut graphs: Vec<StudioArtifact> = self
+            .list_notebook_knowledge_graphs(notebook_id)?
+            .into_iter()
+            .filter(|g| g.status == ArtifactStatus::Ready && g.payload.is_some())
+            .collect();
+        if graphs.is_empty() {
+            return Ok(json!({ "updated_graphs": 0, "updated_nodes": 0, "details": [] }));
+        }
+        // Prioritize knowledge graphs whose source overlaps with quiz sources
+        let quiz_sids: std::collections::HashSet<&str> = quiz.source_ids.iter().map(String::as_str).collect();
+        graphs.sort_by_key(|g| {
+            let overlaps = g.source_ids.iter().any(|s| quiz_sids.contains(s.as_str()));
+            if overlaps { 0 } else { 1 }
+        });
+
+        let mut result_by_qid: HashMap<String, (bool, f64)> = HashMap::new();
+        for item in &result_items {
+            if let Some(qid) = item.get("question_id").and_then(Value::as_str) {
+                let is_correct = item.get("is_correct").and_then(Value::as_bool).unwrap_or(false);
+                let score = item
+                    .get("score")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(if is_correct { 1.0 } else { 0.0 });
+                result_by_qid.insert(qid.to_string(), (is_correct, score));
+            }
+        }
+
+        let topic_hint = quiz
+            .config
+            .get("topic")
+            .and_then(Value::as_str)
+            .unwrap_or(&quiz.title);
+        let now = now_ms();
+        let mut updated_graphs = 0usize;
+        let mut updated_nodes = 0usize;
+        let mut details: Vec<Value> = Vec::new();
+
+        for g in &graphs {
+            let Some(payload) = g.payload.as_ref() else { continue };
+            let Some(nodes) = payload.get("nodes").and_then(Value::as_array) else { continue };
+            let mut progress_obj = g
+                .progress_state
+                .as_ref()
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let mut mastery_obj = progress_obj
+                .get("mastery")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let mut graph_changed = false;
+
+            for q in &questions {
+                let qid = q.get("id").and_then(Value::as_str).unwrap_or("");
+                let Some(&(is_correct, q_score)) = result_by_qid.get(qid) else { continue };
+                let q_text = format!(
+                    "{} {} {}",
+                    quiz.title,
+                    q.get("prompt").and_then(Value::as_str).unwrap_or(""),
+                    q.get("explanation").and_then(Value::as_str).unwrap_or("")
+                );
+
+                let mut scored_nodes: Vec<(f64, &str, &str)> = Vec::new();
+                for n in nodes {
+                    let is_root = n.get("parent_id").map(Value::is_null).unwrap_or(false) && nodes.len() > 1;
+                    if is_root {
+                        continue;
+                    }
+                    let nid = n.get("id").and_then(Value::as_str).unwrap_or("");
+                    let label = n.get("label").and_then(Value::as_str).unwrap_or("");
+                    let summary = n.get("summary").and_then(Value::as_str).unwrap_or("");
+                    if nid.is_empty() || label.is_empty() {
+                        continue;
+                    }
+                    let s = score_kg_node_match(label, summary, &q_text, topic_hint);
+                    if s >= 0.35 {
+                        scored_nodes.push((s, nid, label));
+                    }
+                }
+                scored_nodes.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                scored_nodes.truncate(2);
+
+                for (_, nid, label) in scored_nodes {
+                    let mut entry = mastery_obj
+                        .get(nid)
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    let prev_attempts = entry.get("attempts").and_then(Value::as_u64).unwrap_or(0);
+                    let prev_correct = entry.get("correct").and_then(Value::as_u64).unwrap_or(0);
+                    let attempts = prev_attempts + 1;
+                    let correct = prev_correct + if is_correct { 1 } else { 0 };
+                    let acc = correct as f64 / attempts as f64;
+                    let new_score = if prev_attempts == 0 { q_score } else { (acc + q_score) / 2.0 };
+                    let status = if is_correct {
+                        if new_score >= 0.75 { "mastered" } else { "learning" }
+                    } else if new_score < 0.5 {
+                        "weak"
+                    } else {
+                        "learning"
+                    };
+                    entry.insert("status".into(), json!(status));
+                    entry.insert("score".into(), json!(new_score));
+                    entry.insert("attempts".into(), json!(attempts));
+                    entry.insert("correct".into(), json!(correct));
+                    entry.insert("last_updated".into(), json!(now));
+                    mastery_obj.insert(nid.to_string(), Value::Object(entry));
+                    graph_changed = true;
+                    updated_nodes += 1;
+                    details.push(json!({
+                        "graph_id": g.id,
+                        "node_id": nid,
+                        "label": label,
+                        "status": status,
+                    }));
+                }
+            }
+
+            if graph_changed {
+                progress_obj.insert("mastery".into(), Value::Object(mastery_obj));
+                progress_obj.insert("updated_at".into(), json!(now));
+                self.save_progress(&g.id, Value::Object(progress_obj))?;
+                updated_graphs += 1;
+            }
+        }
+
+        Ok(json!({
+            "updated_graphs": updated_graphs,
+            "updated_nodes": updated_nodes,
+            "details": details,
+        }))
     }
 
     pub async fn process_job(&self, artifact_id: &str, cancel: CancellationToken) -> LnaResult<()> {
@@ -828,15 +1315,25 @@ impl StudioService {
         if review_outline && art.draft.is_none() {
             *current_stage = "PLAN".to_string();
             self.set_stage(artifact_id, "RUNNING", "PLAN", 0.35, &topic)?;
+            let is_report = art.artifact_type == ArtifactType::Report;
             self.append_thought(
                 artifact_id,
                 &art.notebook_id,
                 "stage",
-                "规划演示文稿大纲",
-                "正在基于已选来源梳理章节结构与每页要点…",
+                if is_report { "规划报告提纲" } else { "规划演示文稿提纲" },
+                if is_report {
+                    "正在基于已选来源梳理报告章节结构、论点脉络与核心证据…"
+                } else {
+                    "正在基于已选来源梳理演示文稿章节结构与每页要点…"
+                },
             );
+            let outline_sys = if is_report {
+                "You are a research report outline planner. Output a clean, human-readable Markdown outline (using `# Report Title`, `## Section N: Section Heading`, `- Key findings, analysis points, and supporting evidence`). Match the language requested in config or the primary language of the sources. Be concise, well-structured, and accurate; never output JSON or fenced code blocks."
+            } else {
+                "You are a presentation outline planner. Output a clean, human-readable Markdown outline (using `# Title`, `## Slide N: Slide Title`, `- Key points`, and `> Speaker notes`). Match the language requested in config or the primary language of the sources. Be concise and accurate; never output JSON or fenced code blocks."
+            };
             let plan_req = LlmRequest {
-                system: "You are a presentation and content outline planner. Output a clean, human-readable Markdown outline (using `# Title`, `## Slide N: Slide Title`, `- Key points`, and `> Speaker notes`). Match the language requested in config or the primary language of the sources. Be concise and accurate; never output JSON or fenced code blocks.".into(),
+                system: outline_sys.into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
@@ -936,7 +1433,14 @@ impl StudioService {
                         validate::validate_quiz_with(&generated, &allowed_types, evidence_cap)?;
                     }
                     ArtifactType::Flashcards => validate::dedup_flashcards(&mut generated),
-                    ArtifactType::Mindmap => validate::enforce_mindmap_limits(&mut generated),
+                    ArtifactType::Mindmap => {
+                        let detail = art
+                            .config
+                            .get("detail")
+                            .and_then(Value::as_str)
+                            .unwrap_or("standard");
+                        validate::enforce_mindmap_limits_with_detail(&mut generated, detail);
+                    }
                     _ => {}
                 }
                 // Only save the checkpoint after validation succeeds so broken payloads are never reused.
@@ -1154,7 +1658,7 @@ impl StudioService {
                 }
                 let batch_req = LlmRequest {
                     system: format!(
-                        "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep every prompt, option, and explanation concise and accurate.",
+                        "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep every prompt, option, and explanation concise and accurate. Format all mathematical expressions and chemical formulas/equations in LaTeX wrapped in $...$ (e.g., $\\\\ce{{H2O}}$, $\\\\ce{{O2}}$, $\\\\ce{{CO2}}$, $\\\\ce{{2H2 + O2 -> 2H2O}}$, $x^2$, $\\\\frac{{a}}{{b}}$); never write bare ASCII formulas without subscripts/LaTeX, and double-escape all LaTeX backslashes in JSON strings so \\\\frac, \\\\times, \\\\text, \\\\ce are not corrupted.",
                         art.artifact_type.as_str()
                     ),
                     messages: vec![LlmMessage {
@@ -1339,18 +1843,282 @@ impl StudioService {
             return Ok((json!({ "title": title, "cards": all_cards }), usage_sum));
         }
 
+        if art.artifact_type == ArtifactType::Slides {
+            let target_pages = art
+                .config
+                .get("pages")
+                .and_then(Value::as_u64)
+                .map(|p| p.clamp(4, 30))
+                .unwrap_or_else(|| {
+                    match art.config.get("length").and_then(Value::as_str).unwrap_or("standard") {
+                        "concise" => 6,
+                        "detailed" => 14,
+                        _ => 10,
+                    }
+                });
+
+            // Stage 1: Presentation Architecture & Visual Storyboard Planning
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                "规划演示文稿视觉主题与逐页版式",
+                &format!("正在围绕来源内容设计约 {target_pages} 页演示文稿的叙事节奏、主题配色与多样化版式组合…"),
+            );
+            let plan_req = LlmRequest {
+                system: "You are an executive presentation architect and visual designer. Given the source material and user parameters, design a concise slide-by-slide visual storyboard (NOT raw JSON yet). Choose the best theme from [executive_navy, editorial_slate, academic_sage, warm_terracotta, midnight_aurora]. Plan an engaging narrative arc starting with `title` and `agenda`, ending with `summary`, and using DIVERSE visual layouts across content slides (`cards`, `two_column`, `metrics`, `timeline`, `table`, `formula`, `quote`, `section`, `bullets`) — NEVER use plain `bullets` on more than 25% of slides and never repeat the same content layout twice in a row. For each slide, specify: page number, layout, crisp headline, key facts/numbers/equations/comparisons from the sources, and visual structure. Match the requested language or primary source language.".into(),
+                messages: vec![LlmMessage {
+                    role: Role::User,
+                    parts: vec![Part::Text(format!(
+                        "Target slide count: ~{target_pages}\nParameters: {}\nApproved outline (if any): {}\n\nResearched Sources:\n{}",
+                        art.config,
+                        art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
+                        evidence_txt
+                    ))],
+                }],
+                tools: vec![],
+                tool_mode: ToolMode::None,
+                output: OutputMode::Text,
+                max_output_tokens: 2400,
+                reasoning: ReasoningOptions {
+                    show_summary: profile.show_thinking,
+                    effort: profile.effort.clone(),
+                },
+            };
+            let mut usage_sum = Usage::default();
+            let storyboard = {
+                let _permits = self.acquire_llm_slots(&profile.id).await?;
+                match self
+                    .run_text_with_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "演示文稿视觉架构与版式思考",
+                        resolved,
+                        &plan_req,
+                        cancel.clone(),
+                    )
+                    .await
+                {
+                    Ok((txt, u)) => {
+                        usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u.input_tokens);
+                        usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u.output_tokens);
+                        usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u.cached_tokens);
+                        txt
+                    }
+                    Err(_) => String::new(),
+                }
+            };
+
+            // Stage 2: Rich Structured Slide Deck Authoring
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                "撰写高颜值演示文稿内容与版式数据",
+                "正在基于版式蓝图生成完整结构化幻灯片（含卡片、对比表、流程图、关键指标、核心公式与演讲备注）…",
+            );
+            let author_req = LlmRequest {
+                system: "You are a world-class presentation designer for Local Notebook Studio. Produce a publication-grade SlidesPayload JSON strictly grounded in the provided sources.\n\
+Design rules:\n\
+1. Set top-level `theme` (one of: executive_navy, editorial_slate, academic_sage, warm_terracotta, midnight_aurora) and `subtitle`.\n\
+2. Use rich, varied layouts across slides: `title` (slide 1), `agenda`, `section`, `cards` (3-6 insight cards with tag/title/body), `two_column` (2 titled comparison columns with items), `metrics` (2-4 KPI highlight cards with value/label/detail), `timeline` (3-5 sequential steps with step/title/detail), `table` (structured comparison table with headers and rows), `formula` (highlighted equation/reaction in `formula` plus explanation in `bullets`), `quote`, `bullets` (sparingly), and `summary` (final slide).\n\
+3. Populate the layout-specific fields (`cards`, `columns`, `metrics`, `steps`, `table`, `formula`, `subtitle`, `callout`) whenever using those layouts, AND always include concise `bullets` (can be empty [] when structured fields carry the slide), thorough `speaker_notes`, and valid `citations`.\n\
+4. Keep on-slide text crisp and scannable (short headlines, concise card bodies, zero walls of text) while putting deeper explanation in `speaker_notes`.\n\
+5. Match the language requested in config or the primary language of the sources.".into(),
+                messages: vec![LlmMessage {
+                    role: Role::User,
+                    parts: vec![Part::Text(format!(
+                        "Target slide count: ~{target_pages}\nParameters: {}\nVisual Storyboard:\n{}\n\nReference outline: {}\n\nResearched Sources:\n{}",
+                        art.config,
+                        if storyboard.is_empty() { "Design a rich, visually varied deck." } else { &storyboard },
+                        art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
+                        evidence_txt
+                    ))],
+                }],
+                tools: vec![],
+                tool_mode: ToolMode::None,
+                output: OutputMode::Text,
+                max_output_tokens: resolved.max_output_tokens,
+                reasoning: reasoning.clone(),
+            };
+            let _permits = self.acquire_llm_slots(&profile.id).await?;
+            let (mut deck, u2) = self
+                .run_structured_with_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "演示文稿内容与排版生成",
+                    resolved,
+                    &author_req,
+                    schema_name,
+                    &schema,
+                    max_repairs,
+                    cancel.clone(),
+                )
+                .await?;
+            drop(_permits);
+            usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u2.input_tokens);
+            usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u2.output_tokens);
+            usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u2.cached_tokens);
+
+            // Stage 3: Visual Diversity & Quality Self-Review Pass (only if too many plain bullets slides)
+            let needs_polish = deck
+                .get("slides")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    let content_count = arr.len().saturating_sub(2);
+                    let plain_bullets = arr
+                        .iter()
+                        .filter(|s| s.get("layout").and_then(Value::as_str) == Some("bullets"))
+                        .count();
+                    content_count >= 3 && plain_bullets * 2 > content_count
+                })
+                .unwrap_or(false);
+
+            if needs_polish && !cancel.is_cancelled() {
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    "排版美学与信息密度自检优化",
+                    "检测到部分页面仍为纯列表版式，正在将其重构为卡片、双栏对比、流程图或表格以提升视觉层次…",
+                );
+                let polish_req = LlmRequest {
+                    system: "You are a senior presentation visual editor. Upgrade the provided SlidesPayload JSON so it looks like a professionally designed deck: convert repetitive `bullets` slides into rich `cards`, `two_column`, `timeline`, `table`, `metrics`, or `formula` layouts with crisp `subtitle` and bottom `callout` takeaways, while preserving 100% factual accuracy and citations.".into(),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text(format!("Current SlidesPayload JSON:\n{}", deck))],
+                    }],
+                    tools: vec![],
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::Text,
+                    max_output_tokens: resolved.max_output_tokens,
+                    reasoning: ReasoningOptions::default(),
+                };
+                let _permits = self.acquire_llm_slots(&profile.id).await?;
+                if let Ok((polished, u3)) = self
+                    .run_structured_with_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "演示文稿视觉排版精修",
+                        resolved,
+                        &polish_req,
+                        schema_name,
+                        &schema,
+                        1,
+                        cancel.clone(),
+                    )
+                    .await
+                {
+                    deck = polished;
+                    usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u3.input_tokens);
+                    usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u3.output_tokens);
+                    usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u3.cached_tokens);
+                }
+            }
+
+            return Ok((deck, usage_sum));
+        }
+
         let is_kg = art.artifact_type == ArtifactType::Mindmap
             && art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
-        let extra_kg_hint = if is_kg {
-            r#" Set "kind": "knowledge_graph". Build a concept Knowledge Graph structured as a collapsible tree from foundational prerequisites to core theorems and advanced applications. For each node, set "importance" ("core" | "key" | "detail"), a brief 1-sentence "summary", and "prerequisites" (names of prerequisite concepts when applicable)."#
-        } else {
+        let detail_level = art
+            .config
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or("standard");
+        let extra_hint = match art.artifact_type {
+            ArtifactType::Mindmap => {
+                let detail_rule = match detail_level {
+                    "concise" => " Detail level: CONCISE (high-level overview, 2-3 hierarchy levels, ~12-20 nodes, focus strictly on major themes and core concepts).",
+                    "detailed" => " Detail level: DETAILED (comprehensive breakdown, 4-5 hierarchy levels, ~35-60 nodes, include key sub-concepts, mechanisms, formulas, and concrete examples within the requested scope).",
+                    _ => " Detail level: STANDARD (balanced 3-4 hierarchy levels, ~20-35 nodes covering main themes, sub-topics, and key takeaways).",
+                };
+                let kg_rule = if is_kg {
+                    r#" Set "kind": "knowledge_graph". Build a concept Knowledge Graph structured as a collapsible tree from foundational prerequisites to core theorems and advanced applications. For each node, set "importance" ("core" | "key" | "detail"), a brief 1-sentence "summary", and "prerequisites" (names of prerequisite concepts when applicable)."#
+                } else {
+                    ""
+                };
+                format!(
+                    " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels; keep node labels clean and readable, and leave every node's citations array empty [].{}{}",
+                    detail_rule, kg_rule
+                )
+            }
+            ArtifactType::Report => {
+                match art.config.get("depth").and_then(Value::as_str).unwrap_or("standard") {
+                    "brief" => " Report depth: BRIEF executive overview with concise bulleted takeaways.".into(),
+                    "deep" => " Report depth: DEEP analytical synthesis with thorough explanations, derivations/examples, and structured comparisons.".into(),
+                    _ => String::new(),
+                }
+            }
+            ArtifactType::Slides => {
+                match art.config.get("length").and_then(Value::as_str).unwrap_or("standard") {
+                    "concise" => " Deck length: CONCISE overview (~5-6 slides focusing on core takeaways).".into(),
+                    "detailed" => " Deck length: DETAILED coverage (~12-16 slides with thorough explanations and examples).".into(),
+                    _ => " Deck length: BALANCED (~8-10 slides covering main themes cleanly).".into(),
+                }
+            }
+            ArtifactType::Quiz => {
+                let mut quiz_hint = " Format all mathematical expressions and chemical formulas/equations in prompt, options, accepted_answers, rubric, and explanation using LaTeX wrapped in $...$ (e.g., $\\\\ce{H2O}$, $\\\\ce{O2}$, $\\\\ce{CO2}$, $\\\\ce{2H2 + O2 -> 2H2O}$, $x^2$, $\\\\frac{a}{b}$); never write bare ASCII formulas without subscripts/LaTeX, and double-escape all LaTeX backslashes in JSON strings so \\\\frac, \\\\times, \\\\text, \\\\ce are not corrupted.".to_string();
+                let explicit_diff = art
+                    .config
+                    .get("difficulty")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && *s != "auto");
+                if let Ok(kg_summary) = self.compute_kg_progress_summary(&art.notebook_id, None) {
+                    if kg_summary.get("has_knowledge_graph").and_then(Value::as_bool) == Some(true) {
+                        let rec_diff = kg_summary
+                            .get("recommended_difficulty")
+                            .and_then(Value::as_str)
+                            .unwrap_or("mixed");
+                        let target_diff = explicit_diff.unwrap_or(rec_diff);
+                        let mastery_pct = kg_summary.get("mastery_percent").and_then(Value::as_u64).unwrap_or(0);
+                        let weak: Vec<String> = kg_summary
+                            .get("weak_concepts")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                            .unwrap_or_default();
+                        let unstarted: Vec<String> = kg_summary
+                            .get("unstarted_concepts")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                            .unwrap_or_default();
+                        quiz_hint.push_str(&format!(
+                            " Target difficulty: {} (current Knowledge Graph mastery: {}%).",
+                            target_diff, mastery_pct
+                        ));
+                        if !weak.is_empty() {
+                            quiz_hint.push_str(&format!(" Prioritize reinforcing weak concepts: {}.", weak.join(", ")));
+                        }
+                        if !unstarted.is_empty() {
+                            quiz_hint.push_str(&format!(" Also assess unstarted concepts: {}.", unstarted.join(", ")));
+                        }
+                    } else if let Some(d) = explicit_diff {
+                        quiz_hint.push_str(&format!(" Target difficulty: {}.", d));
+                    }
+                }
+                quiz_hint
+            }
+            ArtifactType::Audio => {
+                match art.config.get("length").and_then(Value::as_str).unwrap_or("standard") {
+                    "short" | "concise" => " Audio duration: SHORT concise overview (~2-3 minutes of dialogue).".into(),
+                    "long" | "detailed" => " Audio duration: DETAILED in-depth discussion (~6-10 minutes of dialogue).".into(),
+                    _ => String::new(),
+                }
+            }
+            _ => String::new(),
+        };
+        let citation_rule = if art.artifact_type == ArtifactType::Mindmap {
             ""
+        } else {
+            ", preserving source citation indices [n] in the citations array"
         };
         let gen_req = LlmRequest {
             system: format!(
-                "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array.{} Match the language requested in config or the primary language of the sources. Keep content concise, accurate, and well-structured without filler.",
+                "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}{}.{} Match the language requested in config or the primary language of the sources. Keep content concise, accurate, and well-structured without filler.",
                 art.artifact_type.as_str(),
-                extra_kg_hint
+                citation_rule,
+                extra_hint
             ),
             messages: vec![LlmMessage {
                 role: Role::User,
@@ -1639,7 +2407,7 @@ impl StudioService {
             let mut slots = self.profile_generation_slots.lock().await;
             slots
                 .entry(profile_id.to_string())
-                .or_insert_with(|| Arc::new(Semaphore::new(1)))
+                .or_insert_with(|| Arc::new(Semaphore::new(4)))
                 .clone()
         };
         let profile_permit = profile_slot
@@ -1947,6 +2715,544 @@ impl StudioService {
         })
     }
 
+    /// On-demand reading loop for large sources: gives the AI a compact structural catalog
+    /// (source guides + index outline) and 3 read tools (`search_sources`, `read_index_node`,
+    /// `read_source_pages`) so it fetches only the specific chapters/passages needed instead of
+    /// stuffing an entire book into one prompt.
+    async fn gather_evidence_on_demand(
+        &self,
+        art: &StudioArtifact,
+        profile: &ModelProfile,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        topic_query: Option<&str>,
+        token_budget: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<Option<String>> {
+        let selected_json = serde_json::to_string(&art.source_ids).unwrap_or_else(|_| "[]".into());
+        let sources_meta: Vec<(String, String, Option<String>, String, i64)> = self.db.read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, title, guide_summary_md, COALESCE(guide_topics_json, '[]'), COALESCE(token_count, 0)
+                     FROM sources WHERE id IN (SELECT value FROM json_each(?1)) AND status='READY'
+                     ORDER BY title",
+                )
+                .map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map([&selected_json], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                })
+                .map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(map_sql_err)?);
+            }
+            Ok(out)
+        })?;
+        if sources_meta.is_empty() {
+            return Ok(None);
+        }
+
+        let mut catalog_lines: Vec<String> = Vec::new();
+        let mut collected: Vec<String> = Vec::new();
+        let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut used_chars: usize = 0;
+        let char_budget = token_budget.saturating_mul(3).clamp(16_000, 64_000);
+
+        for (sid, stitle, guide_md, topics_json, tok) in &sources_meta {
+            let topics: Vec<String> = serde_json::from_str(topics_json).unwrap_or_default();
+            catalog_lines.push(format!(
+                "SOURCE id={sid} | title=\"{stitle}\" | ~{tok} tokens{}",
+                if topics.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | topics: {}", topics.join(", "))
+                }
+            ));
+            if let Some(gmd) = guide_md.as_deref().filter(|s| !s.trim().is_empty()) {
+                catalog_lines.push(format!("  Overview: {}", truncate_str(gmd, 420)));
+            }
+            let idx_nodes: Vec<(String, i32, String, String, Option<i32>, Option<i32>)> =
+                self.db.read(|conn| {
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT id, level, title, summary, page_start, page_end
+                             FROM source_index_nodes WHERE source_id = ?1
+                             ORDER BY order_index ASC LIMIT 45",
+                        )
+                        .map_err(map_sql_err)?;
+                    let rows = stmt
+                        .query_map([sid], |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, i32>(1)?,
+                                r.get::<_, String>(2)?,
+                                r.get::<_, String>(3)?,
+                                r.get::<_, Option<i32>>(4)?,
+                                r.get::<_, Option<i32>>(5)?,
+                            ))
+                        })
+                        .map_err(map_sql_err)?;
+                    let mut out = Vec::new();
+                    for r in rows {
+                        out.push(r.map_err(map_sql_err)?);
+                    }
+                    Ok(out)
+                })?;
+            for (nid, lvl, ntitle, nsum, ps, pe) in idx_nodes {
+                let pg = match (ps, pe) {
+                    (Some(a), Some(b)) if b > a => format!(" p.{a}-{b}"),
+                    (Some(a), _) => format!(" p.{a}"),
+                    _ => String::new(),
+                };
+                catalog_lines.push(format!(
+                    "  - node_id={nid} [L{lvl}] {ntitle}{pg}: {}",
+                    truncate_str(&nsum, 160)
+                ));
+            }
+        }
+        let catalog_text = truncate_str(&catalog_lines.join("\n"), 18_000).to_string();
+
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "stage",
+            "按需查阅目录与章节",
+            "正在浏览来源目录与结构大纲，按需选择要精读的章节与片段（避免一次性传入整本书）…",
+        );
+
+        let tools = vec![
+            ToolDef {
+                name: "search_sources".into(),
+                description: "Search selected sources for specific concepts, chapters, formulas, or keywords and return top matching excerpts.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "queries": { "type": "array", "items": { "type": "string" }, "description": "1 to 3 focused search queries" },
+                        "limit": { "type": "integer", "description": "Max excerpts to return (default 8, max 12)" }
+                    },
+                    "required": ["queries"]
+                }),
+            },
+            ToolDef {
+                name: "read_index_node".into(),
+                description: "Read excerpts from a specific outline node_id listed in the source catalog.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "node_id": { "type": "string", "description": "The node_id from the catalog" },
+                        "max_chunks": { "type": "integer", "description": "Max chunks to read (default 6, max 10)" }
+                    },
+                    "required": ["node_id"]
+                }),
+            },
+            ToolDef {
+                name: "read_source_pages".into(),
+                description: "Read excerpts from a specific page range of a source_id.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "source_id": { "type": "string" },
+                        "page_start": { "type": "integer" },
+                        "page_end": { "type": "integer" }
+                    },
+                    "required": ["source_id", "page_start", "page_end"]
+                }),
+            },
+        ];
+
+        let mut messages = vec![LlmMessage {
+            role: Role::User,
+            parts: vec![Part::Text(format!(
+                "Artifact type: {}\nUser config: {}\nUser topic/focus: {}\n\nSource Catalog & Outline:\n{}\n\nUse the reading tools to fetch ONLY the specific sections or passages needed for this artifact. Call multiple tools in parallel if helpful. Once you have enough material (or if the catalog outline alone is sufficient), reply with \"DONE\" without further tool calls.",
+                art.artifact_type.as_str(),
+                art.config,
+                topic_query.unwrap_or("Full selected scope (balanced coverage)"),
+                catalog_text
+            ))],
+        }];
+
+        fn push_evidence(
+            seen_keys: &mut std::collections::HashSet<String>,
+            collected: &mut Vec<String>,
+            used_chars: &mut usize,
+            char_budget: usize,
+            key: String,
+            header: String,
+            body: String,
+        ) -> bool {
+            if !seen_keys.insert(key) {
+                return false;
+            }
+            let snippet = truncate_str(&body, 1_400);
+            if *used_chars + snippet.len() > char_budget {
+                return false;
+            }
+            *used_chars += snippet.len() + header.len() + 16;
+            collected.push(format!("[{}] ({}) {}", collected.len() + 1, header, snippet));
+            true
+        }
+
+        let max_rounds: usize = if art.artifact_type == ArtifactType::Slides { 6 } else { 3 };
+        for round in 0..max_rounds {
+            if cancel.is_cancelled() {
+                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+            }
+            let req = LlmRequest {
+                system: "You are a frugal research planner for Local Notebook Studio. Your job is to read ONLY the relevant sections on demand using tools so token usage stays low. Never request the entire book; target the requested topic/scope or sample key sections evenly. Stop as soon as you have enough evidence by replying DONE.".into(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+                tool_mode: ToolMode::Auto,
+                output: OutputMode::Text,
+                max_output_tokens: 900,
+                reasoning: ReasoningOptions {
+                    show_summary: profile.show_thinking,
+                    effort: profile.effort.clone(),
+                },
+            };
+            let _permits = self.acquire_llm_slots(&profile.id).await?;
+            let mut calls: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
+            let mut round_usage = Usage::default();
+            let mut thought_seq: Option<i32> = None;
+            let mut full_thought = String::new();
+            let mut pending_thought = String::new();
+            let mut last_flush = std::time::Instant::now();
+            let thought_title = format!("按需资料规划与思考（第 {} 轮）", round + 1);
+            let stream_res = self
+                .llm
+                .stream(resolved, &req, cancel.clone(), |ev| match ev {
+                    LlmEvent::ThoughtDelta(delta) => {
+                        if !delta.is_empty() {
+                            if thought_seq.is_none() {
+                                let s = self.append_thought(
+                                    artifact_id,
+                                    &art.notebook_id,
+                                    "reasoning",
+                                    &thought_title,
+                                    "",
+                                );
+                                if s > 0 {
+                                    thought_seq = Some(s);
+                                }
+                            }
+                            full_thought.push_str(&delta);
+                            pending_thought.push_str(&delta);
+                            if last_flush.elapsed() >= std::time::Duration::from_millis(150)
+                                || pending_thought.len() >= 80
+                            {
+                                if let Some(s) = thought_seq {
+                                    self.emit_thought_delta(artifact_id, &art.notebook_id, s, &pending_thought);
+                                }
+                                pending_thought.clear();
+                                last_flush = std::time::Instant::now();
+                            }
+                        }
+                    }
+                    LlmEvent::ToolCallStart { index, id, name } => {
+                        calls.insert(index, (id, name, String::new()));
+                    }
+                    LlmEvent::ToolCallDelta { index, json } => {
+                        if let Some(entry) = calls.get_mut(&index) {
+                            entry.2.push_str(&json);
+                        }
+                    }
+                    LlmEvent::Usage(u) => {
+                        round_usage = u;
+                    }
+                    _ => {}
+                })
+                .await;
+            if let Some(s) = thought_seq {
+                if !pending_thought.is_empty() {
+                    self.emit_thought_delta(artifact_id, &art.notebook_id, s, &pending_thought);
+                }
+                self.update_thought_body(artifact_id, s, &full_thought);
+            }
+            drop(_permits);
+
+            if stream_res.is_err() {
+                break;
+            }
+            let _ = lna_storage::record_usage(
+                &self.db,
+                Some(&art.notebook_id),
+                Some(&profile.id),
+                "studio_on_demand_read",
+                Some(artifact_id),
+                round_usage.input_tokens as i64,
+                round_usage.output_tokens as i64,
+                round_usage.cached_tokens as i64,
+                false,
+            );
+            if calls.is_empty() {
+                break;
+            }
+
+            let mut assistant_parts = Vec::new();
+            let mut tool_results = Vec::new();
+            for (_idx, (call_id, name, raw_args)) in calls {
+                let args: Value = serde_json::from_str(&raw_args).unwrap_or_else(|_| json!({}));
+                assistant_parts.push(Part::ToolCall {
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                });
+
+                let mut added_here = 0usize;
+                let mut summary_note = String::new();
+                match name.as_str() {
+                    "search_sources" => {
+                        let queries: Vec<String> = args
+                            .get("queries")
+                            .and_then(Value::as_array)
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .take(3)
+                                    .map(String::from)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let limit = args
+                            .get("limit")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(8)
+                            .clamp(2, 12) as usize;
+                        if !queries.is_empty() {
+                            if let Ok(res) = self
+                                .retrieval
+                                .search(&art.notebook_id, &queries, &art.source_ids, 6_000, limit)
+                                .await
+                            {
+                                for ev in res.evidences {
+                                    let pg = ev
+                                        .page_start
+                                        .map(|p| format!(", p.{p}"))
+                                        .unwrap_or_default();
+                                    let key = format!("chunk:{}", ev.chunk_id);
+                                    if push_evidence(
+                                        &mut seen_keys, &mut collected, &mut used_chars, char_budget,
+                                        key,
+                                        format!("{}{}", ev.source_title, pg),
+                                        ev.content,
+                                    ) {
+                                        added_here += 1;
+                                    }
+                                }
+                            }
+                            summary_note = format!(
+                                "Loaded {} excerpts for queries {:?}.",
+                                added_here, queries
+                            );
+                        }
+                    }
+                    "read_index_node" => {
+                        let node_id = args.get("node_id").and_then(Value::as_str).unwrap_or("");
+                        let max_chunks = args
+                            .get("max_chunks")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(6)
+                            .clamp(1, 10);
+                        if !node_id.is_empty() {
+                            let rows: Vec<(i64, String, Option<i32>, String)> = self
+                                .db
+                                .read(|conn| {
+                                    let node_meta: Option<(String, i64, i64)> = conn
+                                        .query_row(
+                                            "SELECT source_id, COALESCE(chunk_start, 0), COALESCE(chunk_end, 0)
+                                             FROM source_index_nodes WHERE id = ?1",
+                                            [node_id],
+                                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                                        )
+                                        .optional()
+                                        .map_err(map_sql_err)?;
+                                    let Some((sid, cstart, cend)) = node_meta else {
+                                        return Ok(Vec::new());
+                                    };
+                                    let mut stmt = conn
+                                        .prepare(
+                                            "SELECT c.id, s.title, c.page_start, c.content
+                                             FROM source_chunks c JOIN sources s ON s.id = c.source_id
+                                             WHERE c.source_id = ?1 AND c.chunk_index BETWEEN ?2 AND ?3
+                                             ORDER BY c.chunk_index ASC LIMIT ?4",
+                                        )
+                                        .map_err(map_sql_err)?;
+                                    let mapped = stmt
+                                        .query_map(params![sid, cstart, cend.max(cstart), max_chunks], |r| {
+                                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                                        })
+                                        .map_err(map_sql_err)?;
+                                    let mut out = Vec::new();
+                                    for r in mapped {
+                                        out.push(r.map_err(map_sql_err)?);
+                                    }
+                                    Ok(out)
+                                })
+                                .unwrap_or_default();
+                            for (cid, stitle, pg, content) in rows {
+                                let pstr = pg.map(|p| format!(", p.{p}")).unwrap_or_default();
+                                if push_evidence(
+                                        &mut seen_keys, &mut collected, &mut used_chars, char_budget,
+                                    format!("chunk:{cid}"),
+                                    format!("{stitle}{pstr}"),
+                                    content,
+                                ) {
+                                    added_here += 1;
+                                }
+                            }
+                            summary_note = format!("Loaded {added_here} excerpts for node {node_id}.");
+                        }
+                    }
+                    "read_source_pages" => {
+                        let sid = args.get("source_id").and_then(Value::as_str).unwrap_or("");
+                        let pstart = args.get("page_start").and_then(Value::as_i64).unwrap_or(1);
+                        let pend = args
+                            .get("page_end")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(pstart)
+                            .min(pstart + 12);
+                        if !sid.is_empty() {
+                            let rows: Vec<(i64, String, Option<i32>, String)> = self
+                                .db
+                                .read(|conn| {
+                                    let mut stmt = conn
+                                        .prepare(
+                                            "SELECT c.id, s.title, c.page_start, c.content
+                                             FROM source_chunks c JOIN sources s ON s.id = c.source_id
+                                             WHERE c.source_id = ?1 AND c.page_start BETWEEN ?2 AND ?3
+                                             ORDER BY c.chunk_index ASC LIMIT 10",
+                                        )
+                                        .map_err(map_sql_err)?;
+                                    let mapped = stmt
+                                        .query_map(params![sid, pstart, pend], |r| {
+                                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                                        })
+                                        .map_err(map_sql_err)?;
+                                    let mut out = Vec::new();
+                                    for r in mapped {
+                                        out.push(r.map_err(map_sql_err)?);
+                                    }
+                                    Ok(out)
+                                })
+                                .unwrap_or_default();
+                            for (cid, stitle, pg, content) in rows {
+                                let pstr = pg.map(|p| format!(", p.{p}")).unwrap_or_default();
+                                if push_evidence(
+                                        &mut seen_keys, &mut collected, &mut used_chars, char_budget,
+                                    format!("chunk:{cid}"),
+                                    format!("{stitle}{pstr}"),
+                                    content,
+                                ) {
+                                    added_here += 1;
+                                }
+                            }
+                            summary_note = format!(
+                                "Loaded {added_here} excerpts from pages {pstart}-{pend}."
+                            );
+                        }
+                    }
+                    _ => {
+                        summary_note = "Unsupported tool.".into();
+                    }
+                }
+                let tool_label = match name.as_str() {
+                    "search_sources" => {
+                        let qs: Vec<&str> = args
+                            .get("queries")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(Value::as_str).collect())
+                            .unwrap_or_default();
+                        format!("工具调用 · 检索来源：{}", qs.join(" / "))
+                    }
+                    "read_index_node" => {
+                        let nid = args.get("node_id").and_then(Value::as_str).unwrap_or("");
+                        format!("工具调用 · 读取目录节点：{}", nid)
+                    }
+                    "read_source_pages" => {
+                        let ps = args.get("page_start").and_then(Value::as_i64).unwrap_or(1);
+                        let pe = args.get("page_end").and_then(Value::as_i64).unwrap_or(ps);
+                        format!("工具调用 · 精读页码：第 {}-{} 页", ps, pe)
+                    }
+                    other => format!("工具调用 · {}", other),
+                };
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "tool",
+                    &tool_label,
+                    &format!("{}（累计已读取 {} 条片段，约 {} tokens）", summary_note, collected.len(), used_chars / 3),
+                );
+                tool_results.push(Part::ToolResult {
+                    call_id,
+                    content: format!(
+                        "{summary_note} Total collected: {} excerpts (~{} tokens). Reply DONE if sufficient.",
+                        collected.len(),
+                        used_chars / 3
+                    ),
+                    is_error: false,
+                });
+            }
+
+            messages.push(LlmMessage {
+                role: Role::Assistant,
+                parts: assistant_parts,
+            });
+            messages.push(LlmMessage {
+                role: Role::User,
+                parts: tool_results,
+            });
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &format!("按需精读第 {} 轮", round + 1),
+                &format!("已按需读取 {} 条关键片段（约 {} tokens）。", collected.len(), used_chars / 3),
+            );
+            if used_chars >= char_budget * 85 / 100 {
+                break;
+            }
+        }
+
+        // If the AI didn't call tools (e.g. model lacks tool-calling or catalog was enough),
+        // supplement with focused retrieval or evenly sampled key chunks so evidence is never empty.
+        if collected.is_empty() {
+            if let Some(q) = topic_query {
+                if let Ok(res) = self
+                    .retrieval
+                    .search(&art.notebook_id, &[q.to_string()], &art.source_ids, 10_000, 14)
+                    .await
+                {
+                    for ev in res.evidences {
+                        let pg = ev.page_start.map(|p| format!(", p.{p}")).unwrap_or_default();
+                        push_evidence(
+                                        &mut seen_keys, &mut collected, &mut used_chars, char_budget,
+                            format!("chunk:{}", ev.chunk_id),
+                            format!("{}{}", ev.source_title, pg),
+                            ev.content,
+                        );
+                    }
+                }
+            }
+            if collected.is_empty() {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(format!(
+            "Source Outline:\n{}\n\nOn-Demand Retrieved Excerpts:\n{}",
+            truncate_str(&catalog_text, 6_000),
+            collected.join("\n\n")
+        )))
+    }
+
     async fn collect_evidence_text(
         &self,
         art: &StudioArtifact,
@@ -2139,7 +3445,10 @@ Core Topics: {}", topics.join(", "))
         let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
         let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
         let evidence_budget = available_input.saturating_mul(70) / 100;
-        if total_source_tokens.max(0) as usize <= evidence_budget {
+        // Only pass full source text directly for compact sources (<= 12,000 tokens).
+        // Larger sources use on-demand AI reading so we never dump an entire book at once.
+        let direct_full_cap = evidence_budget.min(12_000);
+        if total_source_tokens.max(0) as usize <= direct_full_cap {
             let rows: Vec<(String, Option<i32>, Option<String>, String)> =
                 self.db.read(|conn| {
                     let mut stmt = conn
@@ -2194,6 +3503,23 @@ Core Topics: {}", topics.join(", "))
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n"));
+        }
+
+        // On-demand AI reading: present compact source catalog & outline, let the AI call
+        // search_sources / read_index_node / read_source_pages only for sections it needs.
+        if let Ok(Some(on_demand_text)) = self
+            .gather_evidence_on_demand(
+                art,
+                profile,
+                resolved,
+                artifact_id,
+                topic_query.as_deref(),
+                evidence_budget.min(if art.artifact_type == ArtifactType::Slides { 28_000 } else { 18_000 }),
+                cancel.clone(),
+            )
+            .await
+        {
+            return Ok(on_demand_text);
         }
 
         let language = art
@@ -2314,16 +3640,33 @@ Core Topics: {}", topics.join(", "))
                 reduced_batches.push(batch_text);
                 continue;
             }
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "tool",
+                &format!("工具调用 · 归约章节摘要（第 {} 批）", batch_index + 1),
+                &format!("正在合并本批次 {} 组章节摘要…", batch.len()),
+            );
             let batch_req = LlmRequest {
                 system: "You are a document structure synthesis assistant. Merge this batch of section summaries while preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.".into(),
                 messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(batch_text)] }],
                 tools: vec![], tool_mode: ToolMode::None, output: OutputMode::Text,
-                max_output_tokens: 1200, reasoning: ReasoningOptions::default(),
+                max_output_tokens: 1200,
+                reasoning: ReasoningOptions {
+                    show_summary: profile.show_thinking,
+                    effort: profile.effort.clone(),
+                },
             };
             let _permits = self.acquire_llm_slots(&profile.id).await?;
             let (batch_summary, batch_usage) = self
-                .llm
-                .complete_text(resolved, &batch_req, cancel.clone())
+                .run_text_with_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    &format!("章节归约思考（第 {} 批）", batch_index + 1),
+                    resolved,
+                    &batch_req,
+                    cancel.clone(),
+                )
                 .await?;
             let _ = lna_storage::record_usage(
                 &self.db,
@@ -2347,12 +3690,22 @@ Core Topics: {}", topics.join(", "))
             system: "You are a document structure synthesis assistant. Merge the section summaries into a cohesive global outline preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.".into(),
             messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(reduced_text)] }],
             tools: vec![], tool_mode: ToolMode::None, output: OutputMode::Text,
-            max_output_tokens: 2400, reasoning: ReasoningOptions::default(),
+            max_output_tokens: 2400,
+            reasoning: ReasoningOptions {
+                show_summary: profile.show_thinking,
+                effort: profile.effort.clone(),
+            },
         };
         let _permits = self.acquire_llm_slots(&profile.id).await?;
         let (outline, reduce_usage) = self
-            .llm
-            .complete_text(resolved, &reduce_req, cancel.clone())
+            .run_text_with_thought(
+                artifact_id,
+                &art.notebook_id,
+                "全局章节结构提炼思考",
+                resolved,
+                &reduce_req,
+                cancel.clone(),
+            )
             .await?;
         let _ = lna_storage::record_usage(
             &self.db,
@@ -2365,6 +3718,15 @@ Core Topics: {}", topics.join(", "))
             reduce_usage.cached_tokens as i64,
             false,
         );
+        if !digests.is_empty() {
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "tool",
+                "工具调用 · 按章节检索关键原文片段",
+                &format!("正在为前 {} 个核心章节检索高相关证据片段…", digests.len().min(12)),
+            );
+        }
         let mut details = Vec::new();
         let mut next_citation = 1usize;
         for (title, section, _) in digests.iter().take(12) {
@@ -2514,12 +3876,22 @@ Core Topics: {}", topics.join(", "))
                     system: format!("You are a section summarization assistant. Summarize the following content from the same section in {}, preserving key concepts, equations, relationships, and conclusions without adding any facts not present in the source.", language),
                     messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(chunk_text)] }],
                     tools: vec![], tool_mode: ToolMode::None, output: OutputMode::Text,
-                    max_output_tokens: 700, reasoning: ReasoningOptions::default(),
+                    max_output_tokens: 700,
+                    reasoning: ReasoningOptions {
+                        show_summary: profile.show_thinking,
+                        effort: profile.effort.clone(),
+                    },
                 };
                 let _permits = self.acquire_llm_slots(profile_id).await?;
                 let (digest, usage) = self
-                    .llm
-                    .complete_text(profile, &req, cancel.clone())
+                    .run_text_with_thought(
+                        artifact_id,
+                        notebook_id,
+                        &format!("章节摘要思考：{title} / {section_key}"),
+                        profile,
+                        &req,
+                        cancel.clone(),
+                    )
                     .await?;
                 let digest = digest.trim().to_string();
                 let chunk_ids: Vec<i64> = chunks.iter().map(|(id, _)| *id).collect();
@@ -2780,6 +4152,7 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<St
         sources_stale: false,
         in_studio: in_studio != 0,
         origin_message_id,
+        progress_state: None,
         sources_fingerprint: fp,
         profile_id: r.get(10)?,
         draft: draft_s.and_then(|s| serde_json::from_str(&s).ok()),
@@ -2796,4 +4169,71 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<St
         updated_at: r.get(20)?,
         finished_at: r.get(21)?,
     })
+}
+
+fn normalize_match_text(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&c) {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+}
+
+fn extract_match_tokens(s: &str) -> std::collections::HashSet<String> {
+    let mut tokens = std::collections::HashSet::new();
+    let norm = normalize_match_text(s);
+    for part in norm.split_whitespace() {
+        if part.is_empty() {
+            continue;
+        }
+        let has_cjk = part.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+        if has_cjk {
+            let chars: Vec<char> = part.chars().collect();
+            if chars.len() >= 2 {
+                for w in chars.windows(2) {
+                    tokens.insert(w.iter().collect());
+                }
+            } else {
+                tokens.insert(part.to_string());
+            }
+        } else if part.len() >= 2 {
+            tokens.insert(part.to_string());
+        }
+    }
+    tokens
+}
+
+fn score_kg_node_match(label: &str, summary: &str, quiz_text: &str, topic_hint: &str) -> f64 {
+    let clean_label = label.split('[').next().unwrap_or(label).trim();
+    if clean_label.is_empty() {
+        return 0.0;
+    }
+    let norm_label = normalize_match_text(clean_label).replace(' ', "");
+    let norm_quiz = normalize_match_text(quiz_text).replace(' ', "");
+    let norm_topic = normalize_match_text(topic_hint).replace(' ', "");
+    if norm_label.chars().count() >= 2 && norm_quiz.contains(&norm_label) {
+        return 1.0;
+    }
+    if norm_label.chars().count() >= 2 && norm_topic.contains(&norm_label) {
+        return 0.85;
+    }
+    let label_tokens = extract_match_tokens(clean_label);
+    let summary_tokens = extract_match_tokens(summary);
+    let quiz_tokens = extract_match_tokens(quiz_text);
+    if label_tokens.is_empty() || quiz_tokens.is_empty() {
+        return 0.0;
+    }
+    let label_hits = label_tokens.iter().filter(|t| quiz_tokens.contains(*t)).count();
+    let label_ratio = label_hits as f64 / label_tokens.len() as f64;
+    let summary_ratio = if summary_tokens.is_empty() {
+        0.0
+    } else {
+        let hits = summary_tokens.iter().filter(|t| quiz_tokens.contains(*t)).count();
+        hits as f64 / summary_tokens.len().min(12) as f64
+    };
+    (label_ratio * 0.75 + summary_ratio * 0.25).min(0.8)
 }

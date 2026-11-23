@@ -19,6 +19,78 @@ public static class Md
 {
     public static bool HasMath(string text) => text.Contains('$') || text.Contains("\\(") || text.Contains("\\[");
 
+    private static readonly HashSet<string> ChemicalElements = new(StringComparer.Ordinal)
+    {
+        "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
+        "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
+        "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+        "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
+        "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
+        "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
+        "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
+        "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+        "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
+        "Pa", "U"
+    };
+
+    private static readonly System.Text.RegularExpressions.Regex BareChemRegex = new(
+        @"(?<![A-Za-z0-9_$\{\\])(?:(?:H2|N2|O2|O3|F2|Cl2|Br2|I2|P4|S8|C60|C70)|(?:(?:[A-Z][a-z]?\d*|\((?:[A-Z][a-z]?\d*)+\)\d*){2,}))(?![A-Za-z0-9_$\}\]])",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex MathCodeSpanRegex = new(
+        @"\$\$[\s\S]*?\$\$|\$[^\$\r\n]+?\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|`[^`\r\n]+?`",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// Wraps unambiguous bare ASCII chemical formulas (e.g. O2, H2O, CO2, H2SO4) outside existing
+    /// math/code spans into $\ce{...}$ so KaTeX + mhchem renders proper subscripts.
+    /// </summary>
+    public static string NormalizeQuizMath(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        var sb = new StringBuilder(text.Length);
+        var last = 0;
+        foreach (System.Text.RegularExpressions.Match span in MathCodeSpanRegex.Matches(text))
+        {
+            if (span.Index > last)
+            {
+                sb.Append(WrapBareChem(text[last..span.Index]));
+            }
+            sb.Append(span.Value);
+            last = span.Index + span.Length;
+        }
+        if (last < text.Length)
+        {
+            sb.Append(WrapBareChem(text[last..]));
+        }
+        return sb.ToString();
+    }
+
+    private static string WrapBareChem(string segment) => BareChemRegex.Replace(segment, m =>
+    {
+        var val = m.Value;
+        var hasDigit = false;
+        var elemCount = 0;
+        var i = 0;
+        while (i < val.Length)
+        {
+            var ch = val[i];
+            if (ch is '(' or ')') { i++; continue; }
+            if (char.IsDigit(ch)) { hasDigit = true; i++; continue; }
+            if (ch is >= 'A' and <= 'Z')
+            {
+                var len = (i + 1 < val.Length && val[i + 1] is >= 'a' and <= 'z') ? 2 : 1;
+                var sym = val.Substring(i, len);
+                if (!ChemicalElements.Contains(sym)) return val;
+                elemCount++;
+                i += len;
+                continue;
+            }
+            return val;
+        }
+        return hasDigit && elemCount >= 1 ? $"$\\ce{{{val}}}$" : val;
+    });
+
     public static readonly FontFamily BodyFontFamily = new("Microsoft YaHei UI, Segoe UI");
 
     public static Inline SuperscriptCitation(int no, string? tooltip = null, Action? onClick = null) =>
@@ -70,18 +142,34 @@ public static class Md
         Panel? mathHost = null)
     {
         var effectiveSize = fontSize <= 0 ? L10n.Prefs.FontSize : fontSize;
-        var rtb = new RichTextBlock
-        {
-            FontFamily = BodyFontFamily,
-            TextWrapping = TextWrapping.Wrap,
-            IsTextSelectionEnabled = true,
-            FontSize = effectiveSize,
-            LineHeight = Math.Round(effectiveSize * 1.72),
-            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
-            CharacterSpacing = 12,
-            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 226, 228, 232)),
-        };
         fontSize = effectiveSize;
+        var host = new StackPanel { Spacing = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+        RichTextBlock? currentRtb = null;
+
+        RichTextBlock EnsureRtb()
+        {
+            if (currentRtb != null) return currentRtb;
+            currentRtb = new RichTextBlock
+            {
+                FontFamily = BodyFontFamily,
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+                FontSize = effectiveSize,
+                LineHeight = Math.Round(effectiveSize * 1.72),
+                LineStackingStrategy = LineStackingStrategy.MaxHeight,
+                CharacterSpacing = 12,
+                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 226, 228, 232)),
+            };
+            host.Children.Add(currentRtb);
+            return currentRtb;
+        }
+
+        void AddDisplayMathElement(string expr, ref int fCount)
+        {
+            currentRtb = null;
+            host.Children.Add(CreateMathBlock(expr, displayMode: true, fontSize, math, mathHost, ref fCount));
+        }
+
         var lines = markdown.Replace("\r\n", "\n").Split('\n');
         var para = new StringBuilder();
         var i = 0;
@@ -92,7 +180,7 @@ public static class Md
             if (para.Length == 0) return;
             var text = para.ToString().TrimEnd();
             para.Clear();
-            AddParagraphWithDisplayMath(rtb, text, citationChip, fontSize, math, mathHost, ref formulaCount);
+            AddParagraphWithDisplayMath(EnsureRtb, AddDisplayMathElement, text, citationChip, fontSize, math, mathHost, ref formulaCount);
         }
 
         while (i < lines.Length)
@@ -118,7 +206,7 @@ public static class Md
                     Margin = new Thickness(12, 4, 0, 8),
                 };
                 codePara.Inlines.Add(new Run { Text = code.ToString().TrimEnd() });
-                rtb.Blocks.Add(codePara);
+                EnsureRtb().Blocks.Add(codePara);
                 continue;
             }
             // Multi-line display math block: $$ ... $$ or \[ ... \]
@@ -149,15 +237,13 @@ public static class Md
                 var expr = mathBuf.ToString().Trim();
                 if (closed && expr.Length > 0)
                 {
-                    var mathPara = new Paragraph { TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 6, 0, 8) };
-                    mathPara.Inlines.Add(new InlineUIContainer { Child = CreateMathBlock(expr, displayMode: true, fontSize, math, mathHost, ref formulaCount) });
-                    rtb.Blocks.Add(mathPara);
+                    AddDisplayMathElement(expr, ref formulaCount);
                 }
                 else
                 {
                     var p = new Paragraph { Margin = new Thickness(0, 0, 0, 8) };
                     AppendInlines(p, trimmed + "\n" + expr, citationChip, fontSize, math, mathHost, ref formulaCount);
-                    rtb.Blocks.Add(p);
+                    EnsureRtb().Blocks.Add(p);
                 }
                 continue;
             }
@@ -178,7 +264,7 @@ public static class Md
                     Margin = new Thickness(0, 10, 0, 4),
                 };
                 AppendInlines(hp, trimmed.TrimStart('#').Trim(), citationChip, hp.FontSize, math, mathHost, ref formulaCount);
-                rtb.Blocks.Add(hp);
+                EnsureRtb().Blocks.Add(hp);
                 i++;
                 continue;
             }
@@ -195,7 +281,7 @@ public static class Md
                 lp.Inlines.Add(new Run { Text = $"{marker} " });
                 var bodyText = trimmed.StartsWith("- ") || trimmed.StartsWith("* ") ? trimmed[2..] : rest;
                 AppendInlines(lp, bodyText, citationChip, fontSize, math, mathHost, ref formulaCount);
-                rtb.Blocks.Add(lp);
+                EnsureRtb().Blocks.Add(lp);
                 i++;
                 continue;
             }
@@ -209,7 +295,7 @@ public static class Md
                 };
                 qp.Inlines.Add(new Run { Text = "│ ", Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 110, 118, 130)) });
                 AppendInlines(qp, trimmed[2..], citationChip, fontSize, math, mathHost, ref formulaCount);
-                rtb.Blocks.Add(qp);
+                EnsureRtb().Blocks.Add(qp);
                 i++;
                 continue;
             }
@@ -218,11 +304,20 @@ public static class Md
             i++;
         }
         FlushPara();
-        return rtb;
+        if (host.Children.Count == 1)
+        {
+            var single = host.Children[0];
+            host.Children.Clear();
+            return single;
+        }
+        return host;
     }
 
+    private delegate void DisplayMathAdder(string expr, ref int formulaCount);
+
     private static void AddParagraphWithDisplayMath(
-        RichTextBlock rtb,
+        Func<RichTextBlock> ensureRtb,
+        DisplayMathAdder addDisplayMath,
         string text,
         Func<int, Inline?>? citationChip,
         double fontSize,
@@ -257,15 +352,13 @@ public static class Md
                 {
                     var p = new Paragraph { Margin = new Thickness(0, 0, 0, 8) };
                     AppendInlines(p, before, citationChip, fontSize, math, mathHost, ref formulaCount);
-                    rtb.Blocks.Add(p);
+                    ensureRtb().Blocks.Add(p);
                 }
             }
             var expr = text[(nextIdx + 2)..closeIdx].Trim();
             if (expr.Length > 0)
             {
-                var mp = new Paragraph { TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 6, 0, 8) };
-                mp.Inlines.Add(new InlineUIContainer { Child = CreateMathBlock(expr, displayMode: true, fontSize, math, mathHost, ref formulaCount) });
-                rtb.Blocks.Add(mp);
+                addDisplayMath(expr, ref formulaCount);
             }
             pos = closeIdx + 2;
         }
@@ -277,7 +370,7 @@ public static class Md
             {
                 var p = new Paragraph { Margin = new Thickness(0, 0, 0, 8) };
                 AppendInlines(p, tail, citationChip, fontSize, math, mathHost, ref formulaCount);
-                rtb.Blocks.Add(p);
+                ensureRtb().Blocks.Add(p);
             }
         }
     }
@@ -324,7 +417,7 @@ public static class Md
             IsTextSelectionEnabled = true,
             FontSize = fontSize,
             LineHeight = Math.Round(fontSize * 1.72),
-            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            LineStackingStrategy = LineStackingStrategy.MaxHeight,
             CharacterSpacing = 12,
             Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 226, 228, 232)),
         };
@@ -493,6 +586,16 @@ public static class Md
         formulaCount++;
         _ = formulaCount;
 
+        // Recover common LaTeX commands corrupted by single-backslash JSON escaping (\frac, \times, \beta, \rightarrow)
+        if (latex.IndexOfAny(['\f', '\t', '\b', '\r']) >= 0)
+        {
+            latex = latex
+                .Replace("\f", "\\f")
+                .Replace("\t", "\\t")
+                .Replace("\b", "\\b")
+                .Replace("\r", "\\r");
+        }
+
         if (latex.Length <= WebContentHost.MaxFormulaLength
             && math != null
             && math.TryGetCachedBitmap(latex, displayMode, out var cachedRes, out var cachedBmp)
@@ -517,9 +620,10 @@ public static class Md
 
         var container = new Border
         {
-            CornerRadius = new CornerRadius(6),
-            Padding = displayMode ? new Thickness(8, 6, 8, 6) : new Thickness(3, 0, 3, 0),
-            Margin = displayMode ? new Thickness(0, 4, 0, 4) : new Thickness(1, 0, 1, 0),
+            CornerRadius = new CornerRadius(8),
+            Padding = displayMode ? new Thickness(12, 10, 12, 10) : new Thickness(3, 0, 3, 0),
+            Margin = displayMode ? new Thickness(0, 10, 0, 10) : new Thickness(1, 0, 1, 0),
+            HorizontalAlignment = displayMode ? HorizontalAlignment.Stretch : HorizontalAlignment.Left,
             Background = displayMode
                 ? new SolidColorBrush(Windows.UI.Color.FromArgb(60, 19, 19, 20))
                 : new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)),
@@ -529,6 +633,8 @@ public static class Md
                 {
                     HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                     VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    HorizontalContentAlignment = HorizontalAlignment.Center,
                     Content = fallback,
                 }
                 : (UIElement)fallback,
@@ -536,7 +642,7 @@ public static class Md
 
         if (latex.Length > WebContentHost.MaxFormulaLength)
         {
-            ApplyErrorStyle(container, fallback, rawText, $"公式长度超过 {WebContentHost.MaxFormulaLength} 字符上限，已回退显示原文");
+            ApplyErrorStyle(container, fallback, rawText, L10n.Fmt("math.too_long_fallback", WebContentHost.MaxFormulaLength));
             return container;
         }
         if (math == null || mathHost == null)
@@ -558,9 +664,21 @@ public static class Md
         Panel mathHost)
     {
         var res = await math.RenderFormulaAsync(mathHost, latex, displayMode);
-        if (!res.Success || res.PngBytes == null)
+        if (!res.Success)
         {
-            ApplyErrorStyle(container, fallback, rawText, $"公式渲染失败：{res.Error ?? "未知错误"}");
+            ApplyErrorStyle(container, fallback, rawText, L10n.Fmt("math.render_failed", res.Error ?? L10n.T("math.unknown_error")));
+            return;
+        }
+
+        if (res.Image != null)
+        {
+            ApplyRenderedMath(container, res.Image, res, latex, displayMode);
+            return;
+        }
+
+        if (res.PngBytes == null)
+        {
+            ApplyErrorStyle(container, fallback, rawText, L10n.Fmt("math.render_failed", res.Error ?? L10n.T("math.unknown_error")));
             return;
         }
 
@@ -577,21 +695,22 @@ public static class Md
         }
         catch (Exception ex)
         {
-            ApplyErrorStyle(container, fallback, rawText, $"公式图像解码失败：{ex.Message}");
+            ApplyErrorStyle(container, fallback, rawText, L10n.Fmt("math.decode_failed", ex.Message));
         }
     }
 
     private static Border BuildRenderedMathContainer(
-        BitmapImage bmp,
+        ImageSource bmp,
         MathRenderResult res,
         string latex,
         bool displayMode)
     {
         var container = new Border
         {
-            CornerRadius = new CornerRadius(6),
-            Padding = displayMode ? new Thickness(8, 6, 8, 6) : new Thickness(1, 0, 1, 0),
-            Margin = displayMode ? new Thickness(0, 4, 0, 4) : new Thickness(1, 0, 1, -res.Descent),
+            CornerRadius = new CornerRadius(8),
+            Padding = displayMode ? new Thickness(12, 10, 12, 10) : new Thickness(1, 0, 1, 0),
+            Margin = displayMode ? new Thickness(0, 10, 0, 10) : new Thickness(1, 0, 1, -res.Descent),
+            HorizontalAlignment = displayMode ? HorizontalAlignment.Stretch : HorizontalAlignment.Left,
             Background = displayMode
                 ? new SolidColorBrush(Windows.UI.Color.FromArgb(60, 19, 19, 20))
                 : new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)),
@@ -602,7 +721,7 @@ public static class Md
 
     private static void ApplyRenderedMath(
         Border container,
-        BitmapImage bmp,
+        ImageSource bmp,
         MathRenderResult res,
         string latex,
         bool displayMode)
@@ -618,16 +737,27 @@ public static class Md
         };
         ToolTipService.SetToolTip(
             img,
-            res.Overflow ? $"{latex}（公式过宽已裁剪至 1600px，可横向滚动）" : latex);
+            res.Overflow ? L10n.Fmt("math.overflow_tip", latex) : latex);
 
         if (displayMode)
         {
+            container.HorizontalAlignment = HorizontalAlignment.Stretch;
             container.VerticalAlignment = VerticalAlignment.Center;
+            var centeredWrap = new Grid
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Padding = new Thickness(4, 2, 4, 2),
+                Children = { img },
+            };
             container.Child = new ScrollViewer
             {
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                Content = img,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Content = centeredWrap,
             };
         }
         else

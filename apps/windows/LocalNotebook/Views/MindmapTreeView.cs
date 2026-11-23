@@ -2,6 +2,8 @@ using LocalNotebook.Services;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using System.Text.RegularExpressions;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using System.Text.Json;
@@ -52,7 +54,16 @@ internal sealed class MindmapTreeView
     private readonly Action<string>? _onQuizConcept;
     private readonly Action<string>? _onExpandMindmap;
     private readonly Action<string>? _onAskConcept;
+    private readonly Action<JsonElement>? _onProgressChanged;
+    private readonly Dictionary<string, (string Status, double Score, int Attempts, int Correct)> _mastery = new(StringComparer.Ordinal);
+    private readonly List<MindNode> _allNodes = new();
+    private TextBlock? _kgProgressText;
+    private ProgressBar? _kgProgressBar;
     private bool _allCollapsed;
+    private bool _isPanning;
+    private Point _panStartPoint;
+    private double _panStartH;
+    private double _panStartV;
 
     private const double NodeHeight = 38;
     private const double RowGap = 14;
@@ -69,7 +80,9 @@ internal sealed class MindmapTreeView
         bool isKnowledgeGraph = false,
         Action<string>? onQuizConcept = null,
         Action<string>? onExpandMindmap = null,
-        Action<string>? onAskConcept = null)
+        Action<string>? onAskConcept = null,
+        JsonElement? progressState = null,
+        Action<JsonElement>? onProgressChanged = null)
     {
         _compact = compact;
         _isKnowledgeGraph = isKnowledgeGraph || Str(payload, "kind") == "knowledge_graph";
@@ -77,6 +90,8 @@ internal sealed class MindmapTreeView
         _onQuizConcept = onQuizConcept;
         _onExpandMindmap = onExpandMindmap;
         _onAskConcept = onAskConcept;
+        _onProgressChanged = onProgressChanged;
+        LoadMasteryFromState(progressState);
 
         var rawNodes = Arr(payload, "nodes").ToList();
         if (rawNodes.Count == 0)
@@ -101,12 +116,46 @@ internal sealed class MindmapTreeView
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             Background = new SolidColorBrush(Color.FromArgb(255, 29, 31, 36)),
         };
+        AttachDragPan(_scroll);
+        if (_compact) NestedScrollHelper.AttachToOuterOnBoundary(_scroll);
 
         var controls = BuildFloatingControls();
         var stageGrid = new Grid { Children = { _scroll, controls } };
 
         if (_isKnowledgeGraph)
         {
+            _kgProgressText = new TextBlock
+            {
+                FontSize = 11.5,
+                FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI"),
+                Foreground = new SolidColorBrush(Color.FromArgb(255, 224, 236, 255)),
+            };
+            _kgProgressBar = new ProgressBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Height = 5,
+                CornerRadius = new CornerRadius(3),
+                Foreground = new SolidColorBrush(Color.FromArgb(255, 129, 201, 149)),
+                Background = new SolidColorBrush(Color.FromArgb(120, 62, 74, 92)),
+            };
+            var progressStack = new StackPanel { Spacing = 5 };
+            progressStack.Children.Add(_kgProgressText);
+            progressStack.Children.Add(_kgProgressBar);
+            var progressPill = new Border
+            {
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(16, 14, 0, 0),
+                Padding = new Thickness(12, 8, 12, 8),
+                CornerRadius = new CornerRadius(10),
+                Background = new SolidColorBrush(Color.FromArgb(230, 30, 42, 56)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 80, 122, 166)),
+                BorderThickness = new Thickness(1),
+                Child = progressStack,
+            };
+            stageGrid.Children.Add(progressPill);
+
             var badge = new Border
             {
                 HorizontalAlignment = HorizontalAlignment.Right,
@@ -126,6 +175,7 @@ internal sealed class MindmapTreeView
                 },
             };
             stageGrid.Children.Add(badge);
+            UpdateKgProgressBanner();
         }
 
         var stage = new Border
@@ -152,6 +202,141 @@ internal sealed class MindmapTreeView
         Redraw();
     }
 
+    private static string StripCitationMarkers(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        var cleaned = Regex.Replace(text, @"\s*(?:\[\s*\d+(?:\s*[,，\-–—、]\s*\d+)*\s*\]|【\s*\d+(?:\s*[,，\-–—、]\s*\d+)*\s*】)+", "");
+        return Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
+    }
+
+    private void AttachDragPan(ScrollViewer scroll)
+    {
+        scroll.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
+        {
+            var pt = e.GetCurrentPoint(scroll);
+            if (!pt.Properties.IsLeftButtonPressed) return;
+            _isPanning = true;
+            _panStartPoint = pt.Position;
+            _panStartH = scroll.HorizontalOffset;
+            _panStartV = scroll.VerticalOffset;
+        }), handledEventsToo: true);
+
+        scroll.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler((_, e) =>
+        {
+            if (!_isPanning) return;
+            var pt = e.GetCurrentPoint(scroll);
+            if (!pt.Properties.IsLeftButtonPressed)
+            {
+                _isPanning = false;
+                return;
+            }
+            var dx = pt.Position.X - _panStartPoint.X;
+            var dy = pt.Position.Y - _panStartPoint.Y;
+            if (Math.Abs(dx) > 4 || Math.Abs(dy) > 4)
+            {
+                var targetH = Math.Max(0, _panStartH - dx);
+                var targetV = Math.Max(0, _panStartV - dy);
+                scroll.ChangeView(targetH, targetV, null, disableAnimation: true);
+            }
+        }), handledEventsToo: true);
+
+        scroll.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => _isPanning = false), handledEventsToo: true);
+        scroll.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler((_, _) => _isPanning = false), handledEventsToo: true);
+        scroll.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler((_, e) =>
+        {
+            if (!e.GetCurrentPoint(scroll).Properties.IsLeftButtonPressed) _isPanning = false;
+        }), handledEventsToo: true);
+    }
+
+    private void LoadMasteryFromState(JsonElement? progressState)
+    {
+        _mastery.Clear();
+        if (progressState is not { ValueKind: JsonValueKind.Object } ps) return;
+        if (!ps.TryGetProperty("mastery", out var m) || m.ValueKind != JsonValueKind.Object) return;
+        foreach (var prop in m.EnumerateObject())
+        {
+            if (prop.Value.ValueKind != JsonValueKind.Object) continue;
+            var status = prop.Value.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String
+                ? (st.GetString() ?? "unstarted")
+                : "unstarted";
+            var score = prop.Value.TryGetProperty("score", out var sc) && sc.ValueKind == JsonValueKind.Number
+                ? sc.GetDouble()
+                : 0.0;
+            var attempts = prop.Value.TryGetProperty("attempts", out var at) && at.ValueKind == JsonValueKind.Number
+                ? at.GetInt32()
+                : 0;
+            var correct = prop.Value.TryGetProperty("correct", out var co) && co.ValueKind == JsonValueKind.Number
+                ? co.GetInt32()
+                : 0;
+            _mastery[prop.Name] = (status, score, attempts, correct);
+        }
+    }
+
+    private void SetNodeMasteryStatus(string nodeId, string status)
+    {
+        var prev = _mastery.TryGetValue(nodeId, out var existing)
+            ? existing
+            : (Status: "unstarted", Score: 0.0, Attempts: 0, Correct: 0);
+        var score = status switch
+        {
+            "mastered" => 1.0,
+            "learning" => 0.65,
+            "weak" => 0.25,
+            _ => 0.0,
+        };
+        _mastery[nodeId] = (status, score, prev.Attempts, prev.Correct);
+        UpdateKgProgressBanner();
+        Redraw();
+        _onProgressChanged?.Invoke(BuildProgressJson());
+    }
+
+    private JsonElement BuildProgressJson()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var dict = new System.Text.Json.Nodes.JsonObject();
+        foreach (var kv in _mastery)
+        {
+            dict[kv.Key] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["status"] = kv.Value.Status,
+                ["score"] = kv.Value.Score,
+                ["attempts"] = kv.Value.Attempts,
+                ["correct"] = kv.Value.Correct,
+                ["last_updated"] = now,
+            };
+        }
+        var root = new System.Text.Json.Nodes.JsonObject
+        {
+            ["mastery"] = dict,
+            ["updated_at"] = now,
+        };
+        using var doc = JsonDocument.Parse(root.ToJsonString());
+        return doc.RootElement.Clone();
+    }
+
+    private void UpdateKgProgressBanner()
+    {
+        if (!_isKnowledgeGraph || _kgProgressText == null || _kgProgressBar == null) return;
+        var concepts = _allNodes.Count > 1 ? _allNodes.Where(n => n.Depth > 0).ToList() : _allNodes;
+        var total = concepts.Count;
+        var mastered = 0;
+        var learning = 0;
+        var weak = 0;
+        foreach (var c in concepts)
+        {
+            var st = _mastery.TryGetValue(c.Id, out var m) ? m.Status : "unstarted";
+            switch (st)
+            {
+                case "mastered": mastered++; break;
+                case "learning": learning++; break;
+                case "weak": weak++; break;
+            }
+        }
+        var pct = total == 0 ? 0 : (mastered * 100) / total;
+        _kgProgressText.Text = L10n.Fmt("kg.progress_detail_fmt", mastered, total, pct, learning, weak);
+        _kgProgressBar.Value = pct;
+    }
+
     private void BuildHierarchy(List<JsonElement> rawNodes)
     {
         var map = new Dictionary<string, MindNode>();
@@ -162,9 +347,7 @@ internal sealed class MindmapTreeView
         {
             var id = Str(n, "id");
             if (id.Length == 0) id = Guid.NewGuid().ToString("N");
-            var label = Str(n, "label");
-            var nums = Arr(n, "citations").Where(c => c.ValueKind == JsonValueKind.Number).Select(c => $"[{c.GetInt32()}]").ToArray();
-            if (nums.Length > 0) label += " " + string.Join("", nums);
+            var label = StripCitationMarkers(Str(n, "label"));
             var imp = Str(n, "importance");
             var sum = Str(n, "summary");
             var node = new MindNode
@@ -199,6 +382,8 @@ internal sealed class MindmapTreeView
 
         foreach (var r in _roots)
             AssignDepth(r, 0);
+        _allNodes.Clear();
+        _allNodes.AddRange(order);
     }
 
     private static void AssignDepth(MindNode node, int depth)
@@ -291,8 +476,39 @@ internal sealed class MindmapTreeView
         void DrawNodes(MindNode node)
         {
             var (bg, border, fg) = NodeColors(node.Depth, _isKnowledgeGraph);
+            var masteryStatus = _isKnowledgeGraph && node.Depth > 0 && _mastery.TryGetValue(node.Id, out var ms)
+                ? ms.Status
+                : "unstarted";
+            if (_isKnowledgeGraph && node.Depth > 0)
+            {
+                border = masteryStatus switch
+                {
+                    "mastered" => Color.FromArgb(255, 110, 198, 134),
+                    "learning" => Color.FromArgb(255, 118, 174, 246),
+                    "weak" => Color.FromArgb(255, 238, 124, 114),
+                    _ => border,
+                };
+            }
             var contentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7, VerticalAlignment = VerticalAlignment.Center };
-            if (node.Importance.Length > 0)
+            if (_isKnowledgeGraph && node.Depth > 0)
+            {
+                var statusColor = masteryStatus switch
+                {
+                    "mastered" => Color.FromArgb(255, 129, 201, 149),
+                    "learning" => Color.FromArgb(255, 138, 180, 248),
+                    "weak" => Color.FromArgb(255, 242, 139, 130),
+                    _ => Color.FromArgb(255, 110, 118, 129),
+                };
+                contentRow.Children.Add(new Border
+                {
+                    Width = 8,
+                    Height = 8,
+                    CornerRadius = new CornerRadius(4),
+                    Background = new SolidColorBrush(statusColor),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+            }
+            else if (node.Importance.Length > 0)
             {
                 var dotColor = node.Importance switch
                 {
@@ -336,11 +552,22 @@ internal sealed class MindmapTreeView
             };
 
             var tipParts = new List<string> { node.Label };
+            if (_isKnowledgeGraph && node.Depth > 0)
+            {
+                var statusLabel = masteryStatus switch
+                {
+                    "mastered" => L10n.T("kg.status_mastered"),
+                    "learning" => L10n.T("kg.status_learning"),
+                    "weak" => L10n.T("kg.status_weak"),
+                    _ => L10n.T("kg.status_unstarted"),
+                };
+                tipParts.Add($"{L10n.T("kg.status_label")}: {statusLabel}");
+            }
             if (node.Summary.Length > 0) tipParts.Add(node.Summary);
             if (node.Prerequisites.Count > 0) tipParts.Add($"{L10n.T("kg.prereq")}: {string.Join(", ", node.Prerequisites)}");
             ToolTipService.SetToolTip(card, string.Join("\n", tipParts));
 
-            if (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null)
+            if (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null || (_isKnowledgeGraph && node.Depth > 0))
             {
                 var cleanConcept = node.Label.Split('[')[0].Trim();
                 var menu = new MenuFlyout();
@@ -361,6 +588,24 @@ internal sealed class MindmapTreeView
                     var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_chat") };
                     mi.Click += (_, _) => _onAskConcept(cleanConcept);
                     menu.Items.Add(mi);
+                }
+                if (_isKnowledgeGraph && node.Depth > 0)
+                {
+                    if (menu.Items.Count > 0) menu.Items.Add(new MenuFlyoutSeparator());
+                    foreach (var (labelKey, tag) in new[]
+                    {
+                        ("kg.mark_mastered", "mastered"),
+                        ("kg.mark_learning", "learning"),
+                        ("kg.mark_weak", "weak"),
+                        ("kg.mark_unstarted", "unstarted"),
+                    })
+                    {
+                        var mi = new MenuFlyoutItem { Text = L10n.T(labelKey) };
+                        var nodeId = node.Id;
+                        var newStatus = tag;
+                        mi.Click += (_, _) => SetNodeMasteryStatus(nodeId, newStatus);
+                        menu.Items.Add(mi);
+                    }
                 }
                 card.Flyout = menu;
             }

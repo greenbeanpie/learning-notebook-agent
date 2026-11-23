@@ -1,4 +1,5 @@
 using LocalNotebook.Interop;
+using LocalNotebook.Services;
 using LocalNotebook.Views;
 using Microsoft.UI.Xaml;
 using System.IO;
@@ -24,7 +25,7 @@ public partial class App : Application
                 File.AppendAllText(Path.Combine(dir, "ui-errors.log"), $"{DateTime.Now:O} {e.Exception}{Environment.NewLine}{Environment.NewLine}");
             }
             catch (IOException) { }
-            if (_window is MainWindow mw) mw.DispatcherQueue.TryEnqueue(() => mw.ReportStartupFailure($"界面出现错误：{e.Message}"));
+            if (_window is MainWindow mw) mw.DispatcherQueue.TryEnqueue(() => mw.ReportStartupFailure(L10n.Fmt("app.ui_error", e.Message)));
         };
     }
 

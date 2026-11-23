@@ -32,6 +32,8 @@ public sealed partial class MainWindow
     {
         var list = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
         var profiles = list is { } lr ? Arr(lr, "profiles").ToList() : new List<JsonElement>();
+        var presetRes = await CoreAsync("profile.presets", Args(), L10n.T("settings.tab_models"));
+        var presets = presetRes is { } pr ? Arr(pr, "presets").ToList() : new List<JsonElement>();
         var avEnabled = true;
         var mediaSet = await Api.CallAsync("settings.get", Args(("key", "media_processing")));
         if (mediaSet.Result is { } ms && ms.TryGetProperty("value", out var mv) && mv.ValueKind == JsonValueKind.Object)
@@ -74,6 +76,16 @@ public sealed partial class MainWindow
         foreach (var (lbl, tag) in studioLangOpts) studioLangBox.Items.Add(new ComboBoxItem { Content = lbl, Tag = tag });
         studioLangBox.SelectedIndex = Math.Max(0, Array.FindIndex(studioLangOpts, x => x.Item2 == L10n.Prefs.DefaultStudioLang));
 
+        var quizViewBox = new ComboBox { Header = L10n.T("settings.quiz_view_mode"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        var quizViewOpts = new[] { (L10n.T("quiz.view_continuous"), "continuous"), (L10n.T("quiz.view_one"), "one_by_one") };
+        foreach (var (lbl, tag) in quizViewOpts) quizViewBox.Items.Add(new ComboBoxItem { Content = lbl, Tag = tag });
+        quizViewBox.SelectedIndex = Math.Max(0, Array.FindIndex(quizViewOpts, x => x.Item2 == L10n.Prefs.QuizViewMode));
+
+        var quizSubmitBox = new ComboBox { Header = L10n.T("settings.quiz_submit_mode"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        var quizSubmitOpts = new[] { (L10n.T("quiz.submit_manual"), "manual"), (L10n.T("quiz.submit_auto"), "auto") };
+        foreach (var (lbl, tag) in quizSubmitOpts) quizSubmitBox.Items.Add(new ComboBoxItem { Content = lbl, Tag = tag });
+        quizSubmitBox.SelectedIndex = Math.Max(0, Array.FindIndex(quizSubmitOpts, x => x.Item2 == L10n.Prefs.QuizSubmitMode));
+
         var diagBtn = new Button { Content = L10n.T("settings.diag_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
         diagBtn.Click += OnExportDiagnosticsClick;
         var privacyBtn = new Button { Content = L10n.T("settings.privacy_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
@@ -86,6 +98,8 @@ public sealed partial class MainWindow
         generalPanel.Children.Add(expandThoughtsToggle);
         generalPanel.Children.Add(showSuggestionsToggle);
         generalPanel.Children.Add(studioLangBox);
+        generalPanel.Children.Add(quizViewBox);
+        generalPanel.Children.Add(quizSubmitBox);
         generalPanel.Children.Add(generalActions);
 
         async Task SaveUiPrefsAsync()
@@ -98,6 +112,9 @@ public sealed partial class MainWindow
             L10n.Prefs.ExpandThoughtsByDefault = expandThoughtsToggle.IsOn;
             L10n.Prefs.ShowSuggestedQuestions = showSuggestionsToggle.IsOn;
             L10n.Prefs.DefaultStudioLang = (studioLangBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            L10n.Prefs.QuizViewMode = (quizViewBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "continuous";
+            L10n.Prefs.QuizSubmitMode = (quizSubmitBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "manual";
+            L10n.Prefs.QuizModeConfigured = true;
             await Api.CallAsync("settings.set", Args(("key", "ui.preferences"), ("value", L10n.Prefs.ToJson())));
             ApplyUiPreferences();
             if (prevEn != L10n.IsEnglish && _activeNotebookId != null)
@@ -122,6 +139,8 @@ public sealed partial class MainWindow
         expandThoughtsToggle.Toggled += async (_, _) => await SaveUiPrefsAsync();
         showSuggestionsToggle.Toggled += async (_, _) => await SaveUiPrefsAsync();
         studioLangBox.SelectionChanged += async (_, _) => await SaveUiPrefsAsync();
+        quizViewBox.SelectionChanged += async (_, _) => await SaveUiPrefsAsync();
+        quizSubmitBox.SelectionChanged += async (_, _) => await SaveUiPrefsAsync();
 
         // ---- Tab 3: AI Models ----
         string? profileId = null;
@@ -129,6 +148,17 @@ public sealed partial class MainWindow
         var hasSecret = false;
 
         var picker = new ComboBox { Header = L10n.IsEnglish ? "Saved Profiles" : "已保存的配置", HorizontalAlignment = HorizontalAlignment.Stretch };
+        var presetBox = new ComboBox
+        {
+            Header = L10n.IsEnglish ? "Provider Preset (Quick Fill)" : "AI 提供商预设（快速填充）",
+            PlaceholderText = L10n.IsEnglish ? "Choose a preset to auto-fill..." : "选择预设以自动填充协议、地址与请求头…",
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        foreach (var prItem in presets)
+        {
+            var pname = L10n.IsEnglish ? Str(prItem, "name_en") : Str(prItem, "name");
+            presetBox.Items.Add(new ComboBoxItem { Content = pname, Tag = Str(prItem, "id") });
+        }
         var protocolBox = new ComboBox { Header = L10n.IsEnglish ? "Protocol" : "协议", HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var name in Protocols) protocolBox.Items.Add(new ComboBoxItem { Content = name, Tag = name });
         var urlBox = new TextBox { Header = L10n.IsEnglish ? "Base URL" : "接口地址 (Base URL)", PlaceholderText = "https://api.example.com/v1" };
@@ -150,7 +180,88 @@ public sealed partial class MainWindow
         var outBox = new NumberBox { Header = L10n.IsEnglish ? "Max Output Tokens" : "单次最大输出 (tokens)", Value = 8000, Minimum = 256, Maximum = 200_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
         var priceIn = new NumberBox { Header = L10n.IsEnglish ? "Input price ($ / 1M tokens, optional)" : "输入单价 ($ / 百万 tokens，可留空)", Value = double.NaN, Minimum = 0 };
         var priceOut = new NumberBox { Header = L10n.IsEnglish ? "Output price ($ / 1M tokens, optional)" : "输出单价 ($ / 百万 tokens，可留空)", Value = double.NaN, Minimum = 0 };
-        var headersBox = new TextBox { Header = L10n.IsEnglish ? "Extra headers (Key: Value per line)" : "额外请求头（每行 名称: 值）", AcceptsReturn = true, MinHeight = 60, TextWrapping = TextWrapping.Wrap };
+        var headersRows = new List<(Grid Row, TextBox KeyBox, TextBox ValBox)>();
+        var headersListPanel = new StackPanel { Spacing = 6 };
+        void AddHeaderRow(string initKey = "", string initVal = "")
+        {
+            var rowGrid = new Grid { ColumnSpacing = 6 };
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.4, GridUnitType.Star) });
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var kBox = new TextBox
+            {
+                Text = initKey,
+                PlaceholderText = L10n.IsEnglish ? "Header name (e.g. X-Api-Version)" : "请求头名称（如 X-Api-Version）",
+            };
+            var vBox = new TextBox
+            {
+                Text = initVal,
+                PlaceholderText = L10n.IsEnglish ? "Value" : "请求头值",
+            };
+            var delBtn = new Button
+            {
+                Content = new FontIcon { Glyph = "\uE74D", FontSize = 13 },
+                MinWidth = 34,
+                Height = 32,
+                Padding = new Thickness(6, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            ToolTipService.SetToolTip(delBtn, L10n.T("common.delete"));
+            var entry = (rowGrid, kBox, vBox);
+            delBtn.Click += (_, _) =>
+            {
+                headersRows.Remove(entry);
+                headersListPanel.Children.Remove(rowGrid);
+            };
+            Grid.SetColumn(kBox, 0);
+            Grid.SetColumn(vBox, 1);
+            Grid.SetColumn(delBtn, 2);
+            rowGrid.Children.Add(kBox);
+            rowGrid.Children.Add(vBox);
+            rowGrid.Children.Add(delBtn);
+            headersRows.Add(entry);
+            headersListPanel.Children.Add(rowGrid);
+        }
+        void LoadHeaderRows(JsonElement obj)
+        {
+            headersRows.Clear();
+            headersListPanel.Children.Clear();
+            if (obj.ValueKind != JsonValueKind.Object) return;
+            foreach (var prop in obj.EnumerateObject())
+                AddHeaderRow(prop.Name, prop.Value.GetString() ?? "");
+        }
+        JsonElement BuildHeadersJson()
+        {
+            var kv = new List<(string, object?)>();
+            foreach (var (_, kBox, vBox) in headersRows)
+            {
+                var k = kBox.Text.Trim();
+                if (k.Length > 0) kv.Add((k, vBox.Text.Trim()));
+            }
+            return Args(kv.ToArray());
+        }
+        var addHeaderBtn = new Button
+        {
+            Content = L10n.IsEnglish ? "+ Add Header" : "+ 添加请求头",
+            Style = (Style)Application.Current.Resources["PillButtonStyle"],
+            Padding = new Thickness(10, 4, 10, 4),
+            FontSize = 12,
+        };
+        addHeaderBtn.Click += (_, _) => AddHeaderRow();
+        var headersHead = new Grid { ColumnSpacing = 8 };
+        headersHead.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headersHead.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        headersHead.Children.Add(new TextBlock
+        {
+            Text = L10n.IsEnglish ? "Extra headers" : "额外请求头",
+            FontSize = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        Grid.SetColumn(addHeaderBtn, 1);
+        headersHead.Children.Add(addHeaderBtn);
+        var headersBox = new StackPanel { Spacing = 8 };
+        headersBox.Children.Add(headersHead);
+        headersBox.Children.Add(headersListPanel);
         var caps = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.8 };
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap };
         var newBtn = new Button { Content = L10n.IsEnglish ? "New" : "新建配置" };
@@ -183,7 +294,7 @@ public sealed partial class MainWindow
                 visionBox.IsChecked = false; audioBox.IsChecked = false; videoBox.IsChecked = false;
                 thinkingBox.IsOn = true; effortBox.SelectedIndex = 0;
                 ctxBox.Value = 32000; outBox.Value = 8000; priceIn.Value = double.NaN; priceOut.Value = double.NaN;
-                headersBox.Text = ""; caps.Text = "";
+                LoadHeaderRows(default); caps.Text = "";
                 keyBox.Password = "";
                 keyBox.PlaceholderText = L10n.IsEnglish ? "Enter API Key (optional for local models)" : "输入 API Key（本地模型可留空）";
                 status.Text = L10n.IsEnglish ? "Editing new profile. Fill in details and save." : "正在编辑新配置，填写并保存即可启用。";
@@ -207,7 +318,7 @@ public sealed partial class MainWindow
             outBox.Value = Int(prof, "max_output_tokens", 8000);
             priceIn.Value = prof.TryGetProperty("input_price_per_m", out var pi) && pi.ValueKind == JsonValueKind.Number ? pi.GetDouble() : double.NaN;
             priceOut.Value = prof.TryGetProperty("output_price_per_m", out var po) && po.ValueKind == JsonValueKind.Number ? po.GetDouble() : double.NaN;
-            headersBox.Text = HeadersText(Obj(prof, "extra_headers"));
+            LoadHeaderRows(Obj(prof, "extra_headers"));
             keyBox.Password = "";
             keyBox.PlaceholderText = hasSecret
                 ? (L10n.IsEnglish ? "Saved (leave blank to keep)" : "已保存，留空则保持不变")
@@ -252,7 +363,38 @@ public sealed partial class MainWindow
                 if (p.ValueKind == JsonValueKind.Object) Fill(p);
             }
         };
-        newBtn.Click += (_, _) => { picker.SelectedItem = null; Fill(null); };
+        newBtn.Click += (_, _) => { picker.SelectedItem = null; presetBox.SelectedIndex = -1; Fill(null); };
+        presetBox.SelectionChanged += (_, _) =>
+        {
+            if (presetBox.SelectedItem is not ComboBoxItem { Tag: string pid }) return;
+            var prItem = presets.FirstOrDefault(x => Str(x, "id") == pid);
+            if (prItem.ValueKind != JsonValueKind.Object) return;
+            var proto = Str(prItem, "protocol");
+            protocolBox.SelectedIndex = Math.Max(0, Array.IndexOf(Protocols, proto));
+            urlBox.Text = Str(prItem, "base_url");
+            modelBox.Items.Clear();
+            foreach (var sm in Arr(prItem, "suggested_models"))
+            {
+                var s = sm.GetString();
+                if (!string.IsNullOrEmpty(s)) modelBox.Items.Add(s);
+            }
+            var defModel = Str(prItem, "default_model");
+            if (defModel.Length > 0)
+            {
+                if (modelBox.Items.Count > 0) modelBox.SelectedIndex = 0;
+                modelBox.Text = defModel;
+            }
+            ctxBox.Value = Int(prItem, "context_window", 32000);
+            outBox.Value = Int(prItem, "max_output_tokens", 8000);
+            visionBox.IsChecked = Bool(prItem, "supports_vision");
+            audioBox.IsChecked = Bool(prItem, "supports_audio");
+            videoBox.IsChecked = Bool(prItem, "supports_video");
+            LoadHeaderRows(Obj(prItem, "extra_headers"));
+            var pname = L10n.IsEnglish ? Str(prItem, "name_en") : Str(prItem, "name");
+            status.Text = L10n.IsEnglish
+                ? $"Applied preset: {pname}. Enter API Key and save."
+                : $"已应用预设：{pname}，请填写 API Key 后保存。";
+        };
         deleteBtn.Click += async (_, _) =>
         {
             if (profileId == null) return;
@@ -307,7 +449,7 @@ public sealed partial class MainWindow
                 ("show_thinking", thinkingBox.IsOn),
                 ("context_window", (int)ctxBox.Value),
                 ("max_output_tokens", (int)outBox.Value),
-                ("extra_headers", HeadersJson(headersBox.Text)),
+                ("extra_headers", BuildHeadersJson()),
                 ("supports_vision", visionBox.IsChecked == true),
                 ("supports_audio", audioBox.IsChecked == true),
                 ("supports_video", videoBox.IsChecked == true),
@@ -413,6 +555,7 @@ public sealed partial class MainWindow
 
         var modelsPanel = new StackPanel { Spacing = 10, Padding = new Thickness(4, 8, 4, 8) };
         modelsPanel.Children.Add(top);
+        modelsPanel.Children.Add(presetBox);
         modelsPanel.Children.Add(protocolBox);
         modelsPanel.Children.Add(urlBox);
         modelsPanel.Children.Add(modelRow);

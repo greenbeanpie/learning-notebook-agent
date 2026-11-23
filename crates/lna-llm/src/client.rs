@@ -99,6 +99,7 @@ impl LlmClient {
         let mut attempt = 0u32;
         let mut profile = profile.clone();
         let mut req = req.clone();
+        req.max_output_tokens = clamp_reasoning_and_output_tokens(req.max_output_tokens);
         let mut relaxed = !allow_relax;
 
         loop {

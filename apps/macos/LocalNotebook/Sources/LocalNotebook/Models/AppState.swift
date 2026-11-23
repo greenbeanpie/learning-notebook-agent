@@ -71,6 +71,8 @@ final class AppState: ObservableObject {
     @Published var activeArtifact: StudioArtifactItem?
     @Published var studioFullscreen: Bool = false
     @Published var statusMessage: String = ""
+    @Published var activeAiActivity: String = ""
+    @Published var studioThoughts: [String: [ThoughtStepItem]] = [:]
     @Published var showSettingsSheet: Bool = false
 
     var isEnglish: Bool { prefs.isEnglish }
@@ -85,6 +87,48 @@ final class AppState: ObservableObject {
                 Task { @MainActor in
                     if ev.event == "source.status" || ev.event == "studio.status" || ev.event == "chat.finished" {
                         await self?.refreshAll()
+                    } else if ev.event == "studio.thought" {
+                        if let aid = ev.data["artifact_id"] as? String {
+                            let kind = ev.data["kind"] as? String ?? "stage"
+                            if kind != "retry" {
+                                let seq = ev.data["seq"] as? Int ?? ((self?.studioThoughts[aid]?.count ?? 0) + 1)
+                                let item = ThoughtStepItem(
+                                    id: seq,
+                                    kind: kind,
+                                    title: ev.data["title"] as? String ?? "",
+                                    body: ev.data["body"] as? String ?? ""
+                                )
+                                var list = self?.studioThoughts[aid] ?? []
+                                if let idx = list.firstIndex(where: { $0.id == seq }) {
+                                    list[idx] = item
+                                } else {
+                                    list.append(item)
+                                }
+                                self?.studioThoughts[aid] = list
+                            }
+                        }
+                    } else if ev.event == "studio.thought_delta" {
+                        if let aid = ev.data["artifact_id"] as? String,
+                           let seq = ev.data["seq"] as? Int,
+                           let delta = ev.data["delta"] as? String {
+                            var list = self?.studioThoughts[aid] ?? []
+                            if let idx = list.firstIndex(where: { $0.id == seq }) {
+                                let cur = list[idx]
+                                list[idx] = ThoughtStepItem(id: cur.id, kind: cur.kind, title: cur.title, body: cur.body + delta)
+                                self?.studioThoughts[aid] = list
+                            }
+                        }
+                    } else if ev.event == "ai.activity" {
+                        let active = ev.data["active"] as? Bool ?? false
+                        let title = ev.data["title"] as? String ?? ""
+                        let body = ev.data["body"] as? String ?? ""
+                        if active && !title.isEmpty {
+                            self?.activeAiActivity = body.isEmpty ? title : "\(title) — \(body)"
+                            self?.statusMessage = self?.activeAiActivity ?? ""
+                        } else if !active {
+                            self?.activeAiActivity = ""
+                            self?.statusMessage = ""
+                        }
                     }
                 }
             }
@@ -309,6 +353,18 @@ final class AppState: ObservableObject {
         }
     }
 
+    func reviseDraft(artifactId: String, instruction: String, currentDraft: String) async -> String? {
+        guard !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        if let res = try? await core.call(
+            method: "studio.revise_draft",
+            params: ["artifact_id": artifactId, "instruction": instruction, "draft": currentDraft]
+        ), let newDraft = res["draft"] as? String {
+            await refreshAll()
+            return newDraft
+        }
+        return nil
+    }
+
     func approveDraft(artifactId: String, markdown: String) async {
         do {
             _ = try await core.call(method: "studio.approve_draft", params: ["artifact_id": artifactId, "draft": markdown])
@@ -316,5 +372,21 @@ final class AppState: ObservableObject {
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    func loadStudioThoughts(artifactId: String) async {
+        guard let res = try? await core.call(method: "studio.get", params: ["artifact_id": artifactId]),
+              let raw = res["thoughts"] as? [[String: Any]] else { return }
+        let items: [ThoughtStepItem] = raw.enumerated().compactMap { idx, t in
+            let k = t["kind"] as? String ?? "stage"
+            if k == "retry" { return nil }
+            return ThoughtStepItem(
+                id: t["seq"] as? Int ?? (idx + 1),
+                kind: k,
+                title: t["title"] as? String ?? "",
+                body: t["body"] as? String ?? ""
+            )
+        }
+        studioThoughts[artifactId] = items
     }
 }

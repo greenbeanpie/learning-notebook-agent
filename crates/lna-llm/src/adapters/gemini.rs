@@ -123,8 +123,9 @@ impl ProtocolAdapter for GeminiAdapter {
             }
         }
 
+        let capped_max_tokens = clamp_reasoning_and_output_tokens(req.max_output_tokens);
         let mut gen_cfg = json!({
-            "maxOutputTokens": req.max_output_tokens
+            "maxOutputTokens": capped_max_tokens
         });
         if req.reasoning.show_summary {
             gen_cfg["thinkingConfig"] = json!({ "includeThoughts": true });

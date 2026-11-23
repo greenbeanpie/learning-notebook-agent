@@ -13,12 +13,12 @@ public sealed partial class MainWindow
 {
     private static string StatusLabel(string status) => status switch
     {
-        "QUEUED" => "排队中",
-        "PARSING" => "解析中",
-        "CHUNKING" => "分块中",
-        "EMBEDDING" => "建立索引",
-        "READY" => "就绪",
-        "FAILED" => "失败",
+        "QUEUED" => L10n.T("sources.status_queued"),
+        "PARSING" => L10n.T("sources.status_parsing"),
+        "CHUNKING" => L10n.T("sources.status_chunking"),
+        "EMBEDDING" => L10n.T("sources.status_embedding"),
+        "READY" => L10n.T("sources.status_ready"),
+        "FAILED" => L10n.T("sources.status_failed"),
         _ => status,
     };
 
@@ -92,8 +92,8 @@ public sealed partial class MainWindow
                     VerticalContentAlignment = VerticalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center,
                 };
-                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(selectAllCb, "全选来源");
-                ToolTipService.SetToolTip(selectAllCb, "全选或取消全选所有来源");
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(selectAllCb, L10n.T("sources.select_all"));
+                ToolTipService.SetToolTip(selectAllCb, L10n.T("sources.select_all_tip"));
                 selectAllCb.Checked += async (_, _) => await SetAllSourcesSelectedAsync(allIds, true);
                 selectAllCb.Unchecked += async (_, _) => await SetAllSourcesSelectedAsync(allIds, false);
                 Grid.SetColumn(selectAllCb, 1);
@@ -107,7 +107,7 @@ public sealed partial class MainWindow
             }
             else
             {
-                var empty = Line("还没有来源。点击上方“+ 添加来源”导入文件、网页或粘贴文本。");
+                var empty = Line(L10n.T("sources.empty_hint"));
                 empty.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"];
                 empty.Margin = new Thickness(4, 6, 4, 6);
                 SourcesList.Items.Add(empty);
@@ -179,7 +179,7 @@ public sealed partial class MainWindow
         {
             foreach (var id in ids)
             {
-                await CoreAsync("source.set_selected", Args(("source_id", id), ("selected", selected)), "更新来源选择");
+                await CoreAsync("source.set_selected", Args(("source_id", id), ("selected", selected)), L10n.T("sources.op_select"));
             }
             await RefreshNotebookDataAsync();
         }
@@ -203,7 +203,7 @@ public sealed partial class MainWindow
         {
             var advice = Advice(code);
             var detail = advice.Length > 0 ? advice : Str(s, "error_detail");
-            subtext = detail.Length > 0 ? $"失败 — {detail}" : "失败";
+            subtext = detail.Length > 0 ? L10n.Fmt("sources.status_failed_detail", detail) : L10n.T("sources.status_failed");
             subColor = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 160, 140));
         }
         else if (status != "READY")
@@ -212,7 +212,7 @@ public sealed partial class MainWindow
         }
         else if (code == "EMBEDDING_INCOMPLETE")
         {
-            subtext = "仅关键词检索";
+            subtext = L10n.T("sources.keyword_only");
             subColor = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 200, 120));
         }
 
@@ -301,8 +301,8 @@ public sealed partial class MainWindow
             VerticalAlignment = VerticalAlignment.Center,
         };
         more.Tapped += (_, e) => e.Handled = true;
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, $"更多操作 {title}");
-        ToolTipService.SetToolTip(more, "更多操作（重命名、删除等）");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, L10n.Fmt("sources.more_actions_for", title));
+        ToolTipService.SetToolTip(more, L10n.T("sources.more_actions_tip"));
 
         // 4. Select whether to cite (CheckBox)
         var cb = new CheckBox
@@ -319,8 +319,8 @@ public sealed partial class MainWindow
             VerticalAlignment = VerticalAlignment.Center,
         };
         cb.Tapped += (_, e) => e.Handled = true;
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(cb, $"引用来源 {title}");
-        ToolTipService.SetToolTip(cb, "选择是否引用此来源");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(cb, L10n.Fmt("sources.cite_source", title));
+        ToolTipService.SetToolTip(cb, L10n.T("sources.cite_source_tip"));
         cb.Checked += OnSourceCheckChanged;
         cb.Unchecked += OnSourceCheckChanged;
 
@@ -397,17 +397,17 @@ public sealed partial class MainWindow
 
         var path = await PickOpenFileAsync(exts.ToArray());
         if (path == null) return;
-        await CoreAsync("source.add_files", Args(("notebook_id", _activeNotebookId), ("paths", new[] { path })), "添加来源");
+        await CoreAsync("source.add_files", Args(("notebook_id", _activeNotebookId), ("paths", new[] { path })), L10n.T("sources.op_add"));
         await RefreshNotebookDataAsync();
     }
 
     private async void OnAddUrlClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        var url = await PromptTextAsync("添加网页", "网页地址（http 或 https）", "https://", false, "导入");
+        var url = await PromptTextAsync(L10n.T("sources.add_url_title"), L10n.T("sources.add_url_label"), "https://", false, L10n.T("common.import"));
         if (string.IsNullOrWhiteSpace(url)) return;
-        ShowStatus(InfoBarSeverity.Informational, "正在抓取网页", url.Trim());
-        if (await CoreAsync("source.add_url", Args(("notebook_id", _activeNotebookId), ("url", url.Trim())), "添加网页") != null)
+        ShowStatus(InfoBarSeverity.Informational, L10n.T("sources.fetching_url"), url.Trim());
+        if (await CoreAsync("source.add_url", Args(("notebook_id", _activeNotebookId), ("url", url.Trim())), L10n.T("sources.add_url_title")) != null)
         {
             StatusBar.IsOpen = false;
             await RefreshNotebookDataAsync();
@@ -417,15 +417,15 @@ public sealed partial class MainWindow
     private async void OnAddPasteClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        var titleBox = new TextBox { Header = "标题", Text = "粘贴的文本", MinWidth = 460 };
-        var textBox = new TextBox { Header = "内容", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 240, MinWidth = 460 };
+        var titleBox = new TextBox { Header = L10n.T("common.title"), Text = L10n.T("sources.paste_title_default"), MinWidth = 460 };
+        var textBox = new TextBox { Header = L10n.T("common.content"), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 240, MinWidth = 460 };
         var panel = new StackPanel { Spacing = 10 };
         panel.Children.Add(titleBox);
         panel.Children.Add(textBox);
-        var dlg = new ContentDialog { Title = "粘贴文本", Content = panel, PrimaryButtonText = "添加", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };
+        var dlg = new ContentDialog { Title = L10n.T("sources.paste_dialog_title"), Content = panel, PrimaryButtonText = L10n.T("common.add"), CloseButtonText = L10n.T("common.cancel"), DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };
         if (await dlg.ShowAsync() != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(textBox.Text)) return;
-        var res = await CoreAsync("source.add_text", Args(("notebook_id", _activeNotebookId), ("title", titleBox.Text.Trim()), ("text", textBox.Text)), "添加文本");
-        if (res is { } r && Bool(r, "duplicate")) ShowStatus(InfoBarSeverity.Informational, "内容已存在", "这段文本与已有来源相同，没有重复添加。");
+        var res = await CoreAsync("source.add_text", Args(("notebook_id", _activeNotebookId), ("title", titleBox.Text.Trim()), ("text", textBox.Text)), L10n.T("sources.op_add_text"));
+        if (res is { } r && Bool(r, "duplicate")) ShowStatus(InfoBarSeverity.Informational, L10n.T("sources.dup_title"), L10n.T("sources.dup_msg"));
         await RefreshNotebookDataAsync();
     }
 
@@ -433,14 +433,14 @@ public sealed partial class MainWindow
     {
         if (_updatingSourceChecks) return;
         if (sender is not CheckBox cb || cb.Tag is not string id) return;
-        await CoreAsync("source.set_selected", Args(("source_id", id), ("selected", cb.IsChecked == true)), "更新来源选择");
+        await CoreAsync("source.set_selected", Args(("source_id", id), ("selected", cb.IsChecked == true)), L10n.T("sources.op_select"));
     }
 
     private async void OnRetrySourceClick(object sender, RoutedEventArgs e)
     {
         var (id, _) = Tagged(sender);
         if (id.Length == 0) return;
-        await CoreAsync("source.retry", Args(("source_id", id)), "重试导入");
+        await CoreAsync("source.retry", Args(("source_id", id)), L10n.T("sources.retry_import"));
         await RefreshNotebookDataAsync();
     }
 
@@ -448,8 +448,8 @@ public sealed partial class MainWindow
     {
         var (id, title) = Tagged(sender);
         if (id.Length == 0) return;
-        if (!await ConfirmAsync("删除来源", $"确定删除“{title}”吗？它的内容、索引和相关引用来源会被移除。", "删除")) return;
-        await CoreAsync("source.remove", Args(("source_id", id)), "删除来源");
+        if (!await ConfirmAsync(L10n.T("sources.delete"), L10n.Fmt("sources.delete_confirm", title), L10n.T("common.delete"))) return;
+        await CoreAsync("source.remove", Args(("source_id", id)), L10n.T("sources.delete"));
         await RefreshNotebookDataAsync();
     }
 
@@ -457,9 +457,9 @@ public sealed partial class MainWindow
     {
         var (id, title) = Tagged(sender);
         if (id.Length == 0) return;
-        var name = await PromptTextAsync("重命名来源", "名称", title);
+        var name = await PromptTextAsync(L10n.T("sources.rename_title"), L10n.T("common.name"), title);
         if (string.IsNullOrWhiteSpace(name)) return;
-        await CoreAsync("source.rename", Args(("source_id", id), ("title", name.Trim())), "重命名来源");
+        await CoreAsync("source.rename", Args(("source_id", id), ("title", name.Trim())), L10n.T("sources.rename_title"));
         await RefreshNotebookDataAsync();
     }
 
@@ -547,7 +547,103 @@ public sealed partial class MainWindow
     }
 
     /// <summary>Builds the collapsible NotebookLM-style "来源指南" card with bolded summary and clickable topic pills.</summary>
-    private FrameworkElement BuildSourceGuideCard(string sourceId, string sourceTitle, string guideSummaryMd, List<string> guideTopics, bool recommendKnowledgeGraph = false)
+    private string? _activeKgArtifactId;
+    private StackPanel? _kgStepsPanel;
+    private TextBlock? _kgStageLabel;
+    private ProgressBar? _kgProgressBar;
+    private readonly Dictionary<long, TextBlock> _kgStepBodies = new();
+
+    private void OnKgThoughtEvent(JsonElement data)
+    {
+        if (_activeKgArtifactId == null || Str(data, "artifact_id") != _activeKgArtifactId) return;
+        if (_kgStepsPanel == null) return;
+        var kind = Str(data, "kind");
+        if (kind == "retry") return;
+        var seq = Int(data, "seq", 0);
+        var title = Str(data, "title");
+        var body = Str(data, "body");
+        if (seq > 0 && _kgStepBodies.TryGetValue(seq, out var existing))
+        {
+            if (body.Length > existing.Text.Length)
+            {
+                existing.Text = body;
+                existing.Visibility = Visibility.Visible;
+            }
+            return;
+        }
+        var dotColor = kind switch
+        {
+            "tool" => Windows.UI.Color.FromArgb(255, 120, 217, 236),
+            "reasoning" => Windows.UI.Color.FromArgb(255, 168, 199, 250),
+            "error" => Windows.UI.Color.FromArgb(255, 242, 139, 130),
+            _ => Windows.UI.Color.FromArgb(255, 129, 201, 149),
+        };
+        var card = new StackPanel { Spacing = 2, Margin = new Thickness(0, 2, 0, 2) };
+        var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        head.Children.Add(new Border
+        {
+            Width = 6, Height = 6, CornerRadius = new CornerRadius(3),
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(dotColor),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        head.Children.Add(new TextBlock
+        {
+            Text = title.Length > 0 ? title : kind,
+            FontSize = 11.5,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 224, 236, 252)),
+        });
+        card.Children.Add(head);
+        var bodyTb = new TextBlock
+        {
+            Text = body,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            MaxLines = 3,
+            Margin = new Thickness(12, 0, 0, 0),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+            Visibility = body.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
+        };
+        if (seq > 0) _kgStepBodies[seq] = bodyTb;
+        card.Children.Add(bodyTb);
+        _kgStepsPanel.Children.Add(card);
+        if (_kgStageLabel != null && title.Length > 0) _kgStageLabel.Text = title;
+    }
+
+    private void OnKgThoughtDeltaEvent(JsonElement data)
+    {
+        if (_activeKgArtifactId == null || Str(data, "artifact_id") != _activeKgArtifactId) return;
+        var seq = Int(data, "seq", 0);
+        var delta = Str(data, "delta");
+        if (seq > 0 && delta.Length > 0 && _kgStepBodies.TryGetValue(seq, out var tb))
+        {
+            tb.Text += delta;
+            tb.Visibility = Visibility.Visible;
+        }
+    }
+
+    private void OnKgStatusEvent(JsonElement data)
+    {
+        if (_activeKgArtifactId == null || Str(data, "artifact_id") != _activeKgArtifactId) return;
+        if (_kgProgressBar != null)
+        {
+            var prog = Num(data, "progress");
+            _kgProgressBar.IsIndeterminate = prog <= 0.01;
+            _kgProgressBar.Value = prog * 100;
+        }
+    }
+
+    private FrameworkElement BuildSourceGuideCard(
+        string sourceId,
+        string sourceTitle,
+        string guideSummaryMd,
+        List<string> guideTopics,
+        bool recommendKnowledgeGraph = false,
+        JsonElement? kgArtifact = null,
+        Action? onOpenKg = null,
+        Action? onRebuildKg = null,
+        Action? onViewKgProgress = null)
     {
         var expanded = true;
         var cardBg = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 36, 40, 56));
@@ -585,7 +681,7 @@ public sealed partial class MainWindow
         header.Children.Add(leftHead);
 
         var body = new StackPanel { Spacing = 10 };
-        var chevronBtn = MakePaneIconBtn(ChevronUpIconPath, "折叠 / 展开来源指南", (_, _) => { }, out var chevronIcon);
+        var chevronBtn = MakePaneIconBtn(ChevronUpIconPath, L10n.T("sources.guide_toggle_tip"), (_, _) => { }, out var chevronIcon);
         chevronBtn.Width = 28;
         chevronBtn.MinWidth = 28;
         chevronBtn.Height = 28;
@@ -674,22 +770,25 @@ public sealed partial class MainWindow
                     var capturedTopic = t;
                     chip.Click += async (_, _) =>
                     {
-                        await SendChatAsync($"请结合《{sourceTitle}》详细讲解「{capturedTopic}」的核心内容与要点。");
+                        await SendChatAsync(L10n.Fmt("sources.guide_ask_prompt", sourceTitle, capturedTopic));
                     };
                     wrapPanel.Children.Add(chip);
                 }
                 body.Children.Add(wrapPanel);
             }
 
-            // Learning tool: Knowledge Graph builder (with AI auto-recommendation banner when suitable)
+            // Learning tool: Knowledge Graph attached outcome (with understanding progress)
+            var kgStatus = kgArtifact is { ValueKind: JsonValueKind.Object } kgObj ? Str(kgObj, "status") : "";
+            var isKgReady = kgStatus == "READY";
+            var isKgBuilding = kgStatus is "PENDING" or "RUNNING";
             var kgBar = new Border
             {
                 Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(
-                    recommendKnowledgeGraph
+                    recommendKnowledgeGraph || isKgReady
                         ? Windows.UI.Color.FromArgb(255, 34, 52, 68)
                         : Windows.UI.Color.FromArgb(255, 40, 44, 60)),
                 BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(
-                    recommendKnowledgeGraph
+                    recommendKnowledgeGraph || isKgReady
                         ? Windows.UI.Color.FromArgb(255, 82, 134, 186)
                         : Windows.UI.Color.FromArgb(255, 62, 68, 92)),
                 BorderThickness = new Thickness(1),
@@ -700,26 +799,150 @@ public sealed partial class MainWindow
             var kgRow = new Grid { ColumnSpacing = 10 };
             kgRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             kgRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            kgRow.Children.Add(new TextBlock
+
+            if (isKgReady && kgArtifact is { } readyKg)
             {
-                Text = recommendKnowledgeGraph ? L10n.T("kg.recommended_banner") : L10n.T("kg.title"),
-                FontFamily = Md.BodyFontFamily,
-                FontSize = 12,
-                TextWrapping = TextWrapping.Wrap,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 212, 228, 248)),
-            });
-            var kgBtn = new Button
+                var (mastered, total, pct) = ComputeKgMasteryCounts(readyKg);
+                var leftStack = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+                leftStack.Children.Add(new TextBlock
+                {
+                    Text = $"{L10n.T("kg.title")} · {L10n.Fmt("kg.progress_summary_fmt", mastered, total, pct)}",
+                    FontFamily = Md.BodyFontFamily,
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 212, 228, 248)),
+                });
+                leftStack.Children.Add(new ProgressBar
+                {
+                    Minimum = 0,
+                    Maximum = 100,
+                    Value = pct,
+                    Height = 4,
+                    CornerRadius = new CornerRadius(2),
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 129, 201, 149)),
+                    Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(110, 74, 88, 112)),
+                });
+                kgRow.Children.Add(leftStack);
+
+                var btnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                if (onOpenKg != null)
+                {
+                    var openBtn = new Button
+                    {
+                        Content = L10n.T("kg.open_btn"),
+                        Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"],
+                        MinHeight = 30,
+                        Padding = new Thickness(12, 4, 12, 4),
+                        FontSize = 12,
+                    };
+                    openBtn.Click += (_, _) => onOpenKg();
+                    btnRow.Children.Add(openBtn);
+                }
+                var rebuildBtn = new Button
+                {
+                    Content = L10n.T("kg.rebuild_btn"),
+                    Style = (Style)Application.Current.Resources["PillButtonStyle"],
+                    MinHeight = 30,
+                    Padding = new Thickness(10, 4, 10, 4),
+                    FontSize = 12,
+                };
+                rebuildBtn.Click += (_, _) => onRebuildKg?.Invoke();
+                btnRow.Children.Add(rebuildBtn);
+                Grid.SetColumn(btnRow, 1);
+                kgRow.Children.Add(btnRow);
+            }
+            else if (isKgBuilding)
             {
-                Content = L10n.T("kg.build_btn"),
-                Style = (Style)Application.Current.Resources[recommendKnowledgeGraph ? "PrimaryPillButtonStyle" : "PillButtonStyle"],
-                MinHeight = 30,
-                Padding = new Thickness(12, 4, 12, 4),
-                FontSize = 12,
-            };
-            kgBtn.Click += async (_, _) => await CreateKnowledgeGraphAsync(sourceId, sourceTitle);
-            Grid.SetColumn(kgBtn, 1);
-            kgRow.Children.Add(kgBtn);
+                _activeKgArtifactId = kgArtifact is { } ak ? Str(ak, "id") : null;
+                _kgStepBodies.Clear();
+                var buildingStack = new StackPanel { Spacing = 6 };
+                var topLine = new Grid { ColumnSpacing = 8 };
+                topLine.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                topLine.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                var buildingRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+                buildingRow.Children.Add(new ProgressRing { IsActive = true, Width = 14, Height = 14 });
+                _kgStageLabel = new TextBlock
+                {
+                    Text = L10n.T("kg.building_inline"),
+                    FontFamily = Md.BodyFontFamily,
+                    FontSize = 12,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 212, 228, 248)),
+                };
+                buildingRow.Children.Add(_kgStageLabel);
+                topLine.Children.Add(buildingRow);
+
+                if (onViewKgProgress != null)
+                {
+                    var detailBtn = new Button
+                    {
+                        Content = L10n.T("art.view_process"),
+                        Style = (Style)Application.Current.Resources["PillButtonStyle"],
+                        MinHeight = 26,
+                        Padding = new Thickness(10, 2, 10, 2),
+                        FontSize = 11.5,
+                    };
+                    detailBtn.Click += (_, _) => onViewKgProgress();
+                    Grid.SetColumn(detailBtn, 1);
+                    topLine.Children.Add(detailBtn);
+                }
+                buildingStack.Children.Add(topLine);
+
+                var prog = kgArtifact is { } pk ? Num(pk, "progress") : 0.0;
+                _kgProgressBar = new ProgressBar
+                {
+                    IsIndeterminate = prog <= 0.01,
+                    Value = prog * 100,
+                    Maximum = 100,
+                    Height = 4,
+                    CornerRadius = new CornerRadius(2),
+                };
+                buildingStack.Children.Add(_kgProgressBar);
+
+                _kgStepsPanel = new StackPanel { Spacing = 4 };
+                if (kgArtifact is { } ak2)
+                {
+                    foreach (var th in Arr(ak2, "thoughts"))
+                    {
+                        OnKgThoughtEvent(th);
+                    }
+                }
+                var stepsScroll = new ScrollViewer
+                {
+                    MaxHeight = 140,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                    Content = _kgStepsPanel,
+                };
+                buildingStack.Children.Add(stepsScroll);
+                Grid.SetColumnSpan(buildingStack, 2);
+                kgRow.Children.Add(buildingStack);
+            }
+            else
+            {
+                kgRow.Children.Add(new TextBlock
+                {
+                    Text = recommendKnowledgeGraph ? L10n.T("kg.recommended_banner") : L10n.T("kg.title"),
+                    FontFamily = Md.BodyFontFamily,
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.Wrap,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 212, 228, 248)),
+                });
+                var kgBtn = new Button
+                {
+                    Content = L10n.T("kg.build_btn"),
+                    Style = (Style)Application.Current.Resources[recommendKnowledgeGraph ? "PrimaryPillButtonStyle" : "PillButtonStyle"],
+                    MinHeight = 30,
+                    Padding = new Thickness(12, 4, 12, 4),
+                    FontSize = 12,
+                };
+                kgBtn.Click += (_, _) => onRebuildKg?.Invoke();
+                Grid.SetColumn(kgBtn, 1);
+                kgRow.Children.Add(kgBtn);
+            }
             kgBar.Child = kgRow;
             body.Children.Add(kgBar);
         }
@@ -728,7 +951,7 @@ public sealed partial class MainWindow
             var hintRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
             hintRow.Children.Add(new TextBlock
             {
-                Text = "该来源尚未生成 AI 来源指南与结构索引。",
+                Text = L10n.T("sources.guide_missing"),
                 FontSize = 12,
                 Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
                 VerticalAlignment = VerticalAlignment.Center,
@@ -744,8 +967,8 @@ public sealed partial class MainWindow
             genBtn.Click += async (_, _) =>
             {
                 genBtn.IsEnabled = false;
-                genBtn.Content = "生成中...";
-                var g = await CoreAsync("source.generate_guide", Args(("source_id", sourceId)), "生成来源指南");
+                genBtn.Content = L10n.T("sources.guide_generating");
+                var g = await CoreAsync("source.generate_guide", Args(("source_id", sourceId)), L10n.T("sources.op_gen_guide"));
                 if (g != null)
                 {
                     await ShowSourcePreviewAsync(sourceId, null, null, sourceTitle);
@@ -753,7 +976,7 @@ public sealed partial class MainWindow
                 else
                 {
                     genBtn.IsEnabled = true;
-                    genBtn.Content = "AI 生成指南";
+                    genBtn.Content = L10n.T("sources.gen_guide");
                 }
             };
             hintRow.Children.Add(genBtn);
@@ -771,6 +994,49 @@ public sealed partial class MainWindow
             Padding = new Thickness(14, 12, 14, 12),
             Child = outer,
         };
+    }
+
+    private static (int Mastered, int Total, int Percent) ComputeKgMasteryCounts(JsonElement kgArtifact)
+    {
+        if (!kgArtifact.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+            return (0, 0, 0);
+        var nodes = Arr(payload, "nodes").ToList();
+        var conceptNodes = nodes.Count > 1
+            ? nodes.Where(n => n.TryGetProperty("parent_id", out var p) && p.ValueKind == JsonValueKind.String).ToList()
+            : nodes;
+        var total = conceptNodes.Count;
+        if (total == 0) return (0, 0, 0);
+        var mastered = 0;
+        if (kgArtifact.TryGetProperty("progress_state", out var ps) && ps.ValueKind == JsonValueKind.Object
+            && ps.TryGetProperty("mastery", out var m) && m.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var n in conceptNodes)
+            {
+                var nid = Str(n, "id");
+                if (nid.Length > 0 && m.TryGetProperty(nid, out var entry) && Str(entry, "status") == "mastered")
+                    mastered++;
+            }
+        }
+        return (mastered, total, (mastered * 100) / total);
+    }
+
+    private async Task PollSourceKnowledgeGraphAsync(string sourceId, string kgId, int? page, string? focusText, string title)
+    {
+        for (var i = 0; i < 60 && _sourcePreviewOpen; i++)
+        {
+            await Task.Delay(2000);
+            if (!_sourcePreviewOpen) return;
+            var res = await Api.CallAsync("studio.get", Args(("id", kgId)));
+            if (res.Result is { } art)
+            {
+                var st = Str(art, "status");
+                if (st is "READY" or "FAILED" or "CANCELLED")
+                {
+                    await ShowSourcePreviewAsync(sourceId, page, focusText, title);
+                    return;
+                }
+            }
+        }
     }
 
     private static bool IsCodeExtension(string ext) => ext is
@@ -954,7 +1220,7 @@ public sealed partial class MainWindow
             {
                 FontSize = 11,
                 Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
-                Text = $"片段 {Int(c, "chunk_index") + 1}{(p > 0 ? $" · 第 {p} 页" : "")}{(Str(c, "section_path").Length > 0 ? $" · {Str(c, "section_path")}" : "")}",
+                Text = $"{L10n.Fmt("sources.chunk_meta", Int(c, "chunk_index") + 1)}{(p > 0 ? L10n.Fmt("sources.chunk_page", p) : "")}{(Str(c, "section_path").Length > 0 ? $" · {Str(c, "section_path")}" : "")}",
             });
             var hit = (needle.Length > 0 && content.Contains(needle)) || (needle.Length == 0 && page is { } pg && p == pg);
             panel.Children.Add(new Border
@@ -969,7 +1235,7 @@ public sealed partial class MainWindow
         }
         if (chunks.Count == 0)
         {
-            var empty = Line("这个来源还没有可展示的内容。");
+            var empty = Line(L10n.T("sources.empty_content"));
             empty.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"];
             panel.Children.Add(empty);
         }
@@ -990,7 +1256,7 @@ public sealed partial class MainWindow
             var summary = Str(n, "summary");
             var ps = (int)Int(n, "page_start");
             var pe = (int)Int(n, "page_end");
-            var pageLabel = ps > 0 ? (pe > ps ? $"第 {ps}-{pe} 页" : $"第 {ps} 页") : "";
+            var pageLabel = ps > 0 ? (pe > ps ? L10n.Fmt("sources.page_range", ps, pe) : L10n.Fmt("sources.page_single", ps)) : "";
 
             var inner = new StackPanel { Spacing = 4 };
             var topRow = new Grid { ColumnSpacing = 8 };
@@ -1040,7 +1306,7 @@ public sealed partial class MainWindow
             if (ps > 0)
             {
                 var targetPage = ps;
-                ToolTipService.SetToolTip(itemBorder, $"点击跳转到原文件第 {targetPage} 页");
+                ToolTipService.SetToolTip(itemBorder, L10n.Fmt("sources.jump_page_tip", targetPage));
                 itemBorder.Tapped += (_, _) => onJumpToPage(targetPage);
             }
             panel.Children.Add(itemBorder);
@@ -1051,12 +1317,12 @@ public sealed partial class MainWindow
     /// <summary>Displays a collapsible "来源指南" card + native original file preview (with optional AI index tree view & fullscreen toggle).</summary>
     private async Task ShowSourcePreviewAsync(string sourceId, int? page, string? focusText, string? sourceTitle = null)
     {
-        var res = await CoreAsync("source.preview", Args(("source_id", sourceId)), "读取来源材料");
+        var res = await CoreAsync("source.preview", Args(("source_id", sourceId)), L10n.T("sources.op_preview"));
         if (res is not { } r) return;
 
         var title = !string.IsNullOrWhiteSpace(sourceTitle)
             ? sourceTitle
-            : (Str(r, "title") is { Length: > 0 } t ? t : "来源材料");
+            : (Str(r, "title") is { Length: > 0 } t ? t : L10n.T("sources.material_fallback"));
         var kind = Str(r, "kind");
         var blobPath = Str(r, "blob_path");
         var previewHtmlPath = Str(r, "preview_html_path");
@@ -1089,11 +1355,11 @@ public sealed partial class MainWindow
         });
         var metaParts = new List<string>();
         if (kind.Length > 0) metaParts.Add(kind.ToUpperInvariant());
-        if (pageCount > 0) metaParts.Add($"共 {pageCount} 页");
-        if (indexNodes.Count > 0) metaParts.Add($"{indexNodes.Count} 个 AI 索引节点");
+        if (pageCount > 0) metaParts.Add(L10n.Fmt("sources.pages_summary", pageCount));
+        if (indexNodes.Count > 0) metaParts.Add(L10n.Fmt("sources.ai_nodes_summary", indexNodes.Count));
         titleCol.Children.Add(new TextBlock
         {
-            Text = metaParts.Count > 0 ? string.Join(" · ", metaParts) : "原文件预览",
+            Text = metaParts.Count > 0 ? string.Join(" · ", metaParts) : L10n.T("sources.original_preview"),
             FontSize = 11,
             Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
         });
@@ -1117,13 +1383,50 @@ public sealed partial class MainWindow
             CornerRadius = new CornerRadius(12),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        ToolTipService.SetToolTip(modeBtn, "在“原文件预览”与“AI 索引目录”之间切换");
+        ToolTipService.SetToolTip(modeBtn, L10n.T("sources.toggle_mode_tip"));
+
+        var kgRes = await Api.CallAsync("source.knowledge_graph", Args(("source_id", sourceId)));
+        JsonElement? kgArtifact = kgRes.Result is { } kgWrap
+            && kgWrap.TryGetProperty("artifact", out var kgProp)
+            && kgProp.ValueKind == JsonValueKind.Object
+            ? kgProp
+            : null;
+        var kgId = kgArtifact is { } kgA ? Str(kgA, "id") : "";
+        var kgStatus = kgArtifact is { } kgB ? Str(kgB, "status") : "";
 
         async Task LoadOriginalAsync(int? targetPage)
         {
             showingIndex = false;
             modeBtn.Content = L10n.T("sources.index_toc");
             contentHost.Content = await BuildOriginalFileViewAsync(kind, blobPath, previewHtmlPath, targetPage, focusText, chunks);
+        }
+
+        void LoadKnowledgeGraphView()
+        {
+            if (kgArtifact is not { } kg || Str(kg, "status") != "READY") return;
+            if (!kg.TryGetProperty("payload", out var kgPayload) || kgPayload.ValueKind != JsonValueKind.Object) return;
+            DisposeSourcePreviewWebView();
+            showingIndex = true;
+            modeBtn.Content = L10n.T("sources.original_file");
+            JsonElement? kgProgress = kg.TryGetProperty("progress_state", out var ps) && ps.ValueKind == JsonValueKind.Object
+                ? ps
+                : null;
+            var view = new MindmapTreeView(
+                kgPayload,
+                null,
+                compact: false,
+                feedbackBar: null,
+                isKnowledgeGraph: true,
+                onQuizConcept: c => _ = CreateConceptLinkArtifactAsync("quiz", c),
+                onExpandMindmap: c => _ = CreateConceptLinkArtifactAsync("mindmap", c),
+                onAskConcept: c => _ = SendChatAsync(L10n.Fmt("kg.ask_prompt", c)),
+                progressState: kgProgress,
+                onProgressChanged: newState =>
+                {
+                    if (kgId.Length > 0)
+                        _ = Api.CallAsync("studio.save_progress", Args(("id", kgId), ("state", newState)));
+                });
+            contentHost.Content = view.Root;
         }
 
         modeBtn.Click += async (_, _) =>
@@ -1142,17 +1445,31 @@ public sealed partial class MainWindow
         };
         tools.Children.Add(modeBtn);
 
+        if (kgStatus == "READY")
+        {
+            var kgViewBtn = new Button
+            {
+                Content = L10n.T("kg.title"),
+                FontSize = 11.5,
+                Padding = new Thickness(9, 4, 9, 4),
+                CornerRadius = new CornerRadius(12),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            kgViewBtn.Click += (_, _) => LoadKnowledgeGraphView();
+            tools.Children.Add(kgViewBtn);
+        }
+
         if (!string.IsNullOrWhiteSpace(blobPath) && File.Exists(blobPath))
         {
-            var openExtBtn = MakePaneIconBtn(SourceExternalIconPath, "用系统默认应用打开原文件", (_, _) =>
+            var openExtBtn = MakePaneIconBtn(SourceExternalIconPath, L10n.T("sources.open_external_tip"), (_, _) =>
             {
                 try { Process.Start(new ProcessStartInfo(blobPath) { UseShellExecute = true }); } catch { }
             }, out _);
             tools.Children.Add(openExtBtn);
         }
 
-        var fsBtn = MakePaneIconBtn(_sourceFullscreen ? SourceExitFullscreenIconPath : SourceFullscreenIconPath, "全屏显示 / 还原", (_, _) => ToggleSourceFullscreen(), out _sourceFullscreenIcon);
-        var closeBtn = MakePaneIconBtn(SourceCloseIconPath, "返回来源列表", (_, _) => CloseSourcePreview(), out _);
+        var fsBtn = MakePaneIconBtn(_sourceFullscreen ? SourceExitFullscreenIconPath : SourceFullscreenIconPath, L10n.T("studio.fullscreen_toggle"), (_, _) => ToggleSourceFullscreen(), out _sourceFullscreenIcon);
+        var closeBtn = MakePaneIconBtn(SourceCloseIconPath, L10n.T("sources.back_to_list"), (_, _) => CloseSourcePreview(), out _);
         tools.Children.Add(fsBtn);
         tools.Children.Add(closeBtn);
         Grid.SetColumn(tools, 1);
@@ -1161,7 +1478,20 @@ public sealed partial class MainWindow
 
         // Row 1: Collapsible "来源指南" card
         var recommendKg = Bool(r, "recommend_knowledge_graph") || guideTopics.Count >= 3;
-        var guideCard = BuildSourceGuideCard(sourceId, title, guideSummaryMd, guideTopics, recommendKg);
+        var guideCard = BuildSourceGuideCard(
+            sourceId,
+            title,
+            guideSummaryMd,
+            guideTopics,
+            recommendKg,
+            kgArtifact,
+            onOpenKg: kgStatus == "READY" ? LoadKnowledgeGraphView : null,
+            onRebuildKg: async () =>
+            {
+                await CreateKnowledgeGraphAsync(sourceId, title);
+                if (_sourcePreviewOpen) await ShowSourcePreviewAsync(sourceId, page, focusText, title);
+            },
+            onViewKgProgress: kgId.Length > 0 ? () => OpenArtifact(kgId) : null);
         Grid.SetRow(guideCard, 1);
         container.Children.Add(guideCard);
 
@@ -1181,6 +1511,11 @@ public sealed partial class MainWindow
         ApplyPaneLayout();
 
         await LoadOriginalAsync(page);
+
+        if (kgStatus is "PENDING" or "RUNNING" && kgId.Length > 0)
+        {
+            _ = PollSourceKnowledgeGraphAsync(sourceId, kgId, page, focusText, title);
+        }
     }
 
     // ---------- notes ----------
@@ -1188,55 +1523,69 @@ public sealed partial class MainWindow
     private async void OnCreateNoteClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        var res = await CoreAsync("note.save", Args(("notebook_id", _activeNotebookId), ("title", "新笔记"), ("body_md", "")), "创建笔记");
+        var res = await CoreAsync("note.save", Args(("notebook_id", _activeNotebookId), ("title", L10n.T("note.new_title")), ("body_md", "")), L10n.T("note.op_create"));
         await RefreshNotebookDataAsync();
         if (res is { } r) await EditNoteAsync(Str(r, "id"));
     }
 
     private async Task EditNoteAsync(string noteId)
     {
-        var note = await CoreAsync("note.get", Args(("note_id", noteId)), "读取笔记");
+        var note = await CoreAsync("note.get", Args(("note_id", noteId)), L10n.T("note.op_read"));
         if (note is not { } n || _activeNotebookId == null) return;
-        var titleBox = new TextBox { Header = "标题", Text = Str(n, "title"), MinWidth = 520 };
-        var bodyBox = new TextBox { Header = "内容（Markdown）", Text = Str(n, "body_md"), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 260 };
-        var panel = new StackPanel { Spacing = 10 };
-        panel.Children.Add(titleBox);
-        panel.Children.Add(bodyBox);
+        var curTitle = Str(n, "title");
+        var curBody = Str(n, "body_md");
         var origin = Str(n, "origin");
-        if (origin == "chat") panel.Children.Add(new TextBlock { Text = "这条笔记来自一条回答，保存了当时的引用。", Opacity = 0.6, FontSize = 12 });
-        var del = new Button { Content = "删除笔记" };
-        panel.Children.Add(del);
-        var dlg = new ContentDialog
+
+        while (true)
         {
-            Title = "笔记",
-            Content = panel,
-            PrimaryButtonText = "保存",
-            SecondaryButtonText = "转为来源",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Primary,
-            XamlRoot = Content.XamlRoot,
-        };
-        var deleted = false;
-        del.Click += async (_, _) =>
-        {
-            if (!await ConfirmAsync("删除笔记", "确定删除这条笔记吗？", "删除")) return;
-            deleted = true;
-            dlg.Hide();
-        };
-        var result = await dlg.ShowAsync();
-        if (deleted)
-        {
-            await CoreAsync("note.delete", Args(("note_id", noteId)), "删除笔记");
-        }
-        else if (result == ContentDialogResult.Primary)
-        {
-            await CoreAsync("note.save", Args(("notebook_id", _activeNotebookId), ("id", noteId), ("title", titleBox.Text), ("body_md", bodyBox.Text)), "保存笔记");
-        }
-        else if (result == ContentDialogResult.Secondary)
-        {
-            await CoreAsync("note.save", Args(("notebook_id", _activeNotebookId), ("id", noteId), ("title", titleBox.Text), ("body_md", bodyBox.Text)), "保存笔记");
-            if (await CoreAsync("note.to_source", Args(("note_id", noteId)), "转为来源") != null)
-                ShowStatus(InfoBarSeverity.Success, "已转为来源", "这条笔记现在可以像其他来源一样被勾选和引用。");
+            var titleBox = new TextBox { Header = L10n.T("common.title"), Text = curTitle, MinWidth = 520 };
+            var bodyBox = new TextBox { Header = L10n.T("note.body_header"), Text = curBody, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 260 };
+            var panel = new StackPanel { Spacing = 10 };
+            panel.Children.Add(titleBox);
+            panel.Children.Add(bodyBox);
+            if (origin == "chat") panel.Children.Add(new TextBlock { Text = L10n.T("note.origin_chat"), Opacity = 0.6, FontSize = 12 });
+            var del = new Button { Content = L10n.T("note.delete_btn") };
+            panel.Children.Add(del);
+            var dlg = new ContentDialog
+            {
+                Title = L10n.T("note.dialog_title"),
+                Content = panel,
+                PrimaryButtonText = L10n.T("common.save"),
+                SecondaryButtonText = L10n.T("note.to_source_btn"),
+                CloseButtonText = L10n.T("common.cancel"),
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = Content.XamlRoot,
+            };
+            var wantDelete = false;
+            del.Click += (_, _) =>
+            {
+                // Close this ContentDialog before opening the confirmation ContentDialog.
+                wantDelete = true;
+                dlg.Hide();
+            };
+            var result = await dlg.ShowAsync();
+            curTitle = titleBox.Text;
+            curBody = bodyBox.Text;
+            if (wantDelete)
+            {
+                if (await ConfirmAsync(L10n.T("note.delete_btn"), L10n.T("note.delete_confirm"), L10n.T("common.delete")))
+                {
+                    await CoreAsync("note.delete", Args(("note_id", noteId)), L10n.T("note.delete_btn"));
+                    break;
+                }
+                continue;
+            }
+            if (result == ContentDialogResult.Primary)
+            {
+                await CoreAsync("note.save", Args(("notebook_id", _activeNotebookId), ("id", noteId), ("title", curTitle), ("body_md", curBody)), L10n.T("note.op_save"));
+            }
+            else if (result == ContentDialogResult.Secondary)
+            {
+                await CoreAsync("note.save", Args(("notebook_id", _activeNotebookId), ("id", noteId), ("title", curTitle), ("body_md", curBody)), L10n.T("note.op_save"));
+                if (await CoreAsync("note.to_source", Args(("note_id", noteId)), L10n.T("note.to_source_btn")) != null)
+                    ShowStatus(InfoBarSeverity.Success, L10n.T("note.converted_title"), L10n.T("note.converted_msg"));
+            }
+            break;
         }
         await RefreshNotebookDataAsync();
     }

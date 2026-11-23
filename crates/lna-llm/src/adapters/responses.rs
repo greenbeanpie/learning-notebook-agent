@@ -117,7 +117,7 @@ impl ProtocolAdapter for ResponsesAdapter {
             "input": input,
             "stream": true,
             "store": false,
-            "max_output_tokens": req.max_output_tokens,
+            "max_output_tokens": clamp_reasoning_and_output_tokens(req.max_output_tokens),
         });
 
         if req.reasoning.show_summary || req.reasoning.effort.is_some() {

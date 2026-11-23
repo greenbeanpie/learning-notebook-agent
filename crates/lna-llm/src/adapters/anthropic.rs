@@ -117,9 +117,10 @@ impl ProtocolAdapter for AnthropicAdapter {
             }
         }
 
+        let capped_max_tokens = clamp_reasoning_and_output_tokens(req.max_output_tokens);
         let mut body = json!({
             "model": profile.model_id,
-            "max_tokens": req.max_output_tokens,
+            "max_tokens": capped_max_tokens,
             "messages": messages,
             "stream": true,
         });
@@ -131,10 +132,11 @@ impl ProtocolAdapter for AnthropicAdapter {
         let use_legacy =
             profile.capabilities.anthropic_thinking.as_deref() == Some("budget_tokens");
         if use_legacy {
-            let budget = if req.reasoning.show_summary {
-                4096
+            let desired: u32 = if req.reasoning.show_summary { 4096 } else { 1024 };
+            let budget = if capped_max_tokens > 1024 {
+                desired.min(capped_max_tokens.saturating_sub(1024).max(1024))
             } else {
-                1024
+                desired.min(capped_max_tokens)
             };
             body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
         } else {

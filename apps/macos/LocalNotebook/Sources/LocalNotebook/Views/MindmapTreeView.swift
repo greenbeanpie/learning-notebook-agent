@@ -31,6 +31,8 @@ struct MindmapTreeView: View {
     @State private var collapsedIds: Set<String> = []
     @State private var scale: CGFloat = 1.0
     @State private var allCollapsed: Bool = false
+    @State private var panOffset: CGSize = .zero
+    @GestureState private var dragDelta: CGSize = .zero
 
     private let rowGap: CGFloat = 14
     private let colGap: CGFloat = 66
@@ -46,7 +48,8 @@ struct MindmapTreeView: View {
 
         for (i, n) in rawNodes.enumerated() {
             let id = (n["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "n\(i)"
-            let label = n["label"] as? String ?? ""
+            let rawLabel = n["label"] as? String ?? ""
+            let label = rawLabel.replacingOccurrences(of: #"\s*(?:\[\s*\d+(?:\s*[,，\-–—、]\s*\d+)*\s*\]|【\s*\d+(?:\s*[,，\-–—、]\s*\d+)*\s*】)+"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
             let node = MindNodeItem(id: id, label: label)
             map[id] = node
             parentById[id] = n["parent_id"] as? String ?? ""
@@ -179,6 +182,15 @@ struct MindmapTreeView: View {
                 }
                 .frame(width: laid.width, height: laid.height)
                 .scaleEffect(scale, anchor: .topLeading)
+                .offset(x: panOffset.width + dragDelta.width, y: panOffset.height + dragDelta.height)
+                .gesture(
+                    DragGesture(minimumDistance: 4)
+                        .updating($dragDelta) { value, state, _ in state = value.translation }
+                        .onEnded { value in
+                            panOffset.width += value.translation.width
+                            panOffset.height += value.translation.height
+                        }
+                )
             }
             .background(Color(red: 29/255, green: 31/255, blue: 36/255))
             .cornerRadius(12)

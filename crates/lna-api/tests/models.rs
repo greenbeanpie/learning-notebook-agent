@@ -267,3 +267,36 @@ fn unsupported_stream_options_is_dropped_retried_and_remembered() {
     let chat = mock.of_kind(Kind::Chat);
     assert_eq!(chat.len(), 3);
 }
+
+#[test]
+fn builtin_provider_presets_include_official_and_opencode_go_headers() {
+    let env = Env::new("presets");
+    let res = env.ok("profile.presets", json!({}));
+    let presets = res["presets"].as_array().expect("presets array");
+    let ids: Vec<&str> = presets
+        .iter()
+        .filter_map(|p| p["id"].as_str())
+        .collect();
+    for expected in [
+        "openai",
+        "anthropic",
+        "google",
+        "deepseek",
+        "glm",
+        "mimo",
+        "opencode_go",
+    ] {
+        assert!(ids.contains(&expected), "missing preset {expected} in {ids:?}");
+    }
+    let opencode = presets
+        .iter()
+        .find(|p| p["id"] == "opencode_go")
+        .expect("opencode_go preset");
+    assert_eq!(opencode["base_url"], "https://opencode.ai/zen/go/v1");
+    assert_eq!(opencode["protocol"], "chat_completion");
+    assert_eq!(
+        opencode["extra_headers"]["x-opencode-session"],
+        "local-notebook-agent"
+    );
+    assert_eq!(opencode["extra_headers"]["User-Agent"], "opencode/1.0");
+}

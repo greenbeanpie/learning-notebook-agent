@@ -107,7 +107,7 @@ public sealed class StreamingMarkdownView
         Background = new SolidColorBrush(Windows.UI.Color.FromArgb(45, 255, 255, 255)),
         Child = new TextBlock
         {
-            Text = "正在渲染公式…",
+            Text = Services.L10n.T("math.rendering"),
             FontSize = 12,
             Opacity = 0.7,
         },

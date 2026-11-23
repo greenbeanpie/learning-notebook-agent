@@ -4,6 +4,19 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Hard upper bound on combined reasoning + output tokens per single LLM API request.
+pub const MAX_SINGLE_REQUEST_TOKENS: u32 = 8_192;
+
+/// Clamps a requested token budget so a single request's reasoning + output never exceeds 8192 tokens.
+#[inline]
+pub fn clamp_reasoning_and_output_tokens(requested: u32) -> u32 {
+    if requested == 0 {
+        MAX_SINGLE_REQUEST_TOKENS
+    } else {
+        requested.min(MAX_SINGLE_REQUEST_TOKENS)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {

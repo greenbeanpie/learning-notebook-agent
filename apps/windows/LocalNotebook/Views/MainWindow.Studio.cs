@@ -1,6 +1,8 @@
 using LocalNotebook.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using System.Text.Json;
 using static LocalNotebook.Services.Api;
 
@@ -8,6 +10,22 @@ namespace LocalNotebook.Views;
 
 public sealed partial class MainWindow
 {
+    private readonly Dictionary<string, string> _studioLiveStep = new();
+    private readonly Dictionary<string, TextBlock> _studioLiveStepLabels = new();
+
+    private void OnStudioThoughtPreview(JsonElement data)
+    {
+        var aid = Str(data, "artifact_id");
+        var title = Str(data, "title");
+        if (string.IsNullOrEmpty(aid) || string.IsNullOrEmpty(title)) return;
+        _studioLiveStep[aid] = title;
+        if (_studioLiveStepLabels.TryGetValue(aid, out var tb))
+        {
+            tb.Text = title;
+            tb.Visibility = Visibility.Visible;
+        }
+    }
+
     private static string KindName(string kind) => kind switch
     {
         "audio" => L10n.T("studio.audio"),
@@ -42,21 +60,24 @@ public sealed partial class MainWindow
     private void RenderArtifacts(JsonElement art)
     {
         ArtifactsList.Items.Clear();
+        _studioLiveStepLabels.Clear();
         var any = false;
         foreach (var a in Arr(art, "artifacts").Reverse())
         {
+            if (Str(Obj(a, "config"), "mode") == "knowledge_graph" && Str(a, "status") is not ("PENDING" or "RUNNING")) continue;
             any = true;
             ArtifactsList.Items.Add(ArtifactRow(a));
         }
-        if (!any) ArtifactsList.Items.Add(Line("选择上方的类型，把已勾选的来源生成为测验、闪卡、导图、报告等。"));
+        if (!any) ArtifactsList.Items.Add(Line(L10n.T("studio.empty_hint")));
     }
 
     private UIElement ArtifactRow(JsonElement a)
     {
         var id = Str(a, "id");
         var status = Str(a, "status");
-        var title = L10n.LocalizeDefaultArtifactTitle(Str(a, "title"));
+        var rawTitle = Str(a, "title");
         var kind = Str(a, "artifact_type");
+        var title = rawTitle.Length > 0 ? rawTitle : KindName(kind);
         var card = new Border
         {
             Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"],
@@ -111,8 +132,8 @@ public sealed partial class MainWindow
         var stage = Str(a, "stage");
         var hintSuffix = status switch
         {
-            "PENDING" or "RUNNING" => " · 点击查看思考过程",
-            "FAILED" => " · 点击查看错误与日志",
+            "PENDING" or "RUNNING" => L10n.T("studio.click_thoughts"),
+            "FAILED" => L10n.T("studio.click_error_log"),
             _ => "",
         };
         titleStack.Children.Add(new TextBlock { Text = $"{KindName(kind)} · {ArtifactStatusLabel(status, stage)}{hintSuffix}", FontSize = 11, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"] });
@@ -127,26 +148,27 @@ public sealed partial class MainWindow
             item.Click += async (_, _) => { await act(); await RefreshNotebookDataAsync(); };
             menu.Items.Add(item);
         }
-        Add("重命名", async () =>
+        Add(L10n.T("studio.rename"), async () =>
         {
-            var name = await PromptTextAsync("重命名产物", "名称", title);
-            if (!string.IsNullOrWhiteSpace(name)) await CoreAsync("studio.rename", Args(("artifact_id", id), ("title", name.Trim())), "重命名");
+            var name = await PromptTextAsync(L10n.T("studio.rename_title"), L10n.T("common.name"), title);
+            if (!string.IsNullOrWhiteSpace(name)) await CoreAsync("studio.rename", Args(("artifact_id", id), ("title", name.Trim())), L10n.T("studio.rename"));
         });
-        if (status is "PENDING" or "RUNNING") Add("取消", async () => { await CoreAsync("studio.cancel", Args(("artifact_id", id)), "取消"); });
-        if (status is "FAILED" or "CANCELLED") Add("重试", async () => { await CoreAsync("studio.retry", Args(("artifact_id", id)), "重试"); });
+        if (status is "PENDING" or "RUNNING") Add(L10n.T("studio.cancel"), async () => { await CoreAsync("studio.cancel", Args(("artifact_id", id)), L10n.T("studio.cancel")); });
+        if (status is "FAILED" or "CANCELLED") Add(L10n.T("studio.retry"), async () => { await CoreAsync("studio.retry", Args(("artifact_id", id)), L10n.T("studio.retry")); });
         if (status == "READY")
         {
             var existingCfg = a.TryGetProperty("config", out var cfgEl) && cfgEl.ValueKind == JsonValueKind.Object ? cfgEl : (JsonElement?)null;
-            Add("按当前来源与要求更新", async () =>
+            Add(L10n.T("studio.update_from_sources"), async () =>
             {
                 var updated = await ConfigureArtifactAsync(kind, existingCfg, isUpdate: true);
                 if (updated is not { } cfg) return;
-                await CoreAsync("studio.regenerate", Args(("artifact_id", id), ("config", cfg), ("use_selected_sources", true)), "更新产物");
+                await CoreAsync("studio.regenerate", Args(("artifact_id", id), ("config", cfg), ("use_selected_sources", true)), L10n.T("studio.op_update"));
             });
         }
-        Add("删除", async () =>
+        Add(L10n.T("common.delete"), async () =>
         {
-            if (await ConfirmAsync("删除产物", $"确定删除“{title}”吗？", "删除")) await CoreAsync("studio.delete", Args(("artifact_id", id)), "删除");
+            if (await ConfirmAsync(L10n.T("studio.delete_title"), L10n.Fmt("studio.delete_confirm", title), L10n.T("common.delete")))
+                await CoreAsync("studio.delete", Args(("artifact_id", id)), L10n.T("common.delete"));
         });
         var more = new Button
         {
@@ -178,12 +200,27 @@ public sealed partial class MainWindow
             VerticalAlignment = VerticalAlignment.Center,
         };
         more.Tapped += (_, e) => e.Handled = true;
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, "产物操作");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(more, L10n.T("studio.more_actions"));
         Grid.SetColumn(more, 1);
         head.Children.Add(more);
         col.Children.Add(head);
 
-        if (status is "PENDING" or "RUNNING") col.Children.Add(new ProgressBar { Value = Num(a, "progress") * 100, Maximum = 100 });
+        if (status is "PENDING" or "RUNNING")
+        {
+            col.Children.Add(new ProgressBar { Value = Num(a, "progress") * 100, Maximum = 100 });
+            _studioLiveStep.TryGetValue(id, out var liveStep);
+            var stepTb = new TextBlock
+            {
+                Text = liveStep ?? "",
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                MaxLines = 2,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
+                Visibility = string.IsNullOrEmpty(liveStep) ? Visibility.Collapsed : Visibility.Visible,
+            };
+            _studioLiveStepLabels[id] = stepTb;
+            col.Children.Add(stepTb);
+        }
         var err = Str(a, "error_code");
         if (status == "FAILED")
         {
@@ -194,7 +231,7 @@ public sealed partial class MainWindow
         {
             var open = new Button
             {
-                Content = "审核大纲",
+                Content = L10n.T("studio.review_outline"),
                 HorizontalAlignment = HorizontalAlignment.Left,
                 Style = (Style)Application.Current.Resources["PillButtonStyle"],
                 Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["HoverBgBrush"],
@@ -236,7 +273,9 @@ public sealed partial class MainWindow
             onToggleFullscreen: ToggleStudioFullscreen,
             onQuizConcept: concept => _ = CreateConceptLinkArtifactAsync("quiz", concept),
             onExpandMindmap: concept => _ = CreateConceptLinkArtifactAsync("mindmap", concept),
-            onAskConcept: concept => _ = SendChatAsync(L10n.IsEnglish ? $"Explain the concept '{concept}' in detail with key theorems and examples." : $"请详细讲解知识点「{concept}」的核心定义、推导思路与典型应用。"));
+            onAskConcept: concept => _ = SendChatAsync(L10n.Fmt("kg.explain_prompt", concept)),
+            math: _math,
+            mathHost: MathRenderHost);
         _activeArtifactPane = pane;
         StudioDetailHost.Content = pane.Root;
         StudioHomeView.Visibility = Visibility.Collapsed;
@@ -415,13 +454,11 @@ public sealed partial class MainWindow
     private async Task CreateKnowledgeGraphAsync(string sourceId, string sourceTitle)
     {
         if (_activeNotebookId == null) return;
-        var topic = L10n.IsEnglish
-            ? $"Build a structured Knowledge Graph for '{sourceTitle}' covering core concepts, prerequisites, and relationships."
-            : $"基于《{sourceTitle}》构建知识点图谱，梳理核心概念、前置依赖与定理体系。";
+        var topic = L10n.Fmt("kg.default_topic", sourceTitle);
         var cfg = Args(("mode", "knowledge_graph"), ("topic", topic), ("source_id", sourceId), ("lang", L10n.TargetLangCode));
-        var title = L10n.IsEnglish ? $"{sourceTitle} - Knowledge Graph" : $"{sourceTitle} · 知识点图谱";
+        var title = L10n.Fmt("kg.title_with_source", sourceTitle);
         var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", "mindmap"), ("title", title), ("config", cfg)), L10n.T("kg.title"));
-        if (res != null) ShowStatus(InfoBarSeverity.Success, L10n.T("kg.title"), L10n.IsEnglish ? "Building Knowledge Graph in background." : "已开始在后台构建知识点图谱。");
+        if (res != null) ShowStatus(InfoBarSeverity.Success, L10n.T("kg.title"), L10n.T("kg.building_msg"));
         await RefreshNotebookDataAsync();
     }
 
@@ -429,13 +466,13 @@ public sealed partial class MainWindow
     {
         if (_activeNotebookId == null) return;
         var cfg = artifactType == "quiz"
-            ? Args(("topic", L10n.IsEnglish ? $"Focused quiz on concept: {concept}" : $"针对知识点「{concept}」的专项测验"), ("count", 5), ("difficulty", "mixed"))
-            : Args(("topic", L10n.IsEnglish ? $"Detailed mind map expanding concept: {concept}" : $"深入展开知识点「{concept}」的详细思维导图"));
+            ? Args(("topic", L10n.Fmt("kg.quiz_topic", concept)), ("quantity", "standard"), ("count", 8), ("difficulty", "auto"))
+            : Args(("topic", L10n.Fmt("kg.mindmap_topic", concept)));
         var title = artifactType == "quiz"
-            ? (L10n.IsEnglish ? $"Quiz: {concept}" : $"专项测验：{concept}")
-            : (L10n.IsEnglish ? $"Mind Map: {concept}" : $"思维导图：{concept}");
+            ? L10n.Fmt("kg.quiz_title", concept)
+            : L10n.Fmt("kg.mindmap_title", concept);
         var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", artifactType), ("title", title), ("config", cfg)), KindName(artifactType));
-        if (res != null) ShowStatus(InfoBarSeverity.Success, title, L10n.IsEnglish ? "Started generating in background." : "已加入后台生成队列。");
+        if (res != null) ShowStatus(InfoBarSeverity.Success, title, L10n.T("studio.queued_msg"));
         await RefreshNotebookDataAsync();
     }
 
@@ -449,7 +486,7 @@ public sealed partial class MainWindow
             ? MergeKnowledgeGraphMode(config)
             : config;
         var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", actualType), ("config", finalConfig)), KindName(kind));
-        if (res != null) ShowStatus(InfoBarSeverity.Success, KindName(kind), L10n.IsEnglish ? "Submitted to background queue." : "已加入后台生成队列。");
+        if (res != null) ShowStatus(InfoBarSeverity.Success, KindName(kind), L10n.T("studio.queued_msg"));
         await RefreshNotebookDataAsync();
     }
 
@@ -466,14 +503,263 @@ public sealed partial class MainWindow
         return Args(kv.ToArray());
     }
 
+    private static (StackPanel Container, Func<string> GetSelected) BuildSegmentedOption(
+        string header,
+        (string Label, string Tag)[] options,
+        string defaultTag)
+    {
+        var selected = options.Any(o => o.Tag == defaultTag) ? defaultTag : options[0].Tag;
+        var wrapper = new StackPanel { Spacing = 6 };
+        wrapper.Children.Add(new TextBlock
+        {
+            Text = header,
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+        });
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        var buttons = new List<(Button Btn, FontIcon Check, TextBlock Text, string Tag)>();
+        var activeBg = (Brush)Application.Current.Resources["HoverBgBrush"];
+        var transparentBg = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+
+        var thumbTransform = new TranslateTransform();
+        var thumb = new Border
+        {
+            Background = activeBg,
+            CornerRadius = new CornerRadius(16),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            IsHitTestVisible = false,
+            RenderTransform = thumbTransform,
+        };
+        var trackGrid = new Grid();
+        trackGrid.Children.Add(thumb);
+        trackGrid.Children.Add(row);
+
+        Storyboard? activeStoryboard = null;
+        var isTransitioning = false;
+        var isAnimating = false;
+
+        void SnapThumb()
+        {
+            var selBtn = buttons.FirstOrDefault(b => b.Tag == selected).Btn;
+            if (selBtn == null) return;
+            var targetW = selBtn.ActualWidth;
+            if (targetW <= 0) return;
+            var targetX = selBtn.TransformToVisual(trackGrid).TransformPoint(new Windows.Foundation.Point(0, 0)).X;
+            isAnimating = false;
+            activeStoryboard?.Stop();
+            thumbTransform.X = targetX;
+            thumb.Width = targetW;
+        }
+
+        void SyncButtonStates()
+        {
+            foreach (var (btn, chk, txt, tag) in buttons)
+            {
+                var isSel = tag == selected;
+                btn.Background = transparentBg;
+                chk.Visibility = isSel ? Visibility.Visible : Visibility.Collapsed;
+                txt.FontWeight = isSel ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+            }
+        }
+
+        void AnimateSelection(string newTag)
+        {
+            var prevBtn = buttons.FirstOrDefault(b => b.Tag == selected).Btn;
+            var curX = thumbTransform.X;
+            var curW = !double.IsNaN(thumb.Width) && thumb.Width > 0
+                ? thumb.Width
+                : (prevBtn?.ActualWidth ?? 0);
+
+            selected = newTag;
+            isTransitioning = true;
+            SyncButtonStates();
+            trackGrid.UpdateLayout();
+            isTransitioning = false;
+
+            var selBtn = buttons.FirstOrDefault(b => b.Tag == selected).Btn;
+            if (selBtn == null) return;
+            var targetW = selBtn.ActualWidth;
+            if (targetW <= 0) return;
+            var targetX = selBtn.TransformToVisual(trackGrid).TransformPoint(new Windows.Foundation.Point(0, 0)).X;
+
+            if (curW <= 0)
+            {
+                SnapThumb();
+                return;
+            }
+
+            isAnimating = false;
+            activeStoryboard?.Stop();
+            thumbTransform.X = curX;
+            thumb.Width = curW;
+
+            var sb = new Storyboard();
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var dur = new Duration(TimeSpan.FromMilliseconds(240));
+
+            var animX = new DoubleAnimation
+            {
+                From = curX,
+                To = targetX,
+                Duration = dur,
+                EasingFunction = ease,
+                FillBehavior = FillBehavior.HoldEnd,
+            };
+            Storyboard.SetTarget(animX, thumbTransform);
+            Storyboard.SetTargetProperty(animX, "X");
+
+            var animW = new DoubleAnimation
+            {
+                From = curW,
+                To = targetW,
+                Duration = dur,
+                EasingFunction = ease,
+                EnableDependentAnimation = true,
+                FillBehavior = FillBehavior.HoldEnd,
+            };
+            Storyboard.SetTarget(animW, thumb);
+            Storyboard.SetTargetProperty(animW, "Width");
+
+            sb.Children.Add(animX);
+            sb.Children.Add(animW);
+            sb.Completed += (_, _) =>
+            {
+                if (ReferenceEquals(activeStoryboard, sb))
+                    isAnimating = false;
+            };
+            activeStoryboard = sb;
+            isAnimating = true;
+            sb.Begin();
+        }
+
+        foreach (var (label, tag) in options)
+        {
+            var chk = new FontIcon
+            {
+                Glyph = "\uE73E",
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var txt = new TextBlock
+            {
+                Text = label,
+                FontSize = 13,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+            content.Children.Add(chk);
+            content.Children.Add(txt);
+            var capturedTag = tag;
+            var btn = new Button
+            {
+                Content = content,
+                CornerRadius = new CornerRadius(16),
+                Padding = new Thickness(12, 6, 12, 6),
+                BorderThickness = new Thickness(0),
+            };
+            btn.Click += (_, _) =>
+            {
+                if (selected == capturedTag) return;
+                AnimateSelection(capturedTag);
+            };
+            buttons.Add((btn, chk, txt, capturedTag));
+            row.Children.Add(btn);
+        }
+
+        SyncButtonStates();
+        row.Loaded += (_, _) => SnapThumb();
+        row.SizeChanged += (_, _) =>
+        {
+            if (!isTransitioning && !isAnimating)
+                SnapThumb();
+        };
+
+        var border = new Border
+        {
+            CornerRadius = new CornerRadius(18),
+            BorderThickness = new Thickness(1),
+            BorderBrush = (Brush)Application.Current.Resources["StrongBorderBrush"],
+            Background = (Brush)Application.Current.Resources["PanelBgBrush"],
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(2),
+            Child = trackGrid,
+        };
+        wrapper.Children.Add(border);
+        return (wrapper, () => selected);
+    }
+
+    private static (StackPanel Container, Func<string[]> GetSelected) BuildMultiPillOption(
+        string header,
+        (string Label, string Tag, bool DefaultChecked)[] options)
+    {
+        var selected = new HashSet<string>(options.Where(o => o.DefaultChecked).Select(o => o.Tag));
+        var wrapper = new StackPanel { Spacing = 6 };
+        wrapper.Children.Add(new TextBlock
+        {
+            Text = header,
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+        });
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var activeBg = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["HoverBgBrush"];
+        var panelBg = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["PanelBgBrush"];
+        var strongBorder = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"];
+        var subtleBorder = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SubtleBorderBrush"];
+
+        foreach (var (label, tag, _) in options)
+        {
+            var chk = new FontIcon { Glyph = "\uE73E", FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
+            var txt = new TextBlock { Text = label, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+            content.Children.Add(chk);
+            content.Children.Add(txt);
+            var capturedTag = tag;
+            var btn = new Button
+            {
+                Content = content,
+                CornerRadius = new CornerRadius(16),
+                Padding = new Thickness(12, 6, 12, 6),
+                BorderThickness = new Thickness(1),
+            };
+
+            void SyncPill()
+            {
+                var on = selected.Contains(capturedTag);
+                btn.Background = on ? activeBg : panelBg;
+                btn.BorderBrush = on ? strongBorder : subtleBorder;
+                chk.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                txt.FontWeight = on ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+            }
+
+            SyncPill();
+            btn.Click += (_, _) =>
+            {
+                if (selected.Contains(capturedTag))
+                {
+                    if (selected.Count > 1) selected.Remove(capturedTag);
+                }
+                else
+                {
+                    selected.Add(capturedTag);
+                }
+                SyncPill();
+            };
+            row.Children.Add(btn);
+        }
+
+        wrapper.Children.Add(row);
+        return (wrapper, () => options.Where(o => selected.Contains(o.Tag)).Select(o => o.Tag).ToArray());
+    }
+
     private async Task<JsonElement?> ConfigureArtifactAsync(string kind, JsonElement? initialConfig = null, bool isUpdate = false)
     {
-        var panel = new StackPanel { Spacing = 10, MinWidth = 440 };
+        var panel = new StackPanel { Spacing = 12, MinWidth = 460 };
         if (isUpdate)
         {
             panel.Children.Add(new TextBlock
             {
-                Text = "将按以下要求与当前已勾选的来源重新生成此产物。",
+                Text = L10n.T("studio.cfg.update_hint"),
                 FontSize = 12,
                 Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
                 TextWrapping = TextWrapping.Wrap,
@@ -481,130 +767,279 @@ public sealed partial class MainWindow
         }
         var topic = new TextBox
         {
-            Header = "主题或要求（可选）",
-            PlaceholderText = "例如：只关注第三章的基与维数",
+            Header = L10n.T("studio.cfg.topic_header"),
+            PlaceholderText = L10n.T("studio.cfg.topic_placeholder"),
             Text = initialConfig is { } ic0 ? Str(ic0, "topic") : "",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 96,
+            MaxHeight = 200,
         };
-        var lang = new ComboBox { Header = "语言", HorizontalAlignment = HorizontalAlignment.Stretch };
-        var initLang = initialConfig is { } ic1 ? Str(ic1, "lang") : "";
-        var langTags = new[] { ("跟随来源", ""), ("中文", "zh-CN"), ("English", "en") };
+        ScrollViewer.SetVerticalScrollBarVisibility(topic, ScrollBarVisibility.Auto);
+        var lang = new ComboBox { Header = L10n.T("studio.cfg.lang_header"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        var initLang = initialConfig is { } ic1 && Str(ic1, "lang").Length > 0
+            ? Str(ic1, "lang")
+            : L10n.Prefs.DefaultStudioLang;
+        var langTags = new[]
+        {
+            (L10n.T("studio.cfg.lang_source"), ""),
+            (L10n.T("studio.cfg.lang_zh"), "zh-CN"),
+            (L10n.T("studio.cfg.lang_en"), "en"),
+        };
         foreach (var (label, tag) in langTags)
             lang.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
         lang.SelectedIndex = Math.Max(0, Array.FindIndex(langTags, x => x.Item2 == initLang));
         panel.Children.Add(topic);
         panel.Children.Add(lang);
 
-        var count = new NumberBox { Header = kind == "flashcards" ? "卡片数量" : "题目数量", Value = kind == "flashcards" ? 10 : 5, Minimum = 3, Maximum = 50, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-        var difficulty = new ComboBox { Header = "难度", HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var (label, tag) in new[] { ("混合", "mixed"), ("简单", "easy"), ("中等", "medium"), ("困难", "hard") }) difficulty.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
-        difficulty.SelectedIndex = 0;
-        var typeBoxes = new List<CheckBox>();
-        ComboBox? variant = null;
-        CheckBox? review = null;
-        NumberBox? slidePages = null;
+        Func<string>? getQuantity = null;
+        Func<string>? getDifficulty = null;
+        Func<string[]>? getTypes = null;
+        Func<string>? getDetail = null;
+        Func<string>? getFormat = null;
+        Func<string>? getDepth = null;
+        Func<string>? getLength = null;
+        Func<string>? getOrientation = null;
+
+        string InitStr(string key, string fallback) =>
+            initialConfig is { } ic && Str(ic, key) is { Length: > 0 } v ? v : fallback;
 
         switch (kind)
         {
+            case "mindmap":
+            case "knowledge_graph":
+            {
+                var (ctl, getter) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.detail_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.level_concise"), "concise"),
+                        (L10n.T("studio.cfg.level_balanced"), "standard"),
+                        (L10n.T("studio.cfg.level_detailed"), "detailed"),
+                    },
+                    InitStr("detail", "standard"));
+                getDetail = getter;
+                panel.Children.Add(ctl);
+                break;
+            }
             case "quiz":
-                panel.Children.Add(count);
-                panel.Children.Add(difficulty);
-                foreach (var (label, tag) in new[] { ("单选", "single"), ("多选", "multi"), ("填空", "fill"), ("简答", "short") })
-                {
-                    var cb = new CheckBox { Content = label, Tag = tag, IsChecked = tag is "single" or "multi" };
-                    typeBoxes.Add(cb);
-                    panel.Children.Add(cb);
-                }
+            {
+                var (qtyCtl, qtyGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.quantity_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.qty_fewer"), "fewer"),
+                        (L10n.T("studio.cfg.qty_standard"), "standard"),
+                        (L10n.T("studio.cfg.qty_more"), "more"),
+                    },
+                    InitStr("quantity", "standard"));
+                getQuantity = qtyGet;
+                panel.Children.Add(qtyCtl);
+
+                var (diffCtl, diffGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.difficulty_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.diff_auto"), "auto"),
+                        (L10n.T("studio.cfg.diff_mixed"), "mixed"),
+                        (L10n.T("studio.cfg.diff_easy"), "easy"),
+                        (L10n.T("studio.cfg.diff_medium"), "medium"),
+                        (L10n.T("studio.cfg.diff_hard"), "hard"),
+                    },
+                    InitStr("difficulty", "auto"));
+                getDifficulty = diffGet;
+                panel.Children.Add(diffCtl);
+
+                var (typesCtl, typesGet) = BuildMultiPillOption(
+                    L10n.T("studio.cfg.types_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.type_single"), "single", true),
+                        (L10n.T("studio.cfg.type_multi"), "multi", true),
+                        (L10n.T("studio.cfg.type_fill"), "fill", false),
+                        (L10n.T("studio.cfg.type_short"), "short", false),
+                    });
+                getTypes = typesGet;
+                panel.Children.Add(typesCtl);
                 break;
+            }
             case "flashcards":
-                panel.Children.Add(count);
+            {
+                var (qtyCtl, qtyGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.quantity_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.qty_fewer"), "fewer"),
+                        (L10n.T("studio.cfg.qty_standard"), "standard"),
+                        (L10n.T("studio.cfg.qty_more"), "more"),
+                    },
+                    InitStr("quantity", "standard"));
+                getQuantity = qtyGet;
+                panel.Children.Add(qtyCtl);
+
+                var (diffCtl, diffGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.difficulty_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.diff_auto"), "auto"),
+                        (L10n.T("studio.cfg.diff_mixed"), "mixed"),
+                        (L10n.T("studio.cfg.diff_easy"), "easy"),
+                        (L10n.T("studio.cfg.diff_medium"), "medium"),
+                        (L10n.T("studio.cfg.diff_hard"), "hard"),
+                    },
+                    InitStr("difficulty", "auto"));
+                getDifficulty = diffGet;
+                panel.Children.Add(diffCtl);
                 break;
+            }
             case "report":
-                variant = new ComboBox { Header = "形式", HorizontalAlignment = HorizontalAlignment.Stretch };
-                variant.Items.Add(new ComboBoxItem { Content = "文档", Tag = "document" });
-                variant.Items.Add(new ComboBoxItem { Content = "互动式", Tag = "interactive" });
-                variant.SelectedIndex = 0;
-                panel.Children.Add(variant);
+            {
+                var (fmtCtl, fmtGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.format_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.report_doc"), "document"),
+                        (L10n.T("studio.cfg.report_interactive"), "interactive"),
+                    },
+                    InitStr("format", "document"));
+                getFormat = fmtGet;
+                panel.Children.Add(fmtCtl);
+
+                var (depthCtl, depthGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.detail_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.level_concise"), "brief"),
+                        (L10n.T("studio.cfg.level_balanced"), "standard"),
+                        (L10n.T("studio.cfg.level_detailed"), "deep"),
+                    },
+                    InitStr("depth", "standard"));
+                getDepth = depthGet;
+                panel.Children.Add(depthCtl);
                 break;
+            }
             case "slides":
-                slidePages = new NumberBox { Header = "页数（默认 8 页，建议 6~12 页）", Value = 8, Minimum = 4, Maximum = 40, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-                review = new CheckBox { Content = "先审核大纲再生成", IsChecked = true };
-                panel.Children.Add(slidePages);
-                panel.Children.Add(review);
+            {
+                var (lenCtl, lenGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.slides_length_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.level_concise"), "concise"),
+                        (L10n.T("studio.cfg.level_balanced"), "standard"),
+                        (L10n.T("studio.cfg.level_detailed"), "detailed"),
+                    },
+                    InitStr("length", "standard"));
+                getLength = lenGet;
+                panel.Children.Add(lenCtl);
+
                 break;
+            }
             case "infographic":
-                variant = new ComboBox { Header = "方向", HorizontalAlignment = HorizontalAlignment.Stretch };
-                foreach (var (label, tag) in new[] { ("横版", "landscape"), ("竖版", "portrait"), ("方形", "square") }) variant.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
-                variant.SelectedIndex = 0;
-                panel.Children.Add(variant);
+            {
+                var (oriCtl, oriGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.orientation_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.orient_landscape"), "landscape"),
+                        (L10n.T("studio.cfg.orient_portrait"), "portrait"),
+                        (L10n.T("studio.cfg.orient_square"), "square"),
+                    },
+                    InitStr("orientation", "landscape"));
+                getOrientation = oriGet;
+                panel.Children.Add(oriCtl);
                 break;
+            }
             case "audio":
-                variant = new ComboBox { Header = "形式", HorizontalAlignment = HorizontalAlignment.Stretch };
-                foreach (var (label, tag) in new[] { ("深入探究（双人）", "deep_dive"), ("辩论（双人）", "debate"), ("摘要（单人）", "brief"), ("评论（单人）", "critique") }) variant.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
-                variant.SelectedIndex = 0;
-                panel.Children.Add(variant);
-                panel.Children.Add(new TextBlock { Text = "音频使用系统自带的语音合成，较长的内容需要一些时间。", FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap });
+            {
+                var (fmtCtl, fmtGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.format_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.audio_deep_dive"), "deep_dive"),
+                        (L10n.T("studio.cfg.audio_debate"), "debate"),
+                        (L10n.T("studio.cfg.audio_brief"), "brief"),
+                        (L10n.T("studio.cfg.audio_critique"), "critique"),
+                    },
+                    InitStr("format", "deep_dive"));
+                getFormat = fmtGet;
+                panel.Children.Add(fmtCtl);
+
+                var (lenCtl, lenGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.audio_length_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.level_concise"), "short"),
+                        (L10n.T("studio.cfg.level_balanced"), "standard"),
+                        (L10n.T("studio.cfg.level_detailed"), "long"),
+                    },
+                    InitStr("length", "standard"));
+                getLength = lenGet;
+                panel.Children.Add(lenCtl);
+
+                panel.Children.Add(new TextBlock { Text = L10n.T("studio.cfg.audio_hint"), FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap });
                 break;
+            }
         }
 
-        var estimate = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.85, Text = "正在估算用量…" };
-        var confirmBox = new CheckBox { Content = "我已知晓用量较大，仍要继续", Visibility = Visibility.Collapsed };
-        panel.Children.Add(estimate);
-        panel.Children.Add(confirmBox);
-
-        var needsConfirm = false;
-        var dlg = new ContentDialog { Title = isUpdate ? $"更新{KindName(kind)}" : $"生成{KindName(kind)}", Content = new ScrollViewer { Content = panel, MaxHeight = 560 }, PrimaryButtonText = isUpdate ? "更新生成" : "生成", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };
-        dlg.Opened += async (_, _) =>
+        var supportsOutlineSplit = kind is "slides" or "report";
+        var dlg = new ContentDialog
         {
-            var estType = kind == "knowledge_graph" ? "mindmap" : kind;
-            var estCfg = kind == "knowledge_graph" ? Args(("mode", "knowledge_graph")) : Args();
-            var est = await Api.CallAsync("studio.estimate", Args(("notebook_id", _activeNotebookId), ("artifact_type", estType), ("config", estCfg)));
-            if (est.Result is { } r)
-            {
-                var cost = r.TryGetProperty("estimated_cost_usd", out var c) && c.ValueKind == JsonValueKind.Number ? $"，约 ${c.GetDouble():0.000}" : "（未配置单价，不显示金额）";
-                estimate.Text = $"预计输入约 {Int(r, "estimated_input_tokens"):N0} tokens，输出约 {Int(r, "estimated_output_tokens"):N0} tokens{cost}。以上为估算值，实际用量以服务商为准。";
-                needsConfirm = Bool(r, "requires_confirmation");
-                if (needsConfirm)
-                {
-                    confirmBox.Visibility = Visibility.Visible;
-                    dlg.IsPrimaryButtonEnabled = false;
-                    confirmBox.Checked += (_, _) => dlg.IsPrimaryButtonEnabled = true;
-                    confirmBox.Unchecked += (_, _) => dlg.IsPrimaryButtonEnabled = false;
-                }
-            }
-            else
-            {
-                estimate.Text = est.Error is { } er ? $"无法估算：{(Advice(er.Code).Length > 0 ? Advice(er.Code) : er.Message)}" : "";
-            }
+            Title = isUpdate ? L10n.Fmt("studio.cfg.title_update", KindName(kind)) : L10n.Fmt("studio.cfg.title_create", KindName(kind)),
+            Content = new ScrollViewer { Content = panel, MaxHeight = 560 },
+            PrimaryButtonText = supportsOutlineSplit
+                ? L10n.T("studio.cfg.btn_one_click")
+                : (isUpdate ? L10n.T("studio.cfg.btn_update") : L10n.T("studio.cfg.btn_create")),
+            SecondaryButtonText = supportsOutlineSplit ? L10n.T("studio.cfg.btn_outline_preview") : "",
+            CloseButtonText = L10n.T("common.cancel"),
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
         };
-        if (await dlg.ShowAsync() != ContentDialogResult.Primary) return null;
+        var dlgRes = await dlg.ShowAsync();
+        if (dlgRes == ContentDialogResult.None) return null;
+        var wantOutlinePreview = supportsOutlineSplit && dlgRes == ContentDialogResult.Secondary;
 
         var kv = new List<(string, object?)>();
         if (topic.Text.Trim().Length > 0) kv.Add(("topic", topic.Text.Trim()));
         if ((lang.SelectedItem as ComboBoxItem)?.Tag is string l && l.Length > 0) kv.Add(("lang", l));
-        if (needsConfirm) kv.Add(("confirmed", true));
         switch (kind)
         {
             case "quiz":
-                kv.Add(("count", (int)count.Value));
-                kv.Add(("difficulty", (difficulty.SelectedItem as ComboBoxItem)?.Tag as string ?? "mixed"));
-                var types = typeBoxes.Where(c => c.IsChecked == true).Select(c => (string)c.Tag).ToArray();
+            {
+                var q = getQuantity?.Invoke() ?? "standard";
+                kv.Add(("quantity", q));
+                kv.Add(("count", q switch { "fewer" => 4, "more" => 15, _ => 8 }));
+                kv.Add(("difficulty", getDifficulty?.Invoke() ?? "mixed"));
+                var types = getTypes?.Invoke() ?? Array.Empty<string>();
                 if (types.Length > 0) kv.Add(("types", types));
                 break;
-            case "flashcards":
-                kv.Add(("count", (int)count.Value));
+            }
+            case "mindmap":
+            case "knowledge_graph":
+                kv.Add(("detail", getDetail?.Invoke() ?? "standard"));
                 break;
+            case "flashcards":
+            {
+                var q = getQuantity?.Invoke() ?? "standard";
+                kv.Add(("quantity", q));
+                kv.Add(("count", q switch { "fewer" => 6, "more" => 24, _ => 12 }));
+                kv.Add(("difficulty", getDifficulty?.Invoke() ?? "mixed"));
+                break;
+            }
             case "report":
-                kv.Add(("format", (variant!.SelectedItem as ComboBoxItem)?.Tag as string ?? "document"));
+                kv.Add(("format", getFormat?.Invoke() ?? "document"));
+                kv.Add(("depth", getDepth?.Invoke() ?? "standard"));
+                kv.Add(("reviewOutline", wantOutlinePreview));
                 break;
             case "slides":
-                kv.Add(("pages", (int)slidePages!.Value));
-                kv.Add(("reviewOutline", review!.IsChecked == true));
+                kv.Add(("length", getLength?.Invoke() ?? "standard"));
+                kv.Add(("reviewOutline", wantOutlinePreview));
                 break;
             case "infographic":
-                kv.Add(("orientation", (variant!.SelectedItem as ComboBoxItem)?.Tag as string ?? "landscape"));
+                kv.Add(("orientation", getOrientation?.Invoke() ?? "landscape"));
                 break;
             case "audio":
-                kv.Add(("format", (variant!.SelectedItem as ComboBoxItem)?.Tag as string ?? "deep_dive"));
+                kv.Add(("format", getFormat?.Invoke() ?? "deep_dive"));
+                kv.Add(("length", getLength?.Invoke() ?? "standard"));
                 break;
         }
         return Args(kv.ToArray());

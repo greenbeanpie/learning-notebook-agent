@@ -1,3 +1,6 @@
+#[cfg(target_os = "android")]
+mod android_jni;
+
 use lna_api::CoreRuntime;
 use serde::Deserialize;
 use std::ffi::{CStr, CString};

@@ -59,6 +59,47 @@ struct MainView: View {
         .padding(14)
         .background(canvasBg)
         .preferredColorScheme(resolvedColorScheme)
+        .sheet(isPresented: Binding(get: { pendingStudioKind != nil }, set: { if !$0 { pendingStudioKind = nil } })) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(state.isEnglish ? "Configure Studio Artifact" : "生成配置")
+                    .font(.headline)
+                Text(state.isEnglish ? "Prompt / Focus & Scope (Optional)" : "生成提示与范围要求（可选）")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                TextEditor(text: $studioPromptInput)
+                    .frame(minHeight: 110, maxHeight: 180)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.35)))
+                if pendingStudioKind == "mindmap" || pendingStudioKind == "knowledge_graph" {
+                    Picker(state.isEnglish ? "Detail Level" : "详尽程度", selection: $studioDetailLevel) {
+                        Text(state.isEnglish ? "Concise (2-3 levels)" : "简洁（2~3 层概览）").tag("concise")
+                        Text(state.isEnglish ? "Standard (3-4 levels)" : "标准（3~4 层均衡）").tag("standard")
+                        Text(state.isEnglish ? "Detailed (4-5 levels)" : "详尽（4~5 层细分）").tag("detailed")
+                    }
+                    .pickerStyle(.segmented)
+                } else if pendingStudioKind == "report" {
+                    Picker(state.isEnglish ? "Depth" : "报告深度", selection: $studioDetailLevel) {
+                        Text(state.isEnglish ? "Brief" : "简明摘要").tag("brief")
+                        Text(state.isEnglish ? "Standard" : "标准报告").tag("standard")
+                        Text(state.isEnglish ? "Deep" : "深度解析").tag("deep")
+                    }
+                    .pickerStyle(.segmented)
+                }
+                HStack {
+                    Spacer()
+                    Button(state.isEnglish ? "Cancel" : "取消") { pendingStudioKind = nil }
+                    Button(state.isEnglish ? "Generate" : "开始生成") {
+                        let k = pendingStudioKind ?? "mindmap"
+                        let p = studioPromptInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let d = studioDetailLevel
+                        pendingStudioKind = nil
+                        Task { await state.createStudio(kind: k, topic: p, detail: d) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(20)
+            .frame(width: 460)
+        }
         .sheet(isPresented: $state.showSettingsSheet) {
             UnifiedSettingsSheet().environmentObject(state)
         }
@@ -261,7 +302,7 @@ struct MainView: View {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(tiles, id: \.0) { kind, label, icon in
                         Button {
-                            Task { await state.createStudio(kind: kind) }
+                            studioPromptInput = ""; studioDetailLevel = "standard"; pendingStudioKind = kind
                         } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: icon)

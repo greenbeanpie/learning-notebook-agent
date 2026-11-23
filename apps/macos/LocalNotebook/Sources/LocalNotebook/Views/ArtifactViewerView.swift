@@ -6,10 +6,13 @@ struct ArtifactViewerView: View {
     let artifact: StudioArtifactItem
     @State private var infographicScale: CGFloat = 1.0
     @State private var draftText: String = ""
+    @State private var revisePrompt: String = ""
+    @State private var isRevisingDraft: Bool = false
     @State private var editingDraft: Bool = false
     @State private var selectedSectionId: Int = 0
     @State private var showPromptPopover: Bool = false
     @State private var showDiagLog: Bool = false
+    @State private var showThoughts: Bool = false
 
     private var promptPillText: String {
         if artifact.sourceCount > 0 {
@@ -43,6 +46,15 @@ struct ArtifactViewerView: View {
                 }
                 Spacer()
                 Button {
+                    showThoughts.toggle()
+                } label: {
+                    Label(state.isEnglish ? "Thoughts" : "思考过程", systemImage: "sparkles")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
                     if state.prefs.fullscreenAnimation {
                         withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
                             state.studioFullscreen.toggle()
@@ -75,7 +87,9 @@ struct ArtifactViewerView: View {
 
             Divider()
 
-            if artifact.status == "FAILED" {
+            if artifact.status == "PENDING" || artifact.status == "RUNNING" || showThoughts {
+                thoughtsWorkflowBody
+            } else if artifact.status == "FAILED" {
                 failedBody
             } else if artifact.status == "DRAFT_REVIEW" {
                 draftReviewBody
@@ -87,6 +101,9 @@ struct ArtifactViewerView: View {
                     onExpandMindmap: { c in Task { await state.createConceptLink(kind: "mindmap", concept: c) } },
                     onAskConcept: { c in Task { await state.sendChat(c) } }
                 )
+                feedbackBar
+            } else if artifact.artifactType == "slides" {
+                SlideDeckView(payload: artifact.payload, en: state.isEnglish)
                 feedbackBar
             } else if artifact.artifactType == "report" {
                 reportBody
@@ -103,7 +120,7 @@ struct ArtifactViewerView: View {
                 feedbackBar
             }
         }
-        .onAppear { draftText = artifact.draftMarkdown }
+        .onAppear { draftText = artifact.draftMarkdown; Task { await state.loadStudioThoughts(artifactId: artifact.id) } }
     }
 
     private var promptAndSourcesPopover: some View {
@@ -255,6 +272,26 @@ struct ArtifactViewerView: View {
                 .background(Color(white: 0.16))
                 .cornerRadius(12)
             }
+            HStack(spacing: 8) {
+                TextField(
+                    state.isEnglish ? "Enter revision prompt to refine outline..." : "输入调整要求（如：拆分第3部分、补充案例），可反复调整…",
+                    text: $revisePrompt
+                )
+                .textFieldStyle(.roundedBorder)
+                Button(isRevisingDraft ? (state.isEnglish ? "Revising..." : "调整中…") : (state.isEnglish ? "Revise with AI" : "AI 调整提纲")) {
+                    let instr = revisePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !instr.isEmpty else { return }
+                    isRevisingDraft = true
+                    Task {
+                        if let updated = await state.reviseDraft(artifactId: artifact.id, instruction: instr, currentDraft: draftText) {
+                            draftText = updated
+                            revisePrompt = ""
+                        }
+                        isRevisingDraft = false
+                    }
+                }
+                .disabled(isRevisingDraft || revisePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
             Button(state.t("studio.approve_draft")) {
                 Task { await state.approveDraft(artifactId: artifact.id, markdown: draftText) }
             }
@@ -360,5 +397,49 @@ struct ArtifactViewerView: View {
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]),
               let s = String(data: data, encoding: .utf8) else { return "" }
         return s
+    }
+
+    private var thoughtsWorkflowBody: some View {
+        let steps = state.studioThoughts[artifact.id] ?? []
+        return VStack(alignment: .leading, spacing: 10) {
+            if artifact.status == "PENDING" || artifact.status == "RUNNING" {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(state.isEnglish ? "AI workflow in progress..." : "AI 正在执行工具调用与思考…")
+                        .font(.subheadline.bold())
+                }
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if steps.isEmpty {
+                        Text(state.isEnglish ? "Waiting for AI steps..." : "正在等待 AI 工作步骤与思考记录…")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(steps) { step in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(step.kind == "tool" ? Color.cyan : (step.kind == "reasoning" ? Color.blue : Color.green))
+                                        .frame(width: 6, height: 6)
+                                    Text(step.title)
+                                        .font(.caption.bold())
+                                }
+                                if !step.body.isEmpty {
+                                    Text(step.body)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.05))
+                            .cornerRadius(8)
+                        }
+                    }
+                }
+            }
+        }
     }
 }

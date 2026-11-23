@@ -306,36 +306,134 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         let st = state.clone();
         let k = kind.clone();
         btn.connect_clicked(move |_| {
-            let nid = st.active_notebook_id.borrow().clone();
-            if nid.is_empty() {
+            let nid_check = st.active_notebook_id.borrow().clone();
+            if nid_check.is_empty() {
                 return;
             }
-            let dlang = st.prefs.borrow().default_studio_lang.clone();
-            let mut cfg = if k == "slides" {
-                json!({ "pages": 8, "reviewOutline": true })
-            } else if k == "knowledge_graph" {
-                json!({ "mode": "knowledge_graph" })
-            } else {
-                json!({})
-            };
-            let actual_type = if k == "knowledge_graph" { "mindmap" } else { k.as_str() };
-            if !dlang.is_empty() {
-                if let Some(obj) = cfg.as_object_mut() {
-                    obj.insert("lang".into(), json!(dlang));
-                }
-            }
             let en = st.is_en();
-            match call_core(
-                &st.core,
-                "studio.create",
-                json!({ "notebook_id": nid, "artifact_type": actual_type, "config": cfg }),
-            ) {
-                Ok(_) => {
-                    st.status_label.set_text(tr(en, "studio.submitted"));
-                    refresh_all(&st);
+            let win = gtk4::Window::builder()
+                .title(if en { format!("Generate {k}") } else { format!("生成配置 · {k}") })
+                .default_width(480)
+                .default_height(360)
+                .modal(true)
+                .build();
+            let vbox = GtkBox::new(Orientation::Vertical, 10);
+            vbox.set_margin_top(16);
+            vbox.set_margin_bottom(16);
+            vbox.set_margin_start(16);
+            vbox.set_margin_end(16);
+
+            let prompt_lbl = Label::new(Some(if en {
+                "Prompt / Focus & Scope (Optional)"
+            } else {
+                "生成提示与范围要求（可选）"
+            }));
+            prompt_lbl.set_xalign(0.0);
+            vbox.append(&prompt_lbl);
+
+            let tv = gtk4::TextView::new();
+            tv.set_wrap_mode(gtk4::WrapMode::WordChar);
+            let tv_scroll = ScrolledWindow::builder()
+                .child(&tv)
+                .min_content_height(110)
+                .vexpand(true)
+                .build();
+            vbox.append(&tv_scroll);
+
+            let detail_combo = if k == "mindmap" || k == "knowledge_graph" {
+                let dl = Label::new(Some(if en { "Detail Level" } else { "详尽程度" }));
+                dl.set_xalign(0.0);
+                vbox.append(&dl);
+                let dd = gtk4::DropDown::from_strings(if en {
+                    &["Concise (2-3 levels)", "Standard (3-4 levels)", "Detailed (4-5 levels)"]
+                } else {
+                    &["简洁（2~3 层概览）", "标准（3~4 层均衡）", "详尽（4~5 层细分）"]
+                });
+                dd.set_selected(1);
+                vbox.append(&dd);
+                Some(dd)
+            } else if k == "report" {
+                let dl = Label::new(Some(if en { "Depth" } else { "报告深度" }));
+                dl.set_xalign(0.0);
+                vbox.append(&dl);
+                let dd = gtk4::DropDown::from_strings(if en {
+                    &["Brief", "Standard", "Deep"]
+                } else {
+                    &["简明摘要", "标准报告", "深度解析"]
+                });
+                dd.set_selected(1);
+                vbox.append(&dd);
+                Some(dd)
+            } else {
+                None
+            };
+
+            let actions = GtkBox::new(Orientation::Horizontal, 8);
+            actions.set_halign(gtk4::Align::End);
+            let cancel_b = Button::with_label(if en { "Cancel" } else { "取消" });
+            let ok_b = Button::with_label(if en { "Generate" } else { "开始生成" });
+            ok_b.add_css_class("suggested-action");
+            actions.append(&cancel_b);
+            actions.append(&ok_b);
+            vbox.append(&actions);
+            win.set_child(Some(&vbox));
+
+            let win_c = win.clone();
+            cancel_b.connect_clicked(move |_| win_c.close());
+
+            let st_ok = st.clone();
+            let k_ok = k.clone();
+            let win_ok = win.clone();
+            ok_b.connect_clicked(move |_| {
+                let buf = tv.buffer();
+                let topic_txt = buf.text(&buf.start_iter(), &buf.end_iter(), false).trim().to_string();
+                let nid = st_ok.active_notebook_id.borrow().clone();
+                let dlang = st_ok.prefs.borrow().default_studio_lang.clone();
+                let mut cfg = if k_ok == "quiz" {
+                    json!({ "count": 5, "difficulty": "mixed", "types": ["single", "multi"] })
+                } else if k_ok == "flashcards" {
+                    json!({ "count": 10, "difficulty": "mixed" })
+                } else if k_ok == "slides" {
+                    json!({ "pages": 8, "reviewOutline": true })
+                } else if k_ok == "knowledge_graph" {
+                    json!({ "mode": "knowledge_graph" })
+                } else {
+                    json!({})
+                };
+                if let Some(obj) = cfg.as_object_mut() {
+                    if !topic_txt.is_empty() {
+                        obj.insert("topic".into(), json!(topic_txt));
+                    }
+                    if !dlang.is_empty() {
+                        obj.insert("lang".into(), json!(dlang));
+                    }
+                    if let Some(dd) = detail_combo.as_ref() {
+                        let sel = dd.selected();
+                        if k_ok == "mindmap" || k_ok == "knowledge_graph" {
+                            let dv = match sel { 0 => "concise", 2 => "detailed", _ => "standard" };
+                            obj.insert("detail".into(), json!(dv));
+                        } else if k_ok == "report" {
+                            let dv = match sel { 0 => "brief", 2 => "deep", _ => "standard" };
+                            obj.insert("depth".into(), json!(dv));
+                        }
+                    }
                 }
-                Err(e) => st.status_label.set_text(&friendly_err(en, e)),
-            }
+                let actual_type = if k_ok == "knowledge_graph" { "mindmap" } else { k_ok.as_str() };
+                let en2 = st_ok.is_en();
+                match call_core(
+                    &st_ok.core,
+                    "studio.create",
+                    json!({ "notebook_id": nid, "artifact_type": actual_type, "config": cfg }),
+                ) {
+                    Ok(_) => {
+                        st_ok.status_label.set_text(tr(en2, "studio.submitted"));
+                        refresh_all(&st_ok);
+                    }
+                    Err(e) => st_ok.status_label.set_text(&friendly_err(en2, e)),
+                }
+                win_ok.close();
+            });
+            win.present();
         });
         tile_grid.attach(&btn, (idx % 2) as i32, (idx / 2) as i32, 1, 1);
     }
@@ -679,6 +777,55 @@ fn refresh_all(st: &Rc<UiState>) {
     }
 }
 
+
+fn build_thoughts_panel(art: &Value, en: bool) -> GtkBox {
+    let box_w = GtkBox::new(Orientation::Vertical, 6);
+    if let Some(arr) = art.get("thoughts").and_then(Value::as_array) {
+        let items: Vec<&Value> = arr
+            .iter()
+            .filter(|t| t.get("kind").and_then(Value::as_str) != Some("retry"))
+            .collect();
+        if items.is_empty() {
+            let empty = Label::new(Some(if en {
+                "Waiting for AI workflow steps..."
+            } else {
+                "正在等待 AI 工作步骤与思考记录…"
+            }));
+            empty.set_xalign(0.0);
+            empty.add_css_class("lna-muted");
+            box_w.append(&empty);
+        } else {
+            for t in items {
+                let kind = t.get("kind").and_then(Value::as_str).unwrap_or("stage");
+                let title = t.get("title").and_then(Value::as_str).unwrap_or("");
+                let body = t.get("body").and_then(Value::as_str).unwrap_or("");
+                let card = GtkBox::new(Orientation::Vertical, 4);
+                card.add_css_class("lna-card");
+                let tag = match kind {
+                    "tool" => if en { "[Tool] " } else { "[工具调用] " },
+                    "reasoning" => if en { "[Thinking] " } else { "[思考总结] " },
+                    "error" => if en { "[Error] " } else { "[错误] " },
+                    _ => if en { "[Step] " } else { "[步骤] " },
+                };
+                let head = Label::new(Some(&format!("{tag}{title}")));
+                head.set_xalign(0.0);
+                head.set_wrap(true);
+                card.append(&head);
+                if !body.is_empty() {
+                    let b = Label::new(Some(body));
+                    b.set_xalign(0.0);
+                    b.set_wrap(true);
+                    b.set_selectable(true);
+                    b.add_css_class("lna-muted");
+                    card.append(&b);
+                }
+                box_w.append(&card);
+            }
+        }
+    }
+    box_w
+}
+
 fn build_prompt_sources_button(st: &Rc<UiState>, art: &Value, artifact_id: &str) -> MenuButton {
     let en = st.is_en();
     let prompt_text = art
@@ -852,7 +999,39 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
     let status = art.get("status").and_then(Value::as_str).unwrap_or("");
     let kind = art.get("artifact_type").and_then(Value::as_str).unwrap_or("");
 
-    if status == "FAILED" {
+    if status == "READY" {
+        if art.get("thoughts").and_then(Value::as_array).map(|a| !a.is_empty()).unwrap_or(false) {
+            let exp = Expander::new(Some(if en { "AI Workflow & Thoughts" } else { "查看 AI 工具调用与思考过程" }));
+            let list = build_thoughts_panel(&art, en);
+            exp.set_child(Some(&ScrolledWindow::builder().child(&list).min_content_height(160).max_content_height(280).build()));
+            st.studio_detail_box.append(&exp);
+        }
+    }
+
+    if status == "PENDING" || status == "RUNNING" {
+        let prog_box = GtkBox::new(Orientation::Vertical, 10);
+        let stage = art.get("stage").and_then(Value::as_str).unwrap_or("PROCESSING");
+        let pct = (art.get("progress").and_then(Value::as_f64).unwrap_or(0.0) * 100.0).round() as i32;
+        let hdr_lbl = Label::new(Some(&format!(
+            "{} · {} ({pct}%)",
+            if en { "AI Workflow in Progress" } else { "AI 正在执行工作流" },
+            stage
+        )));
+        hdr_lbl.set_xalign(0.0);
+        prog_box.append(&hdr_lbl);
+        let thoughts_list = build_thoughts_panel(&art, en);
+        prog_box.append(&ScrolledWindow::builder().child(&thoughts_list).vexpand(true).min_content_height(260).build());
+        let refresh_btn = Button::with_label(if en { "Refresh Progress" } else { "刷新实时进度" });
+        refresh_btn.add_css_class("lna-pill-btn");
+        refresh_btn.set_halign(gtk4::Align::Start);
+        let st_ref = st.clone();
+        let aid_ref = artifact_id.to_string();
+        refresh_btn.connect_clicked(move |_| {
+            open_artifact_inline(&st_ref, &aid_ref);
+        });
+        prog_box.append(&refresh_btn);
+        st.studio_detail_box.append(&prog_box);
+    } else if status == "FAILED" {
         let err_box = GtkBox::new(Orientation::Vertical, 10);
         err_box.add_css_class("lna-card");
         let code = art.get("error_code").and_then(Value::as_str).unwrap_or("");
@@ -924,7 +1103,41 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
             );
             refresh_all(&st_ap);
         });
+        let rev_row = GtkBox::new(Orientation::Horizontal, 6);
+        let rev_entry = Entry::builder()
+            .placeholder_text(if en {
+                "Enter revision prompt to refine outline..."
+            } else {
+                "输入调整要求（如：拆分第3部分、补充案例），可反复让 AI 调整…"
+            })
+            .hexpand(true)
+            .build();
+        let rev_btn = Button::with_label(if en { "Revise with AI" } else { "AI 调整提纲" });
+        rev_btn.add_css_class("lna-pill-btn");
+        let st_rv = st.clone();
+        let aid_rv = artifact_id.to_string();
+        let buf_rv = tv.buffer();
+        let rev_entry_c = rev_entry.clone();
+        rev_btn.connect_clicked(move |_| {
+            let instr = rev_entry_c.text().to_string();
+            if instr.trim().is_empty() { return; }
+            let (s, e) = buf_rv.bounds();
+            let cur_draft = buf_rv.text(&s, &e, false).to_string();
+            if let Ok(updated) = call_core(
+                &st_rv.core,
+                "studio.revise_draft",
+                json!({ "artifact_id": aid_rv, "instruction": instr.trim(), "draft": cur_draft }),
+            ) {
+                if let Some(new_md) = updated.get("draft").and_then(Value::as_str) {
+                    buf_rv.set_text(new_md);
+                    rev_entry_c.set_text("");
+                }
+            }
+        });
+        rev_row.append(&rev_entry);
+        rev_row.append(&rev_btn);
         st.studio_detail_box.append(&ScrolledWindow::builder().child(&tv).vexpand(true).build());
+        st.studio_detail_box.append(&rev_row);
         st.studio_detail_box.append(&approve);
     } else if kind == "mindmap" {
         let payload = art.get("payload").unwrap_or(&Value::Null);
@@ -958,6 +1171,9 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
             refresh_all(&st_link);
         });
         st.studio_detail_box.append(&build_mindmap_widget(payload, en, is_kg, on_action));
+    } else if kind == "slides" {
+        let payload = art.get("payload").unwrap_or(&Value::Null);
+        st.studio_detail_box.append(&crate::slides_view::build_slides_widget(payload, en));
     } else if kind == "report" {
         let split = GtkBox::new(Orientation::Horizontal, 12);
         split.set_vexpand(true);
@@ -1174,19 +1390,140 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let save_model_btn = Button::with_label(tr(en, "settings.save"));
     save_model_btn.add_css_class("lna-primary-btn");
 
+    let presets_val = call_core(&st.core, "profile.presets", json!({}))
+        .ok()
+        .and_then(|v| v.get("presets").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    let mut preset_labels: Vec<String> = vec![if en {
+        "— Select Provider Preset —".into()
+    } else {
+        "— 选择 AI 提供商预设（快速填充）—".into()
+    }];
+    for pr in &presets_val {
+        let lbl = if en {
+            pr.get("name_en").and_then(Value::as_str)
+        } else {
+            pr.get("name").and_then(Value::as_str)
+        }
+        .unwrap_or("");
+        preset_labels.push(lbl.to_string());
+    }
+    let preset_label_refs: Vec<&str> = preset_labels.iter().map(String::as_str).collect();
+    let preset_dd = DropDown::from_strings(&preset_label_refs);
+
+    model_box.append(&Label::new(Some(if en {
+        "Provider Preset"
+    } else {
+        "AI 提供商预设"
+    })));
+    model_box.append(&preset_dd);
     model_box.append(&Label::new(Some("Protocol (chat_completion / responses / anthropic / gemini)")));
     model_box.append(&proto_entry);
     model_box.append(&Label::new(Some("Base URL")));
     model_box.append(&url_entry);
     model_box.append(&Label::new(Some("Model ID")));
     model_box.append(&model_entry);
+    let extra_headers_rows: Rc<RefCell<Vec<(Entry, Entry)>>> = Rc::new(RefCell::new(Vec::new()));
+    let headers_list = GtkBox::new(Orientation::Vertical, 6);
+    let headers_hdr = GtkBox::new(Orientation::Horizontal, 8);
+    let headers_lbl = Label::new(Some(if en { "Extra Headers" } else { "额外请求头" }));
+    headers_lbl.set_hexpand(true);
+    headers_lbl.set_xalign(0.0);
+    let add_hdr_btn = Button::with_label(if en { "+ Add Header" } else { "+ 添加请求头" });
+    add_hdr_btn.add_css_class("lna-pill-btn");
+    let rows_add = extra_headers_rows.clone();
+    let list_add = headers_list.clone();
+    add_hdr_btn.connect_clicked(move |_| {
+        let row_box = GtkBox::new(Orientation::Horizontal, 6);
+        let k_ent = Entry::builder().placeholder_text(if en { "Header name" } else { "请求头名称" }).hexpand(true).build();
+        let v_ent = Entry::builder().placeholder_text(if en { "Value" } else { "请求头值" }).hexpand(true).build();
+        let del_btn = Button::with_label(if en { "Delete" } else { "删除" });
+        del_btn.add_css_class("lna-pill-btn");
+        row_box.append(&k_ent);
+        row_box.append(&v_ent);
+        row_box.append(&del_btn);
+        list_add.append(&row_box);
+        rows_add.borrow_mut().push((k_ent.clone(), v_ent.clone()));
+        let rows_del = rows_add.clone();
+        let list_del = list_add.clone();
+        let row_del = row_box.clone();
+        del_btn.connect_clicked(move |_| {
+            rows_del.borrow_mut().retain(|(k, _)| k != &k_ent);
+            list_del.remove(&row_del);
+        });
+    });
+    headers_hdr.append(&headers_lbl);
+    headers_hdr.append(&add_hdr_btn);
+
+    let proto_p = proto_entry.clone();
+    let url_p = url_entry.clone();
+    let model_p = model_entry.clone();
+    let rows_p = extra_headers_rows.clone();
+    let list_p = headers_list.clone();
+    preset_dd.connect_selected_notify(move |dd| {
+        let idx = dd.selected() as usize;
+        if idx == 0 {
+            return;
+        }
+        let Some(pr) = presets_val.get(idx - 1) else {
+            return;
+        };
+        if let Some(p) = pr.get("protocol").and_then(Value::as_str) {
+            proto_p.set_text(p);
+        }
+        if let Some(u) = pr.get("base_url").and_then(Value::as_str) {
+            url_p.set_text(u);
+        }
+        if let Some(m) = pr.get("default_model").and_then(Value::as_str) {
+            model_p.set_text(m);
+        }
+        rows_p.borrow_mut().clear();
+        while let Some(child) = list_p.first_child() {
+            list_p.remove(&child);
+        }
+        if let Some(hdrs) = pr.get("extra_headers").and_then(Value::as_object) {
+            for (hk, hv) in hdrs {
+                let row_box = GtkBox::new(Orientation::Horizontal, 6);
+                let k_ent = Entry::builder().text(hk).hexpand(true).build();
+                let v_ent = Entry::builder()
+                    .text(hv.as_str().unwrap_or(""))
+                    .hexpand(true)
+                    .build();
+                let del_btn = Button::with_label(if en { "Delete" } else { "删除" });
+                del_btn.add_css_class("lna-pill-btn");
+                row_box.append(&k_ent);
+                row_box.append(&v_ent);
+                row_box.append(&del_btn);
+                list_p.append(&row_box);
+                rows_p.borrow_mut().push((k_ent.clone(), v_ent.clone()));
+                let rows_del = rows_p.clone();
+                let list_del = list_p.clone();
+                let row_del = row_box.clone();
+                del_btn.connect_clicked(move |_| {
+                    rows_del.borrow_mut().retain(|(k, _)| k != &k_ent);
+                    list_del.remove(&row_del);
+                });
+            }
+        }
+    });
+
     model_box.append(&Label::new(Some("API Key")));
     model_box.append(&key_entry);
+    model_box.append(&headers_hdr);
+    model_box.append(&headers_list);
     model_box.append(&save_model_btn);
 
     let st_m = st.clone();
     let w_m = win.clone();
+    let rows_save = extra_headers_rows.clone();
     save_model_btn.connect_clicked(move |_| {
+        let mut hdr_map = serde_json::Map::new();
+        for (k_ent, v_ent) in rows_save.borrow().iter() {
+            let k = k_ent.text().trim().to_string();
+            if !k.is_empty() {
+                hdr_map.insert(k, Value::String(v_ent.text().trim().to_string()));
+            }
+        }
         let proto = proto_entry.text().to_string();
         let url = url_entry.text().to_string();
         let model = model_entry.text().to_string();
@@ -1200,6 +1537,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 "protocol": proto,
                 "base_url": url,
                 "model_id": model,
+                "extra_headers": Value::Object(hdr_map),
                 "activate": true
             }),
         ) {

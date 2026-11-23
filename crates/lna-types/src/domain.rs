@@ -380,6 +380,8 @@ pub struct StudioArtifact {
     pub in_studio: bool,
     #[serde(default)]
     pub origin_message_id: Option<String>,
+    #[serde(default)]
+    pub progress_state: Option<serde_json::Value>,
     pub created_at: i64,
     pub updated_at: i64,
     pub finished_at: Option<i64>,

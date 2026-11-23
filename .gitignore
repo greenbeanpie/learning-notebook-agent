@@ -32,6 +32,17 @@ pdfium.dll
 libpdfium.so
 libpdfium.dylib
 
+# Android / Gradle
+.gradle/
+.kotlin/
+apps/android/**/build/
+apps/android/**/jniLibs/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+
 # Python
 __pycache__/
 *.pyc

@@ -6,6 +6,17 @@
   "required": ["title", "slides"],
   "properties": {
     "title": { "type": "string" },
+    "subtitle": { "type": "string" },
+    "theme": {
+      "type": "string",
+      "enum": [
+        "executive_navy",
+        "editorial_slate",
+        "academic_sage",
+        "warm_terracotta",
+        "midnight_aurora"
+      ]
+    },
     "slides": {
       "type": "array",
       "items": {
@@ -13,9 +24,92 @@
         "additionalProperties": false,
         "required": ["layout", "title", "bullets", "speaker_notes", "citations"],
         "properties": {
-          "layout": { "type": "string", "enum": ["title", "section", "bullets", "two_column", "quote", "formula"] },
+          "layout": {
+            "type": "string",
+            "enum": [
+              "title",
+              "section",
+              "agenda",
+              "bullets",
+              "two_column",
+              "cards",
+              "metrics",
+              "timeline",
+              "table",
+              "quote",
+              "formula",
+              "summary"
+            ]
+          },
           "title": { "type": "string" },
+          "subtitle": { "type": "string" },
+          "section_number": { "type": "string" },
           "bullets": { "type": "array", "items": { "type": "string" } },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["heading", "items"],
+              "properties": {
+                "heading": { "type": "string" },
+                "items": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          "cards": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["title", "body"],
+              "properties": {
+                "tag": { "type": "string" },
+                "title": { "type": "string" },
+                "body": { "type": "string" }
+              }
+            }
+          },
+          "metrics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value", "label"],
+              "properties": {
+                "value": { "type": "string" },
+                "label": { "type": "string" },
+                "detail": { "type": "string" }
+              }
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["title", "detail"],
+              "properties": {
+                "step": { "type": "string" },
+                "title": { "type": "string" },
+                "detail": { "type": "string" }
+              }
+            }
+          },
+          "table": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["headers", "rows"],
+            "properties": {
+              "headers": { "type": "array", "items": { "type": "string" } },
+              "rows": {
+                "type": "array",
+                "items": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          "formula": { "type": "string" },
+          "callout": { "type": "string" },
           "speaker_notes": { "type": "string" },
           "citations": { "type": "array", "items": { "type": "integer" } }
         }

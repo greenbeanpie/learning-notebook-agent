@@ -1,5 +1,5 @@
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, DrawingArea, GestureClick, Orientation, Overlay, Popover, ScrolledWindow};
+use gtk4::{Box as GtkBox, Button, DrawingArea, GestureClick, GestureDrag, Orientation, Overlay, Popover, ScrolledWindow};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -37,6 +37,38 @@ const COL_GAP: f64 = 66.0;
 const TOGGLE_R: f64 = 10.5;
 const PAD_X: f64 = 68.0;
 const PAD_Y: f64 = 32.0;
+
+fn strip_citation_markers(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '[' || ch == '【' {
+            let close = if ch == '[' { ']' } else { '】' };
+            let mut j = i + 1;
+            let mut has_digit = false;
+            let mut valid = true;
+            while j < chars.len() && chars[j] != close {
+                let c = chars[j];
+                if c.is_ascii_digit() {
+                    has_digit = true;
+                } else if !matches!(c, ' ' | ',' | '，' | '-' | '–' | '—' | '、') {
+                    valid = false;
+                    break;
+                }
+                j += 1;
+            }
+            if valid && has_digit && j < chars.len() && chars[j] == close {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
 fn estimate_width(label: &str) -> f64 {
     let mut u: f64 = 0.0;
@@ -156,7 +188,7 @@ pub fn build_mindmap_widget(payload: &Value, en: bool, is_kg: bool, on_action: R
             .filter(|s| !s.is_empty())
             .map(String::from)
             .unwrap_or_else(|| format!("n{i}"));
-        let label = n.get("label").and_then(Value::as_str).unwrap_or("").to_string();
+        let label = strip_citation_markers(n.get("label").and_then(Value::as_str).unwrap_or(""));
         let pid = n
             .get("parent_id")
             .and_then(Value::as_str)
@@ -378,6 +410,27 @@ pub fn build_mindmap_widget(payload: &Value, en: bool, is_kg: bool, on_action: R
         .hexpand(true)
         .vexpand(true)
         .build();
+
+    // Drag-to-pan on the mindmap canvas
+    let drag = GestureDrag::new();
+    let pan_origin = Rc::new(RefCell::new((0.0_f64, 0.0_f64)));
+    {
+        let scroll_b = scroll.clone();
+        let origin_b = pan_origin.clone();
+        drag.connect_drag_begin(move |_, _, _| {
+            *origin_b.borrow_mut() = (scroll_b.hadjustment().value(), scroll_b.vadjustment().value());
+        });
+    }
+    {
+        let scroll_u = scroll.clone();
+        let origin_u = pan_origin.clone();
+        drag.connect_drag_update(move |_, ox, oy| {
+            let (sx, sy) = *origin_u.borrow();
+            scroll_u.hadjustment().set_value((sx - ox).max(0.0));
+            scroll_u.vadjustment().set_value((sy - oy).max(0.0));
+        });
+    }
+    area.add_controller(drag);
 
     // Floating left vertical controls (Expand/Collapse All, +, -)
     let ctrl_box = GtkBox::new(Orientation::Vertical, 6);

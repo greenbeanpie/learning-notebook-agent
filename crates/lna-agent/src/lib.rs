@@ -842,7 +842,7 @@ impl AgentService {
                             "topic": { "type": "string", "description": "聚焦的主题、章节或具体出题/编写要求（可选）" },
                             "lang": { "type": "string", "description": "输出语言代码，如 zh-CN 或 en（可选）" },
                             "count": { "type": "integer", "minimum": 3, "maximum": 40, "description": "题目数量（quiz 建议 5~8，默认 5）或闪卡数量（flashcards 建议 8~12，默认 10）" },
-                            "difficulty": { "type": "string", "enum": ["mixed", "easy", "medium", "hard"], "description": "测验难度（仅 quiz）" },
+                            "difficulty": { "type": "string", "enum": ["auto", "mixed", "easy", "medium", "hard"], "description": "测验难度（仅 quiz）：auto 为参考知识点图谱理解进度自适应难度（默认）；若用户未显式指定难度请省略或传 auto" },
                             "types": {
                                 "type": "array",
                                 "items": { "type": "string", "enum": ["single", "multi", "fill", "short"] },
@@ -853,6 +853,28 @@ impl AgentService {
                             "orientation": { "type": "string", "enum": ["landscape", "portrait", "square"], "description": "信息图方向（仅 infographic）" }
                         },
                         "required": ["artifact_type"]
+                    }),
+                },
+                ToolDef {
+                    name: "get_knowledge_progress".into(),
+                    description: "查询当前笔记本（或指定材料 source_id）的知识点图谱理解进度统计，包括已掌握/学习中/待巩固/未学习的概念列表、总体掌握率百分比与推荐测验难度。".into(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "source_id": { "type": "string", "description": "可选：指定材料 ID，仅查询该材料依附的知识点图谱进度" }
+                        }
+                    }),
+                },
+                ToolDef {
+                    name: "build_source_knowledge_graph".into(),
+                    description: "为指定材料（source_id）构建依附的知识点图谱（异步后台生成，不作为 Studio 产物展现）。当用户学习结构化教材/讲义并需要知识点图谱或前置依赖梳理时调用。".into(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "source_id": { "type": "string", "description": "目标材料 ID（可先通过 list_sources 获取）" },
+                            "detail": { "type": "string", "enum": ["concise", "standard", "detailed"], "description": "图谱细致度，默认 standard" }
+                        },
+                        "required": ["source_id"]
                     }),
                 },
                 ToolDef {
@@ -1515,6 +1537,43 @@ impl AgentService {
                                     }
                                 }
                             }
+                            "get_knowledge_progress" => {
+                                let sid = args.get("source_id").and_then(|x| x.as_str());
+                                match self.studio.compute_kg_progress_summary(notebook_id, sid) {
+                                    Ok(v) => {
+                                        custom_step_title = Some("已查询知识点图谱理解进度".into());
+                                        serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into())
+                                    }
+                                    Err(err_msg) => {
+                                        is_error = true;
+                                        err_msg.message
+                                    }
+                                }
+                            }
+                            "build_source_knowledge_graph" => {
+                                let sid = args.get("source_id").and_then(|x| x.as_str()).unwrap_or("").trim();
+                                let detail = args.get("detail").and_then(|x| x.as_str()).unwrap_or("standard");
+                                if sid.is_empty() {
+                                    is_error = true;
+                                    "缺少 source_id 参数。".to_string()
+                                } else {
+                                    let cfg = json!({
+                                        "mode": "knowledge_graph",
+                                        "source_id": sid,
+                                        "detail": detail,
+                                    });
+                                    match self.studio.create(notebook_id, ArtifactType::Mindmap, None, cfg) {
+                                        Ok(art) => {
+                                            custom_step_title = Some("已开始构建材料知识点图谱".into());
+                                            json!({ "ok": true, "artifact_id": art.id, "source_id": sid, "status": "PENDING" }).to_string()
+                                        }
+                                        Err(e) => {
+                                            is_error = true;
+                                            e.message
+                                        }
+                                    }
+                                }
+                            }
                             "report_thought_stage" => {
                                 "已记录当前思考阶段概括。".to_string()
                             }
@@ -1825,6 +1884,20 @@ impl AgentService {
         }
         let titles_list = excerpts.join("\n\n");
 
+        let sum_tid = format!("summary:{notebook_id}");
+        self.emit(
+            &format!("notebook:{notebook_id}"),
+            "ai.activity",
+            json!({
+                "task_id": sum_tid,
+                "notebook_id": notebook_id,
+                "scope": "notebook_summary",
+                "kind": "tool",
+                "title": "AI 生成笔记本概览与推荐问题",
+                "body": "正在综合已选来源的核心摘要，提炼主题并生成推荐问题…",
+                "active": true,
+            }),
+        );
         let req = LlmRequest {
             system: SUMMARY_PROMPT.to_string(),
             messages: vec![LlmMessage {
@@ -1835,10 +1908,52 @@ impl AgentService {
             tool_mode: ToolMode::None,
             output: OutputMode::JsonObject,
             max_output_tokens: 1200,
-            reasoning: ReasoningOptions::default(),
+            reasoning: ReasoningOptions {
+                show_summary: resolved.show_thinking,
+                effort: resolved.effort.clone(),
+            },
         };
 
-        let (raw, _) = self.llm.complete_text(&resolved, &req, cancel).await?;
+        let mut thought_buf = String::new();
+        let mut last_emit = std::time::Instant::now();
+        let sum_res = self
+            .llm
+            .complete_text_with_thinking(&resolved, &req, cancel, |delta| {
+                if delta.is_empty() { return; }
+                thought_buf.push_str(delta);
+                if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
+                    let preview: String = thought_buf.chars().rev().take(120).collect::<String>().chars().rev().collect();
+                    self.emit(
+                        &format!("notebook:{notebook_id}"),
+                        "ai.activity",
+                        json!({
+                            "task_id": sum_tid,
+                            "notebook_id": notebook_id,
+                            "scope": "notebook_summary",
+                            "kind": "reasoning",
+                            "title": "AI 思考 · 笔记本概览",
+                            "body": preview,
+                            "active": true,
+                        }),
+                    );
+                    last_emit = std::time::Instant::now();
+                }
+            })
+            .await;
+        self.emit(
+            &format!("notebook:{notebook_id}"),
+            "ai.activity",
+            json!({
+                "task_id": sum_tid,
+                "notebook_id": notebook_id,
+                "scope": "notebook_summary",
+                "kind": "done",
+                "title": "笔记本概览已更新",
+                "body": "",
+                "active": false,
+            }),
+        );
+        let (raw, _) = sum_res?;
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
             let summary_md = v.get("summary_md").and_then(|x| x.as_str()).unwrap_or("");
             let title_sugg = v.get("title_suggestion").and_then(|x| x.as_str());
@@ -2035,11 +2150,38 @@ impl AgentService {
                 max_output_tokens: 256,
                 reasoning: ReasoningOptions::default(),
             };
-            let Ok((raw, _)) = service
+            let fu_tid = format!("followups:{message_id}");
+            service.emit(
+                &format!("notebook:{notebook_id}"),
+                "ai.activity",
+                json!({
+                    "task_id": fu_tid,
+                    "notebook_id": notebook_id,
+                    "scope": "chat_followups",
+                    "kind": "stage",
+                    "title": "AI 生成延伸追问建议",
+                    "body": "正在结合本轮问答生成后续探索问题…",
+                    "active": true,
+                }),
+            );
+            let res_fu = service
                 .llm
                 .complete_text(&profile, &req, CancellationToken::new())
-                .await
-            else {
+                .await;
+            service.emit(
+                &format!("notebook:{notebook_id}"),
+                "ai.activity",
+                json!({
+                    "task_id": fu_tid,
+                    "notebook_id": notebook_id,
+                    "scope": "chat_followups",
+                    "kind": "done",
+                    "title": "延伸追问已就绪",
+                    "body": "",
+                    "active": false,
+                }),
+            );
+            let Ok((raw, _)) = res_fu else {
                 return;
             };
             let questions = dialog::parse_followups(&raw);
@@ -2244,8 +2386,8 @@ impl AgentService {
                     .get("difficulty")
                     .and_then(|x| x.as_str())
                     .map(str::trim)
-                    .filter(|s| matches!(*s, "mixed" | "easy" | "medium" | "hard"))
-                    .unwrap_or("mixed");
+                    .filter(|s| matches!(*s, "auto" | "mixed" | "easy" | "medium" | "hard"))
+                    .unwrap_or("auto");
                 cfg.insert("difficulty".into(), json!(difficulty));
 
                 let mut parsed_types: Vec<String> = Vec::new();

@@ -8,6 +8,7 @@ struct UnifiedSettingsSheet: View {
     @State private var baseUrl = ""
     @State private var modelId = ""
     @State private var apiKey = ""
+    @State private var extraHeaders: [(id: UUID, key: String, value: String)] = []
     @State private var statusMsg = ""
 
     var body: some View {
@@ -73,6 +74,26 @@ struct UnifiedSettingsSheet: View {
                     TextField(state.isEnglish ? "Base URL" : "接口地址 (Base URL)", text: $baseUrl)
                     TextField(state.isEnglish ? "Model ID" : "模型 ID", text: $modelId)
                     SecureField(state.isEnglish ? "API Key (stored in Keychain)" : "API Key（存入 macOS Keychain）", text: $apiKey)
+                    HStack {
+                        Text(state.isEnglish ? "Extra Headers" : "额外请求头").font(.caption).foregroundColor(.secondary)
+                        Spacer()
+                        Button(state.isEnglish ? "+ Add Header" : "+ 添加请求头") {
+                            extraHeaders.append((id: UUID(), key: "", value: ""))
+                        }
+                        .font(.caption)
+                    }
+                    ForEach($extraHeaders, id: \.id) { $hdr in
+                        HStack(spacing: 6) {
+                            TextField(state.isEnglish ? "Header name" : "请求头名称", text: $hdr.key)
+                            TextField(state.isEnglish ? "Value" : "请求头值", text: $hdr.value)
+                            Button {
+                                extraHeaders.removeAll { $0.id == hdr.id }
+                            } label: {
+                                Image(systemName: "trash").foregroundColor(.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                     if !statusMsg.isEmpty {
                         Text(statusMsg).font(.caption).foregroundColor(.secondary)
                     }
@@ -81,11 +102,17 @@ struct UnifiedSettingsSheet: View {
                         Button(state.t("settings.save")) {
                             Task {
                                 do {
+                                    var hdrDict: [String: String] = [:]
+                                    for h in extraHeaders {
+                                        let k = h.key.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        if !k.isEmpty { hdrDict[k] = h.value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                    }
                                     let prof = try await state.core.call(method: "profile.upsert", params: [
                                         "display_name": "\(proto) / \(modelId)",
                                         "protocol": proto,
                                         "base_url": baseUrl,
                                         "model_id": modelId,
+                                        "extra_headers": hdrDict,
                                         "activate": true
                                     ])
                                     if let kref = prof["keychain_ref"] as? String, !apiKey.isEmpty {

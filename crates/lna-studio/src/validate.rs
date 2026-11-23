@@ -233,14 +233,62 @@ pub fn dedup_flashcards(payload: &mut Value) {
     }
 }
 
-/// E4: Enforce mindmap depth <= 5 and max 8 children per node.
+/// Strip bracketed numeric citation tags like `[1]`, `[1][17]`, `[1, 2]`, `【1】` from mindmap labels.
+pub fn strip_citation_markers(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '[' || ch == '【' {
+            let close = if ch == '[' { ']' } else { '】' };
+            let mut j = i + 1;
+            let mut has_digit = false;
+            let mut valid = true;
+            while j < chars.len() && chars[j] != close {
+                let c = chars[j];
+                if c.is_ascii_digit() {
+                    has_digit = true;
+                } else if !matches!(c, ' ' | ',' | '，' | '-' | '–' | '—' | '、') {
+                    valid = false;
+                    break;
+                }
+                j += 1;
+            }
+            if valid && has_digit && j < chars.len() && chars[j] == close {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// E4: Enforce mindmap depth/branching limits based on detail level and strip `[n]` citations.
 pub fn enforce_mindmap_limits(payload: &mut Value) {
+    enforce_mindmap_limits_with_detail(payload, "standard");
+}
+
+pub fn enforce_mindmap_limits_with_detail(payload: &mut Value, detail: &str) {
+    let (max_depth, max_children) = match detail {
+        "concise" => (3usize, 6usize),
+        "detailed" => (6usize, 12usize),
+        _ => (5usize, 8usize),
+    };
     let Some(nodes) = payload.get("nodes").and_then(|x| x.as_array()).cloned() else {
         return;
     };
     let mut children_map: std::collections::HashMap<Option<String>, Vec<Value>> =
         std::collections::HashMap::new();
-    for n in nodes {
+    for mut n in nodes {
+        if let Some(obj) = n.as_object_mut() {
+            if let Some(lbl) = obj.get("label").and_then(|x| x.as_str()).map(strip_citation_markers) {
+                obj.insert("label".into(), Value::String(lbl));
+            }
+            obj.insert("citations".into(), Value::Array(Vec::new()));
+        }
         let pid = n
             .get("parent_id")
             .and_then(|x| x.as_str())
@@ -254,11 +302,11 @@ pub fn enforce_mindmap_limits(payload: &mut Value) {
     queue.push_back((None, 1));
 
     while let Some((pid, depth)) = queue.pop_front() {
-        if depth > 5 {
+        if depth > max_depth {
             continue;
         }
         if let Some(list) = children_map.get(&pid) {
-            for child in list.iter().take(8) {
+            for child in list.iter().take(max_children) {
                 kept.push(child.clone());
                 if let Some(cid) = child.get("id").and_then(|x| x.as_str()) {
                     queue.push_back((Some(cid.to_string()), depth + 1));

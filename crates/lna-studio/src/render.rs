@@ -122,16 +122,82 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
     for (idx, s) in slides.iter().enumerate() {
         let i = idx + 1;
         let title = xml_escape(s.get("title").and_then(|x| x.as_str()).unwrap_or("Slide"));
-        let bullets = s
-            .get("bullets")
-            .and_then(|b| b.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|b| format!("<a:p><a:r><a:rPr lang=\"zh-CN\" sz=\"1800\"/><a:t>• {}</a:t></a:r></a:p>", xml_escape(b)))
-                    .collect::<String>()
+        let mut lines: Vec<String> = Vec::new();
+        if let Some(sub) = s.get("subtitle").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+            lines.push(sub.trim().to_string());
+        }
+        if let Some(formula) = s.get("formula").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+            lines.push(format!("Formula: {}", formula.trim()));
+        }
+        if let Some(cards) = s.get("cards").and_then(|v| v.as_array()) {
+            for c in cards {
+                let ct = c.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let cb = c.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                if !ct.is_empty() || !cb.is_empty() {
+                    lines.push(format!("■ {ct} — {cb}"));
+                }
+            }
+        }
+        if let Some(cols) = s.get("columns").and_then(|v| v.as_array()) {
+            for c in cols {
+                let h = c.get("heading").and_then(|v| v.as_str()).unwrap_or("");
+                if !h.is_empty() { lines.push(format!("【{h}】")); }
+                if let Some(items) = c.get("items").and_then(|v| v.as_array()) {
+                    for it in items.iter().filter_map(|v| v.as_str()) {
+                        lines.push(format!("  • {it}"));
+                    }
+                }
+            }
+        }
+        if let Some(metrics) = s.get("metrics").and_then(|v| v.as_array()) {
+            for m in metrics {
+                let val = m.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                let lbl = m.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                let det = m.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+                lines.push(format!("{val} · {lbl} {det}").trim().to_string());
+            }
+        }
+        if let Some(steps) = s.get("steps").and_then(|v| v.as_array()) {
+            for (si, st) in steps.iter().enumerate() {
+                let num = st.get("step").and_then(|v| v.as_str()).unwrap_or("");
+                let stt = st.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let stdet = st.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+                let prefix = if num.is_empty() { format!("{}.", si + 1) } else { num.to_string() };
+                lines.push(format!("{prefix} {stt}: {stdet}"));
+            }
+        }
+        if let Some(tbl) = s.get("table").and_then(|v| v.as_object()) {
+            if let Some(hdrs) = tbl.get("headers").and_then(|v| v.as_array()) {
+                let hline = hdrs.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | ");
+                if !hline.is_empty() { lines.push(hline); }
+            }
+            if let Some(rows) = tbl.get("rows").and_then(|v| v.as_array()) {
+                for r in rows.iter().take(6) {
+                    if let Some(cells) = r.as_array() {
+                        lines.push(cells.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | "));
+                    }
+                }
+            }
+        }
+        if let Some(arr) = s.get("bullets").and_then(|b| b.as_array()) {
+            for t in arr.iter().filter_map(|v| v.as_str()) {
+                if !t.trim().is_empty() {
+                    lines.push(format!("• {}", t.trim()));
+                }
+            }
+        }
+        if let Some(callout) = s.get("callout").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+            lines.push(format!("★ {}", callout.trim()));
+        }
+        let bullets = lines
+            .iter()
+            .map(|t| {
+                format!(
+                    "<a:p><a:r><a:rPr lang=\"zh-CN\" sz=\"1600\"/><a:t>{}</a:t></a:r></a:p>",
+                    xml_escape(t)
+                )
             })
-            .unwrap_or_default();
+            .collect::<String>();
 
         let slide_xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -297,11 +363,9 @@ pub fn render_mindmap_svg(payload: &Value, out_path: &Path) -> LnaResult<()> {
         for n in nodes {
             if n.get("parent_id").and_then(|x| x.as_str()) == parent_id {
                 let idx = out.len();
-                let label = n
-                    .get("label")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let label = crate::validate::strip_citation_markers(
+                    n.get("label").and_then(|x| x.as_str()).unwrap_or("")
+                );
                 let x = 48 + depth * 220;
                 let y = 96 + *row * 56;
                 *row += 1;

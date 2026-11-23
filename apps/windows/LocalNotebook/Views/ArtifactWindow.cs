@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System.Text;
 using System.Text.Json;
@@ -45,6 +46,8 @@ public sealed class ArtifactViewerPane : IDisposable
     private readonly Action<string>? _onQuizConcept;
     private readonly Action<string>? _onExpandMindmap;
     private readonly Action<string>? _onAskConcept;
+    private readonly WebContentHost? _math;
+    private readonly Panel? _mathHost;
     private readonly TextBlock _title = new() { FontSize = 17, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button _promptSourcesBtn = new()
     {
@@ -85,7 +88,9 @@ public sealed class ArtifactViewerPane : IDisposable
         Action onToggleFullscreen,
         Action<string>? onQuizConcept = null,
         Action<string>? onExpandMindmap = null,
-        Action<string>? onAskConcept = null)
+        Action<string>? onAskConcept = null,
+        WebContentHost? math = null,
+        Panel? mathHost = null)
     {
         _id = id;
         _hostWindow = hostWindow;
@@ -94,6 +99,8 @@ public sealed class ArtifactViewerPane : IDisposable
         _onQuizConcept = onQuizConcept;
         _onExpandMindmap = onExpandMindmap;
         _onAskConcept = onAskConcept;
+        _math = math;
+        _mathHost = mathHost;
 
         Root.RowSpacing = 10;
         Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -215,7 +222,7 @@ public sealed class ArtifactViewerPane : IDisposable
     private async Task LoadAsync()
     {
         if (_disposed) return;
-        var res = await Core("studio.get", Args(("artifact_id", _id)), "读取产物");
+        var res = await Core("studio.get", Args(("artifact_id", _id)), L10n.T("art.op_load"));
         if (_disposed || res is not { } a) return;
         _art = a;
         _title.Text = Str(a, "title");
@@ -254,6 +261,8 @@ public sealed class ArtifactViewerPane : IDisposable
             }
             _interactiveView = new InteractiveArtifactView(
                 _id, kind, a, _hostWindow, Say, compact: false, feedbackBar: BuildFeedbackBar(),
+                math: _math,
+                mathHost: _mathHost,
                 onExportSvg: () => _ = ExportAsync("svg", ".svg", "SVG"),
                 onQuizConcept: _onQuizConcept,
                 onExpandMindmap: _onExpandMindmap,
@@ -273,14 +282,14 @@ public sealed class ArtifactViewerPane : IDisposable
 
     private static string FormatGenStage(string status, string stage) => status switch
     {
-        "PENDING" => "正在排队等待后台工作线程处理…",
+        "PENDING" => L10n.T("art.stage_pending"),
         _ => stage switch
         {
-            "COLLECT" => "步骤 1/3 · 正在检索与整理来源资料…",
-            "PLAN" => "步骤 2/3 · 正在规划大纲结构…",
-            "GENERATE" => "步骤 2/3 · 正在思考并生成结构化内容…",
-            "RENDER" => "步骤 3/3 · 正在渲染输出文件…",
-            _ => "正在后台处理中…",
+            "COLLECT" => L10n.T("art.stage_collect"),
+            "PLAN" => L10n.T("art.stage_plan"),
+            "GENERATE" => L10n.T("art.stage_generate"),
+            "RENDER" => L10n.T("art.stage_render"),
+            _ => L10n.T("art.stage_default"),
         },
     };
 
@@ -319,7 +328,7 @@ public sealed class ArtifactViewerPane : IDisposable
 
         _genCancelBtn = new Button
         {
-            Content = "取消生成",
+            Content = L10n.T("art.cancel_gen"),
             Style = (Style)Application.Current.Resources["PillButtonStyle"],
             MinHeight = 30,
             Padding = new Thickness(12, 4, 12, 4),
@@ -328,7 +337,7 @@ public sealed class ArtifactViewerPane : IDisposable
         _genCancelBtn.Click += async (_, _) =>
         {
             if (_genCancelBtn != null) _genCancelBtn.IsEnabled = false;
-            await Core("studio.cancel", Args(("artifact_id", _id)), "取消");
+            await Core("studio.cancel", Args(("artifact_id", _id)), L10n.T("art.cancel_gen"));
             await LoadAsync();
         };
         Grid.SetColumn(_genCancelBtn, 1);
@@ -350,7 +359,7 @@ public sealed class ArtifactViewerPane : IDisposable
         processGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         processGrid.Children.Add(new TextBlock
         {
-            Text = "思考与执行过程",
+            Text = L10n.T("art.thoughts_header"),
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
             Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
@@ -365,7 +374,7 @@ public sealed class ArtifactViewerPane : IDisposable
         {
             _thoughtEmptyHint = new TextBlock
             {
-                Text = "等待后台任务开始输出过程与思考内容…",
+                Text = L10n.T("art.waiting_thoughts"),
                 FontSize = 12,
                 Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
             };
@@ -454,6 +463,7 @@ public sealed class ArtifactViewerPane : IDisposable
         {
             "retry" => Windows.UI.Color.FromArgb(255, 253, 214, 99),
             "error" => Windows.UI.Color.FromArgb(255, 242, 139, 130),
+            "tool" => Windows.UI.Color.FromArgb(255, 120, 217, 236),
             "reasoning" => Windows.UI.Color.FromArgb(255, 168, 199, 250),
             _ => Windows.UI.Color.FromArgb(255, 129, 201, 149),
         };
@@ -514,7 +524,7 @@ public sealed class ArtifactViewerPane : IDisposable
         {
             root.Children.Add(new TextBlock
             {
-                Text = "该产物未记录详细思考步骤。",
+                Text = L10n.T("art.no_thoughts"),
                 FontSize = 12,
                 Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
             });
@@ -575,13 +585,13 @@ public sealed class ArtifactViewerPane : IDisposable
         var root = new StackPanel { Spacing = 12, Margin = new Thickness(0, 8, 8, 8) };
         root.Children.Add(new TextBlock
         {
-            Text = "已停止生成。",
+            Text = L10n.T("studio.cancelled"),
             FontSize = 13,
             Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
         });
         var retryBtn = new Button
         {
-            Content = "重新生成",
+            Content = L10n.T("studio.regenerate"),
             Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"],
             MinHeight = 32,
             Padding = new Thickness(14, 4, 14, 4),
@@ -746,7 +756,7 @@ public sealed class ArtifactViewerPane : IDisposable
     private async Task RetryAsync()
     {
         if (_disposed) return;
-        var res = await Core("studio.retry", Args(("artifact_id", _id)), "重试");
+        var res = await Core("studio.retry", Args(("artifact_id", _id)), L10n.T("studio.retry"));
         if (res != null && !_disposed)
         {
             _builtFor = "";
@@ -801,7 +811,7 @@ public sealed class ArtifactViewerPane : IDisposable
             {
                 var thoughtsBtn = new Button
                 {
-                    Content = _showingThoughts ? "返回成品" : "思考过程",
+                    Content = _showingThoughts ? L10n.T("studio.back_to_artifact") : L10n.T("studio.thoughts"),
                     Style = (Style)Application.Current.Resources["PillButtonStyle"],
                     MinHeight = 34,
                     Padding = new Thickness(12, 4, 12, 4),
@@ -810,7 +820,7 @@ public sealed class ArtifactViewerPane : IDisposable
                 thoughtsBtn.Click += (_, _) =>
                 {
                     _showingThoughts = !_showingThoughts;
-                    thoughtsBtn.Content = _showingThoughts ? "返回成品" : "思考过程";
+                    thoughtsBtn.Content = _showingThoughts ? L10n.T("studio.back_to_artifact") : L10n.T("studio.thoughts");
                     RenderCurrentBody(kind, status, _art);
                 };
                 _tools.Children.Add(thoughtsBtn);
@@ -824,19 +834,19 @@ public sealed class ArtifactViewerPane : IDisposable
                 "report" => new[] { ("Markdown", "markdown", ".md"), ("HTML", "html", ".html") },
                 "slides" => new[] { ("PPTX", "pptx", ".pptx"), ("Markdown", "markdown", ".md") },
                 "infographic" => new[] { ("SVG", "svg", ".svg"), ("Markdown", "markdown", ".md") },
-                "audio" => new[] { ("WAV", "wav", ".wav"), ("文字稿", "markdown", ".md") },
+                "audio" => new[] { ("WAV", "wav", ".wav"), (L10n.T("art.transcript"), "markdown", ".md") },
                 _ => new[] { ("Markdown", "markdown", ".md") },
             };
             var menu = new MenuFlyout { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
             foreach (var (label, fmt, ext) in formats)
             {
-                var item = new MenuFlyoutItem { Text = $"导出为 {label}" };
+                var item = new MenuFlyoutItem { Text = L10n.Fmt("studio.export_as", label) };
                 item.Click += async (_, _) => await ExportAsync(fmt, ext, label);
                 menu.Items.Add(item);
             }
             _tools.Children.Add(new DropDownButton
             {
-                Content = "导出",
+                Content = L10n.T("studio.export"),
                 Flyout = menu,
                 Style = (Style)Application.Current.Resources["PillDropDownButtonStyle"],
                 MinHeight = 34,
@@ -844,8 +854,8 @@ public sealed class ArtifactViewerPane : IDisposable
             });
         }
 
-        _tools.Children.Add(IconBtn(_isFullscreen ? ExitFullscreenIconPath : FullscreenIconPath, "全屏显示 / 还原", (_, _) => _onToggleFullscreen(), out _fullscreenIcon));
-        _tools.Children.Add(IconBtn(CloseIconPath, "关闭详情", (_, _) => _onClose(), out _));
+        _tools.Children.Add(IconBtn(_isFullscreen ? ExitFullscreenIconPath : FullscreenIconPath, L10n.T("studio.fullscreen_toggle"), (_, _) => _onToggleFullscreen(), out _fullscreenIcon));
+        _tools.Children.Add(IconBtn(CloseIconPath, L10n.T("studio.close_detail"), (_, _) => _onClose(), out _));
     }
 
     private async Task ExportAsync(string fmt, string ext, string label)
@@ -855,8 +865,8 @@ public sealed class ArtifactViewerPane : IDisposable
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(_hostWindow));
         var file = await picker.PickSaveFileAsync();
         if (file == null) return;
-        if (await Core("studio.export", Args(("artifact_id", _id), ("format", fmt), ("out_path", file.Path)), "导出") != null)
-            Say(InfoBarSeverity.Success, "已导出", file.Path);
+        if (await Core("studio.export", Args(("artifact_id", _id), ("format", fmt), ("out_path", file.Path)), L10n.T("studio.export")) != null)
+            Say(InfoBarSeverity.Success, L10n.T("common.exported"), file.Path);
     }
 
     private StackPanel BuildFeedbackBar()
@@ -876,13 +886,13 @@ public sealed class ArtifactViewerPane : IDisposable
             };
             b.Click += async (_, _) =>
             {
-                await Core("studio.set_feedback", Args(("artifact_id", _id), ("feedback", val)), "提交反馈");
-                Say(InfoBarSeverity.Success, "已收到反馈", "");
+                await Core("studio.set_feedback", Args(("artifact_id", _id), ("feedback", val)), L10n.T("chat.op_feedback"));
+                Say(InfoBarSeverity.Success, L10n.T("studio.feedback_received"), "");
             };
             return b;
         }
-        bar.Children.Add(MkFb(ThumbUpPath, "优质内容", 1));
-        bar.Children.Add(MkFb(ThumbDownPath, "劣质内容", -1));
+        bar.Children.Add(MkFb(ThumbUpPath, L10n.T("studio.good_content"), 1));
+        bar.Children.Add(MkFb(ThumbDownPath, L10n.T("studio.bad_content"), -1));
         return bar;
     }
 
@@ -929,11 +939,11 @@ public sealed class ArtifactViewerPane : IDisposable
                     i++;
                     var t = Str(item, "title");
                     if (t.Length == 0) t = Str(item, "heading");
-                    sb.AppendLine($"## 第 {i} 页：{(t.Length > 0 ? t : $"主题 {i}")}");
+                    sb.AppendLine(L10n.Fmt("art.slide_heading", i, t.Length > 0 ? t : L10n.Fmt("art.slide_fallback_title", i)));
                     foreach (var b in Arr(item, "bullets")) sb.AppendLine($"- {b.GetString()}");
                     foreach (var b in Arr(item, "points")) sb.AppendLine($"- {b.GetString()}");
                     var sn = Str(item, "speaker_notes");
-                    if (sn.Length > 0) sb.AppendLine($"> 讲稿提示：{sn}");
+                    if (sn.Length > 0) sb.AppendLine(L10n.Fmt("art.slide_notes_quote", sn));
                     sb.AppendLine();
                 }
                 return sb.ToString().Trim();
@@ -953,63 +963,344 @@ public sealed class ArtifactViewerPane : IDisposable
         var draft = art.TryGetProperty("draft", out var d) && d.ValueKind != JsonValueKind.Null ? d : default;
         var mdText = DraftToMarkdown(draft);
 
-        var previewHost = new Border
+        UIElement RenderPreviewContent(string text)
+        {
+            var trimmed = text.Trim();
+            return Md.Render(trimmed.Length > 0 ? text : L10n.T("art.outline_empty"), null, 14, _math, _mathHost);
+        }
+
+        var previewScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Padding = new Thickness(16),
+            Content = RenderPreviewContent(mdText),
+        };
+        var previewBorder = new Border
         {
             Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+            BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(16),
-            Child = Md.Render(mdText.Length > 0 ? mdText : "（暂无提纲内容）", null, 14),
+            Child = previewScroll,
         };
+
         var editorBox = new TextBox
         {
-            Text = mdText,
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
-            MinHeight = 320,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Top,
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14),
+            FontSize = 13.5,
             Visibility = Visibility.Collapsed,
-            Header = "编辑 Markdown 提纲（修改后点击“预览提纲”可实时查看渲染效果）",
+            PlaceholderText = L10n.T("art.outline_edit_header"),
+            Text = mdText,
         };
+        ScrollViewer.SetVerticalScrollBarVisibility(editorBox, ScrollBarVisibility.Auto);
+        ScrollViewer.SetHorizontalScrollBarVisibility(editorBox, ScrollBarVisibility.Disabled);
 
-        var previewBtn = new Button { Content = "预览提纲", Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"] };
-        var editBtn = new Button { Content = "编辑提纲", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        previewBtn.Click += (_, _) =>
+        // Sliding segmented switch: Preview | Edit outline
+        var mode = "preview";
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        var buttons = new List<(Button Btn, FontIcon Check, TextBlock Text, string Tag)>();
+        var activeBg = (Brush)Application.Current.Resources["HoverBgBrush"];
+        var transparentBg = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+
+        var thumbTransform = new TranslateTransform();
+        var thumb = new Border
         {
-            previewHost.Child = Md.Render(editorBox.Text.Trim().Length > 0 ? editorBox.Text : "（暂无提纲内容）", null, 14);
-            previewHost.Visibility = Visibility.Visible;
-            editorBox.Visibility = Visibility.Collapsed;
-            previewBtn.Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"];
-            editBtn.Style = (Style)Application.Current.Resources["PillButtonStyle"];
+            Background = activeBg,
+            CornerRadius = new CornerRadius(16),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            IsHitTestVisible = false,
+            RenderTransform = thumbTransform,
         };
-        editBtn.Click += (_, _) =>
+        var trackGrid = new Grid();
+        trackGrid.Children.Add(thumb);
+        trackGrid.Children.Add(row);
+
+        Storyboard? activeStoryboard = null;
+        var isTransitioning = false;
+        var isAnimating = false;
+
+        void SnapThumb()
         {
-            previewHost.Visibility = Visibility.Collapsed;
-            editorBox.Visibility = Visibility.Visible;
-            editBtn.Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"];
-            previewBtn.Style = (Style)Application.Current.Resources["PillButtonStyle"];
+            var selBtn = buttons.FirstOrDefault(b => b.Tag == mode).Btn;
+            if (selBtn == null) return;
+            var targetW = selBtn.ActualWidth;
+            if (targetW <= 0) return;
+            var targetX = selBtn.TransformToVisual(trackGrid).TransformPoint(new Windows.Foundation.Point(0, 0)).X;
+            isAnimating = false;
+            activeStoryboard?.Stop();
+            thumbTransform.X = targetX;
+            thumb.Width = targetW;
+        }
+
+        void SyncButtonStates()
+        {
+            foreach (var (btn, chk, txt, tag) in buttons)
+            {
+                var isSel = tag == mode;
+                btn.Background = transparentBg;
+                chk.Visibility = isSel ? Visibility.Visible : Visibility.Collapsed;
+                txt.FontWeight = isSel ? FontWeights.SemiBold : FontWeights.Normal;
+            }
+        }
+
+        void SwitchMode(string nextMode)
+        {
+            if (mode == nextMode) return;
+            var prevBtn = buttons.FirstOrDefault(b => b.Tag == mode).Btn;
+            var curX = thumbTransform.X;
+            var curW = !double.IsNaN(thumb.Width) && thumb.Width > 0
+                ? thumb.Width
+                : (prevBtn?.ActualWidth ?? 0);
+
+            mode = nextMode;
+            isTransitioning = true;
+            SyncButtonStates();
+            trackGrid.UpdateLayout();
+            isTransitioning = false;
+
+            if (mode == "preview")
+            {
+                previewScroll.Content = RenderPreviewContent(editorBox.Text);
+                previewBorder.Visibility = Visibility.Visible;
+                editorBox.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                previewBorder.Visibility = Visibility.Collapsed;
+                editorBox.Visibility = Visibility.Visible;
+                _ = editorBox.Focus(FocusState.Programmatic);
+            }
+
+            var selBtn = buttons.FirstOrDefault(b => b.Tag == mode).Btn;
+            if (selBtn == null) return;
+            var targetW = selBtn.ActualWidth;
+            if (targetW <= 0) return;
+            var targetX = selBtn.TransformToVisual(trackGrid).TransformPoint(new Windows.Foundation.Point(0, 0)).X;
+
+            if (curW <= 0)
+            {
+                SnapThumb();
+                return;
+            }
+
+            isAnimating = false;
+            activeStoryboard?.Stop();
+            thumbTransform.X = curX;
+            thumb.Width = curW;
+
+            var sb = new Storyboard();
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var dur = new Duration(TimeSpan.FromMilliseconds(240));
+
+            var animX = new DoubleAnimation
+            {
+                From = curX,
+                To = targetX,
+                Duration = dur,
+                EasingFunction = ease,
+                FillBehavior = FillBehavior.HoldEnd,
+            };
+            Storyboard.SetTarget(animX, thumbTransform);
+            Storyboard.SetTargetProperty(animX, "X");
+
+            var animW = new DoubleAnimation
+            {
+                From = curW,
+                To = targetW,
+                Duration = dur,
+                EasingFunction = ease,
+                EnableDependentAnimation = true,
+                FillBehavior = FillBehavior.HoldEnd,
+            };
+            Storyboard.SetTarget(animW, thumb);
+            Storyboard.SetTargetProperty(animW, "Width");
+
+            sb.Children.Add(animX);
+            sb.Children.Add(animW);
+            sb.Completed += (_, _) =>
+            {
+                if (ReferenceEquals(activeStoryboard, sb))
+                    isAnimating = false;
+            };
+            activeStoryboard = sb;
+            isAnimating = true;
+            sb.Begin();
+        }
+
+        foreach (var (label, tag) in new[] { (L10n.T("art.outline_preview_btn"), "preview"), (L10n.T("art.outline_edit_btn"), "edit") })
+        {
+            var chk = new FontIcon
+            {
+                Glyph = "\uE73E",
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var txt = new TextBlock
+            {
+                Text = label,
+                FontSize = 13,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+            content.Children.Add(chk);
+            content.Children.Add(txt);
+            var capturedTag = tag;
+            var btn = new Button
+            {
+                Content = content,
+                CornerRadius = new CornerRadius(16),
+                Padding = new Thickness(12, 6, 12, 6),
+                BorderThickness = new Thickness(0),
+            };
+            btn.Click += (_, _) => SwitchMode(capturedTag);
+            buttons.Add((btn, chk, txt, tag));
+            row.Children.Add(btn);
+        }
+
+        SyncButtonStates();
+        row.SizeChanged += (_, _) =>
+        {
+            if (!isTransitioning && !isAnimating) SnapThumb();
+        };
+        trackGrid.Loaded += (_, _) => SnapThumb();
+
+        var toggleContainer = new Border
+        {
+            Background = (Brush)Application.Current.Resources["PanelBgBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["StrongBorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(2),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = trackGrid,
         };
 
-        var tabRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        tabRow.Children.Add(previewBtn);
-        tabRow.Children.Add(editBtn);
-
-        var approveBtn = new Button { Content = "批准并生成演示文稿", Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"] };
+        var approveBtn = new Button
+        {
+            Content = L10n.T("art.outline_approve_btn"),
+            Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"],
+            VerticalAlignment = VerticalAlignment.Center,
+        };
         approveBtn.Click += async (_, _) =>
         {
+            approveBtn.IsEnabled = false;
             var editedMd = editorBox.Text.Trim();
             var args = editedMd.Length > 0
                 ? Args(("artifact_id", _id), ("draft", editedMd))
                 : Args(("artifact_id", _id));
-            if (await Core("studio.approve_draft", args, "批准提纲") != null)
-                Say(InfoBarSeverity.Success, "已批准提纲", "正在通过本地演示文稿工具生成 PPTX，完成后会自动展示。");
+            var res = await Core("studio.approve_draft", args, L10n.T("art.outline_op_approve"));
+            if (res != null)
+            {
+                Say(InfoBarSeverity.Success, L10n.T("art.outline_approved_title"), L10n.T("art.outline_approved_msg"));
+            }
+            else
+            {
+                approveBtn.IsEnabled = true;
+            }
         };
 
-        var col = new StackPanel { Spacing = 12 };
-        col.Children.Add(new TextBlock { Text = "请先审阅渲染后的 Markdown 提纲，确认或调整后再生成最终演示文稿。", Opacity = 0.8, TextWrapping = TextWrapping.Wrap });
-        col.Children.Add(tabRow);
-        col.Children.Add(previewHost);
-        col.Children.Add(editorBox);
-        col.Children.Add(approveBtn);
-        return new ScrollViewer { Content = col };
+        var toolbar = new Grid { ColumnSpacing = 12 };
+        toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(toggleContainer, 0);
+        Grid.SetColumn(approveBtn, 1);
+        toolbar.Children.Add(toggleContainer);
+        toolbar.Children.Add(approveBtn);
+
+        var hintText = new TextBlock
+        {
+            Text = L10n.T("art.outline_review_hint"),
+            Opacity = 0.8,
+            FontSize = 12.5,
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        var reviseBox = new TextBox
+        {
+            PlaceholderText = L10n.T("art.outline_revise_placeholder"),
+            AcceptsReturn = false,
+            CornerRadius = new CornerRadius(10),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var reviseBtn = new Button
+        {
+            Content = L10n.T("art.outline_revise_btn"),
+            Style = (Style)Application.Current.Resources["PillButtonStyle"],
+            VerticalAlignment = VerticalAlignment.Center,
+            MinHeight = 34,
+            Padding = new Thickness(14, 4, 14, 4),
+        };
+        async Task RunReviseAsync()
+        {
+            var instr = reviseBox.Text.Trim();
+            if (instr.Length == 0) return;
+            reviseBtn.IsEnabled = false;
+            approveBtn.IsEnabled = false;
+            reviseBtn.Content = L10n.T("art.outline_revising");
+            try
+            {
+                var res = await Core(
+                    "studio.revise_draft",
+                    Args(("artifact_id", _id), ("instruction", instr), ("draft", editorBox.Text.Trim())),
+                    L10n.T("art.outline_revise_btn"));
+                if (res is { } updated && updated.TryGetProperty("draft", out var newDraft))
+                {
+                    var newMd = DraftToMarkdown(newDraft);
+                    editorBox.Text = newMd;
+                    previewScroll.Content = RenderPreviewContent(newMd);
+                    reviseBox.Text = "";
+                    Say(InfoBarSeverity.Success, L10n.T("art.outline_revised_title"), L10n.T("art.outline_revised_msg"));
+                }
+            }
+            finally
+            {
+                reviseBtn.Content = L10n.T("art.outline_revise_btn");
+                reviseBtn.IsEnabled = true;
+                approveBtn.IsEnabled = true;
+            }
+        }
+        reviseBtn.Click += async (_, _) => await RunReviseAsync();
+        reviseBox.KeyDown += async (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter)
+            {
+                e.Handled = true;
+                await RunReviseAsync();
+            }
+        };
+        var reviseBar = new Grid { ColumnSpacing = 8 };
+        reviseBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        reviseBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(reviseBox, 0);
+        Grid.SetColumn(reviseBtn, 1);
+        reviseBar.Children.Add(reviseBox);
+        reviseBar.Children.Add(reviseBtn);
+
+        var rootGrid = new Grid { RowSpacing = 10 };
+        rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        rootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(hintText, 0);
+        Grid.SetRow(toolbar, 1);
+        Grid.SetRow(previewBorder, 2);
+        Grid.SetRow(editorBox, 2);
+        Grid.SetRow(reviseBar, 3);
+        rootGrid.Children.Add(hintText);
+        rootGrid.Children.Add(toolbar);
+        rootGrid.Children.Add(previewBorder);
+        rootGrid.Children.Add(editorBox);
+        rootGrid.Children.Add(reviseBar);
+        return rootGrid;
     }
 }
 
@@ -1085,7 +1376,7 @@ internal sealed class InteractiveArtifactView : IDisposable
             "slides" => BuildSlides(payload),
             "infographic" => BuildInfographic(payload),
             "audio" => BuildAudio(payload),
-            _ => Message("暂不支持查看这种产物。"),
+            _ => Message(L10n.T("art.unsupported")),
         };
     }
 
@@ -1120,6 +1411,7 @@ internal sealed class InteractiveArtifactView : IDisposable
         {
             sv.MaxHeight = compactMaxHeight;
             sv.Padding = new Thickness(0, 0, 8, 0);
+            NestedScrollHelper.AttachToOuterOnBoundary(sv);
         }
         return sv;
     }
@@ -1173,99 +1465,688 @@ internal sealed class InteractiveArtifactView : IDisposable
 
     // quiz ------------------------------------------------------------------
 
+    private enum QuizViewMode { Continuous, OneByOne }
+    private enum QuizSubmitMode { Manual, Auto }
+
+    private sealed class QuizItemState
+    {
+        public int Number;
+        public string Id = "";
+        public string Type = "";
+        public string Prompt = "";
+        public string Citations = "";
+        public List<string> Options = [];
+        public string Explanation = "";
+        public JsonElement Question;
+        public Border Card = null!;
+        public StackPanel Result = null!;
+        public RadioButtons? Radios;
+        public List<CheckBox> Checks = [];
+        public TextBox? InputBox;
+        public Button? SubmitBtn;
+        public Button? SheetPill;
+        public bool Submitted;
+        public bool IsSelfEval;
+        public bool? IsCorrect;
+
+        public bool HasAnswer() => Type switch
+        {
+            "single" => Radios != null && Radios.SelectedIndex >= 0,
+            "multi" => Checks.Any(c => c.IsChecked == true),
+            _ => InputBox != null && !string.IsNullOrWhiteSpace(InputBox.Text),
+        };
+
+        public JsonElement GetAnswerJson() => Type switch
+        {
+            "single" => Api.Args(("a", Radios?.SelectedIndex ?? -1)).GetProperty("a"),
+            "multi" => Api.Args(("a", Checks.Select((c, i) => (c, i)).Where(t => t.c.IsChecked == true).Select(t => t.i).ToArray())).GetProperty("a"),
+            _ => Api.Args(("a", InputBox?.Text ?? "")).GetProperty("a"),
+        };
+
+        public void LockInputs(string submittedText)
+        {
+            if (Radios != null) Radios.IsEnabled = false;
+            foreach (var cb in Checks) cb.IsEnabled = false;
+            if (InputBox != null) InputBox.IsReadOnly = true;
+            if (SubmitBtn != null)
+            {
+                SubmitBtn.IsEnabled = false;
+                SubmitBtn.Content = submittedText;
+            }
+        }
+    }
+
+    private UIElement RenderQuizRichText(string text, double fontSize = 14, bool allowSelection = true, Func<int, Microsoft.UI.Xaml.Documents.Inline?>? citeChip = null)
+    {
+        var normalized = Md.NormalizeQuizMath(text);
+        var el = Md.Render(normalized, citeChip, fontSize, _math, _mathHost);
+        if (!allowSelection)
+        {
+            DisableSelectionAndTrimMargin(el);
+        }
+        return el;
+    }
+
+    private static void DisableSelectionAndTrimMargin(UIElement el)
+    {
+        el.IsHitTestVisible = false;
+        if (el is RichTextBlock rtb)
+        {
+            rtb.IsTextSelectionEnabled = false;
+            if (rtb.Blocks.Count == 1 && rtb.Blocks[0] is Microsoft.UI.Xaml.Documents.Paragraph p)
+            {
+                p.Margin = new Thickness(0);
+            }
+        }
+        else if (el is TextBlock tb)
+        {
+            tb.IsTextSelectionEnabled = false;
+        }
+        else if (el is Panel p)
+        {
+            foreach (var child in p.Children) DisableSelectionAndTrimMargin(child);
+        }
+    }
+
     private FrameworkElement BuildQuiz(JsonElement payload)
     {
-        var panel = new StackPanel { Spacing = _compact ? 10 : 14 };
         var questions = Arr(payload, "questions").ToList();
-        if (questions.Count == 0) return Message("没有测验题目。");
-        var score = new TextBlock { FontSize = _compact ? 13 : 14, FontWeight = FontWeights.SemiBold, Text = $"共 {questions.Count} 题，作答后点击“提交”查看结果。" };
-        panel.Children.Add(score);
-        var correct = 0;
-        var answered = new HashSet<string>();
-        var number = 0;
+        if (questions.Count == 0) return Message(L10n.T("quiz.empty"));
+
+        var outer = new StackPanel { Spacing = _compact ? 10 : 14 };
         var cardBg = (Brush)Application.Current.Resources[_compact ? "PanelBgBrush" : "ElevatedBgBrush"];
-        foreach (var q in questions)
+        var borderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"];
+        var pillStyle = (Style)Application.Current.Resources["PillButtonStyle"];
+
+        // Initial mode selector
+        var pickerCard = new Border
         {
-            number++;
-            var qid = Str(q, "id");
-            var type = Str(q, "type");
+            Background = cardBg,
+            BorderBrush = borderBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(_compact ? 14 : 18),
+        };
+        var pickerCol = new StackPanel { Spacing = 10 };
+        pickerCol.Children.Add(new TextBlock { Text = L10n.T("quiz.mode_title"), FontSize = _compact ? 15 : 16, FontWeight = FontWeights.SemiBold });
+        pickerCol.Children.Add(new TextBlock { Text = L10n.Fmt("quiz.mode_subtitle", questions.Count), Opacity = 0.78, TextWrapping = TextWrapping.Wrap, FontSize = 13 });
+
+        var selectedView = L10n.Prefs.QuizViewMode == "one_by_one" ? QuizViewMode.OneByOne : QuizViewMode.Continuous;
+        var selectedSubmit = L10n.Prefs.QuizSubmitMode == "auto" ? QuizSubmitMode.Auto : QuizSubmitMode.Manual;
+
+        var viewButtons = new List<(QuizViewMode Mode, Button Btn)>();
+        var submitButtons = new List<(QuizSubmitMode Mode, Button Btn)>();
+
+        void RefreshPickerSelection()
+        {
+            var activeBg = new SolidColorBrush(Windows.UI.Color.FromArgb(42, 100, 160, 255));
+            var activeBorder = new SolidColorBrush(Windows.UI.Color.FromArgb(220, 100, 160, 255));
+            var idleBg = (Brush)Application.Current.Resources[_compact ? "ElevatedBgBrush" : "PanelBgBrush"];
+
+            foreach (var (m, b) in viewButtons)
+            {
+                var active = m == selectedView;
+                b.Background = active ? activeBg : idleBg;
+                b.BorderBrush = active ? activeBorder : borderBrush;
+                b.BorderThickness = new Thickness(active ? 2 : 1);
+            }
+            foreach (var (m, b) in submitButtons)
+            {
+                var active = m == selectedSubmit;
+                b.Background = active ? activeBg : idleBg;
+                b.BorderBrush = active ? activeBorder : borderBrush;
+                b.BorderThickness = new Thickness(active ? 2 : 1);
+            }
+        }
+
+        Button MakeChoiceBtn(string title, string desc, Action onClick)
+        {
+            var inner = new StackPanel { Spacing = 3, HorizontalAlignment = HorizontalAlignment.Stretch };
+            inner.Children.Add(new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 14, TextWrapping = TextWrapping.Wrap });
+            inner.Children.Add(new TextBlock { Text = desc, Opacity = 0.72, FontSize = 12, TextWrapping = TextWrapping.Wrap });
+            var btn = new Button
+            {
+                Content = inner,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(14, 10, 14, 10),
+                CornerRadius = new CornerRadius(10),
+            };
+            btn.Click += (_, _) => onClick();
+            return btn;
+        }
+
+        var quizHost = new StackPanel { Spacing = _compact ? 10 : 14, Visibility = Visibility.Collapsed };
+
+        void StartQuiz(bool persistPrefs)
+        {
+            if (persistPrefs)
+            {
+                L10n.Prefs.QuizViewMode = selectedView == QuizViewMode.OneByOne ? "one_by_one" : "continuous";
+                L10n.Prefs.QuizSubmitMode = selectedSubmit == QuizSubmitMode.Auto ? "auto" : "manual";
+                L10n.Prefs.QuizModeConfigured = true;
+                _ = Api.CallAsync("settings.set", Args(("key", "ui.preferences"), ("value", L10n.Prefs.ToJson())));
+            }
+            pickerCard.Visibility = Visibility.Collapsed;
+            quizHost.Visibility = Visibility.Visible;
+            PopulateQuizWorkspace(quizHost, questions, selectedView, selectedSubmit, cardBg, borderBrush, pillStyle);
+        }
+
+        pickerCol.Children.Add(new TextBlock { Text = L10n.T("quiz.view_label"), FontSize = 12, FontWeight = FontWeights.SemiBold, Opacity = 0.75, Margin = new Thickness(0, 2, 0, 0) });
+        var btnCont = MakeChoiceBtn(L10n.T("quiz.view_continuous"), L10n.T("quiz.view_continuous_desc"), () => { selectedView = QuizViewMode.Continuous; RefreshPickerSelection(); });
+        var btnOne = MakeChoiceBtn(L10n.T("quiz.view_one"), L10n.T("quiz.view_one_desc"), () => { selectedView = QuizViewMode.OneByOne; RefreshPickerSelection(); });
+        viewButtons.Add((QuizViewMode.Continuous, btnCont));
+        viewButtons.Add((QuizViewMode.OneByOne, btnOne));
+        pickerCol.Children.Add(btnCont);
+        pickerCol.Children.Add(btnOne);
+
+        pickerCol.Children.Add(new TextBlock { Text = L10n.T("quiz.submit_mode_label"), FontSize = 12, FontWeight = FontWeights.SemiBold, Opacity = 0.75, Margin = new Thickness(0, 4, 0, 0) });
+        var btnManual = MakeChoiceBtn(L10n.T("quiz.submit_manual"), L10n.T("quiz.submit_manual_desc"), () => { selectedSubmit = QuizSubmitMode.Manual; RefreshPickerSelection(); });
+        var btnAuto = MakeChoiceBtn(L10n.T("quiz.submit_auto"), L10n.T("quiz.submit_auto_desc"), () => { selectedSubmit = QuizSubmitMode.Auto; RefreshPickerSelection(); });
+        submitButtons.Add((QuizSubmitMode.Manual, btnManual));
+        submitButtons.Add((QuizSubmitMode.Auto, btnAuto));
+        pickerCol.Children.Add(btnManual);
+        pickerCol.Children.Add(btnAuto);
+
+        RefreshPickerSelection();
+
+        var startBtn = new Button
+        {
+            Content = L10n.T("quiz.start"),
+            Style = pillStyle,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+        startBtn.Click += (_, _) => StartQuiz(persistPrefs: true);
+        pickerCol.Children.Add(startBtn);
+        pickerCard.Child = pickerCol;
+
+        outer.Children.Add(pickerCard);
+        outer.Children.Add(quizHost);
+        if (L10n.Prefs.QuizModeConfigured)
+        {
+            StartQuiz(persistPrefs: false);
+        }
+        AppendFeedbackIfPresent(outer);
+        return WrapScroll(outer);
+    }
+
+    private void PopulateQuizWorkspace(
+        StackPanel host,
+        List<JsonElement> questions,
+        QuizViewMode viewMode,
+        QuizSubmitMode submitMode,
+        Brush cardBg,
+        Brush borderBrush,
+        Style pillStyle)
+    {
+        host.Children.Clear();
+
+        var score = new TextBlock
+        {
+            FontSize = _compact ? 13 : 14,
+            FontWeight = FontWeights.SemiBold,
+            Text = submitMode == QuizSubmitMode.Manual
+                ? L10n.Fmt("quiz.sheet_progress", 0, questions.Count)
+                : L10n.Fmt("quiz.score_progress", 0, questions.Count, 0),
+        };
+        host.Children.Add(score);
+
+        // Final summary card (hidden until all questions are submitted)
+        var summaryCard = new Border
+        {
+            Visibility = Visibility.Collapsed,
+            Background = cardBg,
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(180, 120, 200, 150)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(_compact ? 12 : 16),
+        };
+        var summaryCol = new StackPanel { Spacing = 6 };
+        var summaryTitle = new TextBlock { Text = L10n.T("quiz.summary_title"), FontSize = 15, FontWeight = FontWeights.SemiBold };
+        var summaryText = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+        var summaryBar = new ProgressBar { Minimum = 0, Maximum = 100, Height = 6 };
+        var summaryKgSyncText = new TextBlock { FontSize = 12, Opacity = 0.85, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+        summaryCol.Children.Add(summaryTitle);
+        summaryCol.Children.Add(summaryText);
+        summaryCol.Children.Add(summaryBar);
+        summaryCol.Children.Add(summaryKgSyncText);
+        summaryCard.Child = summaryCol;
+        host.Children.Add(summaryCard);
+
+        var items = new List<QuizItemState>(questions.Count);
+        var submittedCount = 0;
+        var correctCount = 0;
+        var objectiveCount = 0;
+        var selfEvalCount = 0;
+        var kgSynced = false;
+
+        // One-by-one header + host state (captured by answer sheet click handler)
+        TextBlock? oneProgressText = null;
+        ProgressBar? oneProgressBar = null;
+        ContentControl? oneCardHost = null;
+        Button? prevBtn = null;
+        Button? nextBtn = null;
+        var currentIndex = 0;
+
+        // Answer sheet controls (always shown across all modes)
+        Button? submitAllBtn = null;
+        var pillButtons = new List<Button>(questions.Count);
+        {
+            var sheetCard = new Border
+            {
+                Background = cardBg,
+                BorderBrush = borderBrush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(_compact ? 10 : 12),
+            };
+            var sheetCol = new StackPanel { Spacing = 8 };
+            var sheetTop = new Grid();
+            sheetTop.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            sheetTop.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            sheetTop.Children.Add(new TextBlock { Text = L10n.T("quiz.sheet_title"), FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+            if (submitMode == QuizSubmitMode.Manual)
+            {
+                submitAllBtn = new Button { Content = L10n.T("quiz.submit_all"), Style = pillStyle };
+                Grid.SetColumn(submitAllBtn, 1);
+                sheetTop.Children.Add(submitAllBtn);
+            }
+            sheetCol.Children.Add(sheetTop);
+
+            var pillsHost = new StackPanel { Spacing = 6 };
+            const int perRow = 8;
+            StackPanel? row = null;
+            for (var idx = 0; idx < questions.Count; idx++)
+            {
+                if (idx % perRow == 0)
+                {
+                    row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                    pillsHost.Children.Add(row);
+                }
+                var captureIdx = idx;
+                var pill = new Button
+                {
+                    Content = $"{idx + 1}",
+                    Width = 34,
+                    Height = 30,
+                    Padding = new Thickness(0),
+                    CornerRadius = new CornerRadius(8),
+                    FontSize = 12,
+                };
+                pill.Click += (_, _) =>
+                {
+                    if (captureIdx >= items.Count) return;
+                    if (viewMode == QuizViewMode.OneByOne)
+                    {
+                        currentIndex = captureIdx;
+                        UpdateOneByOneView();
+                    }
+                    else
+                    {
+                        items[captureIdx].Card.StartBringIntoView();
+                    }
+                };
+                pillButtons.Add(pill);
+                row!.Children.Add(pill);
+            }
+            sheetCol.Children.Add(pillsHost);
+            sheetCard.Child = sheetCol;
+            host.Children.Add(sheetCard);
+        }
+
+        void UpdateSummaryIfDone()
+        {
+            if (submittedCount < items.Count) return;
+            if (submitAllBtn != null)
+            {
+                submitAllBtn.IsEnabled = false;
+                submitAllBtn.Content = L10n.T("quiz.submitted_all");
+            }
+            summaryCard.Visibility = Visibility.Visible;
+            if (objectiveCount > 0)
+            {
+                var pct = Math.Round(correctCount * 100.0 / objectiveCount, 1);
+                summaryBar.Value = pct;
+                summaryText.Text = selfEvalCount > 0
+                    ? L10n.Fmt("quiz.summary_accuracy_with_self", pct, correctCount, objectiveCount, selfEvalCount)
+                    : L10n.Fmt("quiz.summary_accuracy", pct, correctCount, objectiveCount);
+                var accent = pct >= 80
+                    ? Windows.UI.Color.FromArgb(255, 120, 220, 140)
+                    : pct >= 60
+                        ? Windows.UI.Color.FromArgb(255, 245, 190, 90)
+                        : Windows.UI.Color.FromArgb(255, 255, 140, 130);
+                summaryCard.BorderBrush = new SolidColorBrush(accent);
+                summaryText.Foreground = new SolidColorBrush(accent);
+            }
+            else
+            {
+                summaryBar.Value = 100;
+                summaryText.Text = L10n.Fmt("quiz.summary_self_only", selfEvalCount);
+            }
+            if (!kgSynced)
+            {
+                kgSynced = true;
+                var nbId = Str(_art, "notebook_id");
+                var artId = Str(_art, "id");
+                if (nbId.Length > 0 && artId.Length > 0)
+                {
+                    var resultsArr = new System.Text.Json.Nodes.JsonArray();
+                    foreach (var it in items)
+                    {
+                        resultsArr.Add(new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["question_id"] = it.Id,
+                            ["is_correct"] = it.IsCorrect ?? true,
+                            ["score"] = it.IsCorrect == true ? 1.0 : (it.IsSelfEval ? 0.7 : 0.0),
+                        });
+                    }
+                    using var resultsDoc = JsonDocument.Parse(resultsArr.ToJsonString());
+                    var resultsPayload = resultsDoc.RootElement.Clone();
+                    _ = summaryCard.DispatcherQueue.TryEnqueue(async () =>
+                    {
+                        var syncRes = await Api.CallAsync("studio.apply_quiz_to_kg", Args(
+                            ("notebook_id", nbId),
+                            ("artifact_id", artId),
+                            ("results", resultsPayload)));
+                        if (syncRes.Result is { } sr && sr.TryGetProperty("updated_nodes", out var un) && un.ValueKind == JsonValueKind.Number && un.GetInt32() > 0)
+                        {
+                            summaryKgSyncText.Text = L10n.Fmt("kg.quiz_synced_fmt", un.GetInt32());
+                            summaryKgSyncText.Visibility = Visibility.Visible;
+                        }
+                    });
+                }
+            }
+            summaryCard.StartBringIntoView();
+        }
+
+        void UpdateSheetStatus()
+        {
+            var answeredNow = items.Count(it => it.HasAnswer());
+            if (submittedCount == 0 && submitMode == QuizSubmitMode.Manual)
+            {
+                score.Text = L10n.Fmt("quiz.sheet_progress", answeredNow, items.Count);
+            }
+            for (var i = 0; i < items.Count; i++)
+            {
+                var it = items[i];
+                if (it.SheetPill == null) continue;
+                if (it.Submitted)
+                {
+                    if (it.IsSelfEval)
+                    {
+                        it.SheetPill.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(90, 130, 170, 255));
+                    }
+                    else if (it.IsCorrect == true)
+                    {
+                        it.SheetPill.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(110, 80, 190, 110));
+                    }
+                    else
+                    {
+                        it.SheetPill.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(110, 220, 90, 90));
+                    }
+                }
+                else if (it.HasAnswer())
+                {
+                    it.SheetPill.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(95, 100, 150, 255));
+                }
+                else
+                {
+                    it.SheetPill.ClearValue(Control.BackgroundProperty);
+                }
+
+                if (viewMode == QuizViewMode.OneByOne && i == currentIndex)
+                {
+                    it.SheetPill.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 110, 170, 255));
+                    it.SheetPill.BorderThickness = new Thickness(2);
+                }
+                else
+                {
+                    it.SheetPill.ClearValue(Control.BorderBrushProperty);
+                    it.SheetPill.ClearValue(Control.BorderThicknessProperty);
+                }
+            }
+        }
+
+        void UpdateOneByOneView()
+        {
+            if (viewMode != QuizViewMode.OneByOne || oneCardHost == null || oneProgressText == null || oneProgressBar == null) return;
+            oneCardHost.Content = items[currentIndex].Card;
+            oneProgressText.Text = L10n.Fmt("quiz.one_progress", currentIndex + 1, items.Count, submittedCount);
+            oneProgressBar.Value = submittedCount * 100.0 / items.Count;
+            if (prevBtn != null) prevBtn.IsEnabled = currentIndex > 0;
+            if (nextBtn != null) nextBtn.IsEnabled = currentIndex < items.Count - 1;
+            UpdateSheetStatus();
+        }
+
+        async Task SubmitItemAsync(QuizItemState item, bool warnIfEmpty)
+        {
+            if (item.Submitted) return;
+            if (warnIfEmpty && item.Type == "single" && (item.Radios == null || item.Radios.SelectedIndex < 0))
+            {
+                _notify(InfoBarSeverity.Warning, L10n.T("quiz.select_warning"), "");
+                return;
+            }
+
+            item.Submitted = true;
+            if (item.SubmitBtn != null) item.SubmitBtn.IsEnabled = false;
+
+            var res = await CallGradeAsync("studio.grade_answer", Args(("artifact_id", _artifactId), ("question_id", item.Id), ("answer", item.GetAnswerJson())), L10n.T("quiz.op_grade"));
+            if (res is not { } g)
+            {
+                item.Submitted = false;
+                if (item.SubmitBtn != null) item.SubmitBtn.IsEnabled = true;
+                return;
+            }
+
+            item.LockInputs(L10n.T("quiz.submitted"));
+            item.Result.Children.Clear();
+            var isSelfEval = Bool(g, "self_eval");
+            var ok = Bool(g, "correct");
+            item.IsSelfEval = isSelfEval;
+            item.IsCorrect = isSelfEval ? null : ok;
+
+            submittedCount++;
+            if (isSelfEval)
+            {
+                selfEvalCount++;
+                item.Result.Children.Add(RenderQuizRichText(L10n.Fmt("quiz.rubric", Str(g, "rubric")), 13));
+                item.Result.Children.Add(new TextBlock { Text = L10n.T("quiz.self_check"), Opacity = 0.7, FontSize = 12 });
+            }
+            else
+            {
+                objectiveCount++;
+                if (ok) correctCount++;
+                var resBrush = new SolidColorBrush(ok ? Windows.UI.Color.FromArgb(255, 120, 220, 140) : Windows.UI.Color.FromArgb(255, 255, 140, 130));
+                var statusRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                statusRow.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = new PathIcon { Width = 24, Height = 24, Data = Geom(ok ? CheckIconPath : CrossIconPath), Foreground = resBrush } });
+                statusRow.Children.Add(new TextBlock { Text = ok ? L10n.T("quiz.correct") : L10n.T("quiz.wrong"), Foreground = resBrush, FontWeight = FontWeights.SemiBold });
+                item.Result.Children.Add(statusRow);
+
+                var ans = Arr(item.Question, "answer_indices")
+                    .Select(i => i.GetInt32())
+                    .Where(i => i >= 0 && i < item.Options.Count)
+                    .Select(i => $"{(char)('A' + i)}. {item.Options[i]}")
+                    .ToList();
+                var accepted = Arr(item.Question, "accepted_answers").Select(a => a.GetString() ?? "").Where(s => s.Length > 0);
+                var reference = ans.Count > 0 ? string.Join("; ", ans) : string.Join(" / ", accepted);
+                if (!ok && reference.Length > 0)
+                {
+                    item.Result.Children.Add(RenderQuizRichText(L10n.Fmt("quiz.ref_answer", reference), 13));
+                }
+            }
+
+            if (item.Explanation.Length > 0)
+            {
+                item.Result.Children.Add(RenderQuizRichText(L10n.Fmt("quiz.explanation", item.Explanation), 13, citeChip: n => Md.SuperscriptCitation(n)));
+            }
+
+            score.Text = L10n.Fmt("quiz.score_progress", submittedCount, items.Count, correctCount);
+            UpdateSheetStatus();
+            UpdateOneByOneView();
+            UpdateSummaryIfDone();
+        }
+
+        // Build question cards
+        for (var idx = 0; idx < questions.Count; idx++)
+        {
+            var q = questions[idx];
+            var item = new QuizItemState
+            {
+                Number = idx + 1,
+                Id = Str(q, "id"),
+                Type = Str(q, "type"),
+                Prompt = Str(q, "prompt"),
+                Citations = CiteText(q),
+                Options = Arr(q, "options").Select(o => o.GetString() ?? "").ToList(),
+                Explanation = Str(q, "explanation"),
+                Question = q,
+                SheetPill = idx < pillButtons.Count ? pillButtons[idx] : null,
+            };
+
             var card = new Border
             {
                 Background = cardBg,
-                BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
+                BorderBrush = borderBrush,
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(12),
                 Padding = new Thickness(_compact ? 12 : 14),
             };
             var col = new StackPanel { Spacing = 8 };
-            col.Children.Add(new TextBlock { Text = $"{number}. {Str(q, "prompt")}{CiteText(q)}", TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold, IsTextSelectionEnabled = true });
-            col.Children.Add(new TextBlock { Text = type switch { "single" => "单选", "multi" => "多选", "fill" => "填空", _ => "简答" }, FontSize = 11, Opacity = 0.6 });
-            var options = Arr(q, "options").Select(o => o.GetString() ?? "").ToList();
-            RadioButtons? radios = null;
-            var checks = new List<CheckBox>();
-            TextBox? text = null;
-            if (type == "single")
+            col.Children.Add(RenderQuizRichText($"**{item.Number}.** {item.Prompt}{item.Citations}", 14, allowSelection: true, citeChip: n => Md.SuperscriptCitation(n)));
+
+            var typeLabel = item.Type switch
             {
-                radios = new RadioButtons();
-                foreach (var o in options) radios.Items.Add(o);
+                "single" => L10n.T("quiz.type_single"),
+                "multi" => L10n.T("quiz.type_multi"),
+                "fill" => L10n.T("quiz.type_fill"),
+                _ => L10n.T("quiz.type_short"),
+            };
+            if (submitMode == QuizSubmitMode.Auto && item.Type == "single")
+            {
+                typeLabel = $"{typeLabel} · {L10n.T("quiz.auto_hint")}";
+            }
+            col.Children.Add(new TextBlock { Text = typeLabel, FontSize = 11, Opacity = 0.6 });
+
+            if (item.Type == "single")
+            {
+                var radios = new RadioButtons();
+                foreach (var o in item.Options)
+                {
+                    radios.Items.Add(RenderQuizRichText(o, 14, allowSelection: false));
+                }
+                radios.SelectionChanged += async (_, _) =>
+                {
+                    UpdateSheetStatus();
+                    if (submitMode == QuizSubmitMode.Auto && !item.Submitted && radios.SelectedIndex >= 0)
+                    {
+                        await SubmitItemAsync(item, warnIfEmpty: false);
+                    }
+                };
+                item.Radios = radios;
                 col.Children.Add(radios);
             }
-            else if (type == "multi")
+            else if (item.Type == "multi")
             {
-                foreach (var o in options)
+                foreach (var o in item.Options)
                 {
-                    var cb = new CheckBox { Content = o };
-                    checks.Add(cb);
+                    var cb = new CheckBox { Content = RenderQuizRichText(o, 14, allowSelection: false) };
+                    cb.Checked += (_, _) => UpdateSheetStatus();
+                    cb.Unchecked += (_, _) => UpdateSheetStatus();
+                    item.Checks.Add(cb);
                     col.Children.Add(cb);
                 }
             }
             else
             {
-                text = new TextBox { PlaceholderText = type == "fill" ? "输入答案" : "写下你的回答", AcceptsReturn = type == "short", TextWrapping = TextWrapping.Wrap, MinHeight = type == "short" ? 76 : 0 };
-                col.Children.Add(text);
+                var tb = new TextBox
+                {
+                    PlaceholderText = item.Type == "fill" ? L10n.T("quiz.placeholder_fill") : L10n.T("quiz.placeholder_short"),
+                    AcceptsReturn = item.Type == "short",
+                    TextWrapping = TextWrapping.Wrap,
+                    MinHeight = item.Type == "short" ? 76 : 0,
+                };
+                tb.TextChanged += (_, _) => UpdateSheetStatus();
+                if (item.Type == "fill" && submitMode == QuizSubmitMode.Auto)
+                {
+                    tb.KeyDown += async (_, e) =>
+                    {
+                        if (e.Key == Windows.System.VirtualKey.Enter && !item.Submitted)
+                        {
+                            e.Handled = true;
+                            await SubmitItemAsync(item, warnIfEmpty: true);
+                        }
+                    };
+                }
+                item.InputBox = tb;
+                col.Children.Add(tb);
             }
-            var result = new StackPanel { Spacing = 4 };
-            var submit = new Button { Content = "提交", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-            submit.Click += async (_, _) =>
+
+            if (!(submitMode == QuizSubmitMode.Auto && item.Type == "single"))
             {
-                JsonElement answer;
-                if (type == "single") answer = Api.Args(("a", radios!.SelectedIndex)).GetProperty("a");
-                else if (type == "multi") answer = Api.Args(("a", checks.Select((c, i) => (c, i)).Where(t => t.c.IsChecked == true).Select(t => t.i).ToArray())).GetProperty("a");
-                else answer = Api.Args(("a", text!.Text)).GetProperty("a");
-                if (type == "single" && radios!.SelectedIndex < 0) { _notify(InfoBarSeverity.Warning, "请先选择一个选项", ""); return; }
-                var res = await CallGradeAsync("studio.grade_answer", Args(("artifact_id", _artifactId), ("question_id", qid), ("answer", answer)), "评分");
-                if (res is not { } g) return;
-                result.Children.Clear();
-                var isSelfEval = Bool(g, "self_eval");
-                var ok = Bool(g, "correct");
-                if (isSelfEval)
-                {
-                    result.Children.Add(new TextBlock { Text = $"评分要点：{Str(g, "rubric")}", TextWrapping = TextWrapping.Wrap });
-                    result.Children.Add(new TextBlock { Text = "请对照要点自评。", Opacity = 0.7, FontSize = 12 });
-                }
-                else
-                {
-                    var resBrush = new SolidColorBrush(ok ? Windows.UI.Color.FromArgb(255, 120, 220, 140) : Windows.UI.Color.FromArgb(255, 255, 140, 130));
-                    var statusRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-                    statusRow.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = new PathIcon { Width = 24, Height = 24, Data = Geom(ok ? CheckIconPath : CrossIconPath), Foreground = resBrush } });
-                    statusRow.Children.Add(new TextBlock { Text = ok ? "回答正确" : "回答错误", Foreground = resBrush, FontWeight = FontWeights.SemiBold });
-                    result.Children.Add(statusRow);
-                    var ans = Arr(q, "answer_indices").Select(i => i.GetInt32()).Where(i => i < options.Count).Select(i => $"{(char)('A' + i)}. {options[i]}").ToList();
-                    var accepted = Arr(q, "accepted_answers").Select(a => a.GetString() ?? "");
-                    var reference = ans.Count > 0 ? string.Join("；", ans) : string.Join(" / ", accepted);
-                    if (!ok && reference.Length > 0) result.Children.Add(new TextBlock { Text = $"参考答案：{reference}", TextWrapping = TextWrapping.Wrap });
-                    if (answered.Add(qid) && ok) correct++;
-                    score.Text = $"已作答 {answered.Count}/{questions.Count}，答对 {correct}";
-                }
-                if (Str(q, "explanation").Length > 0) result.Children.Add(new TextBlock { Text = $"解析：{Str(q, "explanation")}", TextWrapping = TextWrapping.Wrap, Opacity = 0.9 });
-            };
-            col.Children.Add(submit);
-            col.Children.Add(result);
+                var submit = new Button { Content = L10n.T("quiz.submit"), Style = pillStyle };
+                submit.Click += async (_, _) => await SubmitItemAsync(item, warnIfEmpty: true);
+                item.SubmitBtn = submit;
+                col.Children.Add(submit);
+            }
+
+            item.Result = new StackPanel { Spacing = 4 };
+            col.Children.Add(item.Result);
             card.Child = col;
-            panel.Children.Add(card);
+            item.Card = card;
+            items.Add(item);
         }
-        AppendFeedbackIfPresent(panel);
-        return WrapScroll(panel);
+
+        if (submitMode == QuizSubmitMode.Manual && submitAllBtn != null)
+        {
+            var sheetSubmitted = false;
+            submitAllBtn.Click += async (_, _) =>
+            {
+                if (sheetSubmitted) return;
+                sheetSubmitted = true;
+                submitAllBtn.IsEnabled = false;
+                submitAllBtn.Content = L10n.T("quiz.submitted_all");
+                foreach (var it in items)
+                {
+                    if (!it.Submitted)
+                    {
+                        await SubmitItemAsync(it, warnIfEmpty: false);
+                    }
+                }
+            };
+        }
+
+        if (viewMode == QuizViewMode.OneByOne)
+        {
+            oneProgressText = new TextBlock { FontSize = 13, Opacity = 0.85 };
+            oneProgressBar = new ProgressBar { Minimum = 0, Maximum = 100, Height = 5 };
+            oneCardHost = new ContentControl
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            };
+            prevBtn = new Button { Content = L10n.T("quiz.prev"), Style = pillStyle };
+            nextBtn = new Button { Content = L10n.T("quiz.next"), Style = pillStyle };
+            prevBtn.Click += (_, _) => { if (currentIndex > 0) { currentIndex--; UpdateOneByOneView(); } };
+            nextBtn.Click += (_, _) => { if (currentIndex < items.Count - 1) { currentIndex++; UpdateOneByOneView(); } };
+
+            var navRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right };
+            navRow.Children.Add(prevBtn);
+            navRow.Children.Add(nextBtn);
+
+            host.Children.Add(oneProgressText);
+            host.Children.Add(oneProgressBar);
+            host.Children.Add(oneCardHost);
+            host.Children.Add(navRow);
+            UpdateOneByOneView();
+        }
+        else
+        {
+            foreach (var it in items)
+            {
+                host.Children.Add(it.Card);
+            }
+        }
     }
 
     // flashcards --------------------------------------------------------------
@@ -1273,7 +2154,7 @@ internal sealed class InteractiveArtifactView : IDisposable
     private FrameworkElement BuildFlashcards(JsonElement payload)
     {
         var cards = Arr(payload, "cards").ToList();
-        if (cards.Count == 0) return Message("没有卡片。");
+        if (cards.Count == 0) return Message(L10n.T("fc.empty"));
         var order = Enumerable.Range(0, cards.Count).ToList();
         var index = 0;
         var flipped = false;
@@ -1293,9 +2174,9 @@ internal sealed class InteractiveArtifactView : IDisposable
             MinHeight = _compact ? 150 : 220,
             Child = face,
         };
-        var flip = new Button { Content = "翻转", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        var yes = new Button { Content = "认识", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        var no = new Button { Content = "不认识", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var flip = new Button { Content = L10n.T("fc.flip"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var yes = new Button { Content = L10n.T("fc.know"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var no = new Button { Content = L10n.T("fc.dont_know"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Center };
         row.Children.Add(no);
         row.Children.Add(flip);
@@ -1311,18 +2192,18 @@ internal sealed class InteractiveArtifactView : IDisposable
         {
             if (index >= order.Count)
             {
-                face.Text = unknown.Count == 0 ? $"全部完成！认识 {known}/{cards.Count}" : $"本轮结束：认识 {known}，不认识 {unknown.Count}";
+                face.Text = unknown.Count == 0 ? L10n.Fmt("fc.done_all", known, cards.Count) : L10n.Fmt("fc.done_round", known, unknown.Count);
                 hint.Text = "";
                 progress.Text = "";
-                flip.Content = unknown.Count > 0 ? "只复习不认识的" : "重新开始";
+                flip.Content = unknown.Count > 0 ? L10n.T("fc.review_unknown") : L10n.T("fc.restart");
                 yes.Visibility = no.Visibility = Visibility.Collapsed;
                 return;
             }
             var c = cards[order[index]];
             progress.Text = $"{index + 1} / {order.Count}";
             face.Text = flipped ? Str(c, "back") : Str(c, "front");
-            hint.Text = !flipped && Str(c, "hint").Length > 0 ? $"提示：{Str(c, "hint")}" : "";
-            flip.Content = flipped ? "看正面" : "翻转";
+            hint.Text = !flipped && Str(c, "hint").Length > 0 ? L10n.Fmt("fc.hint", Str(c, "hint")) : "";
+            flip.Content = flipped ? L10n.T("fc.show_front") : L10n.T("fc.flip");
             yes.Visibility = no.Visibility = Visibility.Visible;
         }
         void Next(bool knew) { if (knew) known++; else unknown.Add(order[index]); index++; flipped = false; Show(); }
@@ -1340,8 +2221,13 @@ internal sealed class InteractiveArtifactView : IDisposable
 
     // mind map ----------------------------------------------------------------
 
-    private FrameworkElement BuildMindmap(JsonElement payload) =>
-        new MindmapTreeView(
+    private FrameworkElement BuildMindmap(JsonElement payload)
+    {
+        JsonElement? progressState = _art.TryGetProperty("progress_state", out var ps) && ps.ValueKind == JsonValueKind.Object
+            ? ps
+            : null;
+        var aid = Str(_art, "id");
+        return new MindmapTreeView(
             payload,
             _onExportSvg,
             _compact,
@@ -1349,7 +2235,14 @@ internal sealed class InteractiveArtifactView : IDisposable
             isKnowledgeGraph: Str(Obj(_art, "config"), "mode") == "knowledge_graph" || Str(payload, "kind") == "knowledge_graph",
             onQuizConcept: _onQuizConcept,
             onExpandMindmap: _onExpandMindmap,
-            onAskConcept: _onAskConcept).Root;
+            onAskConcept: _onAskConcept,
+            progressState: progressState,
+            onProgressChanged: newState =>
+            {
+                if (aid.Length > 0)
+                    _ = Api.CallAsync("studio.save_progress", Args(("id", aid), ("state", newState)));
+            }).Root;
+    }
 
     // report ------------------------------------------------------------------
 
@@ -1360,7 +2253,7 @@ internal sealed class InteractiveArtifactView : IDisposable
         {
             tocPanel.Children.Add(new TextBlock
             {
-                Text = "目录",
+                Text = L10n.T("report.toc"),
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
@@ -1370,7 +2263,7 @@ internal sealed class InteractiveArtifactView : IDisposable
 
         var contentPanel = new StackPanel { Spacing = 14 };
         var sections = Arr(payload, "sections").ToList();
-        if (sections.Count == 0) return Message("没有报告内容。");
+        if (sections.Count == 0) return Message(L10n.T("report.empty"));
         var compactTocHost = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch };
         if (_compact && sections.Count > 1) contentPanel.Children.Add(compactTocHost);
 
@@ -1402,7 +2295,7 @@ internal sealed class InteractiveArtifactView : IDisposable
                     Padding = new Thickness(12),
                 };
                 var col = new StackPanel { Spacing = 4 };
-                col.Children.Add(new TextBlock { Text = "核心要点", FontWeight = FontWeights.SemiBold, FontSize = 13 });
+                col.Children.Add(new TextBlock { Text = L10n.T("report.key_points"), FontWeight = FontWeights.SemiBold, FontSize = 13 });
                 foreach (var t in takeaways) col.Children.Add(new TextBlock { Text = $"- {t}", TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, FontSize = 13 });
                 box.Child = col;
                 contentPanel.Children.Add(box);
@@ -1436,7 +2329,7 @@ internal sealed class InteractiveArtifactView : IDisposable
             {
                 compactTocHost.Content = new Expander
                 {
-                    Header = $"目录（共 {sections.Count} 节）",
+                    Header = L10n.Fmt("report.toc_count", sections.Count),
                     Content = tocPanel,
                     HorizontalAlignment = HorizontalAlignment.Stretch,
                 };
@@ -1468,67 +2361,7 @@ internal sealed class InteractiveArtifactView : IDisposable
 
     private FrameworkElement BuildSlides(JsonElement payload)
     {
-        var slides = Arr(payload, "slides").ToList();
-        if (slides.Count == 0) return Message("没有幻灯片。");
-        var index = 0;
-        var title = new TextBlock { FontSize = _compact ? 22 : 26, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
-        var bullets = new StackPanel { Spacing = 8 };
-        var notes = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.8, IsTextSelectionEnabled = true };
-        var counter = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-        var slide = new Border
-        {
-            Background = (Brush)Application.Current.Resources[_compact ? "PanelBgBrush" : "ElevatedBgBrush"],
-            BorderBrush = (Brush)Application.Current.Resources["SubtleBorderBrush"],
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(14),
-            Padding = new Thickness(_compact ? 20 : 28),
-            MinHeight = _compact ? 200 : 280,
-        };
-        var inner = new StackPanel { Spacing = 12 };
-        inner.Children.Add(title);
-        inner.Children.Add(bullets);
-        slide.Child = inner;
-
-        var prevSp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        prevSp.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = new PathIcon { Width = 24, Height = 24, Data = Geom(PrevIconPath) } });
-        prevSp.Children.Add(new TextBlock { Text = "上一页" });
-        var prev = new Button { Content = prevSp, Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-
-        var nextSp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        nextSp.Children.Add(new TextBlock { Text = "下一页" });
-        nextSp.Children.Add(new Viewbox { Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center, Child = new PathIcon { Width = 24, Height = 24, Data = Geom(NextIconPath) } });
-        var next = new Button { Content = nextSp, Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-
-        void Show()
-        {
-            var s = slides[index];
-            var layout = Str(s, "layout");
-            title.Text = Str(s, "title");
-            title.FontSize = layout is "title" or "section" ? (_compact ? 24 : 32) : (_compact ? 20 : 24);
-            bullets.Children.Clear();
-            foreach (var b in Arr(s, "bullets"))
-            {
-                var isQuote = layout == "quote";
-                bullets.Children.Add(new TextBlock { Text = isQuote ? $"“{b.GetString()}”" : $"- {b.GetString()}", TextWrapping = TextWrapping.Wrap, FontSize = _compact ? 14 : 16, IsTextSelectionEnabled = true, FontStyle = isQuote ? Windows.UI.Text.FontStyle.Italic : Windows.UI.Text.FontStyle.Normal });
-            }
-            notes.Text = Str(s, "speaker_notes").Length > 0 ? Str(s, "speaker_notes") : "（没有讲稿）";
-            counter.Text = $"{index + 1} / {slides.Count}";
-            prev.IsEnabled = index > 0;
-            next.IsEnabled = index < slides.Count - 1;
-        }
-        prev.Click += (_, _) => { index--; Show(); };
-        next.Click += (_, _) => { index++; Show(); };
-        Show();
-        var nav = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, HorizontalAlignment = HorizontalAlignment.Center };
-        nav.Children.Add(prev);
-        nav.Children.Add(counter);
-        nav.Children.Add(next);
-        var root = new StackPanel { Spacing = 12 };
-        root.Children.Add(slide);
-        root.Children.Add(nav);
-        root.Children.Add(new Expander { Header = "讲稿", Content = notes, HorizontalAlignment = HorizontalAlignment.Stretch });
-        AppendFeedbackIfPresent(root);
-        return WrapScroll(root);
+        return new SlideDeckViewer(payload, _compact, AppendFeedbackIfPresent).Root;
     }
 
     // infographic -------------------------------------------------------------
@@ -1578,6 +2411,7 @@ internal sealed class InteractiveArtifactView : IDisposable
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
+        if (_compact) NestedScrollHelper.AttachToOuterOnBoundary(scroll);
 
         Button MakeZoomBtn(string path, string tip, RoutedEventHandler onClick)
         {
@@ -1614,8 +2448,8 @@ internal sealed class InteractiveArtifactView : IDisposable
             b.Click += onClick;
             return b;
         }
-        var zoomIn = MakeZoomBtn(PlusIconPath, "放大", (_, _) => { scale.ScaleX = scale.ScaleY = Math.Min(2.4, scale.ScaleX + 0.15); });
-        var zoomOut = MakeZoomBtn(MinusIconPath, "缩小", (_, _) => { scale.ScaleX = scale.ScaleY = Math.Max(0.5, scale.ScaleX - 0.15); });
+        var zoomIn = MakeZoomBtn(PlusIconPath, L10n.T("mindmap.zoom_in"), (_, _) => { scale.ScaleX = scale.ScaleY = Math.Min(2.4, scale.ScaleX + 0.15); });
+        var zoomOut = MakeZoomBtn(MinusIconPath, L10n.T("mindmap.zoom_out"), (_, _) => { scale.ScaleX = scale.ScaleY = Math.Max(0.5, scale.ScaleX - 0.15); });
         var zoomBox = new Border
         {
             Background = (Brush)Application.Current.Resources["ElevatedBgBrush"],
@@ -1684,7 +2518,7 @@ internal sealed class InteractiveArtifactView : IDisposable
         }
         else
         {
-            root.Children.Add(new TextBlock { Text = "没有找到音频文件，只显示文字稿。", Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 200, 120)) });
+            root.Children.Add(new TextBlock { Text = L10n.T("audio.missing_wav"), Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 200, 120)) });
         }
         foreach (var t in turns)
         {
@@ -1694,5 +2528,38 @@ internal sealed class InteractiveArtifactView : IDisposable
         }
         AppendFeedbackIfPresent(root);
         return WrapScroll(root, 480);
+    }
+}
+
+internal static class NestedScrollHelper
+{
+    /// <summary>
+    /// Allows mouse-wheel scrolling to bubble to an outer ScrollViewer (e.g. the chat list)
+    /// once the inner ScrollViewer has reached its top or bottom boundary (or cannot scroll).
+    /// </summary>
+    public static void AttachToOuterOnBoundary(ScrollViewer inner)
+    {
+        inner.AddHandler(UIElement.PointerWheelChangedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((s, e) =>
+        {
+            if (s is not ScrollViewer sv) return;
+            var props = e.GetCurrentPoint(sv).Properties;
+            if (props.IsHorizontalMouseWheel) return;
+
+            var delta = props.MouseWheelDelta;
+            if (delta == 0) return;
+
+            if ((e.KeyModifiers & (Windows.System.VirtualKeyModifiers.Control | Windows.System.VirtualKeyModifiers.Shift)) != 0)
+                return;
+
+            var scrollable = sv.ScrollableHeight;
+            var atBoundary = scrollable <= 0.5
+                || (delta > 0 && sv.VerticalOffset <= 0.5)
+                || (delta < 0 && sv.VerticalOffset >= scrollable - 0.5);
+
+            if (atBoundary)
+            {
+                e.Handled = false;
+            }
+        }), handledEventsToo: true);
     }
 }

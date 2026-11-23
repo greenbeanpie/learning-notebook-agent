@@ -31,7 +31,7 @@ public sealed partial class MainWindow
         public StackPanel Artifacts = new() { Spacing = 8, Visibility = Visibility.Collapsed };
         public Dictionary<string, ChatArtifactCard> ArtifactCards = new();
         public StackPanel Footer = new() { Spacing = 8 };
-        public StackPanel Followups = new() { Spacing = 8, Margin = new Thickness(0, 6, 0, 0) };
+        public FlowWrapPanel Followups = new() { HorizontalSpacing = 8, VerticalSpacing = 8, Margin = new Thickness(0, 6, 0, 0) };
         public bool Streaming;
     }
 
@@ -220,7 +220,7 @@ public sealed partial class MainWindow
                 var code = Str(m, "error_code");
                 if (status is "INCOMPLETE" or "FAILED" or "CANCELLED")
                 {
-                    var why = status == "CANCELLED" ? "已停止生成。" : code.Length > 0 && Advice(code).Length > 0 ? Advice(code) : "回答没有完成。";
+                    var why = status == "CANCELLED" ? L10n.T("studio.cancelled") : code.Length > 0 && Advice(code).Length > 0 ? Advice(code) : L10n.T("chat.incomplete");
                     v.Footer.Children.Add(new TextBlock { Text = why, Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 180, 120)), TextWrapping = TextWrapping.Wrap });
                 }
                 AddActions(v, Str(m, "content"), Int(m, "feedback"), i == messages.Count - 1);
@@ -236,10 +236,10 @@ public sealed partial class MainWindow
     private UIElement EmptyChatHint()
     {
         var panel = new StackPanel { Spacing = 6, Margin = new Thickness(0, 20, 0, 0) };
-        panel.Children.Add(new TextBlock { Text = "开始提问", FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        panel.Children.Add(Line("1. 先在左侧添加来源（文件、网页或粘贴文本），并勾选要使用的来源。"));
-        panel.Children.Add(Line("2. 在下方输入问题，回答会带有 [1] [2] 这样的引用，点击可查看原文。"));
-        panel.Children.Add(Line("3. 右侧 Studio 可以把来源生成为测验、闪卡、思维导图、报告等。"));
+        panel.Children.Add(new TextBlock { Text = L10n.T("chat.empty_title"), FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        panel.Children.Add(Line(L10n.T("chat.empty_step1")));
+        panel.Children.Add(Line(L10n.T("chat.empty_step2")));
+        panel.Children.Add(Line(L10n.T("chat.empty_step3")));
         return panel;
     }
 
@@ -394,7 +394,7 @@ public sealed partial class MainWindow
                 Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
             },
         });
-        saveContent.Children.Add(new TextBlock { Text = "保存到笔记", FontSize = 12, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"], VerticalAlignment = VerticalAlignment.Center });
+        saveContent.Children.Add(new TextBlock { Text = L10n.T("chat.save_to_note"), FontSize = 12, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"], VerticalAlignment = VerticalAlignment.Center });
         var saveBtn = new Button
         {
             Content = saveContent,
@@ -405,13 +405,13 @@ public sealed partial class MainWindow
             BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"],
             BorderThickness = new Thickness(1),
         };
-        ToolTipService.SetToolTip(saveBtn, "把这条回答保存为笔记（保留引用）");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(saveBtn, "把这条回答保存为笔记（保留引用）");
+        ToolTipService.SetToolTip(saveBtn, L10n.T("chat.save_to_note_tip"));
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(saveBtn, L10n.T("chat.save_to_note_tip"));
         saveBtn.Click += async (_, _) =>
         {
-            if (await CoreAsync("note.from_message", Args(("message_id", v.Id)), "保存笔记") != null)
+            if (await CoreAsync("note.from_message", Args(("message_id", v.Id)), L10n.T("note.op_save")) != null)
             {
-                ShowStatus(InfoBarSeverity.Success, "已保存", "回答已保存为笔记。");
+                ShowStatus(InfoBarSeverity.Success, L10n.T("chat.saved_title"), L10n.T("chat.saved_msg"));
                 await RefreshNotebookDataAsync();
             }
         };
@@ -444,19 +444,19 @@ public sealed partial class MainWindow
             Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
         };
-        ToolTipService.SetToolTip(copyBtn, "复制回答");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(copyBtn, "复制回答");
+        ToolTipService.SetToolTip(copyBtn, L10n.T("chat.copy_answer"));
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(copyBtn, L10n.T("chat.copy_answer"));
         copyBtn.Click += (_, _) =>
         {
             var dp = new DataPackage();
             dp.SetText(content);
             Clipboard.SetContent(dp);
-            ShowStatus(InfoBarSeverity.Success, "已复制", "回答已复制到剪贴板。");
+            ShowStatus(InfoBarSeverity.Success, L10n.T("chat.copied_title"), L10n.T("chat.copied_msg"));
         };
         bar.Children.Add(copyBtn);
         if (isLast)
         {
-            bar.Children.Add(Mk("重新生成", "重新生成这条回答", async () =>
+            bar.Children.Add(Mk(L10n.T("chat.regenerate"), L10n.T("chat.regenerate_tip"), async () =>
             {
                 if (_activeNotebookId == null || _streaming != null) return;
                 if (ChatList.Items.Count == 0 || !ReferenceEquals(ChatList.Items[^1], v.Root)) return;
@@ -540,16 +540,16 @@ public sealed partial class MainWindow
         }
         bar.Children.Add(MkIcon(
             "M23,10C23,8.89 22.1,8 21,8H14.68L15.64,3.43C15.66,3.33 15.67,3.22 15.67,3.11C15.67,2.7 15.5,2.32 15.23,2.05L14.17,1L7.59,7.58C7.22,7.95 7,8.45 7,9V19A2,2 0 0,0 9,21H18C18.83,21 19.54,20.5 19.84,19.78L22.86,12.73C22.95,12.5 23,12.26 23,12V10M1,21H5V9H1V21Z",
-            feedback > 0 ? "已赞" : "", feedback > 0, "回答有帮助", async () =>
+            feedback > 0 ? L10n.T("chat.liked") : "", feedback > 0, L10n.T("chat.like_tip"), async () =>
         {
-            await CoreAsync("chat.set_feedback", Args(("message_id", v.Id), ("feedback", 1)), "提交反馈");
+            await CoreAsync("chat.set_feedback", Args(("message_id", v.Id), ("feedback", 1)), L10n.T("chat.op_feedback"));
             await RefreshNotebookDataAsync();
         }));
         bar.Children.Add(MkIcon(
             "M19,15H23V3H19M15,3H6C5.17,3 4.46,3.5 4.16,4.22L1.14,11.27C1.05,11.5 1,11.74 1,12V14A2,2 0 0,0 3,16H9.31L8.36,20.57C8.34,20.67 8.33,20.77 8.33,20.88C8.33,21.3 8.5,21.67 8.77,21.94L9.83,23L16.41,16.41C16.78,16.05 17,15.55 17,15V5A2,2 0 0,0 15,3Z",
-            feedback < 0 ? "已踩" : "", feedback < 0, "回答没有帮助", async () =>
+            feedback < 0 ? L10n.T("chat.disliked") : "", feedback < 0, L10n.T("chat.dislike_tip"), async () =>
         {
-            await CoreAsync("chat.set_feedback", Args(("message_id", v.Id), ("feedback", -1)), "提交反馈");
+            await CoreAsync("chat.set_feedback", Args(("message_id", v.Id), ("feedback", -1)), L10n.T("chat.op_feedback"));
             await RefreshNotebookDataAsync();
         }));
         v.Footer.Children.Add(bar);
@@ -613,7 +613,7 @@ public sealed partial class MainWindow
 
     private async void OnStopChatClick(object sender, RoutedEventArgs e)
     {
-        if (_activeNotebookId != null) await CoreAsync("chat.cancel", Args(("notebook_id", _activeNotebookId)), "停止生成");
+        if (_activeNotebookId != null) await CoreAsync("chat.cancel", Args(("notebook_id", _activeNotebookId)), L10n.T("chat.stop"));
     }
 
     private async Task SendChatAsync(string text)
@@ -650,14 +650,14 @@ public sealed partial class MainWindow
     private void ShowChatError(ApiErrorDto e)
     {
         var advice = Advice(e.Code);
-        ShowStatus(InfoBarSeverity.Error, "对话失败", advice.Length > 0 ? $"{advice}（{e.Code}）" : $"{e.Message}（{e.Code}）");
+        ShowStatus(InfoBarSeverity.Error, L10n.T("chat.failed_title"), advice.Length > 0 ? $"{advice} ({e.Code})" : $"{e.Message} ({e.Code})");
     }
 
     private async void OnClearChatClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        if (!await ConfirmAsync("清空对话", "确定清空当前笔记本的全部对话吗？来源和笔记不受影响。", "清空")) return;
-        await CoreAsync("chat.clear", Args(("notebook_id", _activeNotebookId)), "清空对话");
+        if (!await ConfirmAsync(L10n.T("nb.clear_chat"), L10n.T("chat.clear_confirm"), L10n.T("chat.clear_btn"))) return;
+        await CoreAsync("chat.clear", Args(("notebook_id", _activeNotebookId)), L10n.T("nb.clear_chat"));
         await RefreshNotebookDataAsync();
     }
 

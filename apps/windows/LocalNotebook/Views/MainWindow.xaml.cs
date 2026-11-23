@@ -18,10 +18,12 @@ public sealed partial class MainWindow : Window
     private bool _loadingPicker;
     private bool _refreshing;
     private bool _refreshAgain;
+    private readonly HashSet<string> _autoTranslatedSummaries = new();
 
     public MainWindow()
     {
         InitializeComponent();
+        ApplyLocalization();
         App.Core.EventReceived += OnCoreEvent;
         Closed += (_, _) =>
         {
@@ -61,7 +63,7 @@ public sealed partial class MainWindow : Window
         IsTextSelectionEnabled = true,
     };
 
-    private async Task<string?> PromptTextAsync(string title, string label, string initial = "", bool multiline = false, string primary = "确定")
+    private async Task<string?> PromptTextAsync(string title, string label, string initial = "", bool multiline = false, string? primary = null)
     {
         var box = new TextBox
         {
@@ -72,19 +74,19 @@ public sealed partial class MainWindow : Window
             MinWidth = 420,
             MinHeight = multiline ? 220 : 0,
         };
-        var dlg = new ContentDialog { Title = title, Content = box, PrimaryButtonText = primary, CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };
+        var dlg = new ContentDialog { Title = title, Content = box, PrimaryButtonText = primary ?? L10n.T("common.ok"), CloseButtonText = L10n.T("common.cancel"), DefaultButton = ContentDialogButton.Primary, XamlRoot = Content.XamlRoot };
         return await dlg.ShowAsync() == ContentDialogResult.Primary ? box.Text : null;
     }
 
-    private async Task<bool> ConfirmAsync(string title, string message, string primary = "确定")
+    private async Task<bool> ConfirmAsync(string title, string message, string? primary = null)
     {
-        var dlg = new ContentDialog { Title = title, Content = Line(message), PrimaryButtonText = primary, CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = Content.XamlRoot };
+        var dlg = new ContentDialog { Title = title, Content = Line(message), PrimaryButtonText = primary ?? L10n.T("common.ok"), CloseButtonText = L10n.T("common.cancel"), DefaultButton = ContentDialogButton.Close, XamlRoot = Content.XamlRoot };
         return await dlg.ShowAsync() == ContentDialogResult.Primary;
     }
 
     private async Task InfoAsync(string title, UIElement content)
     {
-        var dlg = new ContentDialog { Title = title, Content = content, CloseButtonText = "关闭", XamlRoot = Content.XamlRoot };
+        var dlg = new ContentDialog { Title = title, Content = content, CloseButtonText = L10n.T("common.close"), XamlRoot = Content.XamlRoot };
         await dlg.ShowAsync();
     }
 
@@ -133,9 +135,12 @@ public sealed partial class MainWindow : Window
 
     private void ApplyLocalization()
     {
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(NotebookPicker, L10n.T("nb.switch"));
         NotebookPicker.PlaceholderText = L10n.T("nb.switch");
         NewNotebookBtn.Content = L10n.T("nb.new");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(SettingsBtn, L10n.T("settings.title"));
         SettingsBtnText.Text = L10n.T("settings.title");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(NotebookMenuBtn, L10n.T("nb.menu"));
         RenameNotebookItem.Text = L10n.T("nb.rename");
         ExportLnaItem.Text = L10n.T("nb.export_lna");
         ExportMdItem.Text = L10n.T("nb.export_md");
@@ -147,12 +152,16 @@ public sealed partial class MainWindow : Window
 
         SourcesHeaderText.Text = L10n.T("sources.title");
         AddSourceBtn.Content = L10n.T("sources.add");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(AddSourceBtn, L10n.T("sources.add"));
         AddFileMenuItem.Text = L10n.T("sources.add_file");
         AddUrlMenuItem.Text = L10n.T("sources.add_url");
         AddPasteMenuItem.Text = L10n.T("sources.add_paste");
         CreateNoteBtn.Content = L10n.T("sources.create_note");
 
         ChatInputBox.PlaceholderText = L10n.T("chat.placeholder");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(SendBtn, L10n.T("chat.send"));
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(StopBtn, L10n.T("chat.stop"));
+        ToolTipService.SetToolTip(StopBtn, L10n.T("chat.stop"));
         TileAudioText.Text = L10n.T("studio.audio");
         TileSlidesText.Text = L10n.T("studio.slides");
         TileMindmapText.Text = L10n.T("studio.mindmap");
@@ -160,18 +169,17 @@ public sealed partial class MainWindow : Window
         TileFlashcardsText.Text = L10n.T("studio.flashcards");
         TileQuizText.Text = L10n.T("studio.quiz");
         TileInfographicText.Text = L10n.T("studio.infographic");
-        TileKnowledgeGraphText.Text = L10n.T("kg.title");
     }
 
     // ---------- startup ----------
 
     public void ReportStartupFailure(string message) =>
-        ShowStatus(InfoBarSeverity.Error, "核心启动失败", message);
+        ShowStatus(InfoBarSeverity.Error, L10n.T("app.startup_failed"), message);
 
     public async Task OnCoreReadyAsync()
     {
         await LoadUiPreferencesAsync();
-        var list = await CoreAsync("notebook.list", Args(), "读取笔记本");
+        var list = await CoreAsync("notebook.list", Args(), L10n.T("nb.op_load"));
         if (list is { } res && Arr(res, "notebooks").FirstOrDefault() is { ValueKind: JsonValueKind.Object } first)
         {
             _activeNotebookId = Str(first, "id");
@@ -179,14 +187,14 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            var created = await CoreAsync("notebook.create", Args(("title", "未命名笔记本")), "创建笔记本");
+            var created = await CoreAsync("notebook.create", Args(("title", L10n.T("nb.untitled"))), L10n.T("nb.op_create"));
             if (created is { } cr)
             {
                 _activeNotebookId = Str(cr, "id");
                 _activeNotebookTitle = Str(cr, "title");
             }
         }
-        NotebookTitleText.Text = _activeNotebookTitle.Length > 0 ? _activeNotebookTitle : "未命名笔记本";
+        NotebookTitleText.Text = _activeNotebookTitle.Length > 0 ? _activeNotebookTitle : L10n.T("nb.untitled");
         await RefreshNotebookPickerAsync();
         await RefreshNotebookDataAsync();
         if (!await WarnIfNoModelAsync()) await ShowOnboardingIfFirstRunAsync();
@@ -195,14 +203,14 @@ public sealed partial class MainWindow : Window
     /// <summary>Returns true when a model is configured.</summary>
     private async Task<bool> WarnIfNoModelAsync()
     {
-        var profiles = await CoreAsync("profile.list", Args(), "读取模型配置");
+        var profiles = await CoreAsync("profile.list", Args(), L10n.T("nb.op_load_profiles"));
         if (profiles is not { } p) return false;
         var ok = Arr(p, "profiles").Any(prof => Bool(prof, "is_active"));
         if (!ok)
         {
             ShowStatus(InfoBarSeverity.Warning, L10n.T("settings.no_model_title"), L10n.T("settings.no_model_msg"));
         }
-        else if (StatusBar.Title == L10n.T("settings.no_model_title") || StatusBar.Title == "尚未配置模型")
+        else if (StatusBar.Title == L10n.T("settings.no_model_title"))
         {
             StatusBar.IsOpen = false;
         }
@@ -213,7 +221,7 @@ public sealed partial class MainWindow : Window
 
     private async Task RefreshNotebookPickerAsync()
     {
-        var list = await CoreAsync("notebook.list", Args(), "读取笔记本");
+        var list = await CoreAsync("notebook.list", Args(), L10n.T("nb.op_load"));
         if (list is not { } res) return;
         _loadingPicker = true;
         try
@@ -261,25 +269,25 @@ public sealed partial class MainWindow : Window
         CloseArtifactInline();
         _activeNotebookId = id;
         _streaming = null;
-        var nb = await CoreAsync("notebook.get", Args(("notebook_id", id)), "读取笔记本");
+        var nb = await CoreAsync("notebook.get", Args(("notebook_id", id)), L10n.T("nb.op_load"));
         _activeNotebookTitle = nb is { } n ? Str(n, "title") : "";
-        NotebookTitleText.Text = _activeNotebookTitle.Length > 0 ? _activeNotebookTitle : "未命名笔记本";
+        NotebookTitleText.Text = _activeNotebookTitle.Length > 0 ? _activeNotebookTitle : L10n.T("nb.untitled");
         await RefreshNotebookPickerAsync();
         await RefreshNotebookDataAsync();
     }
 
     private async void OnNewNotebookClick(object sender, RoutedEventArgs e)
     {
-        var res = await CoreAsync("notebook.create", Args(("title", "新笔记本")), "新建笔记本");
+        var res = await CoreAsync("notebook.create", Args(("title", L10n.T("nb.new_title"))), L10n.T("nb.new"));
         if (res is { } r) await SwitchNotebookAsync(Str(r, "id"));
     }
 
     private async void OnRenameNotebookClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        var name = await PromptTextAsync("重命名笔记本", "名称", _activeNotebookTitle);
+        var name = await PromptTextAsync(L10n.T("nb.rename"), L10n.T("common.name"), _activeNotebookTitle);
         if (string.IsNullOrWhiteSpace(name)) return;
-        if (await CoreAsync("notebook.rename", Args(("notebook_id", _activeNotebookId), ("title", name.Trim())), "重命名笔记本") != null)
+        if (await CoreAsync("notebook.rename", Args(("notebook_id", _activeNotebookId), ("title", name.Trim())), L10n.T("nb.op_rename")) != null)
         {
             _activeNotebookTitle = name.Trim();
             NotebookTitleText.Text = _activeNotebookTitle;
@@ -290,9 +298,9 @@ public sealed partial class MainWindow : Window
     private async void OnDeleteNotebookClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        if (!await ConfirmAsync("删除笔记本", $"确定删除“{_activeNotebookTitle}”及其全部来源、对话和产物吗？此操作无法撤销。", "删除")) return;
-        if (await CoreAsync("notebook.delete", Args(("notebook_id", _activeNotebookId)), "删除笔记本") == null) return;
-        var list = await CoreAsync("notebook.list", Args(), "读取笔记本");
+        if (!await ConfirmAsync(L10n.T("nb.delete"), L10n.Fmt("nb.delete_confirm", _activeNotebookTitle), L10n.T("common.delete"))) return;
+        if (await CoreAsync("notebook.delete", Args(("notebook_id", _activeNotebookId)), L10n.T("nb.op_delete")) == null) return;
+        var list = await CoreAsync("notebook.list", Args(), L10n.T("nb.op_load"));
         var next = list is { } l ? Arr(l, "notebooks").FirstOrDefault() : default;
         if (next.ValueKind == JsonValueKind.Object)
         {
@@ -300,7 +308,7 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            var created = await CoreAsync("notebook.create", Args(("title", "未命名笔记本")), "创建笔记本");
+            var created = await CoreAsync("notebook.create", Args(("title", L10n.T("nb.untitled"))), L10n.T("nb.op_create"));
             if (created is { } c) await SwitchNotebookAsync(Str(c, "id"));
         }
     }
@@ -308,10 +316,10 @@ public sealed partial class MainWindow : Window
     private async void OnExportLnaClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        var path = await PickSaveFileAsync(_activeNotebookTitle, "Local Notebook 归档", ".lna");
+        var path = await PickSaveFileAsync(_activeNotebookTitle, L10n.T("nb.archive_filter"), ".lna");
         if (path == null) return;
-        if (await CoreAsync("notebook.export", Args(("notebook_id", _activeNotebookId), ("format", "lna"), ("out_path", path)), "导出") != null)
-            ShowStatus(InfoBarSeverity.Success, "已导出", path);
+        if (await CoreAsync("notebook.export", Args(("notebook_id", _activeNotebookId), ("format", "lna"), ("out_path", path)), L10n.T("nb.op_export")) != null)
+            ShowStatus(InfoBarSeverity.Success, L10n.T("common.exported"), path);
     }
 
     private async void OnExportMarkdownClick(object sender, RoutedEventArgs e)
@@ -319,28 +327,28 @@ public sealed partial class MainWindow : Window
         if (_activeNotebookId == null) return;
         var path = await PickSaveFileAsync(_activeNotebookTitle, "Markdown", ".md");
         if (path == null) return;
-        if (await CoreAsync("notebook.export", Args(("notebook_id", _activeNotebookId), ("format", "markdown"), ("out_path", path)), "导出") != null)
-            ShowStatus(InfoBarSeverity.Success, "已导出", path);
+        if (await CoreAsync("notebook.export", Args(("notebook_id", _activeNotebookId), ("format", "markdown"), ("out_path", path)), L10n.T("nb.op_export")) != null)
+            ShowStatus(InfoBarSeverity.Success, L10n.T("common.exported"), path);
     }
 
     private async void OnImportLnaClick(object sender, RoutedEventArgs e)
     {
         var path = await PickOpenFileAsync(".lna");
         if (path == null) return;
-        var res = await CoreAsync("notebook.import", Args(("in_path", path)), "导入");
+        var res = await CoreAsync("notebook.import", Args(("in_path", path)), L10n.T("nb.op_import"));
         if (res is { } r)
         {
-            ShowStatus(InfoBarSeverity.Success, "已导入", "来源正在重新建立索引。");
+            ShowStatus(InfoBarSeverity.Success, L10n.T("nb.imported"), L10n.T("nb.imported_msg"));
             await SwitchNotebookAsync(Str(r, "notebook_id"));
         }
     }
 
     private async void OnExportDiagnosticsClick(object sender, RoutedEventArgs e)
     {
-        var path = await PickSaveFileAsync("diagnostics", "诊断包 (JSON)", ".json");
+        var path = await PickSaveFileAsync("diagnostics", L10n.T("nb.diag_filter"), ".json");
         if (path == null) return;
-        if (await CoreAsync("diagnostics.export", Args(("out_path", path)), "导出诊断包") != null)
-            ShowStatus(InfoBarSeverity.Success, "诊断包已导出", "只包含数量、状态与错误码，不含文档内容、提示词、回答或密钥。");
+        if (await CoreAsync("diagnostics.export", Args(("out_path", path)), L10n.T("nb.export_diag")) != null)
+            ShowStatus(InfoBarSeverity.Success, L10n.T("nb.diag_exported"), L10n.T("nb.diag_exported_msg"));
     }
 
     // ---------- refresh ----------
@@ -374,34 +382,70 @@ public sealed partial class MainWindow : Window
         var nid = _activeNotebookId!;
         var param = Args(("notebook_id", nid));
 
-        var summary = await CoreAsync("notebook.get", param, "读取笔记本");
+        var summary = await CoreAsync("notebook.get", param, L10n.T("nb.op_load"));
         if (summary is { } sm) RenderSummary(sm);
 
-        var src = await CoreAsync("source.list", param, "读取来源");
-        var notes = await CoreAsync("note.list", param, "读取笔记");
+        var src = await CoreAsync("source.list", param, L10n.T("nb.op_load_sources"));
+        var notes = await CoreAsync("note.list", param, L10n.T("nb.op_load_notes"));
         RenderSources(src, notes);
 
         if (_streaming == null)
         {
-            var chat = await CoreAsync("chat.history", param, "读取对话");
+            var chat = await CoreAsync("chat.history", param, L10n.T("nb.op_load_chat"));
             if (chat is { } c) RenderChat(c);
         }
 
-        var art = await CoreAsync("studio.list", param, "读取 Studio 产物");
+        var art = await CoreAsync("studio.list", param, L10n.T("nb.op_load_studio"));
         if (art is { } a) RenderArtifacts(a);
     }
 
     private async Task RefreshStudioArtifactsAsync()
     {
         if (_activeNotebookId == null) return;
-        var art = await CoreAsync("studio.list", Args(("notebook_id", _activeNotebookId)), "读取 Studio 产物");
+        var art = await CoreAsync("studio.list", Args(("notebook_id", _activeNotebookId)), L10n.T("nb.op_load_studio"));
         if (art is { } a) RenderArtifacts(a);
+    }
+
+    private static bool NeedsSummaryTranslation(string summaryMd, bool wantEnglish)
+    {
+        if (string.IsNullOrWhiteSpace(summaryMd)) return false;
+        var cjk = 0;
+        var latin = 0;
+        foreach (var ch in summaryMd)
+        {
+            if (ch >= '\u4e00' && ch <= '\u9fff') cjk++;
+            else if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) latin++;
+        }
+        return wantEnglish ? cjk >= 4 : (cjk == 0 && latin >= 12);
     }
 
     private void RenderSummary(JsonElement nb)
     {
         var md = Str(nb, "summary_md");
-        SummaryText.Text = md.Length > 0 ? md : "请添加来源或直接提问。";
+        SummaryText.Text = md.Length > 0 ? md : L10n.T("chat.empty_summary");
+        if (_activeNotebookId is { } nid && NeedsSummaryTranslation(md, L10n.IsEnglish))
+        {
+            var cacheKey = $"{nid}:{L10n.TargetLangCode}";
+            if (_autoTranslatedSummaries.Add(cacheKey))
+            {
+                var targetLang = L10n.TargetLangCode;
+                _ = Task.Run(async () =>
+                {
+                    var tr = await Api.CallAsync("i18n.translate_notebook_content", Args(("notebook_id", nid), ("target_lang", targetLang)));
+                    if (tr.Result is { } res && Bool(res, "translated_with_llm"))
+                    {
+                        DispatcherQueue.TryEnqueue(async () =>
+                        {
+                            if (_activeNotebookId == nid)
+                            {
+                                var updated = await CoreAsync("notebook.get", Args(("notebook_id", nid)), L10n.T("nb.op_load"));
+                                if (updated is { } u) RenderSummary(u);
+                            }
+                        });
+                    }
+                });
+            }
+        }
         SuggestedPanel.Children.Clear();
         SuggestedPanel.ColumnDefinitions.Clear();
         var raw = Str(nb, "suggested_questions_json");
@@ -419,7 +463,6 @@ public sealed partial class MainWindow : Window
             }
             catch (JsonException) { }
         }
-        if (!L10n.Prefs.ShowSuggestedQuestions) return;
         if (!L10n.Prefs.ShowSuggestedQuestions) return;
         var topQuestions = questions.Where(q => q.Length > 0).Take(3).ToList();
         for (int i = 0; i < topQuestions.Count; i++)
@@ -465,9 +508,28 @@ public sealed partial class MainWindow : Window
                 switch (ev.Event)
                 {
                     case "studio.status":
+                        OnKgStatusEvent(ev.Data);
                         if (!ev.Data.TryGetProperty("in_studio", out var inSt) || inSt.GetBoolean())
                             await RefreshStudioArtifactsAsync();
                         break;
+                    case "studio.thought":
+                        OnStudioThoughtPreview(ev.Data);
+                        OnKgThoughtEvent(ev.Data);
+                        break;
+                    case "studio.thought_delta":
+                        OnKgThoughtDeltaEvent(ev.Data);
+                        break;
+                    case "ai.activity":
+                    {
+                        var act = ev.Data.TryGetProperty("active", out var aEl) && aEl.ValueKind == JsonValueKind.True;
+                        var title = Str(ev.Data, "title");
+                        var body = Str(ev.Data, "body");
+                        if (act && !string.IsNullOrEmpty(title))
+                            ShowStatus(InfoBarSeverity.Informational, title, body);
+                        else if (!act)
+                            StatusBar.IsOpen = false;
+                        break;
+                    }
                     case "source.status":
                     case "notebook.summary_updated":
                         await RefreshNotebookDataAsync();
@@ -483,7 +545,7 @@ public sealed partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                ShowStatus(InfoBarSeverity.Error, "界面更新失败", ex.Message);
+                ShowStatus(InfoBarSeverity.Error, L10n.T("app.ui_refresh_failed"), ex.Message);
             }
         });
     }

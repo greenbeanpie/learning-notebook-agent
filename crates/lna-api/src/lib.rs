@@ -65,16 +65,17 @@ impl CoreRuntime {
         }
         let embedding = EmbeddingService::new(db.clone(), secrets.clone());
         let retrieval = Arc::new(RetrievalEngine::new(db.clone(), embedding.clone()));
+        let (events, _) = broadcast::channel(512);
+        let seq = Arc::new(AtomicU64::new(0));
         let ingest = IngestService::new(
             db.clone(),
             jobs.clone(),
             embedding.clone(),
             llm.clone(),
             secrets.clone(),
-        );
+        )
+        .with_events(events.clone(), seq.clone());
 
-        let (events, _) = broadcast::channel(512);
-        let seq = Arc::new(AtomicU64::new(0));
         let studio = StudioService::new(
             db.clone(),
             secrets.clone(),
@@ -163,6 +164,7 @@ impl CoreRuntime {
         self.rt.spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let mut tick = 0u64;
+            let bg_slots = Arc::new(tokio::sync::Semaphore::new(3));
             loop {
                 let Some(core) = weak1.upgrade() else { break };
                 if core.shutdown.is_cancelled() {
@@ -173,12 +175,18 @@ impl CoreRuntime {
                     core.embedding.evict_if_idle();
                 }
                 tick += 1;
+                let Ok(bg_permit) = bg_slots.clone().acquire_owned().await else {
+                    break;
+                };
                 if let Ok(Some(job)) =
                     core.jobs
                         .claim_next(&["ingest_source", "refresh_summary", "embed_source"])
                 {
                     let _tok = core.jobs.register_token(&job.id);
                     core.emit_source_status(&job);
+                    let core = core.clone();
+                    tokio::spawn(async move {
+                    let _bg_permit = bg_permit;
                     let res = match job.kind.as_str() {
                         "ingest_source" => core.ingest.process_ingest_job(&job.subject_id).await,
                         "refresh_summary" => {
@@ -261,7 +269,9 @@ impl CoreRuntime {
                         }
                     }
                     core.emit_source_status(&job);
+                    });
                 } else {
+                    drop(bg_permit);
                     tokio::select! {
                         _ = core.shutdown.cancelled() => break,
                         _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
@@ -270,35 +280,48 @@ impl CoreRuntime {
             }
         });
 
-        // Worker 2: Dedicated Studio generation loop (updates artifact FAILED on terminal error, B-07)
+        // Worker 2: Dedicated Studio parallel dispatcher (runs up to 4 Studio artifacts concurrently)
         let weak2 = Arc::downgrade(self);
         self.rt.spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let studio_slots = Arc::new(tokio::sync::Semaphore::new(4));
             loop {
                 let Some(core) = weak2.upgrade() else { break };
                 if core.shutdown.is_cancelled() {
                     break;
                 }
+                let Ok(permit) = studio_slots.clone().acquire_owned().await else {
+                    break;
+                };
+                if core.shutdown.is_cancelled() {
+                    drop(permit);
+                    break;
+                }
                 if let Ok(Some(job)) = core.jobs.claim_next(&["studio_generate"]) {
                     let tok = core.jobs.register_token(&job.id);
-                    match core.studio.process_job(&job.subject_id, tok).await {
-                        Ok(()) => {
-                            let _ = core.jobs.mark_done(&job.id);
-                        }
-                        Err(e) => {
-                            // StudioService::process_job owns the 3-retry rollback loop and records error_log on terminal failure.
-                            let _ = core
-                                .jobs
-                                .mark_failed_or_retry(&job.id, &e.message, 0, false);
-                            if e.code == ErrorCode::Cancelled {
-                                let _ = core.studio.mark_cancelled(&job.subject_id);
+                    let core_job = core.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        match core_job.studio.process_job(&job.subject_id, tok).await {
+                            Ok(()) => {
+                                let _ = core_job.jobs.mark_done(&job.id);
+                            }
+                            Err(e) => {
+                                // StudioService::process_job owns the 3-retry rollback loop and records error_log on terminal failure.
+                                let _ = core_job
+                                    .jobs
+                                    .mark_failed_or_retry(&job.id, &e.message, 0, false);
+                                if e.code == ErrorCode::Cancelled {
+                                    let _ = core_job.studio.mark_cancelled(&job.subject_id);
+                                }
                             }
                         }
-                    }
+                    });
                 } else {
+                    drop(permit);
                     tokio::select! {
                         _ = core.shutdown.cancelled() => break,
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
                     }
                 }
             }
@@ -514,6 +537,7 @@ impl CoreRuntime {
             }
 
             // --- Profile & Secrets ---
+            "profile.presets" => Ok(json!({ "presets": builtin_provider_presets() })),
             "profile.list" => {
                 let mut profiles = lna_storage::list_profiles(&self.db)?;
                 for prof in profiles.iter_mut() {
@@ -522,8 +546,10 @@ impl CoreRuntime {
                 Ok(json!({ "profiles": profiles }))
             }
             "profile.upsert" => {
-                let params_in: ProfileUpsertParams = serde_json::from_value(p.clone())
+                let mut params_in: ProfileUpsertParams = serde_json::from_value(p.clone())
                     .map_err(|e| LnaError::invalid(e.to_string()))?;
+                params_in.max_output_tokens =
+                    lna_llm::clamp_reasoning_and_output_tokens(params_in.max_output_tokens);
                 let allow_insecure_http = p
                     .get("allow_insecure_http")
                     .and_then(Value::as_bool)
@@ -814,6 +840,18 @@ impl CoreRuntime {
                 let draft = p.get("draft").cloned();
                 Ok(serde_json::to_value(self.studio.approve_draft(id, draft)?).unwrap())
             }
+            "studio.revise_draft" => {
+                let id = req_str(p, "artifact_id")?.to_string();
+                let instruction = req_str(p, "instruction")?.to_string();
+                let current_draft = p.get("draft").and_then(Value::as_str).map(String::from);
+                let studio = self.studio.clone();
+                let updated = self.rt.block_on(async move {
+                    studio
+                        .revise_draft(&id, &instruction, current_draft.as_deref())
+                        .await
+                })?;
+                Ok(serde_json::to_value(updated).unwrap())
+            }
             "studio.save_progress" => {
                 let id = req_str(p, "artifact_id")?;
                 let state = p.get("state").cloned().unwrap_or_else(|| json!({}));
@@ -1030,6 +1068,22 @@ impl CoreRuntime {
                 let ans = p.get("answer").cloned().unwrap_or(Value::Null);
                 self.studio.grade_answer(aid, qid, &ans)
             }
+            "source.knowledge_graph" => {
+                let sid = req_str(p, "source_id")?;
+                let art = self.studio.get_source_knowledge_graph(sid)?;
+                Ok(json!({ "artifact": art }))
+            }
+            "source.knowledge_progress" => {
+                let nid = req_str(p, "notebook_id")?;
+                let sid = p.get("source_id").and_then(|x| x.as_str());
+                self.studio.compute_kg_progress_summary(nid, sid)
+            }
+            "studio.apply_quiz_to_kg" => {
+                let nid = req_str(p, "notebook_id")?;
+                let aid = req_str(p, "artifact_id")?;
+                let results = p.get("results").cloned().unwrap_or_else(|| json!([]));
+                self.studio.apply_quiz_to_knowledge_graphs(nid, aid, results)
+            }
             "studio.export" => {
                 let aid = req_str(p, "artifact_id")?;
                 let fmt = p
@@ -1223,39 +1277,12 @@ impl CoreRuntime {
         }
     }
 
-    /// Translates AI-generated notebook summary, suggested questions, source guides, and
-    /// Studio artifact titles into `target_lang` (`zh-CN` or `en-US`) while leaving chat history untouched.
+    /// Translates the notebook's overview (`summary_md` and `suggested_questions`) into `target_lang`
+    /// (`zh-CN` or `en-US`), leaving source book guides, Studio artifacts, and chat history untouched.
     fn translate_notebook_ui_content(&self, notebook_id: &str, target_lang: &str) -> LnaResult<Value> {
         let to_en = target_lang.to_lowercase().starts_with("en");
         let lang_name = if to_en { "English" } else { "Simplified Chinese (简体中文)" };
 
-        // 1. Deterministically localize built-in Studio default titles immediately
-        let title_pairs: &[(&str, &str)] = &[
-            ("音频概览", "Audio Overview"),
-            ("演示文稿", "Slides"),
-            ("思维导图", "Mind Map"),
-            ("知识点图谱", "Knowledge Graph"),
-            ("研究报告", "Report"),
-            ("报告", "Report"),
-            ("学习闪卡", "Flashcards"),
-            ("闪卡", "Flashcards"),
-            ("知识测验", "Quiz"),
-            ("测验", "Quiz"),
-            ("信息图", "Infographic"),
-        ];
-        let now = now_ms();
-        self.db.write(|conn| {
-            for (zh, en) in title_pairs {
-                let (from, to) = if to_en { (*zh, *en) } else { (*en, *zh) };
-                let _ = conn.execute(
-                    "UPDATE studio_artifacts SET title = ?1, updated_at = ?2 WHERE notebook_id = ?3 AND title = ?4",
-                    params![to, now, notebook_id, from],
-                );
-            }
-            Ok(())
-        })?;
-
-        // 2. If an active LLM is configured, translate notebook summary/questions and source guides via LLM
         let Some(prof) = lna_storage::get_active_profile(&self.db)? else {
             let _ = self.events.send(ApiEvent { event: "notebook.summary_updated".into(), topic: format!("notebook:{notebook_id}"), seq: 0, data: json!({ "notebook_id": notebook_id }) });
             return Ok(json!({ "ok": true, "translated_with_llm": false }));
@@ -1294,31 +1321,7 @@ impl CoreRuntime {
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
 
-        let sources: Vec<(String, Option<String>, Vec<String>)> = self.db.read(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT id, guide_summary_md, COALESCE(guide_topics_json, '[]') FROM sources WHERE notebook_id = ?1 AND status = 'READY'")
-                .map_err(map_sql_err)?;
-            let rows = stmt
-                .query_map([notebook_id], |r| {
-                    let t_s: String = r.get(2)?;
-                    let topics: Vec<String> = serde_json::from_str(&t_s).unwrap_or_default();
-                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, topics))
-                })
-                .map_err(map_sql_err)?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row.map_err(map_sql_err)?);
-            }
-            Ok(out)
-        })?;
-
-        let source_items: Vec<Value> = sources
-            .iter()
-            .filter(|(_, g, t)| g.as_deref().is_some_and(|x| !x.trim().is_empty()) || !t.is_empty())
-            .map(|(id, g, t)| json!({ "id": id, "guide_summary_md": g.clone().unwrap_or_default(), "guide_topics": t }))
-            .collect();
-
-        if summary_md.as_deref().unwrap_or("").trim().is_empty() && suggested_questions.is_empty() && source_items.is_empty() {
+        if summary_md.as_deref().unwrap_or("").trim().is_empty() && suggested_questions.is_empty() {
             let _ = self.events.send(ApiEvent { event: "notebook.summary_updated".into(), topic: format!("notebook:{notebook_id}"), seq: 0, data: json!({ "notebook_id": notebook_id }) });
             return Ok(json!({ "ok": true, "translated_with_llm": false }));
         }
@@ -1326,12 +1329,11 @@ impl CoreRuntime {
         let input_payload = json!({
             "summary_md": summary_md.unwrap_or_default(),
             "suggested_questions": suggested_questions,
-            "sources": source_items,
         });
 
         let req = lna_llm::LlmRequest {
             system: format!(
-                "You are a UI content translator. Translate all text values in the provided JSON into {lang_name}. Keep JSON keys and source IDs strictly unchanged, preserve Markdown **bold** emphasis, and output valid JSON only with no code fences."
+                "You are a UI content translator. Translate all text values in the provided JSON into {lang_name}. Keep JSON keys strictly unchanged, preserve Markdown **bold** emphasis, and output valid JSON only with no code fences."
             ),
             messages: vec![lna_llm::LlmMessage {
                 role: lna_llm::Role::User,
@@ -1344,10 +1346,37 @@ impl CoreRuntime {
             reasoning: lna_llm::ReasoningOptions::default(),
         };
 
+        let tr_tid = format!("translate:{notebook_id}");
+        self.emit(
+            &format!("notebook:{notebook_id}"),
+            "ai.activity",
+            json!({
+                "task_id": tr_tid,
+                "notebook_id": notebook_id,
+                "scope": "ui_translate",
+                "kind": "tool",
+                "title": format!("AI 翻译界面摘要（{lang_name}）"),
+                "body": "正在翻译笔记本概览与推荐问题…",
+                "active": true,
+            }),
+        );
         let llm = self.llm.clone();
         let translated_res = self.rt.block_on(async move {
             llm.complete_text(&resolved, &req, tokio_util::sync::CancellationToken::new()).await
         });
+        self.emit(
+            &format!("notebook:{notebook_id}"),
+            "ai.activity",
+            json!({
+                "task_id": tr_tid,
+                "notebook_id": notebook_id,
+                "scope": "ui_translate",
+                "kind": "done",
+                "title": "界面翻译完成",
+                "body": "",
+                "active": false,
+            }),
+        );
 
         if let Ok((raw, _)) = translated_res {
             let trimmed = raw
@@ -1362,7 +1391,6 @@ impl CoreRuntime {
                     .get("suggested_questions")
                     .and_then(Value::as_array)
                     .map(|a| serde_json::to_string(a).unwrap_or_else(|_| "[]".into()));
-                let new_sources = parsed.get("sources").and_then(Value::as_array).cloned().unwrap_or_default();
                 let ts = now_ms();
                 let _ = self.db.write(|conn| {
                     if let Some(ref sm) = new_sum {
@@ -1378,20 +1406,6 @@ impl CoreRuntime {
                             "UPDATE notebooks SET suggested_questions_json = ?1, updated_at = ?2 WHERE id = ?3",
                             params![sq, ts, notebook_id],
                         );
-                    }
-                    for s in &new_sources {
-                        if let Some(sid) = s.get("id").and_then(Value::as_str) {
-                            let gmd = s.get("guide_summary_md").and_then(Value::as_str).unwrap_or("");
-                            let topics_s = s
-                                .get("guide_topics")
-                                .and_then(Value::as_array)
-                                .map(|a| serde_json::to_string(a).unwrap_or_else(|_| "[]".into()))
-                                .unwrap_or_else(|| "[]".into());
-                            let _ = conn.execute(
-                                "UPDATE sources SET guide_summary_md = ?1, guide_topics_json = ?2, updated_at = ?3 WHERE id = ?4",
-                                params![gmd, topics_s, ts, sid],
-                            );
-                        }
                     }
                     Ok(())
                 });
@@ -1502,4 +1516,125 @@ fn req_str<'a>(p: &'a Value, key: &str) -> LnaResult<&'a str> {
     p.get(key)
         .and_then(|x| x.as_str())
         .ok_or_else(|| LnaError::invalid(format!("Missing string parameter: {key}")))
+}
+
+/// Built-in AI provider presets (official providers and preconfigured relays).
+fn builtin_provider_presets() -> Value {
+    json!([
+        {
+            "id": "openai",
+            "name": "OpenAI 官方",
+            "name_en": "OpenAI",
+            "category": "official",
+            "protocol": "responses",
+            "base_url": "https://api.openai.com/v1",
+            "default_model": "gpt-4.1",
+            "suggested_models": ["gpt-4.1", "gpt-4o", "o4-mini"],
+            "context_window": 1047576,
+            "max_output_tokens": 16384,
+            "supports_vision": true,
+            "supports_audio": false,
+            "supports_video": false,
+            "extra_headers": {}
+        },
+        {
+            "id": "anthropic",
+            "name": "Anthropic 官方",
+            "name_en": "Anthropic",
+            "category": "official",
+            "protocol": "anthropic",
+            "base_url": "https://api.anthropic.com/v1",
+            "default_model": "claude-sonnet-4-20250514",
+            "suggested_models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-7-sonnet-20250219"],
+            "context_window": 200000,
+            "max_output_tokens": 16384,
+            "supports_vision": true,
+            "supports_audio": false,
+            "supports_video": false,
+            "extra_headers": {}
+        },
+        {
+            "id": "google",
+            "name": "Google Gemini 官方",
+            "name_en": "Google Gemini",
+            "category": "official",
+            "protocol": "gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "default_model": "gemini-2.5-flash",
+            "suggested_models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+            "context_window": 1000000,
+            "max_output_tokens": 8192,
+            "supports_vision": true,
+            "supports_audio": true,
+            "supports_video": true,
+            "extra_headers": {}
+        },
+        {
+            "id": "deepseek",
+            "name": "DeepSeek 官方",
+            "name_en": "DeepSeek",
+            "category": "official",
+            "protocol": "chat_completion",
+            "base_url": "https://api.deepseek.com/v1",
+            "default_model": "deepseek-chat",
+            "suggested_models": ["deepseek-chat", "deepseek-reasoner"],
+            "context_window": 64000,
+            "max_output_tokens": 8192,
+            "supports_vision": false,
+            "supports_audio": false,
+            "supports_video": false,
+            "extra_headers": {}
+        },
+        {
+            "id": "glm",
+            "name": "GLM 智谱官方",
+            "name_en": "GLM (Zhipu)",
+            "category": "official",
+            "protocol": "chat_completion",
+            "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "default_model": "glm-4.5",
+            "suggested_models": ["glm-4.5", "glm-4.5-air", "glm-4-plus"],
+            "context_window": 128000,
+            "max_output_tokens": 8192,
+            "supports_vision": false,
+            "supports_audio": false,
+            "supports_video": false,
+            "extra_headers": {}
+        },
+        {
+            "id": "mimo",
+            "name": "MiMo 小米官方",
+            "name_en": "MiMo (Xiaomi)",
+            "category": "official",
+            "protocol": "chat_completion",
+            "base_url": "https://api.xiaomimimo.com/v1",
+            "default_model": "mimo-v2-flash",
+            "suggested_models": ["mimo-v2-flash", "mimo-v2.6-pro"],
+            "context_window": 128000,
+            "max_output_tokens": 8192,
+            "supports_vision": false,
+            "supports_audio": false,
+            "supports_video": false,
+            "extra_headers": {}
+        },
+        {
+            "id": "opencode_go",
+            "name": "Opencode Go (中转)",
+            "name_en": "Opencode Go (Relay)",
+            "category": "relay",
+            "protocol": "chat_completion",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "default_model": "glm-5",
+            "suggested_models": ["glm-5", "kimi-k2.5", "minimax-m2.5"],
+            "context_window": 128000,
+            "max_output_tokens": 8192,
+            "supports_vision": false,
+            "supports_audio": false,
+            "supports_video": false,
+            "extra_headers": {
+                "x-opencode-session": "local-notebook-agent",
+                "User-Agent": "opencode/1.0"
+            }
+        }
+    ])
 }

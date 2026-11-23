@@ -46,7 +46,7 @@ public sealed unsafe class CoreClient : IDisposable
             return Task.FromResult(new ApiResponseDto
             {
                 Id = string.Empty,
-                Error = new ApiErrorDto { Code = "NOT_READY", Message = "核心尚未就绪，请稍候再试" }
+                Error = new ApiErrorDto { Code = "NOT_READY", Message = Services.L10n.T("core.not_ready") }
             });
         }
 
@@ -124,7 +124,7 @@ public sealed unsafe class CoreClient : IDisposable
                 tcs.TrySetResult(new ApiResponseDto
                 {
                     Id = kv.Key,
-                    Error = new ApiErrorDto { Code = "CANCELLED", Message = "核心已关闭" }
+                    Error = new ApiErrorDto { Code = "CANCELLED", Message = Services.L10n.T("core.closed") }
                 });
             }
         }

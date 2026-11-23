@@ -59,7 +59,7 @@ internal sealed class ChatArtifactCard : IDisposable
 
         _processBtn = new Button
         {
-            Content = "查看过程",
+            Content = L10n.T("art.view_process"),
             Style = (Style)Application.Current.Resources["PillButtonStyle"],
             MinHeight = 30,
             Padding = new Thickness(11, 4, 11, 4),
@@ -69,11 +69,11 @@ internal sealed class ChatArtifactCard : IDisposable
         {
             if (_artifactId.Length > 0) _onOpenInStudio(_artifactId);
         };
-        ToolTipService.SetToolTip(_processBtn, "在右侧详情面板查看后台思考与执行过程");
+        ToolTipService.SetToolTip(_processBtn, L10n.T("art.view_process_tip"));
 
         _toggleBtn = new Button
         {
-            Content = "收起",
+            Content = L10n.T("art.collapse"),
             Style = (Style)Application.Current.Resources["PillButtonStyle"],
             MinHeight = 30,
             Padding = new Thickness(12, 4, 12, 4),
@@ -87,7 +87,7 @@ internal sealed class ChatArtifactCard : IDisposable
 
         _importBtn = new Button
         {
-            Content = "导入到 Studio",
+            Content = L10n.T("art.import_studio"),
             Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"],
             MinHeight = 30,
             Padding = new Thickness(12, 4, 12, 4),
@@ -157,7 +157,7 @@ internal sealed class ChatArtifactCard : IDisposable
         _metaText.Text = BuildMetaLine(_kind, status, stage, Obj(_artifact, "payload"));
 
         _processBtn.Visibility = Visibility.Visible;
-        _processBtn.Content = status == "READY" ? "思考过程" : "查看过程";
+        _processBtn.Content = status == "READY" ? L10n.T("studio.thoughts") : L10n.T("art.view_process");
         _toggleBtn.Visibility = status == "READY" ? Visibility.Visible : Visibility.Collapsed;
         _importBtn.Visibility = status == "READY" ? Visibility.Visible : Visibility.Collapsed;
         UpdateImportButton();
@@ -198,7 +198,7 @@ internal sealed class ChatArtifactCard : IDisposable
             var sp = new StackPanel { Spacing = 8 };
             sp.Children.Add(new TextBlock
             {
-                Text = $"正在后台生成{KindLabel(_kind)}（{StageLabel(stage)}）…点击上方「查看过程」可实时查看思考流程。",
+                Text = L10n.Fmt("art.running_hint", KindLabel(_kind), StageLabel(stage)),
                 FontSize = 12,
                 Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
                 TextWrapping = TextWrapping.Wrap,
@@ -212,7 +212,7 @@ internal sealed class ChatArtifactCard : IDisposable
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             var cancelBtn = new Button
             {
-                Content = "停止生成",
+                Content = L10n.T("chat.stop"),
                 Style = (Style)Application.Current.Resources["PillButtonStyle"],
                 MinHeight = 28,
                 Padding = new Thickness(12, 3, 12, 3),
@@ -241,13 +241,13 @@ internal sealed class ChatArtifactCard : IDisposable
             var sp = new StackPanel { Spacing = 8 };
             sp.Children.Add(new TextBlock
             {
-                Text = "已停止生成。",
+                Text = L10n.T("studio.cancelled"),
                 FontSize = 12,
                 Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
             });
             var retryBtn = new Button
             {
-                Content = "重新生成",
+                Content = L10n.T("studio.regenerate"),
                 Style = (Style)Application.Current.Resources["PillButtonStyle"],
                 MinHeight = 28,
                 Padding = new Thickness(12, 3, 12, 3),
@@ -267,7 +267,7 @@ internal sealed class ChatArtifactCard : IDisposable
         if (_disposed) return;
         if (err is { } e)
         {
-            _notify(InfoBarSeverity.Error, "重试失败", Advice(e.Code) is { Length: > 0 } adv ? adv : e.Message);
+            _notify(InfoBarSeverity.Error, L10n.T("art.retry_failed"), Advice(e.Code) is { Length: > 0 } adv ? adv : e.Message);
             return;
         }
         if (res is { } updated) Update(updated);
@@ -285,24 +285,24 @@ internal sealed class ChatArtifactCard : IDisposable
     private void UpdateExpandState()
     {
         _bodyHost.Visibility = _expanded ? Visibility.Visible : Visibility.Collapsed;
-        _toggleBtn.Content = _expanded ? "收起" : "展开预览";
+        _toggleBtn.Content = _expanded ? L10n.T("art.collapse") : L10n.T("art.expand_preview");
     }
 
     private void UpdateImportButton()
     {
         if (_inStudio)
         {
-            _importBtn.Content = "在 Studio 打开";
+            _importBtn.Content = L10n.T("art.open_in_studio");
             _importBtn.Style = (Style)Application.Current.Resources["PillButtonStyle"];
             _importBtn.IsEnabled = true;
-            ToolTipService.SetToolTip(_importBtn, "已在右侧 Studio 中，点击打开详情或导出");
+            ToolTipService.SetToolTip(_importBtn, L10n.T("art.open_in_studio_tip"));
         }
         else
         {
-            _importBtn.Content = _importing ? "导入中..." : "导入到 Studio";
+            _importBtn.Content = _importing ? L10n.T("art.importing_studio") : L10n.T("art.import_studio");
             _importBtn.Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"];
             _importBtn.IsEnabled = !_importing;
-            ToolTipService.SetToolTip(_importBtn, "保存并添加到右侧 Studio 列表中");
+            ToolTipService.SetToolTip(_importBtn, L10n.T("art.import_studio_tip"));
         }
     }
 
@@ -323,14 +323,14 @@ internal sealed class ChatArtifactCard : IDisposable
         if (err is { } e)
         {
             UpdateImportButton();
-            _notify(InfoBarSeverity.Error, "导入 Studio 失败", Advice(e.Code) is { Length: > 0 } adv ? adv : e.Message);
+            _notify(InfoBarSeverity.Error, L10n.T("art.import_failed"), Advice(e.Code) is { Length: > 0 } adv ? adv : e.Message);
             return;
         }
         if (res is { } updated) _artifact = updated.Clone();
         _inStudio = true;
         UpdateImportButton();
         _onImported();
-        _notify(InfoBarSeverity.Success, "已导入到 Studio", $"“{_titleText.Text}”已添加到右侧 Studio，可随时打开或导出。");
+        _notify(InfoBarSeverity.Success, L10n.T("art.imported_title"), L10n.Fmt("art.imported_msg", _titleText.Text));
     }
 
     private void UpdateIcon(string kind)
@@ -361,49 +361,49 @@ internal sealed class ChatArtifactCard : IDisposable
 
     private static string KindLabel(string kind) => kind switch
     {
-        "audio" => "音频概览",
-        "slides" => "演示文稿",
-        "mindmap" => "思维导图",
-        "report" => "研究报告",
-        "flashcards" => "学习闪卡",
-        "quiz" => "知识测验",
-        "infographic" => "信息图",
+        "audio" => L10n.T("studio.audio"),
+        "slides" => L10n.T("studio.slides"),
+        "mindmap" => L10n.T("studio.mindmap"),
+        "report" => L10n.T("studio.report"),
+        "flashcards" => L10n.T("studio.flashcards"),
+        "quiz" => L10n.T("studio.quiz"),
+        "infographic" => L10n.T("studio.infographic"),
         _ => kind,
     };
 
     private static string StageLabel(string stage) => stage switch
     {
-        "COLLECT" => "收集资料",
-        "PLAN" => "规划大纲",
-        "GENERATE" => "生成内容",
-        "RENDER" => "渲染成品",
-        _ => "处理中",
+        "COLLECT" => L10n.T("studio.status_collect"),
+        "PLAN" => L10n.T("studio.status_plan"),
+        "GENERATE" => L10n.T("studio.status_generate"),
+        "RENDER" => L10n.T("studio.status_render"),
+        _ => L10n.T("studio.status_processing"),
     };
 
     private static string BuildMetaLine(string kind, string status, string stage, JsonElement payload)
     {
         var label = KindLabel(kind);
         if (status is "PENDING" or "RUNNING") return $"{label} · {StageLabel(stage)}";
-        if (status == "FAILED") return $"{label} · 生成失败";
-        if (status == "CANCELLED") return $"{label} · 已取消";
+        if (status == "FAILED") return L10n.Fmt("art.failed_fmt", label);
+        if (status == "CANCELLED") return L10n.Fmt("art.cancelled_fmt", label);
         if (status != "READY") return label;
 
         var (prop, unit) = kind switch
         {
-            "quiz" => ("questions", "道题"),
-            "flashcards" => ("cards", "张卡片"),
-            "mindmap" => ("nodes", "个节点"),
-            "report" => ("sections", "个章节"),
-            "slides" => ("slides", "页幻灯片"),
-            "infographic" => ("blocks", "个板块"),
-            "audio" => ("turns", "段对话"),
+            "quiz" => ("questions", L10n.T("art.unit_questions")),
+            "flashcards" => ("cards", L10n.T("art.unit_cards")),
+            "mindmap" => ("nodes", L10n.T("art.unit_nodes")),
+            "report" => ("sections", L10n.T("art.unit_sections")),
+            "slides" => ("slides", L10n.T("art.unit_slides")),
+            "infographic" => ("blocks", L10n.T("art.unit_blocks")),
+            "audio" => ("turns", L10n.T("art.unit_turns")),
             _ => ("", ""),
         };
         if (prop.Length > 0)
         {
             var count = Arr(payload, prop).Count();
-            if (count > 0) return $"{label} · 共 {count} {unit}";
+            if (count > 0) return L10n.Fmt("art.count_fmt", label, count, unit);
         }
-        return $"{label} · 可交互预览";
+        return L10n.Fmt("art.interactive_preview", label);
     }
 }

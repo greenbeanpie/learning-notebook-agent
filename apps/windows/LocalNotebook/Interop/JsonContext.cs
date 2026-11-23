@@ -84,11 +84,61 @@ public sealed class MathMeasureDto
     public string? Error { get; set; }
 }
 
+public sealed class MathBatchItemInputDto
+{
+    [JsonPropertyName("latex")]
+    public string Latex { get; set; } = "";
+
+    [JsonPropertyName("displayMode")]
+    public bool DisplayMode { get; set; }
+}
+
+public sealed class MathBatchItemMeasureDto
+{
+    [JsonPropertyName("ok")]
+    public bool Ok { get; set; }
+
+    [JsonPropertyName("x")]
+    public int X { get; set; }
+
+    [JsonPropertyName("y")]
+    public int Y { get; set; }
+
+    [JsonPropertyName("width")]
+    public int Width { get; set; }
+
+    [JsonPropertyName("height")]
+    public int Height { get; set; }
+
+    [JsonPropertyName("descent")]
+    public int Descent { get; set; }
+
+    [JsonPropertyName("overflow")]
+    public bool Overflow { get; set; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; set; }
+}
+
+public sealed class MathBatchMeasureDto
+{
+    [JsonPropertyName("atlasWidth")]
+    public int AtlasWidth { get; set; }
+
+    [JsonPropertyName("atlasHeight")]
+    public int AtlasHeight { get; set; }
+
+    [JsonPropertyName("items")]
+    public List<MathBatchItemMeasureDto> Items { get; set; } = new();
+}
+
 [JsonSerializable(typeof(OpenConfigDto))]
 [JsonSerializable(typeof(ApiRequestDto))]
 [JsonSerializable(typeof(ApiResponseDto))]
 [JsonSerializable(typeof(ApiEventDto))]
 [JsonSerializable(typeof(MathMeasureDto))]
+[JsonSerializable(typeof(List<MathBatchItemInputDto>))]
+[JsonSerializable(typeof(MathBatchMeasureDto))]
 [JsonSerializable(typeof(string))]
 internal partial class LnaJsonContext : JsonSerializerContext
 {

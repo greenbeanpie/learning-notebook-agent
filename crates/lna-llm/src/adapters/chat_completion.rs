@@ -152,7 +152,7 @@ impl ProtocolAdapter for ChatCompletionAdapter {
             "messages": messages,
             "stream": true,
         });
-        body[max_field] = json!(req.max_output_tokens);
+        body[max_field] = json!(clamp_reasoning_and_output_tokens(req.max_output_tokens));
 
         if profile.capabilities.stream_usage {
             body["stream_options"] = json!({ "include_usage": true });
