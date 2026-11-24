@@ -1044,7 +1044,17 @@ User Revision Instruction:
                     if nid.is_empty() || label.is_empty() {
                         continue;
                     }
-                    let s = score_kg_node_match(label, summary, &q_text, topic_hint);
+                    let facets: Vec<&str> = n
+                        .get("facets")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(Value::as_str).collect())
+                        .unwrap_or_default();
+                    let match_text = if facets.is_empty() {
+                        summary.to_string()
+                    } else {
+                        format!("{summary} {}", facets.join(" "))
+                    };
+                    let s = score_kg_node_match(label, &match_text, &q_text, topic_hint);
                     if s >= 0.35 {
                         scored_nodes.push((s, nid, label));
                     }
@@ -1435,14 +1445,7 @@ User Revision Instruction:
                         validate::validate_quiz_with(&generated, &allowed_types, evidence_cap)?;
                     }
                     ArtifactType::Flashcards => validate::dedup_flashcards(&mut generated),
-                    ArtifactType::Mindmap => {
-                        let detail = art
-                            .config
-                            .get("detail")
-                            .and_then(Value::as_str)
-                            .unwrap_or("standard");
-                        validate::enforce_mindmap_limits_with_detail(&mut generated, detail);
-                    }
+                    ArtifactType::Mindmap => validate::normalize_mindmap(&mut generated),
                     _ => {}
                 }
                 // Only save the checkpoint after validation succeeds so broken payloads are never reused.
@@ -2028,24 +2031,22 @@ Design rules:\n\
             .get("detail")
             .and_then(Value::as_str)
             .unwrap_or("standard");
-        let extra_hint = match art.artifact_type {
-            ArtifactType::Mindmap => {
-                let detail_rule = match detail_level {
-                    "concise" => " Detail level: CONCISE (high-level overview, 2-3 hierarchy levels, ~12-20 nodes, focus strictly on major themes and core concepts).",
-                    "detailed" => " Detail level: DETAILED (comprehensive breakdown, 4-5 hierarchy levels, ~35-60 nodes, include key sub-concepts, mechanisms, formulas, and concrete examples within the requested scope).",
-                    _ => " Detail level: STANDARD (balanced 3-4 hierarchy levels, ~20-35 nodes covering main themes, sub-topics, and key takeaways).",
-                };
-                let structure_rule = " STRUCTURE ADAPTATION: Organize the hierarchy according to the actual knowledge structure of the material rather than copying chapter headings mechanically. You may merge closely related or thin sections under a cohesive parent theme, and split dense or foundational topics into finer sub-branches so that each branch goes beyond surface table-of-contents titles to capture core definitions, theorems, formulas, and mechanisms.";
-                let kg_rule = if is_kg {
-                    r#" Set "kind": "knowledge_graph". Build a concept Knowledge Graph structured as a collapsible tree from foundational prerequisites to core theorems and advanced applications. For each node, set "importance" ("core" | "key" | "detail"), a brief 1-sentence "summary", and "prerequisites" (names of prerequisite concepts when applicable)."#
-                } else {
-                    ""
-                };
-                format!(
-                    " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels; keep node labels clean and readable, and leave every node's citations array empty []. Node labels are shown as plain text, so write any math in labels as compact Unicode (e.g. A=SΛS⁻¹, Aᵀ, x₁, ℝⁿ, √2) instead of LaTeX.{}{}{}",
-                    detail_rule, structure_rule, kg_rule
+        if art.artifact_type == ArtifactType::Mindmap && (is_kg || detail_level != "concise") {
+            return self
+                .generate_mindmap_multipass(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    evidence_txt,
+                    reasoning,
+                    max_repairs,
+                    cancel,
                 )
-            }
+                .await;
+        }
+        let extra_hint = match art.artifact_type {
+            ArtifactType::Mindmap => mindmap_rules(is_kg, detail_level),
             ArtifactType::Report => {
                 match art.config.get("depth").and_then(Value::as_str).unwrap_or("standard") {
                     "brief" => " Report depth: BRIEF executive overview with concise bulleted takeaways.".into(),
@@ -2678,6 +2679,584 @@ Design rules:\n\
         res
     }
 
+    /// Full text of the given sources as numbered evidence blocks: `(block count, text)`.
+    fn load_full_source_text(&self, source_ids: &[String]) -> LnaResult<(usize, String)> {
+        let ids_json = serde_json::to_string(source_ids).unwrap_or_else(|_| "[]".into());
+        let rows: Vec<(String, Option<i32>, Option<String>, String)> = self.db.read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.title, c.page_start, c.section_path, c.content
+                     FROM source_chunks c JOIN sources s ON s.id=c.source_id
+                     WHERE c.source_id IN (SELECT value FROM json_each(?1))
+                     ORDER BY s.title, c.chunk_index",
+                )
+                .map_err(map_sql_err)?;
+            let mapped = stmt
+                .query_map([&ids_json], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<i32>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(map_sql_err)?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row.map_err(map_sql_err)?);
+            }
+            Ok(out)
+        })?;
+        let text = rows
+            .iter()
+            .enumerate()
+            .map(|(idx, (title, page, section, content))| {
+                let page_label = page.map(|p| format!(", 第 {p} 页")).unwrap_or_default();
+                let section_label = section
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(", {s}"))
+                    .unwrap_or_default();
+                format!("[{}] ({}{}{}) {}", idx + 1, title, page_label, section_label, content)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Ok((rows.len(), text))
+    }
+
+    /// Sources a generation reads: a knowledge graph's own source, else the selection.
+    fn generation_source_ids(art: &StudioArtifact) -> Vec<String> {
+        let is_kg = art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        art.config
+            .get("source_id")
+            .and_then(Value::as_str)
+            .filter(|s| is_kg && !s.is_empty())
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_else(|| art.source_ids.clone())
+    }
+
+    /// Whether the full text of these sources fits directly into a generation prompt.
+    fn sources_fit_directly(&self, ids: &[String], resolved: &ResolvedProfile) -> LnaResult<bool> {
+        let ids_json = serde_json::to_string(ids).unwrap_or_else(|_| "[]".into());
+        let tokens: i64 = self.db.read(|conn| {
+            conn.query_row(
+                "SELECT COALESCE(SUM(token_count),0) FROM sources WHERE id IN (SELECT value FROM json_each(?1)) AND status='READY'",
+                [&ids_json],
+                |r| r.get(0),
+            )
+            .map_err(map_sql_err)
+        })?;
+        let window = resolved.context_window as usize;
+        let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
+        let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
+        let budget = available_input.saturating_mul(70) / 100;
+        Ok(tokens.max(0) as usize <= budget.min(12_000))
+    }
+
+    fn resolve_active_profile(&self) -> LnaResult<(ModelProfile, ResolvedProfile)> {
+        let profile = lna_storage::get_active_profile(&self.db)?
+            .ok_or_else(|| LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured"))?;
+        let api_key = match profile.keychain_ref.as_deref() {
+            Some(kref) => self.secrets.get(kref)?,
+            None => None,
+        };
+        let resolved = ResolvedProfile {
+            id: profile.id.clone(),
+            display_name: profile.display_name.clone(),
+            protocol: profile.protocol,
+            base_url: profile.base_url.clone(),
+            model_id: profile.model_id.clone(),
+            api_key,
+            show_thinking: profile.show_thinking,
+            effort: profile.effort.clone(),
+            context_window: profile.context_window,
+            max_output_tokens: profile.max_output_tokens,
+            capabilities: profile.capabilities.clone(),
+            extra_headers: profile.extra_headers.clone(),
+            anthropic_version: "2023-06-01".into(),
+        };
+        Ok((profile, resolved))
+    }
+
+    /// Mind map / knowledge graph in several passes so size is never limited by one output:
+    /// pass 1 initialises the skeleton (root + every top-level branch), then each branch is
+    /// re-read from the sources (multi-round tool reading for large sources) and its detailed
+    /// descendants are appended. Progress is checkpointed per branch so retries resume.
+    #[allow(clippy::too_many_arguments)]
+    async fn generate_mindmap_multipass(
+        &self,
+        art: &StudioArtifact,
+        profile: &ModelProfile,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        evidence_txt: &str,
+        reasoning: ReasoningOptions,
+        max_repairs: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<(Value, Usage)> {
+        let is_kg = art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        let detail = art.config.get("detail").and_then(Value::as_str).unwrap_or("standard");
+        let kind = if is_kg { "knowledge graph" } else { "mind map" };
+        let rules = mindmap_rules(is_kg, detail);
+        let schema: Value =
+            serde_json::from_str(SCHEMA_MINDMAP).map_err(|e| LnaError::internal(e.to_string()))?;
+        let mut usage_sum = Usage::default();
+        let target_ids = Self::generation_source_ids(art);
+        let full_text = if self.sources_fit_directly(&target_ids, resolved)? {
+            Some(evidence_txt)
+        } else {
+            None
+        };
+
+        let saved = self.get_checkpoint(artifact_id, "mindmap_passes")?.filter(|v| {
+            v.get("sources_fingerprint").and_then(Value::as_str) == Some(art.sources_fingerprint.as_str())
+        });
+        let (mut payload, mut done): (Value, Vec<String>) = match saved {
+            Some(v) => {
+                let done: Vec<String> = v
+                    .get("done")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                    .unwrap_or_default();
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    "复用已完成的图谱分支",
+                    &format!("已从检查点恢复图谱骨架与 {} 个已追加的分支，继续处理剩余分支。", done.len()),
+                );
+                (v.get("payload").cloned().unwrap_or_else(|| json!({})), done)
+            }
+            None => {
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    "初始化图谱骨架",
+                    "第 1 步：搭建根节点与全部一级分支；之后逐个分支重新查阅原文，追加更细的知识点节点。",
+                );
+                let req = LlmRequest {
+                    system: format!(
+                        "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}), built in several passes. THIS IS PASS 1 (initialization): output ONLY the skeleton as structured JSON — the root node, EVERY top-level branch of the requested scope (all major chapters/themes; omit none), and, where already clear, their direct sub-topics. Later passes re-read the sources branch by branch and append the detailed descendants, so do not try to fit every detail now. Give every top-level branch a \"summary\" stating its scope (which chapters / sections / pages it covers). Use short ids such as \"b1\", \"b2\".{rules} Strictly ground the structure in the provided sources. Match the language requested in config or the primary language of the sources."
+                    ),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text(format!(
+                            "Parameters: {}\n\nSources:\n{}",
+                            art.config, evidence_txt
+                        ))],
+                    }],
+                    tools: vec![],
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::Text,
+                    max_output_tokens: resolved.max_output_tokens,
+                    reasoning: reasoning.clone(),
+                };
+                let permits = self.acquire_llm_slots(&profile.id).await?;
+                let (mut skeleton, u) = self
+                    .run_structured_with_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "图谱骨架规划思考",
+                        resolved,
+                        &req,
+                        "mindmap_payload",
+                        &schema,
+                        max_repairs,
+                        cancel.clone(),
+                    )
+                    .await?;
+                drop(permits);
+                add_usage(&mut usage_sum, &u);
+                validate::normalize_mindmap(&mut skeleton);
+                if let Some(obj) = skeleton.as_object_mut() {
+                    obj.insert("kind".into(), json!(if is_kg { "knowledge_graph" } else { "mindmap" }));
+                }
+                self.save_checkpoint(
+                    artifact_id,
+                    "mindmap_passes",
+                    json!({ "sources_fingerprint": art.sources_fingerprint, "payload": skeleton, "done": [] }),
+                )?;
+                (skeleton, Vec::new())
+            }
+        };
+
+        let nodes = mm_nodes(&payload);
+        let Some(root) = mm_root_id(&nodes) else {
+            return Ok((payload, usage_sum));
+        };
+        let branches: Vec<(String, String)> = mm_children(&nodes, &root)
+            .iter()
+            .map(|n| (mm_str(n, "id"), mm_str(n, "label")))
+            .collect();
+        let total = branches.len();
+        for (i, (bid, blabel)) in branches.iter().enumerate() {
+            if done.contains(bid) {
+                continue;
+            }
+            if cancel.is_cancelled() {
+                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+            }
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &format!("追加分支 {}/{}：{}", i + 1, total, blabel),
+                "正在针对该分支查阅原文，并追加更细的知识点节点…",
+            );
+            match self
+                .expand_mindmap_node(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    &payload,
+                    bid,
+                    false,
+                    full_text,
+                    &rules,
+                    reasoning.clone(),
+                    max_repairs,
+                    cancel.clone(),
+                )
+                .await
+            {
+                Ok((exp, u)) => {
+                    add_usage(&mut usage_sum, &u);
+                    let added = merge_mindmap_subtree(&mut payload, bid, exp.nodes);
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "tool",
+                        &format!("工具调用 · 追加节点：{blabel}"),
+                        &format!("已为该分支追加 {added} 个节点。"),
+                    );
+                }
+                Err(e) if e.code == ErrorCode::Cancelled || cancel.is_cancelled() => return Err(e),
+                Err(e) => {
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        &format!("分支追加失败：{blabel}"),
+                        &format!(
+                            "{}。已保留该分支的骨架节点，可稍后对其使用「细化」。",
+                            truncate_str(&e.message, 200)
+                        ),
+                    );
+                }
+            }
+            done.push(bid.clone());
+            self.save_checkpoint(
+                artifact_id,
+                "mindmap_passes",
+                json!({ "sources_fingerprint": art.sources_fingerprint, "payload": payload, "done": done }),
+            )?;
+        }
+        validate::normalize_mindmap(&mut payload);
+        Ok((payload, usage_sum))
+    }
+
+    /// Generates new descendants for one node: a branch append pass (`refine == false`) or a
+    /// user-requested refinement, where the model may decline because the node is atomic.
+    #[allow(clippy::too_many_arguments)]
+    async fn expand_mindmap_node(
+        &self,
+        art: &StudioArtifact,
+        profile: &ModelProfile,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        payload: &Value,
+        node_id: &str,
+        refine: bool,
+        full_text: Option<&str>,
+        rules: &str,
+        reasoning: ReasoningOptions,
+        max_repairs: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<(NodeExpansion, Usage)> {
+        let nodes = mm_nodes(payload);
+        let node = nodes
+            .iter()
+            .find(|n| mm_str(n, "id") == node_id)
+            .ok_or_else(|| LnaError::new(ErrorCode::NotFound, "Node not found"))?;
+        let label = mm_str(node, "label");
+        let summary = mm_str(node, "summary");
+        let facets: Vec<String> = node
+            .get("facets")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default();
+        let path = mm_ancestor_labels(&nodes, node_id);
+        let mut outline = String::new();
+        mm_outline(&nodes, node_id, 0, &mut outline);
+        let root = mm_root_id(&nodes).unwrap_or_default();
+        let own_branch = mm_top_branch(&nodes, node_id, &root);
+        let others: Vec<String> = mm_children(&nodes, &root)
+            .iter()
+            .filter(|n| Some(mm_str(n, "id")) != own_branch)
+            .map(|n| mm_str(n, "label"))
+            .collect();
+        let focus = {
+            let mut f = path.join(" > ");
+            if !f.is_empty() {
+                f.push_str(" > ");
+            }
+            f.push_str(&label);
+            if !summary.is_empty() {
+                f.push_str(" — ");
+                f.push_str(&summary);
+            }
+            f
+        };
+
+        let evidence = match full_text {
+            Some(t) => t.to_string(),
+            None => {
+                let target_ids = Self::generation_source_ids(art);
+                let window = resolved.context_window as usize;
+                let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
+                let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
+                let budget = (available_input.saturating_mul(70) / 100).min(16_000);
+                match self
+                    .gather_evidence_on_demand(
+                        art,
+                        profile,
+                        resolved,
+                        artifact_id,
+                        Some(&focus),
+                        budget,
+                        Some(&target_ids),
+                        true,
+                        cancel.clone(),
+                    )
+                    .await
+                {
+                    Ok(Some(t)) => t,
+                    Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+                    _ => {
+                        let mut queries = vec![label.clone()];
+                        if let Some(parent) = path.last() {
+                            queries.push(format!("{parent} {label}"));
+                        }
+                        match self
+                            .retrieval
+                            .search(&art.notebook_id, &queries, &target_ids, 6_000, 12)
+                            .await
+                        {
+                            Ok(res) => res
+                                .evidences
+                                .iter()
+                                .enumerate()
+                                .map(|(i, e)| format!("[{}] ({}) {}", i + 1, e.source_title, e.content))
+                                .collect::<Vec<_>>()
+                                .join("\n\n"),
+                            Err(_) => String::new(),
+                        }
+                    }
+                }
+            }
+        };
+
+        let base: Value =
+            serde_json::from_str(SCHEMA_MINDMAP).map_err(|e| LnaError::internal(e.to_string()))?;
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["nodes"],
+            "properties": {
+                "title": { "type": "string" },
+                "atomic": { "type": "boolean" },
+                "reason": { "type": "string" },
+                "nodes": base["properties"]["nodes"].clone()
+            }
+        });
+        let is_kg = art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        let kind = if is_kg { "knowledge graph" } else { "mind map" };
+        let task = if refine {
+            format!(
+                "The learner asked to REFINE the node \"{label}\" into finer knowledge points. First decide whether it is already a minimal, indivisible knowledge point (a single definition, formula, fact or step whose parts cannot be learned or tested separately). If it is, return {{\"atomic\": true, \"reason\": <one short sentence in the learner's language explaining why>, \"nodes\": []}}. Otherwise return \"atomic\": false and the NEW child nodes (normally one level, two only when necessary) that split it into separately learnable knowledge points — distinct methods, cases, theorems, forms or steps — turning its facets into children where they deserve it. Never repeat existing children."
+            )
+        } else {
+            format!(
+                "THIS IS AN APPEND PASS for the top-level branch \"{label}\" of a {kind} whose skeleton already exists. Using the source excerpts, output ONLY the NEW descendant nodes of this branch, down to atomic knowledge points at the requested detail level. Do not repeat nodes listed under \"Existing subtree\" and do not cover material that belongs to the other top-level branches. Set \"atomic\": false."
+            )
+        };
+        let req = LlmRequest {
+            system: format!(
+                "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}). {task} Every new node needs a unique new \"id\" and a \"parent_id\" that is either \"{node_id}\", an id from the existing subtree, or the id of another new node you output.{rules} Strictly ground everything in the provided sources. Match the language requested in config or the primary language of the sources."
+            ),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text(format!(
+                    "Parameters: {}\nPath: {}\nNode: [{node_id}] {label}\nSummary: {summary}\nFacets: {}\nExisting subtree:\n{outline}\nOther top-level branches (out of scope): {}\n\nSources:\n{evidence}",
+                    art.config,
+                    if path.is_empty() { "(root)".to_string() } else { path.join(" > ") },
+                    if facets.is_empty() { "(none)".to_string() } else { facets.join("; ") },
+                    if others.is_empty() { "(none)".to_string() } else { others.join("; ") },
+                ))],
+            }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            max_output_tokens: resolved.max_output_tokens,
+            reasoning,
+        };
+        let permits = self.acquire_llm_slots(&profile.id).await?;
+        let (out, usage) = self
+            .run_structured_with_thought(
+                artifact_id,
+                &art.notebook_id,
+                &if refine {
+                    format!("细化「{label}」思考")
+                } else {
+                    format!("分支「{label}」追加思考")
+                },
+                resolved,
+                &req,
+                "mindmap_branch",
+                &schema,
+                max_repairs,
+                cancel,
+            )
+            .await?;
+        drop(permits);
+        Ok((
+            NodeExpansion {
+                atomic: out.get("atomic").and_then(Value::as_bool).unwrap_or(false),
+                reason: mm_str(&out, "reason"),
+                nodes: out.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default(),
+            },
+            usage,
+        ))
+    }
+
+    /// Splits one mind-map / knowledge-graph node into finer child nodes from the sources.
+    /// The model may decline when the node is already a minimal knowledge point; such nodes
+    /// are marked `atomic` so they cannot be refined again (no endless subdivision).
+    pub async fn refine_node(&self, artifact_id: &str, node_id: &str) -> LnaResult<Value> {
+        let art = self.get(artifact_id)?;
+        if art.artifact_type != ArtifactType::Mindmap {
+            return Err(LnaError::invalid("Only mind maps and knowledge graphs can be refined"));
+        }
+        let payload = art
+            .payload
+            .clone()
+            .ok_or_else(|| LnaError::new(ErrorCode::Conflict, "Artifact has no content yet"))?;
+        let nodes = mm_nodes(&payload);
+        let node = nodes
+            .iter()
+            .find(|n| mm_str(n, "id") == node_id)
+            .ok_or_else(|| LnaError::new(ErrorCode::NotFound, "Node not found"))?;
+        let label = mm_str(node, "label");
+        if node.get("atomic").and_then(Value::as_bool) == Some(true) {
+            return Ok(json!({ "refined": false, "atomic": true, "added": 0, "reason": "", "artifact": art }));
+        }
+        let (profile, resolved) = self.resolve_active_profile()?;
+        let is_kg = art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        let detail = art.config.get("detail").and_then(Value::as_str).unwrap_or("standard");
+        let rules = mindmap_rules(is_kg, detail);
+        let target_ids = Self::generation_source_ids(&art);
+        let full = if self.sources_fit_directly(&target_ids, &resolved)? {
+            Some(self.load_full_source_text(&target_ids)?.1)
+        } else {
+            None
+        };
+        let reasoning = ReasoningOptions {
+            show_summary: resolved.show_thinking || resolved.capabilities.reasoning_summary,
+            effort: resolved.effort.clone(),
+        };
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "stage",
+            &format!("细化知识点：{label}"),
+            "正在查阅原文，判断该知识点能否继续拆分…",
+        );
+        let (exp, usage) = self
+            .expand_mindmap_node(
+                &art,
+                &profile,
+                &resolved,
+                artifact_id,
+                &payload,
+                node_id,
+                true,
+                full.as_deref(),
+                &rules,
+                reasoning,
+                2,
+                CancellationToken::new(),
+            )
+            .await?;
+        let _ = lna_storage::record_usage(
+            &self.db,
+            Some(&art.notebook_id),
+            Some(&profile.id),
+            "studio_refine_node",
+            Some(artifact_id),
+            usage.input_tokens as i64,
+            usage.output_tokens as i64,
+            usage.cached_tokens as i64,
+            false,
+        );
+
+        // Merge into the latest stored payload so a concurrent refine isn't lost.
+        let mut latest = self.get(artifact_id)?.payload.unwrap_or(payload);
+        let added = if exp.atomic {
+            0
+        } else {
+            merge_mindmap_subtree(&mut latest, node_id, exp.nodes)
+        };
+        if added == 0 {
+            if let Some(arr) = latest.get_mut("nodes").and_then(Value::as_array_mut) {
+                for n in arr.iter_mut() {
+                    if mm_str(n, "id") == node_id {
+                        if let Some(obj) = n.as_object_mut() {
+                            obj.insert("atomic".into(), Value::Bool(true));
+                        }
+                    }
+                }
+            }
+        }
+        validate::normalize_mindmap(&mut latest);
+        let payload_str = latest.to_string();
+        self.db.write(|conn| {
+            conn.execute(
+                "UPDATE studio_artifacts SET payload_json=?1, updated_at=?2 WHERE id=?3",
+                params![payload_str, now_ms(), artifact_id],
+            )
+            .map_err(map_sql_err)?;
+            Ok(())
+        })?;
+        let reason = if added > 0 {
+            String::new()
+        } else if !exp.reason.trim().is_empty() {
+            exp.reason
+        } else {
+            "未在来源中找到可进一步拆分的内容，已标记为最小知识点。".to_string()
+        };
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "stage",
+            &format!("细化完成：{label}"),
+            &if added > 0 {
+                format!("已追加 {added} 个更细的子知识点。")
+            } else {
+                format!("该知识点已是最小单位：{reason}")
+            },
+        );
+        self.emit_status_event(artifact_id, "READY", "READY", 1.0, None, None);
+        Ok(json!({
+            "refined": added > 0,
+            "atomic": added == 0,
+            "added": added,
+            "reason": reason,
+            "artifact": self.get(artifact_id)?
+        }))
+    }
+
     fn load_cached_source_digests(
         &self,
         source_ids: &[String],
@@ -2731,6 +3310,7 @@ Design rules:\n\
         topic_query: Option<&str>,
         token_budget: usize,
         source_ids_override: Option<&[String]>,
+        branch_focus: bool,
         cancel: CancellationToken,
     ) -> LnaResult<Option<String>> {
         let is_mindmap = art.artifact_type == ArtifactType::Mindmap;
@@ -2784,7 +3364,7 @@ Design rules:\n\
             if let Some(gmd) = guide_md.as_deref().filter(|s| !s.trim().is_empty()) {
                 catalog_lines.push(format!("  Overview: {}", truncate_str(gmd, 420)));
             }
-            let idx_limit: i64 = if is_mindmap { 160 } else { 60 };
+            let idx_limit: i64 = if is_mindmap { 400 } else { 120 };
             let idx_nodes: Vec<(String, i32, String, String, Option<i32>, Option<i32>)> =
                 self.db.read(|conn| {
                     let mut stmt = conn
@@ -2824,7 +3404,7 @@ Design rules:\n\
                 ));
             }
         }
-        let catalog_cap = if is_mindmap { 28_000 } else { 18_000 };
+        let catalog_cap = if is_mindmap { 48_000 } else { 24_000 };
         let catalog_text = truncate_str(&catalog_lines.join("\n"), catalog_cap).to_string();
 
         self.append_thought(
@@ -2875,10 +3455,12 @@ Design rules:\n\
             },
         ];
 
-        let planner_instruction = if is_mindmap {
+        let planner_instruction = if branch_focus {
+            "Focus ONLY on the branch/topic given above (other branches are handled separately). Using the reading tools, read the parts of the sources that cover this branch in depth: read_index_node for its outline nodes, read_source_pages for its page ranges, search_sources for specific methods, theorems, formulas or cases. Make several rounds of calls when needed so that every sub-topic, method, theorem and formula of this branch is backed by actual source text, not just outline titles. Reply \"DONE\" only when the branch is fully covered."
+        } else if is_mindmap {
             "Use the reading tools to inspect the table of contents (e.g., early pages via read_source_pages) if the outline is coarse, and read key sections across ALL major chapters/themes evenly (call multiple tools in parallel) so every branch has concrete sub-topics, definitions, theorems, formulas, and details. Do NOT reply \"DONE\" until all major chapters/themes in scope are covered at uniform depth."
         } else {
-            "Use the reading tools to fetch ONLY the specific sections or passages needed for this artifact. Call multiple tools in parallel if helpful. Once you have enough material (or if the catalog outline alone is sufficient), reply with \"DONE\" without further tool calls."
+            "Use the reading tools to fetch the specific sections or passages this artifact needs (not unrelated material). Call multiple tools in parallel and continue over several rounds when parts of the requested scope are still unread. Reply with \"DONE\" (without further tool calls) once the collected excerpts actually cover the requested scope."
         };
         let mut messages = vec![LlmMessage {
             role: Role::User,
@@ -2913,17 +3495,19 @@ Design rules:\n\
             true
         }
 
-        let max_rounds: usize = if art.artifact_type == ArtifactType::Slides {
-            6
-        } else if is_mindmap {
+        let max_rounds: usize = if branch_focus {
             5
+        } else if is_mindmap {
+            8
         } else {
-            3
+            6
         };
-        let planner_system = if is_mindmap {
+        let planner_system = if branch_focus {
+            "You are a thorough knowledge-structure researcher for Local Notebook Studio. You are deepening ONE branch of a knowledge map: read the source sections behind that branch in detail with the reading tools (several rounds if needed) so every distinct concept, method, theorem, formula and case in it can be grounded in source text. Ignore material outside the branch."
+        } else if is_mindmap {
             "You are a thorough curriculum and knowledge-structure planner for Local Notebook Studio. Your job is to inspect the source structure and gather balanced, concrete details (sub-topics, definitions, theorems, formulas, mechanisms, and examples) across EVERY major chapter or section in the requested scope using the reading tools. Call multiple tools in parallel across different chapters so no chapter is left shallow or skipped. Only reply DONE once every major branch has sufficient concrete detail to build a deep, evenly balanced hierarchy."
         } else {
-            "You are a frugal research planner for Local Notebook Studio. Your job is to read ONLY the relevant sections on demand using tools so token usage stays low. Never request the entire book; target the requested topic/scope or sample key sections evenly. Stop as soon as you have enough evidence by replying DONE."
+            "You are a research planner for Local Notebook Studio. Read the sources on demand with the tools: target the requested topic/scope (or, for a whole-book request, its key sections evenly across all chapters), never request the entire book at once, and avoid unrelated material. Work in as many rounds as the artifact needs; reply DONE once the evidence covers the requested scope."
         };
         for round in 0..max_rounds {
             if cancel.is_cancelled() {
@@ -2935,7 +3519,9 @@ Design rules:\n\
                 tools: tools.clone(),
                 tool_mode: ToolMode::Auto,
                 output: OutputMode::Text,
-                max_output_tokens: 900,
+                // Reasoning models spend output tokens on thinking before emitting tool calls;
+                // a small cap silently ended the reading loop after the first round.
+                max_output_tokens: resolved.max_output_tokens.clamp(2048, 8192),
                 reasoning: ReasoningOptions {
                     show_summary: profile.show_thinking,
                     effort: profile.effort.clone(),
@@ -3001,7 +3587,22 @@ Design rules:\n\
             }
             drop(_permits);
 
-            if stream_res.is_err() {
+            if let Err(e) = stream_res {
+                if e.code == ErrorCode::Cancelled || cancel.is_cancelled() {
+                    return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+                }
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    "按需精读中断",
+                    &format!(
+                        "第 {} 轮资料读取请求失败（{}），将使用已读取的 {} 条片段继续。",
+                        round + 1,
+                        truncate_str(&e.message, 160),
+                        collected.len()
+                    ),
+                );
                 break;
             }
             let _ = lna_storage::record_usage(
@@ -3218,9 +3819,10 @@ Design rules:\n\
                 tool_results.push(Part::ToolResult {
                     call_id,
                     content: format!(
-                        "{summary_note} Total collected: {} excerpts (~{} tokens). Reply DONE if sufficient.",
+                        "{summary_note} Total collected: {} excerpts (~{} tokens of ~{} budget). If parts of the scope are still unread or only known from outline titles, keep reading them; reply DONE only when the scope is covered.",
                         collected.len(),
-                        used_chars / 3
+                        used_chars / 3,
+                        char_budget / 3
                     ),
                     is_error: false,
                 });
@@ -3271,7 +3873,13 @@ Design rules:\n\
             }
         }
 
-        let outline_return_cap = if is_mindmap { 18_000 } else { 8_000 };
+        let outline_return_cap = if branch_focus {
+            4_000
+        } else if is_mindmap {
+            32_000
+        } else {
+            8_000
+        };
         Ok(Some(format!(
             "Source Outline:\n{}\n\nOn-Demand Retrieved Excerpts:\n{}",
             truncate_str(&catalog_text, outline_return_cap),
@@ -3321,7 +3929,7 @@ Design rules:\n\
             let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
             let kg_budget = available_input.saturating_mul(70) / 100;
             if target_tokens.max(0) as usize > kg_budget.min(12_000) {
-                if let Ok(Some(on_demand_text)) = self
+                match self
                     .gather_evidence_on_demand(
                         art,
                         profile,
@@ -3330,11 +3938,27 @@ Design rules:\n\
                         topic_query.as_deref(),
                         kg_budget.min(28_000),
                         Some(&target_ids),
+                        false,
                         cancel.clone(),
                     )
                     .await
                 {
-                    return Ok(on_demand_text);
+                    Ok(Some(on_demand_text)) => return Ok(on_demand_text),
+                    Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+                    _ => {}
+                }
+            } else {
+                // Small enough to fit: give the model the actual text, not just index titles.
+                let (n, text) = self.load_full_source_text(&target_ids)?;
+                if n > 0 {
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        "整理来源正文",
+                        &format!("共加载 {n} 个来源正文片段（可直接放入模型上下文）。"),
+                    );
+                    return Ok(text);
                 }
             }
             let mut evidence_blocks: Vec<String> = Vec::new();
@@ -3506,60 +4130,15 @@ Core Topics: {}", topics.join(", "))
         // Larger sources use on-demand AI reading so we never dump an entire book at once.
         let direct_full_cap = evidence_budget.min(12_000);
         if total_source_tokens.max(0) as usize <= direct_full_cap {
-            let rows: Vec<(String, Option<i32>, Option<String>, String)> =
-                self.db.read(|conn| {
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT s.title, c.page_start, c.section_path, c.content
-                     FROM source_chunks c JOIN sources s ON s.id=c.source_id
-                     WHERE c.source_id IN (SELECT value FROM json_each(?1))
-                     ORDER BY s.title, c.chunk_index",
-                        )
-                        .map_err(map_sql_err)?;
-                    let mapped = stmt
-                        .query_map([&selected_json], |r| {
-                            Ok((
-                                r.get::<_, String>(0)?,
-                                r.get::<_, Option<i32>>(1)?,
-                                r.get::<_, Option<String>>(2)?,
-                                r.get::<_, String>(3)?,
-                            ))
-                        })
-                        .map_err(map_sql_err)?;
-                    let mut out = Vec::new();
-                    for row in mapped {
-                        out.push(row.map_err(map_sql_err)?);
-                    }
-                    Ok(out)
-                })?;
+            let (n, text) = self.load_full_source_text(&art.source_ids)?;
             self.append_thought(
                 artifact_id,
                 &art.notebook_id,
                 "stage",
                 "整理来源正文",
-                &format!("共加载 {} 个来源正文片段（可直接放入模型上下文）。", rows.len()),
+                &format!("共加载 {n} 个来源正文片段（可直接放入模型上下文）。"),
             );
-            return Ok(rows
-                .iter()
-                .enumerate()
-                .map(|(idx, (title, page, section, content))| {
-                    let page_label = page.map(|p| format!(", 第 {p} 页")).unwrap_or_default();
-                    let section_label = section
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                        .map(|s| format!(", {s}"))
-                        .unwrap_or_default();
-                    format!(
-                        "[{}] ({}{}{}) {}",
-                        idx + 1,
-                        title,
-                        page_label,
-                        section_label,
-                        content
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n"));
+            return Ok(text);
         }
 
         // On-demand AI reading: present compact source catalog & outline, let the AI call
@@ -3573,6 +4152,7 @@ Core Topics: {}", topics.join(", "))
                 topic_query.as_deref(),
                 evidence_budget.min(if matches!(art.artifact_type, ArtifactType::Slides | ArtifactType::Mindmap) { 28_000 } else { 18_000 }),
                 None,
+                false,
                 cancel.clone(),
             )
             .await
@@ -4110,6 +4690,210 @@ fn stage_progress(stage: &str) -> f64 {
     }
 }
 
+/// Generation rules shared by single-pass, multi-pass and refine prompts for mind maps and
+/// knowledge graphs: correct granularity, facets, atomic marking and no size cap.
+fn mindmap_rules(is_kg: bool, detail: &str) -> String {
+    let detail_rule = match detail {
+        "concise" => " Detail level: CONCISE — cover every major theme but expand each only to its core concepts (typically 2-3 levels).",
+        "detailed" => " Detail level: DETAILED — expand every branch down to atomic knowledge points (definitions, theorems, individual methods, formulas, conditions, typical examples); use as many levels as the material needs.",
+        _ => " Detail level: STANDARD — expand every branch down to the knowledge points a learner must master separately (typically 3-5 levels).",
+    };
+    let size_rule = " NO SIZE LIMIT: there is no cap on the number of nodes or the depth. Never merge distinct knowledge points or drop sections to keep the map small; completeness and correct granularity matter more than brevity, while each label stays short.";
+    let granularity_rule = " GRANULARITY: every leaf must be ONE separately learnable and testable knowledge point. When a concept has several distinct methods, cases, theorems or forms that each need their own explanation or skill (e.g. \"matrix inverse\" → \"adjugate formula A⁻¹=adj(A)/det(A)\", \"Gauss–Jordan elimination [A|I]→[I|A⁻¹]\", \"block-matrix inverse\", \"2×2 shortcut\"), make each one its own child node instead of merging them into one node.";
+    let facet_rule = " FACETS: small sub-aspects that do not deserve their own node (conditions, special cases, notations, common pitfalls, minor variants) go into the node's optional \"facets\" array as short phrases (e.g. \"invertible ⇔ det≠0\"); keep 0-6 facets per node.";
+    let atomic_rule = " ATOMIC: set \"atomic\": true only on a node that is already a minimal knowledge point that cannot be meaningfully split further.";
+    let structure_rule = " STRUCTURE ADAPTATION: organize the hierarchy by the actual knowledge structure of the material rather than copying chapter headings mechanically; group thin related sections under a cohesive parent and split dense topics into finer sub-branches that go beyond table-of-contents titles to definitions, theorems, formulas and mechanisms.";
+    let kg_rule = if is_kg {
+        r#" Set "kind": "knowledge_graph". Build a concept Knowledge Graph structured as a collapsible tree from foundational prerequisites to core theorems and advanced applications. For each node, set "importance" ("core" | "key" | "detail"), a brief 1-sentence "summary", and "prerequisites" (names of prerequisite concepts when applicable)."#
+    } else {
+        ""
+    };
+    format!(
+        " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels or facets; keep labels clean and readable, and leave every node's citations array empty []. Node labels are shown as plain text, so write any math in labels and facets as compact Unicode (e.g. A=SΛS⁻¹, Aᵀ, x₁, ℝⁿ, √2) instead of LaTeX.{detail_rule}{size_rule}{granularity_rule}{facet_rule}{atomic_rule}{structure_rule}{kg_rule}"
+    )
+}
+
+fn add_usage(sum: &mut Usage, u: &Usage) {
+    sum.input_tokens = sum.input_tokens.saturating_add(u.input_tokens);
+    sum.output_tokens = sum.output_tokens.saturating_add(u.output_tokens);
+    sum.cached_tokens = sum.cached_tokens.saturating_add(u.cached_tokens);
+}
+
+/// Result of a branch append / node refine pass.
+struct NodeExpansion {
+    atomic: bool,
+    reason: String,
+    nodes: Vec<Value>,
+}
+
+fn mm_str(v: &Value, key: &str) -> String {
+    v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+fn mm_nodes(payload: &Value) -> Vec<Value> {
+    payload.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+fn mm_parent(n: &Value) -> Option<String> {
+    n.get("parent_id").and_then(Value::as_str).map(String::from)
+}
+
+fn mm_root_id(nodes: &[Value]) -> Option<String> {
+    nodes
+        .iter()
+        .find(|n| mm_parent(n).is_none())
+        .or_else(|| nodes.first())
+        .map(|n| mm_str(n, "id"))
+}
+
+fn mm_children<'a>(nodes: &'a [Value], id: &str) -> Vec<&'a Value> {
+    nodes.iter().filter(|n| mm_parent(n).as_deref() == Some(id)).collect()
+}
+
+/// Labels from the root down to (excluding) `id`.
+fn mm_ancestor_labels(nodes: &[Value], id: &str) -> Vec<String> {
+    let by_id: HashMap<String, &Value> = nodes.iter().map(|n| (mm_str(n, "id"), n)).collect();
+    let mut out = Vec::new();
+    let mut cur = by_id.get(id).and_then(|n| mm_parent(n));
+    while let Some(p) = cur {
+        if out.len() > nodes.len() {
+            break;
+        }
+        let Some(n) = by_id.get(&p) else { break };
+        out.push(mm_str(n, "label"));
+        cur = mm_parent(n);
+    }
+    out.reverse();
+    out
+}
+
+/// The top-level branch (child of the root) containing `id`.
+fn mm_top_branch(nodes: &[Value], id: &str, root: &str) -> Option<String> {
+    let by_id: HashMap<String, &Value> = nodes.iter().map(|n| (mm_str(n, "id"), n)).collect();
+    let mut cur = id.to_string();
+    for _ in 0..=nodes.len() {
+        let parent = by_id.get(&cur).and_then(|n| mm_parent(n))?;
+        if parent == root {
+            return Some(cur);
+        }
+        cur = parent;
+    }
+    None
+}
+
+/// Indented outline of the subtree under `id` (excluding `id`), with ids for parent linking.
+fn mm_outline(nodes: &[Value], id: &str, depth: usize, out: &mut String) {
+    if depth > 24 {
+        return;
+    }
+    for c in mm_children(nodes, id) {
+        let cid = mm_str(c, "id");
+        out.push_str(&"  ".repeat(depth));
+        out.push_str(&format!("- [{cid}] {}", mm_str(c, "label")));
+        if let Some(f) = c.get("facets").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+            let fs: Vec<&str> = f.iter().filter_map(Value::as_str).collect();
+            out.push_str(&format!(" (facets: {})", fs.join("; ")));
+        }
+        out.push('\n');
+        mm_outline(nodes, &cid, depth + 1, out);
+    }
+    if depth == 0 && out.is_empty() {
+        out.push_str("(none yet)\n");
+    }
+}
+
+fn mm_label_key(label: &str) -> String {
+    label.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
+}
+
+/// Appends model-generated nodes under `anchor_id`: ids are namespaced under the anchor so
+/// they never collide, parents outside the anchor's subtree fall back to the anchor, and a
+/// node whose label duplicates an existing sibling is merged into it. Returns nodes added.
+fn merge_mindmap_subtree(payload: &mut Value, anchor_id: &str, new_nodes: Vec<Value>) -> usize {
+    let existing = mm_nodes(payload);
+    let mut ids: std::collections::HashSet<String> = existing.iter().map(|n| mm_str(n, "id")).collect();
+    let mut subtree: std::collections::HashSet<String> = std::collections::HashSet::new();
+    subtree.insert(anchor_id.to_string());
+    loop {
+        let before = subtree.len();
+        for n in &existing {
+            if mm_parent(n).is_some_and(|p| subtree.contains(&p)) {
+                subtree.insert(mm_str(n, "id"));
+            }
+        }
+        if subtree.len() == before {
+            break;
+        }
+    }
+    let mut sibling_labels: HashMap<(String, String), String> = existing
+        .iter()
+        .filter_map(|n| mm_parent(n).map(|p| ((p, mm_label_key(&mm_str(n, "label"))), mm_str(n, "id"))))
+        .collect();
+
+    // Pass 1: allocate ids for every new node.
+    let mut id_map: HashMap<String, String> = HashMap::new();
+    let mut prepared: Vec<(String, Value)> = Vec::new();
+    for (i, n) in new_nodes.into_iter().enumerate() {
+        let orig = mm_str(&n, "id");
+        if !orig.is_empty() && subtree.contains(&orig) {
+            continue; // the model re-emitted an existing node
+        }
+        let base = if orig.is_empty() { format!("{anchor_id}.{}", i + 1) } else { format!("{anchor_id}.{orig}") };
+        let mut nid = base.clone();
+        let mut k = 2;
+        while ids.contains(&nid) {
+            nid = format!("{base}_{k}");
+            k += 1;
+        }
+        ids.insert(nid.clone());
+        if !orig.is_empty() {
+            id_map.insert(orig, nid.clone());
+        }
+        prepared.push((nid, n));
+    }
+    // Pass 2: resolve parents, merge duplicates, append.
+    let mut alias: HashMap<String, String> = HashMap::new();
+    let mut appended: Vec<Value> = Vec::new();
+    for (nid, mut n) in prepared {
+        let parent = match mm_parent(&n) {
+            Some(p) if id_map.contains_key(&p) => id_map[&p].clone(),
+            Some(p) if subtree.contains(&p) => p,
+            _ => anchor_id.to_string(),
+        };
+        let parent = alias.get(&parent).cloned().unwrap_or(parent);
+        let key = (parent.clone(), mm_label_key(&mm_str(&n, "label")));
+        if key.1.is_empty() {
+            continue;
+        }
+        if let Some(existing_id) = sibling_labels.get(&key) {
+            alias.insert(nid, existing_id.clone());
+            continue;
+        }
+        sibling_labels.insert(key, nid.clone());
+        if let Some(obj) = n.as_object_mut() {
+            obj.insert("id".into(), Value::String(nid));
+            obj.insert("parent_id".into(), Value::String(parent));
+            obj.insert("citations".into(), Value::Array(Vec::new()));
+        }
+        appended.push(n);
+    }
+    // Children listed before a parent that was merged away still point at the alias.
+    for n in appended.iter_mut() {
+        if let Some(p) = mm_parent(n) {
+            if let Some(real) = alias.get(&p) {
+                if let Some(obj) = n.as_object_mut() {
+                    obj.insert("parent_id".into(), Value::String(real.clone()));
+                }
+            }
+        }
+    }
+    let added = appended.len();
+    if let Some(arr) = payload.get_mut("nodes").and_then(Value::as_array_mut) {
+        arr.extend(appended);
+    }
+    added
+}
+
 fn truncate_str(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim();
     if trimmed.chars().count() <= max_chars {
@@ -4301,4 +5085,55 @@ fn score_kg_node_match(label: &str, summary: &str, quiz_text: &str, topic_hint: 
         hits as f64 / summary_tokens.len().min(12) as f64
     };
     (label_ratio * 0.75 + summary_ratio * 0.25).min(0.8)
+}
+
+#[cfg(test)]
+mod mindmap_merge_tests {
+    use super::*;
+
+    fn skeleton() -> Value {
+        json!({"title":"t","nodes":[
+            {"id":"r","parent_id":null,"label":"线性代数","citations":[]},
+            {"id":"b1","parent_id":"r","label":"矩阵","citations":[]},
+            {"id":"b1x","parent_id":"b1","label":"矩阵的逆","citations":[]},
+            {"id":"b2","parent_id":"r","label":"向量空间","citations":[]}
+        ]})
+    }
+
+    #[test]
+    fn merge_namespaces_ids_and_resolves_parents() {
+        let mut p = skeleton();
+        let added = merge_mindmap_subtree(&mut p, "b1", vec![
+            json!({"id":"n1","parent_id":"b1x","label":"伴随矩阵法","citations":[3]}),
+            json!({"id":"n2","parent_id":"b1x","label":"初等变换法","citations":[]}),
+            json!({"id":"n3","parent_id":"n2","label":"[A|I]→[I|A⁻¹]","citations":[]}),
+            json!({"id":"n4","parent_id":"b2","label":"越界节点","citations":[]}),
+            json!({"id":"b1x","parent_id":"b1","label":"矩阵的逆","citations":[]}),
+            json!({"id":"n5","parent_id":"b1","label":" 矩阵的逆 ","citations":[]}),
+            json!({"id":"n6","parent_id":"n5","label":"分块求逆","citations":[]})
+        ]);
+        let nodes = mm_nodes(&p);
+        let by = |label: &str| nodes.iter().find(|n| mm_str(n, "label") == label).unwrap().clone();
+        assert_eq!(added, 5);
+        assert_eq!(by("伴随矩阵法")["id"], "b1.n1");
+        assert_eq!(by("伴随矩阵法")["parent_id"], "b1x");
+        assert_eq!(by("伴随矩阵法")["citations"], json!([]));
+        assert_eq!(by("[A|I]→[I|A⁻¹]")["parent_id"], "b1.n2");
+        // a parent outside the anchor's subtree falls back to the anchor
+        assert_eq!(by("越界节点")["parent_id"], "b1");
+        // a duplicate of an existing sibling is merged; its children attach to the original
+        assert_eq!(nodes.iter().filter(|n| mm_str(n, "label").trim() == "矩阵的逆").count(), 1);
+        assert_eq!(by("分块求逆")["parent_id"], "b1x");
+    }
+
+    #[test]
+    fn tree_helpers_follow_paths() {
+        let nodes = mm_nodes(&skeleton());
+        assert_eq!(mm_root_id(&nodes).as_deref(), Some("r"));
+        assert_eq!(mm_ancestor_labels(&nodes, "b1x"), vec!["线性代数", "矩阵"]);
+        assert_eq!(mm_top_branch(&nodes, "b1x", "r").as_deref(), Some("b1"));
+        let mut outline = String::new();
+        mm_outline(&nodes, "b1", 0, &mut outline);
+        assert_eq!(outline, "- [b1x] 矩阵的逆\n");
+    }
 }

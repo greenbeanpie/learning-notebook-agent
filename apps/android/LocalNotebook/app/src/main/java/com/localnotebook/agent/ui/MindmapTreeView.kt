@@ -43,6 +43,8 @@ private class MindNode(
     val importance: String,
     val summary: String,
     val widthDp: Float,
+    val facets: List<String> = emptyList(),
+    val atomic: Boolean = false,
 ) {
     var depth: Int = 0
     val children = mutableListOf<MindNode>()
@@ -59,6 +61,7 @@ fun MindmapTreeView(
     onExpandMindmap: (String) -> Unit,
     onAskConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onRefineNode: ((nodeId: String, label: String) -> Unit)? = null,
 ) {
     val isKg = isKnowledgeGraph || payload.optString("kind") == "knowledge_graph"
     val roots = remember(payload) { buildTree(payload.optJSONArray("nodes") ?: JSONArray()) }
@@ -197,7 +200,19 @@ fun MindmapTreeView(
                                 fontWeight = if (node.depth == 0) FontWeight.SemiBold else FontWeight.Normal,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
                             )
+                            if (node.facets.isNotEmpty()) {
+                                Spacer(Modifier.width(5.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(7.dp))
+                                        .background(Color(0x96505C70))
+                                        .padding(horizontal = 5.dp),
+                                ) {
+                                    Text(node.facets.size.toString(), color = Color(0xFFD6DEEC), fontSize = 10.sp)
+                                }
+                            }
                         }
                     }
 
@@ -290,7 +305,20 @@ fun MindmapTreeView(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (node.summary.isNotEmpty()) {
-                        Text(node.summary, style = MaterialTheme.typography.bodyMedium)
+                        MarkdownInline(node.summary, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (node.facets.isNotEmpty()) {
+                        Text(L10n.t("kg.facets", en), style = MaterialTheme.typography.labelLarge)
+                        node.facets.forEach { f ->
+                            MarkdownInline("• $f", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    if (onRefineNode != null && node.depth > 0) {
+                        OutlinedButton(
+                            onClick = { selectedNode = null; onRefineNode(node.id, cleanConcept) },
+                            enabled = !node.atomic,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(L10n.t(if (node.atomic) "kg.atomic" else "kg.action_refine", en)) }
                     }
                     Button(
                         onClick = { selectedNode = null; onQuizConcept(cleanConcept) },
@@ -324,7 +352,12 @@ private fun buildTree(arr: JSONArray): List<MindNode> {
         val sum = o.optString("summary")
         var units = 0f
         for (ch in label) units += if (ch.code > 127) 13.5f else 7.5f
-        val node = MindNode(id, label, imp, sum, (units + if (imp.isNotEmpty()) 40f else 28f).coerceIn(104f, 260f))
+        val facets = buildList {
+            val fa = o.optJSONArray("facets")
+            if (fa != null) for (j in 0 until fa.length()) fa.optString(j).takeIf { it.isNotBlank() }?.let(::add)
+        }
+        val width = (units + (if (imp.isNotEmpty()) 40f else 28f) + (if (facets.isNotEmpty()) 24f else 0f)).coerceIn(104f, 284f)
+        val node = MindNode(id, label, imp, sum, width, facets, o.optBoolean("atomic", false))
         map[id] = node
         parents[id] = if (o.isNull("parent_id")) "" else o.optString("parent_id", "")
     }

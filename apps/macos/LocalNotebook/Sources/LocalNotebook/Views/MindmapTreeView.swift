@@ -3,6 +3,9 @@ import SwiftUI
 private final class MindNodeItem: Identifiable {
     let id: String
     let label: String
+    var summary: String = ""
+    var facets: [String] = []
+    var atomic: Bool = false
     var depth: Int = 0
     var children: [MindNodeItem] = []
     var x: CGFloat = 0
@@ -10,14 +13,17 @@ private final class MindNodeItem: Identifiable {
     var width: CGFloat = 120
     let height: CGFloat = 34
 
-    init(id: String, label: String) {
+    init(id: String, label: String, summary: String = "", facets: [String] = [], atomic: Bool = false) {
         self.id = id
         self.label = label
+        self.summary = summary
+        self.facets = facets
+        self.atomic = atomic
         var units: CGFloat = 0
         for scalar in label.unicodeScalars {
             units += scalar.value > 127 ? 13.5 : 7.5
         }
-        self.width = min(270, max(96, units + 26))
+        self.width = min(294, max(96, units + 26 + (facets.isEmpty ? 0 : 24)))
     }
 }
 
@@ -27,6 +33,8 @@ struct MindmapTreeView: View {
     var onQuizConcept: ((String) -> Void)? = nil
     var onExpandMindmap: ((String) -> Void)? = nil
     var onAskConcept: ((String) -> Void)? = nil
+    /// (nodeId, label): split the node into finer knowledge points.
+    var onRefineNode: ((String, String) -> Void)? = nil
 
     @State private var collapsedIds: Set<String> = []
     @State private var scale: CGFloat = 1.0
@@ -50,7 +58,14 @@ struct MindmapTreeView: View {
             let id = (n["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "n\(i)"
             let rawLabel = n["label"] as? String ?? ""
             let label = rawLabel.replacingOccurrences(of: #"\s*(?:\[\s*\d+(?:\s*[,，\-–—、]\s*\d+)*\s*\]|【\s*\d+(?:\s*[,，\-–—、]\s*\d+)*\s*】)+"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
-            let node = MindNodeItem(id: id, label: label)
+            let facets = (n["facets"] as? [Any] ?? []).compactMap { $0 as? String }.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            let node = MindNodeItem(
+                id: id,
+                label: label,
+                summary: n["summary"] as? String ?? "",
+                facets: facets,
+                atomic: n["atomic"] as? Bool ?? false
+            )
             map[id] = node
             parentById[id] = n["parent_id"] as? String ?? ""
             order.append(node)
@@ -141,14 +156,41 @@ struct MindmapTreeView: View {
                     ForEach(laid.visible) { node in
                         let colors = nodeColors(node.depth)
                         Menu {
+                            if !node.summary.isEmpty {
+                                Text(node.summary)
+                            }
+                            if !node.facets.isEmpty {
+                                Menu("\(L10n.t("kg.facets", en: en)) (\(node.facets.count))") {
+                                    ForEach(node.facets, id: \.self) { facet in
+                                        Button(facet) { onAskConcept?("\(node.label)：\(facet)") }
+                                    }
+                                }
+                            }
+                            if let refine = onRefineNode, node.depth > 0 {
+                                Button(L10n.t(node.atomic ? "kg.atomic" : "kg.action_refine", en: en)) {
+                                    refine(node.id, node.label)
+                                }
+                                .disabled(node.atomic)
+                            }
+                            Divider()
                             Button(L10n.t("kg.action_quiz", en: en)) { onQuizConcept?(node.label) }
                             Button(L10n.t("kg.action_mindmap", en: en)) { onExpandMindmap?(node.label) }
                             Button(L10n.t("kg.action_chat", en: en)) { onAskConcept?(node.label) }
                         } label: {
-                            Text(node.label)
-                                .font(.system(size: 13, weight: node.depth == 0 ? .semibold : .regular))
-                                .foregroundColor(Color(white: 0.93))
-                                .lineLimit(1)
+                            HStack(spacing: 5) {
+                                Text(node.label)
+                                    .font(.system(size: 13, weight: node.depth == 0 ? .semibold : .regular))
+                                    .foregroundColor(Color(white: 0.93))
+                                    .lineLimit(1)
+                                if !node.facets.isEmpty {
+                                    Text("\(node.facets.count)")
+                                        .font(.system(size: 10.5))
+                                        .foregroundColor(Color(white: 0.86))
+                                        .padding(.horizontal, 5)
+                                        .background(Color(white: 0.4, opacity: 0.6))
+                                        .cornerRadius(7)
+                                }
+                            }
                                 .padding(.horizontal, 11)
                                 .frame(width: node.width, height: node.height, alignment: .leading)
                                 .background(colors.bg)

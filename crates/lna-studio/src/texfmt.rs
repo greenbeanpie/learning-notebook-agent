@@ -94,7 +94,8 @@ pub fn convert_mindmap_payload(payload: &mut Value) {
                 *text = tex_to_unicode(text);
             }
         }
-        if let Some(Value::Array(prereqs)) = obj.get_mut("prerequisites") {
+        for list_key in ["prerequisites", "facets"] {
+            let Some(Value::Array(prereqs)) = obj.get_mut(list_key) else { continue };
             for p in prereqs {
                 if let Value::String(text) = p {
                     *text = tex_to_unicode(text);

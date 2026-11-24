@@ -99,7 +99,10 @@ struct ArtifactViewerView: View {
                     en: state.isEnglish,
                     onQuizConcept: { c in Task { await state.createConceptLink(kind: "quiz", concept: c) } },
                     onExpandMindmap: { c in Task { await state.createConceptLink(kind: "mindmap", concept: c) } },
-                    onAskConcept: { c in Task { await state.sendChat(c) } }
+                    onAskConcept: { c in Task { await state.sendChat(c) } },
+                    onRefineNode: { nodeId, label in
+                        Task { await state.refineNode(artifactId: artifact.id, nodeId: nodeId, label: label) }
+                    }
                 )
                 feedbackBar
             } else if artifact.artifactType == "slides" {

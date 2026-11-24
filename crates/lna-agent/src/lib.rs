@@ -907,8 +907,11 @@ impl AgentService {
         let mut emitted_cites: HashSet<i32> = HashSet::new();
         let mut next_cite_no = (evidence_map.len() as i32) + 1;
 
-        // GENERATE + TOOL_LOOP (max 6 tool rounds + 1 final synthesis round)
-        const MAX_TOOL_ROUNDS: usize = 6;
+        // GENERATE + TOOL_LOOP (max 12 tool rounds + 1 final synthesis round). Rounds that only
+        // report thought stages don't consume the reading budget (capped separately).
+        const MAX_TOOL_ROUNDS: usize = 12;
+        const MAX_FREE_STAGE_ROUNDS: usize = 6;
+        let mut free_stage_rounds: usize = 0;
         let mut final_round_nudged = false;
         let mut final_empty_retried = false;
         let mut round: usize = 0;
@@ -1152,6 +1155,9 @@ impl AgentService {
                         asst_parts.push(Part::Text(round_text));
                     }
                     let mut tool_results = Vec::new();
+                    let only_stage_reports = pending_calls
+                        .values()
+                        .all(|(_, name, _)| name == "report_thought_stage");
                     for (_, (cid, name, args_s)) in pending_calls {
                         let args: serde_json::Value =
                             serde_json::from_str(&args_s).unwrap_or_else(|_| json!({}));
@@ -1660,7 +1666,11 @@ impl AgentService {
                         role: Role::Tool,
                         parts: tool_results,
                     });
-                    round += 1;
+                    if only_stage_reports && free_stage_rounds < MAX_FREE_STAGE_ROUNDS {
+                        free_stage_rounds += 1;
+                    } else {
+                        round += 1;
+                    }
                     continue;
                 }
                 Ok(reason) => {

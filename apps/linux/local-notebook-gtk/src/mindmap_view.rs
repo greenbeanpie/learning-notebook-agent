@@ -10,6 +10,9 @@ use std::rc::Rc;
 struct MindNode {
     id: String,
     label: String,
+    summary: String,
+    facets: Vec<String>,
+    atomic: bool,
     depth: usize,
     children: Vec<usize>,
     x: f64,
@@ -27,8 +30,8 @@ struct TreeState {
     is_kg: bool,
     // Hit boxes for toggle buttons: (cx, cy, radius, node_id)
     toggle_hits: Vec<(f64, f64, f64, String)>,
-    // Hit boxes for node cards: (x, y, w, h, label)
-    node_hits: Vec<(f64, f64, f64, f64, String)>,
+    // Hit boxes for node cards: (x, y, w, h, node index)
+    node_hits: Vec<(f64, f64, f64, f64, usize)>,
 }
 
 const NODE_H: f64 = 34.0;
@@ -194,11 +197,25 @@ pub fn build_mindmap_widget(payload: &Value, en: bool, is_kg: bool, on_action: R
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(String::from);
+        let facets: Vec<String> = n
+            .get("facets")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
         let idx = nodes.len();
         id_to_idx.insert(id.clone(), idx);
         nodes.push(MindNode {
             id,
-            w: estimate_width(&label),
+            w: (estimate_width(&label) + if facets.is_empty() { 0.0 } else { 26.0 }).min(296.0),
+            summary: n.get("summary").and_then(Value::as_str).unwrap_or("").to_string(),
+            atomic: n.get("atomic").and_then(Value::as_bool).unwrap_or(false),
+            facets,
             label,
             depth: 0,
             children: Vec::new(),
@@ -286,12 +303,12 @@ pub fn build_mindmap_widget(payload: &Value, en: bool, is_kg: bool, on_action: R
             nodes: &[MindNode],
             collapsed: &HashSet<String>,
             hits: &mut Vec<(f64, f64, f64, String)>,
-            node_hits: &mut Vec<(f64, f64, f64, f64, String)>,
+            node_hits: &mut Vec<(f64, f64, f64, f64, usize)>,
             is_kg: bool,
             idx: usize,
         ) {
             let node = &nodes[idx];
-            node_hits.push((node.x, node.y, node.w, node.h, node.label.clone()));
+            node_hits.push((node.x, node.y, node.w, node.h, idx));
             let ((br, bg, bb), (sr, sg, sb)) = node_colors(node.depth, is_kg);
             rounded_rect(cr, node.x, node.y, node.w, node.h, 8.0);
             cr.set_source_rgb(br, bg, bb);
@@ -305,6 +322,20 @@ pub fn build_mindmap_widget(payload: &Value, en: bool, is_kg: bool, on_action: R
             cr.set_font_size(12.0);
             cr.move_to(node.x + 11.0, node.y + node.h / 2.0 + 4.5);
             let _ = cr.show_text(&node.label);
+            if !node.facets.is_empty() {
+                // Small count chip: this node carries sub-points (facets) listed in its popover.
+                let txt = node.facets.len().to_string();
+                let cw = 8.0 + 6.5 * txt.len() as f64;
+                let cx = node.x + node.w - cw - 8.0;
+                let cy = node.y + node.h / 2.0 - 8.0;
+                rounded_rect(cr, cx, cy, cw, 16.0, 7.0);
+                cr.set_source_rgba(0.31, 0.36, 0.44, 0.75);
+                let _ = cr.fill();
+                cr.set_source_rgb(0.84, 0.87, 0.93);
+                cr.set_font_size(10.5);
+                cr.move_to(cx + 4.0, cy + 12.0);
+                let _ = cr.show_text(&txt);
+            }
 
             let is_col = collapsed.contains(&node.id);
             if !node.children.is_empty() {
@@ -372,17 +403,65 @@ pub fn build_mindmap_widget(payload: &Value, en: bool, is_kg: bool, on_action: R
             area_click.queue_draw();
             return;
         }
-        let hit_label = st
+        let hit_node = st
             .node_hits
             .iter()
             .find(|(nx, ny, nw, nh, _)| sx >= *nx && sx <= nx + nw && sy >= *ny && sy <= ny + nh)
-            .map(|(_, _, _, _, lbl)| lbl.clone());
+            .and_then(|(_, _, _, _, i)| st.nodes.get(*i).cloned());
         drop(st);
-        if let Some(lbl) = hit_label {
+        if let Some(node) = hit_node {
+            let lbl = node.label.clone();
             let pop = Popover::new();
             pop.set_parent(&area_click);
             pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
             let menu = GtkBox::new(Orientation::Vertical, 4);
+            menu.set_width_request(260);
+            if !node.summary.is_empty() {
+                let s = crate::md_view::inline_label(&node.summary);
+                s.set_max_width_chars(36);
+                menu.append(&s);
+            }
+            if !node.facets.is_empty() {
+                let head = gtk4::Label::new(Some(if en { "Sub-points" } else { "细分要点" }));
+                head.set_xalign(0.0);
+                head.add_css_class("lna-muted");
+                menu.append(&head);
+                for facet in &node.facets {
+                    let fb = Button::new();
+                    let fl = crate::md_view::inline_label(&format!("• {facet}"));
+                    fl.set_selectable(false);
+                    fl.set_max_width_chars(36);
+                    fb.set_child(Some(&fl));
+                    fb.add_css_class("lna-ghost-btn");
+                    let cb = on_action.clone();
+                    let concept = format!("{lbl}：{facet}");
+                    let p_c = pop.clone();
+                    fb.connect_clicked(move |_| {
+                        p_c.popdown();
+                        cb("chat", &concept);
+                    });
+                    menu.append(&fb);
+                }
+            }
+            if node.depth > 0 {
+                let rb = Button::with_label(match (node.atomic, en) {
+                    (true, true) => "Already a minimal concept",
+                    (true, false) => "已是最小知识点，无需细化",
+                    (false, true) => "Refine into finer points",
+                    (false, false) => "细化为更小的知识点",
+                });
+                rb.add_css_class("lna-pill-btn");
+                rb.set_sensitive(!node.atomic);
+                let cb = on_action.clone();
+                let act = format!("refine:{}", node.id);
+                let concept = lbl.clone();
+                let p_c = pop.clone();
+                rb.connect_clicked(move |_| {
+                    p_c.popdown();
+                    cb(&act, &concept);
+                });
+                menu.append(&rb);
+            }
             for (act, key_en, key_zh) in [
                 ("quiz", "Quiz on this concept", "针对此知识点生成测验"),
                 ("mindmap", "Expand as Mind Map", "展开为详细思维导图"),

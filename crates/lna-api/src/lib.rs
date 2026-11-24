@@ -852,6 +852,13 @@ impl CoreRuntime {
                 })?;
                 Ok(serde_json::to_value(updated).unwrap())
             }
+            "studio.refine_node" => {
+                let id = req_str(p, "artifact_id")?.to_string();
+                let node_id = req_str(p, "node_id")?.to_string();
+                let studio = self.studio.clone();
+                self.rt
+                    .block_on(async move { studio.refine_node(&id, &node_id).await })
+            }
             "studio.save_progress" => {
                 let id = req_str(p, "artifact_id")?;
                 let state = p.get("state").cloned().unwrap_or_else(|| json!({}));

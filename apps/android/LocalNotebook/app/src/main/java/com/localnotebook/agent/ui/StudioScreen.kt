@@ -43,6 +43,7 @@ fun StudioScreen(
     onExpandMindmap: (String) -> Unit,
     onAskConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onRefineNode: (artifactId: String, nodeId: String, label: String) -> Unit = { _, _, _ -> },
 ) {
     val en = state.prefs.isEnglish
     val openArt = state.activeArtifact
@@ -65,6 +66,7 @@ fun StudioScreen(
             onExpandMindmap = onExpandMindmap,
             onAskConcept = onAskConcept,
             modifier = modifier,
+            onRefineNode = { nodeId, label -> onRefineNode(openArt.id, nodeId, label) },
         )
         return
     }
@@ -227,6 +229,7 @@ private fun ArtifactViewerScreen(
     onExpandMindmap: (String) -> Unit,
     onAskConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onRefineNode: (nodeId: String, label: String) -> Unit = { _, _ -> },
 ) {
     var showPromptDialog by remember { mutableStateOf(false) }
     var showDiagLog by remember { mutableStateOf(false) }
@@ -381,6 +384,7 @@ private fun ArtifactViewerScreen(
                         onQuizConcept = onQuizConcept,
                         onExpandMindmap = onExpandMindmap,
                         onAskConcept = onAskConcept,
+                        onRefineNode = onRefineNode,
                     )
                 }
 

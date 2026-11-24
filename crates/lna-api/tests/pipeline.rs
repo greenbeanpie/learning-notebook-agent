@@ -65,9 +65,9 @@ fn tool_loop_stops_after_three_rounds_and_sums_usage() {
     assert_eq!(msg["status"], json!("COMPLETE"), "{msg}");
 
     let chat = mock.of_kind(Kind::Chat);
-    assert_eq!(chat.len(), 7, "6 tool rounds + 1 final request");
-    assert!(chat[..6].iter().all(|r| r.has_tools()));
-    assert!(!chat[6].has_tools(), "7th request must not offer tools");
+    assert_eq!(chat.len(), 13, "12 tool rounds + 1 final request");
+    assert!(chat[..12].iter().all(|r| r.has_tools()));
+    assert!(!chat[12].has_tools(), "13th request must not offer tools");
     // tool results are wrapped as untrusted
     assert!(chat[1].user_text().contains("untrusted"));
     let kinds = thought_kinds(&msg);
@@ -76,16 +76,16 @@ fn tool_loop_stops_after_three_rounds_and_sums_usage() {
             .iter()
             .filter(|k| *k == "tool_list_sources" || *k == "tool_call")
             .count(),
-        6
+        12
     );
 
     let usage = env.ok("usage.summary", json!({ "notebook_id": nid }));
     assert_eq!(
         usage["input_tokens"],
-        json!(700),
-        "100 per round x 7: {usage}"
+        json!(1300),
+        "100 per round x 13: {usage}"
     );
-    assert_eq!(usage["output_tokens"], json!(140));
+    assert_eq!(usage["output_tokens"], json!(260));
     assert!(env
         .history(&nid)
         .iter()

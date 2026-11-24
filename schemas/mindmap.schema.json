@@ -20,6 +20,8 @@
           "importance": { "type": "string", "enum": ["core", "key", "detail"] },
           "summary": { "type": "string" },
           "prerequisites": { "type": "array", "items": { "type": "string" } },
+          "facets": { "type": "array", "items": { "type": "string" } },
+          "atomic": { "type": "boolean" },
           "citations": { "type": "array", "items": { "type": "integer" } }
         }
       }

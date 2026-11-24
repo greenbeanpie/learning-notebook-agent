@@ -266,57 +266,134 @@ pub fn strip_citation_markers(text: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// E4: Enforce mindmap depth/branching limits based on detail level and strip `[n]` citations.
-pub fn enforce_mindmap_limits(payload: &mut Value) {
-    enforce_mindmap_limits_with_detail(payload, "standard");
-}
-
-pub fn enforce_mindmap_limits_with_detail(payload: &mut Value, detail: &str) {
-    let (max_depth, max_children) = match detail {
-        "concise" => (3usize, 6usize),
-        "detailed" => (6usize, 12usize),
-        _ => (5usize, 8usize),
-    };
+/// Normalises a mindmap / knowledge-graph payload WITHOUT dropping content: no depth or
+/// branching caps. Strips `[n]` citation markers from labels, clears node citations, drops
+/// nodes with empty labels (re-parenting their children), makes ids unique, re-attaches
+/// orphans to the root, breaks parent cycles, cleans `facets`, and converts TeX to Unicode.
+pub fn normalize_mindmap(payload: &mut Value) {
+    use std::collections::{HashMap, HashSet};
     let Some(nodes) = payload.get("nodes").and_then(|x| x.as_array()).cloned() else {
         return;
     };
-    let mut children_map: std::collections::HashMap<Option<String>, Vec<Value>> =
-        std::collections::HashMap::new();
-    for mut n in nodes {
-        if let Some(obj) = n.as_object_mut() {
-            if let Some(lbl) = obj.get("label").and_then(|x| x.as_str()).map(strip_citation_markers) {
-                obj.insert("label".into(), Value::String(lbl));
-            }
-            obj.insert("citations".into(), Value::Array(Vec::new()));
-        }
-        let pid = n
-            .get("parent_id")
-            .and_then(|x| x.as_str())
-            .map(str::to_string);
-        children_map.entry(pid).or_default().push(n);
-    }
-
-    let mut kept = Vec::new();
-    let mut queue: std::collections::VecDeque<(Option<String>, usize)> =
-        std::collections::VecDeque::new();
-    queue.push_back((None, 1));
-
-    while let Some((pid, depth)) = queue.pop_front() {
-        if depth > max_depth {
+    let mut out: Vec<Value> = Vec::with_capacity(nodes.len());
+    let mut seen: HashSet<String> = HashSet::new();
+    // Old id -> new id, plus parent links of dropped (empty-label) nodes for re-parenting.
+    let mut rename: HashMap<String, String> = HashMap::new();
+    let mut dropped_parent: HashMap<String, Option<String>> = HashMap::new();
+    for (i, mut n) in nodes.into_iter().enumerate() {
+        let Some(obj) = n.as_object_mut() else { continue };
+        let label = obj
+            .get("label")
+            .and_then(Value::as_str)
+            .map(strip_citation_markers)
+            .unwrap_or_default();
+        let old_id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| format!("n{i}"));
+        let parent = obj.get("parent_id").and_then(Value::as_str).map(String::from);
+        if label.trim().is_empty() {
+            dropped_parent.insert(old_id, parent);
             continue;
         }
-        if let Some(list) = children_map.get(&pid) {
-            for child in list.iter().take(max_children) {
-                kept.push(child.clone());
-                if let Some(cid) = child.get("id").and_then(|x| x.as_str()) {
-                    queue.push_back((Some(cid.to_string()), depth + 1));
-                }
+        let mut id = old_id.clone();
+        let mut k = 2;
+        while seen.contains(&id) {
+            id = format!("{old_id}_{k}");
+            k += 1;
+        }
+        seen.insert(id.clone());
+        rename.entry(old_id).or_insert_with(|| id.clone());
+        obj.insert("id".into(), Value::String(id));
+        obj.insert("label".into(), Value::String(label));
+        obj.insert("citations".into(), Value::Array(Vec::new()));
+        if let Some(Value::Array(facets)) = obj.get_mut("facets") {
+            let mut uniq: HashSet<String> = HashSet::new();
+            let cleaned: Vec<Value> = facets
+                .iter()
+                .filter_map(Value::as_str)
+                .map(strip_citation_markers)
+                .filter(|t| !t.trim().is_empty() && uniq.insert(t.clone()))
+                .map(Value::String)
+                .collect();
+            *facets = cleaned;
+        }
+        out.push(n);
+    }
+    if out.is_empty() {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("nodes".into(), Value::Array(out));
+        }
+        return;
+    }
+    // Resolve a parent id through renames and dropped nodes.
+    let resolve = |pid: Option<String>| -> Option<String> {
+        let mut cur = pid;
+        for _ in 0..64 {
+            match cur {
+                None => return None,
+                Some(ref p) if rename.contains_key(p) => return rename.get(p).cloned(),
+                Some(ref p) if dropped_parent.contains_key(p) => cur = dropped_parent[p].clone(),
+                Some(_) => return None,
+            }
+        }
+        None
+    };
+    let root_id = out
+        .iter()
+        .find(|n| n.get("parent_id").map_or(true, Value::is_null))
+        .or_else(|| out.first())
+        .and_then(|n| n.get("id").and_then(Value::as_str))
+        .map(String::from)
+        .unwrap_or_default();
+    let mut parent_of: HashMap<String, Option<String>> = HashMap::new();
+    for n in out.iter_mut() {
+        let id = n.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let raw = n.get("parent_id").and_then(Value::as_str).map(String::from);
+        let mut pid = resolve(raw);
+        if id == root_id {
+            pid = None;
+        } else if pid.is_none() || pid.as_deref() == Some(id.as_str()) {
+            // A second root or a dangling parent: hang it under the root instead of dropping it.
+            pid = Some(root_id.clone());
+        }
+        parent_of.insert(id, pid.clone());
+        if let Some(obj) = n.as_object_mut() {
+            obj.insert("parent_id".into(), pid.map(Value::String).unwrap_or(Value::Null));
+        }
+    }
+    // Break cycles: a node whose ancestor chain never reaches the root is re-attached to it.
+    for n in out.iter_mut() {
+        let id = n.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        if id == root_id {
+            continue;
+        }
+        let mut cur = parent_of.get(&id).cloned().flatten();
+        let mut steps = 0;
+        let mut reaches_root = false;
+        while let Some(p) = cur {
+            if p == root_id {
+                reaches_root = true;
+                break;
+            }
+            steps += 1;
+            if steps > parent_of.len() {
+                break;
+            }
+            cur = parent_of.get(&p).cloned().flatten();
+        }
+        if !reaches_root {
+            parent_of.insert(id, Some(root_id.clone()));
+            if let Some(obj) = n.as_object_mut() {
+                obj.insert("parent_id".into(), Value::String(root_id.clone()));
             }
         }
     }
-
     if let Some(obj) = payload.as_object_mut() {
-        obj.insert("nodes".into(), Value::Array(kept));
+        obj.insert("nodes".into(), Value::Array(out));
     }
     crate::texfmt::convert_mindmap_payload(payload);
 }
@@ -465,27 +542,43 @@ mod tests {
     }
 
     #[test]
-    fn mindmap_depth_is_limited_to_five_levels() {
+    fn mindmap_is_never_truncated() {
         let mut nodes = vec![json!({"id":"n0","parent_id":null,"label":"r","citations":[]})];
-        for i in 1..8 {
+        for i in 1..12 {
             nodes.push(json!({"id":format!("n{i}"),"parent_id":format!("n{}", i-1),"label":"x","citations":[]}));
         }
+        for i in 0..40 {
+            nodes.push(json!({"id":format!("c{i}"),"parent_id":"n0","label":"Child","citations":[]}));
+        }
         let mut mm = json!({"title":"m","nodes":nodes});
-        enforce_mindmap_limits(&mut mm);
-        assert_eq!(mm["nodes"].as_array().unwrap().len(), 5);
+        normalize_mindmap(&mut mm);
+        assert_eq!(mm["nodes"].as_array().unwrap().len(), 52);
     }
 
     #[test]
-    fn enforces_mindmap_depth_and_width() {
-        let mut nodes = vec![json!({"id":"n1","parent_id":null,"label":"Root","citations":[]})];
-        for i in 0..12 {
-            nodes.push(
-                json!({"id":format!("c{i}"),"parent_id":"n1","label":"Child","citations":[]}),
-            );
-        }
-        let mut mm = json!({ "title": "MM", "nodes": nodes });
-        enforce_mindmap_limits(&mut mm);
-        // 1 root + max 8 children = 9
-        assert_eq!(mm["nodes"].as_array().unwrap().len(), 9);
+    fn mindmap_repairs_ids_orphans_and_cycles() {
+        let mut mm = json!({"title":"m","nodes":[
+            {"id":"r","parent_id":null,"label":"Root [3]","citations":[1]},
+            {"id":"a","parent_id":"r","label":"A","citations":[],"facets":["x [2]","x","", "y"]},
+            {"id":"a","parent_id":"r","label":"A2","citations":[]},
+            {"id":"gone","parent_id":"r","label":"  ","citations":[]},
+            {"id":"b","parent_id":"gone","label":"B","citations":[]},
+            {"id":"o","parent_id":"missing","label":"O","citations":[]},
+            {"id":"c1","parent_id":"c2","label":"C1","citations":[]},
+            {"id":"c2","parent_id":"c1","label":"C2","citations":[]},
+            {"id":"r2","parent_id":null,"label":"Second root","citations":[]}
+        ]});
+        normalize_mindmap(&mut mm);
+        let n = mm["nodes"].as_array().unwrap();
+        assert_eq!(n.len(), 8);
+        let by = |id: &str| n.iter().find(|x| x["id"] == id).unwrap().clone();
+        assert_eq!(by("r")["label"], "Root");
+        assert_eq!(by("r")["citations"], json!([]));
+        assert_eq!(by("a")["facets"], json!(["x", "y"]));
+        assert_eq!(by("a_2")["parent_id"], "r");
+        assert_eq!(by("b")["parent_id"], "r");
+        assert_eq!(by("o")["parent_id"], "r");
+        assert_eq!(by("r2")["parent_id"], "r");
+        assert!(by("c1")["parent_id"] == "r" || by("c2")["parent_id"] == "r");
     }
 }

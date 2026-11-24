@@ -523,6 +523,30 @@ final class AppState: ObservableObject {
         return nil
     }
 
+    /// Splits a mind-map / knowledge-graph node into finer points; the core may decline atomic nodes.
+    func refineNode(artifactId: String, nodeId: String, label: String) async {
+        statusMessage = "\(t("kg.refining"))：\(label)"
+        do {
+            let res = try await core.call(
+                method: "studio.refine_node",
+                params: ["artifact_id": artifactId, "node_id": nodeId]
+            )
+            if res["refined"] as? Bool == true {
+                let added = (res["added"] as? NSNumber)?.intValue ?? 0
+                statusMessage = t("kg.refined_fmt")
+                    .replacingOccurrences(of: "{0}", with: label)
+                    .replacingOccurrences(of: "{1}", with: String(added))
+            } else {
+                let reason = (res["reason"] as? String) ?? ""
+                statusMessage = t("kg.refine_declined").replacingOccurrences(of: "{0}", with: label)
+                    + (reason.isEmpty ? "" : " — \(reason)")
+            }
+            await refreshAll()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
     func approveDraft(artifactId: String, markdown: String) async {
         do {
             _ = try await core.call(method: "studio.approve_draft", params: ["artifact_id": artifactId, "draft": markdown])

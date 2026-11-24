@@ -266,7 +266,14 @@ fn oversized_sources_use_cached_digests_map_reduce_and_topic_retrieval() {
     studio_wait(&env, &id3, "READY", 60);
     assert_eq!(mock.of_kind(Kind::Reduce).len(), reduces);
     let gen = mock.of_kind(Kind::Studio).pop().unwrap();
-    assert!(gen.user_text().contains("主题相关证据"));
+    // Topic evidence arrives either via the on-demand reader's topic retrieval or the
+    // direct topic-retrieval fallback; both mean "retrieved, not reduced".
+    let user = gen.user_text();
+    assert!(
+        user.contains("主题相关证据") || user.contains("On-Demand Retrieved Excerpts"),
+        "USER={:?}",
+        user.chars().take(700).collect::<String>()
+    );
 
     // Changing a source invalidates only that source's digests.
     env.core

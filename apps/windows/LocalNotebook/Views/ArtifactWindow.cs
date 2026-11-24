@@ -222,6 +222,40 @@ public sealed class ArtifactViewerPane : IDisposable
         return res;
     }
 
+    private bool _refining;
+
+    /// Asks the core to split one node into finer knowledge points; it may decline when the
+    /// node is already minimal. Reloads the artifact so the new children show up.
+    private async Task RefineNodeAsync(string nodeId, string label)
+    {
+        if (_refining) return;
+        _refining = true;
+        Say(InfoBarSeverity.Informational, L10n.T("kg.refining"), label);
+        try
+        {
+            var res = await Core(
+                "studio.refine_node",
+                Args(("artifact_id", _id), ("node_id", nodeId)),
+                L10n.T("kg.action_refine"));
+            if (res is not { } r) return;
+            var refined = r.TryGetProperty("refined", out var rf) && rf.ValueKind == JsonValueKind.True;
+            if (refined)
+            {
+                var added = r.TryGetProperty("added", out var ad) && ad.TryGetInt32(out var n) ? n : 0;
+                Say(InfoBarSeverity.Success, L10n.T("kg.action_refine"), L10n.Fmt("kg.refined_fmt", label, added));
+            }
+            else
+            {
+                Say(InfoBarSeverity.Informational, L10n.Fmt("kg.refine_declined", label), Str(r, "reason"));
+            }
+            await LoadAsync();
+        }
+        finally
+        {
+            _refining = false;
+        }
+    }
+
     private async Task LoadAsync()
     {
         if (_disposed) return;
@@ -278,7 +312,8 @@ public sealed class ArtifactViewerPane : IDisposable
                 onExportSvg: () => _ = ExportAsync("svg", ".svg", "SVG"),
                 onQuizConcept: _onQuizConcept,
                 onExpandMindmap: _onExpandMindmap,
-                onAskConcept: _onAskConcept);
+                onAskConcept: _onAskConcept,
+                onRefineNode: RefineNodeAsync);
             _body.Content = _interactiveView.Root;
             return;
         }
@@ -1349,6 +1384,7 @@ internal sealed class InteractiveArtifactView : IDisposable
     private readonly Action<string>? _onQuizConcept;
     private readonly Action<string>? _onExpandMindmap;
     private readonly Action<string>? _onAskConcept;
+    private readonly Func<string, string, Task>? _onRefineNode;
     private readonly JsonElement _art;
 
     private Windows.Media.Playback.MediaPlayer? _player;
@@ -1370,8 +1406,10 @@ internal sealed class InteractiveArtifactView : IDisposable
         Action? onExportSvg = null,
         Action<string>? onQuizConcept = null,
         Action<string>? onExpandMindmap = null,
-        Action<string>? onAskConcept = null)
+        Action<string>? onAskConcept = null,
+        Func<string, string, Task>? onRefineNode = null)
     {
+        _onRefineNode = onRefineNode;
         _artifactId = artifactId;
         _art = artifact;
         _hostWindow = hostWindow;
@@ -2259,8 +2297,9 @@ internal sealed class InteractiveArtifactView : IDisposable
             onProgressChanged: newState =>
             {
                 if (aid.Length > 0)
-                    _ = Api.CallAsync("studio.save_progress", Args(("id", aid), ("state", newState)));
-            }).Root;
+                    _ = Api.CallAsync("studio.save_progress", Args(("artifact_id", aid), ("state", newState)));
+            },
+            onRefineNode: aid.Length == 0 ? null : _onRefineNode).Root;
     }
 
     // report ------------------------------------------------------------------

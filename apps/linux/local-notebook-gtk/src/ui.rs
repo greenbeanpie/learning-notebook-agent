@@ -661,7 +661,6 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     }
     {
         let st = state.clone();
-        let win = window.clone();
         let pop = more_popover.clone();
         rename_nb_btn.connect_clicked(move |_| {
             pop.popdown();
@@ -1030,11 +1029,8 @@ fn refresh_all(st: &Rc<UiState>) {
                 if id == nid {
                     st.title_lbl.set_text(title);
                 }
-                let btn = Button::with_label(if id == nid {
-                    format!("✓ {title}")
-                } else {
-                    title.to_string()
-                });
+                let btn_label = if id == nid { format!("✓ {title}") } else { title.to_string() };
+                let btn = Button::with_label(&btn_label);
                 btn.add_css_class("lna-ghost-btn");
                 let st2 = st.clone();
                 btn.connect_clicked(move |_| {
@@ -1621,9 +1617,58 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         let is_kg = art.pointer("/config/mode").and_then(Value::as_str) == Some("knowledge_graph")
             || payload.get("kind").and_then(Value::as_str) == Some("knowledge_graph");
         let st_link = st.clone();
+        let aid_refine = artifact_id.to_string();
         let on_action: Rc<dyn Fn(&str, &str)> = Rc::new(move |action, concept| {
             let nid2 = st_link.active_notebook_id.borrow().clone();
             if nid2.is_empty() { return; }
+            if let Some(node_id) = action.strip_prefix("refine:") {
+                // Refinement runs model calls: keep it off the GTK thread and poll for the result.
+                let en = st_link.is_en();
+                st_link.status_label.set_text(&format!(
+                    "{}{concept}",
+                    if en { "Refining: " } else { "正在细化：" }
+                ));
+                let (tx, rx) = std::sync::mpsc::channel();
+                let core = st_link.core.clone();
+                let params = json!({ "artifact_id": aid_refine, "node_id": node_id });
+                std::thread::spawn(move || {
+                    let _ = tx.send(call_core(&core, "studio.refine_node", params));
+                });
+                let st_done = st_link.clone();
+                let aid_done = aid_refine.clone();
+                let label = concept.to_string();
+                gtk4::glib::timeout_add_local(Duration::from_millis(250), move || {
+                    let Ok(res) = rx.try_recv() else {
+                        return gtk4::glib::ControlFlow::Continue;
+                    };
+                    let en = st_done.is_en();
+                    let msg = match res {
+                        Ok(r) if r.get("refined").and_then(Value::as_bool) == Some(true) => {
+                            let added = r.get("added").and_then(Value::as_u64).unwrap_or(0);
+                            if en {
+                                format!("Added {added} finer point(s) under \"{label}\"")
+                            } else {
+                                format!("已为「{label}」追加 {added} 个更细的子知识点")
+                            }
+                        }
+                        Ok(r) => {
+                            let reason = r.get("reason").and_then(Value::as_str).unwrap_or("");
+                            let head = if en {
+                                format!("\"{label}\" is already a minimal concept")
+                            } else {
+                                format!("「{label}」已是最小知识点")
+                            };
+                            if reason.is_empty() { head } else { format!("{head} — {reason}") }
+                        }
+                        Err(e) => friendly_err(en, e),
+                    };
+                    st_done.status_label.set_text(&msg);
+                    refresh_all(&st_done);
+                    open_artifact_inline(&st_done, &aid_done);
+                    gtk4::glib::ControlFlow::Break
+                });
+                return;
+            }
             match action {
                 "quiz" => {
                     let _ = call_core(&st_link.core, "studio.create", json!({
@@ -1989,10 +2034,9 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     gen_privacy_btn.add_css_class("lna-pill-btn");
     let gen_diag_btn = Button::with_label(tr(en, "nb.export_diag"));
     gen_diag_btn.add_css_class("lna-pill-btn");
-    let win_priv = win.clone();
+    let parent_priv = parent.clone();
     let st_priv = st.clone();
-    gen_privacy_btn.connect_clicked(move |_| open_privacy_dialog(parent, st_priv.is_en()));
-    let _ = win_priv;
+    gen_privacy_btn.connect_clicked(move |_| open_privacy_dialog(&parent_priv, st_priv.is_en()));
     let st_diag = st.clone();
     gen_diag_btn.connect_clicked(move |_| {
         let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));

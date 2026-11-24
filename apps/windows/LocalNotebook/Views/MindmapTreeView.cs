@@ -33,6 +33,8 @@ internal sealed class MindmapTreeView
         public string Importance { get; init; } = "";
         public string Summary { get; init; } = "";
         public List<string> Prerequisites { get; } = new();
+        public List<string> Facets { get; } = new();
+        public bool Atomic { get; init; }
         public int Depth { get; set; }
         public bool IsCollapsed { get; set; }
         public List<MindNode> Children { get; } = new();
@@ -55,6 +57,7 @@ internal sealed class MindmapTreeView
     private readonly Action<string>? _onExpandMindmap;
     private readonly Action<string>? _onAskConcept;
     private readonly Action<JsonElement>? _onProgressChanged;
+    private readonly Func<string, string, Task>? _onRefineNode;
     private readonly Dictionary<string, (string Status, double Score, int Attempts, int Correct)> _mastery = new(StringComparer.Ordinal);
     private readonly List<MindNode> _allNodes = new();
     private TextBlock? _kgProgressText;
@@ -85,8 +88,10 @@ internal sealed class MindmapTreeView
         Action<string>? onExpandMindmap = null,
         Action<string>? onAskConcept = null,
         JsonElement? progressState = null,
-        Action<JsonElement>? onProgressChanged = null)
+        Action<JsonElement>? onProgressChanged = null,
+        Func<string, string, Task>? onRefineNode = null)
     {
+        _onRefineNode = onRefineNode;
         _compact = compact;
         _isKnowledgeGraph = isKnowledgeGraph || Str(payload, "kind") == "knowledge_graph";
         _onDownloadSvg = onDownloadSvg;
@@ -365,14 +370,20 @@ internal sealed class MindmapTreeView
             var label = StripCitationMarkers(Str(n, "label"));
             var imp = Str(n, "importance");
             var sum = Str(n, "summary");
+            var facets = Arr(n, "facets")
+                .Where(f => f.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(f.GetString()))
+                .Select(f => f.GetString()!)
+                .ToList();
             var node = new MindNode
             {
                 Id = id,
                 Label = label,
                 Importance = imp,
                 Summary = sum,
-                Width = EstimateWidth(label, imp.Length > 0),
+                Atomic = n.TryGetProperty("atomic", out var at) && at.ValueKind == JsonValueKind.True,
+                Width = EstimateWidth(label, imp.Length > 0) + (facets.Count > 0 ? 26 : 0),
             };
+            node.Facets.AddRange(facets);
             foreach (var pr in Arr(n, "prerequisites"))
             {
                 if (pr.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(pr.GetString()))
@@ -550,6 +561,23 @@ internal sealed class MindmapTreeView
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
             });
+            if (node.Facets.Count > 0)
+            {
+                // Small count chip: this node carries sub-points (facets) shown in tooltip/menu.
+                contentRow.Children.Add(new Border
+                {
+                    CornerRadius = new CornerRadius(7),
+                    Padding = new Thickness(5, 0, 5, 1),
+                    Background = new SolidColorBrush(Color.FromArgb(150, 80, 92, 112)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Child = new TextBlock
+                    {
+                        Text = node.Facets.Count.ToString(),
+                        FontSize = 10.5,
+                        Foreground = new SolidColorBrush(Color.FromArgb(255, 214, 222, 236)),
+                    },
+                });
+            }
 
             var card = new Button
             {
@@ -579,13 +607,43 @@ internal sealed class MindmapTreeView
                 tipParts.Add($"{L10n.T("kg.status_label")}: {statusLabel}");
             }
             if (node.Summary.Length > 0) tipParts.Add(node.Summary);
+            if (node.Facets.Count > 0)
+                tipParts.Add($"{L10n.T("kg.facets")}:\n" + string.Join("\n", node.Facets.Select(f => $"• {f}")));
             if (node.Prerequisites.Count > 0) tipParts.Add($"{L10n.T("kg.prereq")}: {string.Join(", ", node.Prerequisites)}");
             ToolTipService.SetToolTip(card, string.Join("\n", tipParts));
 
-            if (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null || (_isKnowledgeGraph && node.Depth > 0))
+            if (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null || _onRefineNode != null || (_isKnowledgeGraph && node.Depth > 0))
             {
                 var cleanConcept = node.Label.Split('[')[0].Trim();
                 var menu = new MenuFlyout();
+                if (node.Facets.Count > 0)
+                {
+                    var sub = new MenuFlyoutSubItem { Text = $"{L10n.T("kg.facets")} ({node.Facets.Count})" };
+                    foreach (var facet in node.Facets)
+                    {
+                        var fi = new MenuFlyoutItem { Text = facet };
+                        var target = $"{cleanConcept}：{facet}";
+                        if (_onAskConcept != null) fi.Click += (_, _) => _onAskConcept(target);
+                        else if (_onQuizConcept != null) fi.Click += (_, _) => _onQuizConcept(target);
+                        else fi.IsEnabled = false;
+                        sub.Items.Add(fi);
+                    }
+                    menu.Items.Add(sub);
+                }
+                if (_onRefineNode != null && node.Depth > 0)
+                {
+                    var mi = new MenuFlyoutItem
+                    {
+                        Text = node.Atomic ? L10n.T("kg.atomic") : L10n.T("kg.action_refine"),
+                        IsEnabled = !node.Atomic,
+                    };
+                    var refineId = node.Id;
+                    var refineLabel = node.Label;
+                    mi.Click += async (_, _) => await _onRefineNode(refineId, refineLabel);
+                    menu.Items.Add(mi);
+                }
+                if (menu.Items.Count > 0 && (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null))
+                    menu.Items.Add(new MenuFlyoutSeparator());
                 if (_onQuizConcept != null)
                 {
                     var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_quiz") };

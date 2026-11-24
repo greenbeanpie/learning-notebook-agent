@@ -626,6 +626,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Splits a mind-map / knowledge-graph node into finer points; the core may decline atomic nodes. */
+    fun refineNode(artifactId: String, nodeId: String, label: String) {
+        val en = _ui.value.prefs.isEnglish
+        _ui.update { it.copy(statusBanner = "${L10n.t("kg.refining", en)}：$label") }
+        viewModelScope.launch {
+            runCatching {
+                val res = core.call(
+                    "studio.refine_node",
+                    JSONObject().put("artifact_id", artifactId).put("node_id", nodeId),
+                )
+                val msg = if (res.optBoolean("refined")) {
+                    L10n.t("kg.refined_fmt", en).replace("{0}", label).replace("{1}", res.optInt("added").toString())
+                } else {
+                    L10n.t("kg.refine_declined", en).replace("{0}", label) +
+                        res.optString("reason").takeIf { it.isNotBlank() }?.let { " — $it" }.orEmpty()
+                }
+                _ui.update { it.copy(statusBanner = msg) }
+                refreshAll()
+            }.onFailure { reportError(it) }
+        }
+    }
+
     fun approveDraft(artifactId: String, markdown: String) {
         viewModelScope.launch {
             runCatching {
