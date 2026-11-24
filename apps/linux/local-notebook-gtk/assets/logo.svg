@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Outer obsidian squircle background -->
+    <linearGradient id="bgGrad" x1="12%" y1="8%" x2="88%" y2="92%">
+      <stop offset="0%" stop-color="#252830" />
+      <stop offset="55%" stop-color="#191B20" />
+      <stop offset="100%" stop-color="#111216" />
+    </linearGradient>
+
+    <!-- Luminous cobalt-periwinkle accent -->
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#C2DAFF" />
+      <stop offset="50%" stop-color="#90B8FA" />
+      <stop offset="100%" stop-color="#669DF6" />
+    </linearGradient>
+
+    <!-- Notebook cover surface -->
+    <linearGradient id="bookGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2E323C" />
+      <stop offset="100%" stop-color="#1E2027" />
+    </linearGradient>
+
+    <!-- Spine strip fill -->
+    <linearGradient id="spineGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#A8C7FA" stop-opacity="0.30" />
+      <stop offset="100%" stop-color="#669DF6" stop-opacity="0.14" />
+    </linearGradient>
+
+    <!-- AI sparkle glow -->
+    <radialGradient id="sparkleGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#A8C7FA" stop-opacity="0.55" />
+      <stop offset="60%" stop-color="#7CACF8" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#7CACF8" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Bookmark gold-amber accent -->
+    <linearGradient id="bookmarkGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FDE08D" />
+      <stop offset="100%" stop-color="#F5B942" />
+    </linearGradient>
+  </defs>
+
+  <!-- App squircle badge -->
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#bgGrad)" />
+
+  <!-- Subtle stacked back page for depth -->
+  <rect x="148" y="102" width="234" height="296" rx="34" fill="#23262E" stroke="#3C4048" stroke-width="4" opacity="0.72" />
+
+  <!-- Main notebook cover -->
+  <rect x="128" y="114" width="234" height="296" rx="34" fill="url(#bookGrad)" stroke="url(#accentGrad)" stroke-width="11" />
+
+  <!-- Left spine band -->
+  <path d="M162 119.5 H182 V404.5 H162 A28.5 28.5 0 0 1 133.5 376 V148 A28.5 28.5 0 0 1 162 119.5 Z" fill="url(#spineGrad)" />
+  <line x1="182" y1="119.5" x2="182" y2="404.5" stroke="url(#accentGrad)" stroke-width="6" stroke-opacity="0.65" />
+
+  <!-- Subtle bookmark ribbon at top-right of cover -->
+  <path d="M294 114 H326 V174 L310 160 L294 174 Z" fill="url(#bookmarkGrad)" />
+
+  <!-- Notebook content lines -->
+  <line x1="212" y1="202" x2="322" y2="202" stroke="#EEF2F8" stroke-width="13" stroke-linecap="round" />
+  <line x1="212" y1="244" x2="306" y2="244" stroke="#BFC7D4" stroke-width="12" stroke-linecap="round" />
+  <line x1="212" y1="286" x2="274" y2="286" stroke="#8C95A6" stroke-width="12" stroke-linecap="round" />
+
+  <!-- Ambient glow behind AI sparkle -->
+  <circle cx="348" cy="350" r="88" fill="url(#sparkleGlow)" />
+
+  <!-- Primary 4-point AI sparkle -->
+  <path d="M348 286 C352 322 374 344 410 348 C374 352 352 374 348 410 C344 374 322 352 286 348 C322 344 344 322 348 286 Z"
+        fill="url(#accentGrad)" />
+
+  <!-- Secondary micro-sparkle -->
+  <path d="M396 270 C398 284 406 292 420 294 C406 296 398 304 396 318 C394 304 386 296 372 294 C386 292 394 284 396 270 Z"
+        fill="#E3EEFF" opacity="0.92" />
+</svg>

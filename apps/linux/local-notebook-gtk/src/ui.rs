@@ -55,6 +55,9 @@ struct UiState {
     outer_paned: Paned,
     inner_paned: Paned,
     // Localizable labels
+    title_lbl: Label,
+    nb_switch_btn: MenuButton,
+    nb_switch_popover_box: GtkBox,
     new_nb_btn: Button,
     settings_btn: Button,
     src_hdr: Label,
@@ -73,11 +76,40 @@ impl UiState {
     fn apply_preferences(&self) {
         let p = self.prefs.borrow().clone();
         let en = p.is_english();
-        if p.theme == "light" {
-            self.window.add_css_class("lna-light");
-        } else {
-            self.window.remove_css_class("lna-light");
+        for cls in [
+            "lna-light",
+            "lna-midnight",
+            "lna-forest",
+            "lna-warm-paper",
+            "lna-rose-dusk",
+            "lna-font-14",
+            "lna-font-15",
+            "lna-font-17",
+        ] {
+            self.window.remove_css_class(cls);
         }
+        let resolved_theme = if p.theme == "system" {
+            let prefer_dark = gtk4::Settings::default()
+                .map(|s| s.is_gtk_application_prefer_dark_theme())
+                .unwrap_or(true);
+            if prefer_dark { "dark" } else { "light" }
+        } else {
+            p.theme.as_str()
+        };
+        match resolved_theme {
+            "light" => self.window.add_css_class("lna-light"),
+            "midnight" => self.window.add_css_class("lna-midnight"),
+            "forest" => self.window.add_css_class("lna-forest"),
+            "warm_paper" => self.window.add_css_class("lna-warm-paper"),
+            "rose_dusk" => self.window.add_css_class("lna-rose-dusk"),
+            _ => {}
+        }
+        match p.font_size {
+            14 => self.window.add_css_class("lna-font-14"),
+            17 => self.window.add_css_class("lna-font-17"),
+            _ => self.window.add_css_class("lna-font-15"),
+        }
+        self.nb_switch_btn.set_label(tr(en, "nb.switch"));
         self.new_nb_btn.set_label(tr(en, "nb.new"));
         self.settings_btn.set_label(tr(en, "settings.title"));
         self.src_hdr.set_text(tr(en, "sources.title"));
@@ -112,20 +144,64 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     root.set_margin_start(14);
     root.set_margin_end(14);
 
-    // Top bar (unified Settings entry — Model & Embedding config live inside Settings)
+    // Top bar (synced with macOS & Windows: Logo + Title + Notebook Switcher + New + Settings + More)
     let header = GtkBox::new(Orientation::Horizontal, 10);
-    let title_lbl = Label::new(Some("Local Notebook Agent"));
-    title_lbl.set_hexpand(true);
+    let logo_img = svg_image(include_str!("../assets/logo.svg"), 26);
+    let title_lbl = Label::new(Some(tr(en, "nb.untitled")));
     title_lbl.set_halign(gtk4::Align::Start);
+
+    let nb_switch_btn = MenuButton::builder().label(tr(en, "nb.switch")).build();
+    nb_switch_btn.add_css_class("lna-ghost-btn");
+    let nb_switch_popover = Popover::new();
+    nb_switch_popover.set_position(PositionType::Bottom);
+    let nb_switch_popover_box = GtkBox::new(Orientation::Vertical, 4);
+    nb_switch_popover.set_child(Some(&nb_switch_popover_box));
+    nb_switch_btn.set_popover(Some(&nb_switch_popover));
+
+    let spacer = GtkBox::new(Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
 
     let new_nb_btn = Button::with_label(tr(en, "nb.new"));
     new_nb_btn.add_css_class("lna-pill-btn");
     let settings_btn = Button::with_label(tr(en, "settings.title"));
     settings_btn.add_css_class("lna-pill-btn");
 
+    let more_btn = MenuButton::builder().label("⋯").build();
+    more_btn.add_css_class("lna-pill-btn");
+    let more_popover = Popover::new();
+    more_popover.set_position(PositionType::Bottom);
+    let more_list = GtkBox::new(Orientation::Vertical, 4);
+    let rename_nb_btn = Button::with_label(tr(en, "nb.rename"));
+    let clear_chat_btn = Button::with_label(tr(en, "nb.clear_chat"));
+    let export_lna_btn = Button::with_label(tr(en, "nb.export_lna"));
+    let export_md_btn = Button::with_label(tr(en, "nb.export_md"));
+    let import_lna_btn = Button::with_label(tr(en, "nb.import_lna"));
+    let export_diag_btn = Button::with_label(tr(en, "nb.export_diag"));
+    let privacy_btn = Button::with_label(tr(en, "nb.privacy"));
+    let delete_nb_btn = Button::with_label(tr(en, "nb.delete"));
+    for b in [
+        &rename_nb_btn,
+        &clear_chat_btn,
+        &export_lna_btn,
+        &export_md_btn,
+        &import_lna_btn,
+        &export_diag_btn,
+        &privacy_btn,
+        &delete_nb_btn,
+    ] {
+        b.add_css_class("lna-ghost-btn");
+        more_list.append(b);
+    }
+    more_popover.set_child(Some(&more_list));
+    more_btn.set_popover(Some(&more_popover));
+
+    header.append(&logo_img);
     header.append(&title_lbl);
+    header.append(&nb_switch_btn);
+    header.append(&spacer);
     header.append(&new_nb_btn);
     header.append(&settings_btn);
+    header.append(&more_btn);
     root.append(&header);
 
     // Left panel: Sources
@@ -284,6 +360,9 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         center_panel,
         outer_paned,
         inner_paned,
+        title_lbl: title_lbl.clone(),
+        nb_switch_btn: nb_switch_btn.clone(),
+        nb_switch_popover_box: nb_switch_popover_box.clone(),
         new_nb_btn: new_nb_btn.clone(),
         settings_btn: settings_btn.clone(),
         src_hdr,
@@ -499,6 +578,175 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         });
     }
 
+    // Wire notebook overflow menu actions
+    {
+        let st = state.clone();
+        let pop = more_popover.clone();
+        clear_chat_btn.connect_clicked(move |_| {
+            pop.popdown();
+            let nid = st.active_notebook_id.borrow().clone();
+            if !nid.is_empty() {
+                let _ = call_core(&st.core, "chat.clear", json!({ "notebook_id": nid }));
+                refresh_all(&st);
+            }
+        });
+    }
+    {
+        let st = state.clone();
+        let pop = more_popover.clone();
+        delete_nb_btn.connect_clicked(move |_| {
+            pop.popdown();
+            let nid = st.active_notebook_id.borrow().clone();
+            if nid.is_empty() { return; }
+            let _ = call_core(&st.core, "notebook.delete", json!({ "notebook_id": nid }));
+            if let Ok(list) = call_core(&st.core, "notebook.list", json!({})) {
+                if let Some(id) = list.pointer("/notebooks/0/id").and_then(Value::as_str) {
+                    *st.active_notebook_id.borrow_mut() = id.to_string();
+                } else if let Ok(nb) = call_core(&st.core, "notebook.create", json!({ "title": tr(st.is_en(), "nb.untitled") })) {
+                    if let Some(id) = nb.get("id").and_then(Value::as_str) {
+                        *st.active_notebook_id.borrow_mut() = id.to_string();
+                    }
+                }
+            }
+            refresh_all(&st);
+        });
+    }
+    {
+        let st = state.clone();
+        let pop = more_popover.clone();
+        export_diag_btn.connect_clicked(move |_| {
+            pop.popdown();
+            let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            let out_path = out_dir.join("local-notebook-diagnostics.zip");
+            if let Ok(_) = call_core(&st.core, "diagnostics.export", json!({ "output_path": out_path.to_string_lossy() })) {
+                let en = st.is_en();
+                st.status_label.set_text(&if en {
+                    format!("Diagnostics exported to {}", out_path.display())
+                } else {
+                    format!("诊断日志已导出至 {}", out_path.display())
+                });
+            }
+        });
+    }
+    {
+        let st = state.clone();
+        let win = window.clone();
+        let pop = more_popover.clone();
+        privacy_btn.connect_clicked(move |_| {
+            pop.popdown();
+            open_privacy_dialog(&win, st.is_en());
+        });
+    }
+    {
+        let st = state.clone();
+        let win = window.clone();
+        let pop = more_popover.clone();
+        rename_nb_btn.connect_clicked(move |_| {
+            pop.popdown();
+            let nid = st.active_notebook_id.borrow().clone();
+            if nid.is_empty() { return; }
+            let en = st.is_en();
+            let dlg = gtk4::Window::builder()
+                .title(tr(en, "nb.rename"))
+                .transient_for(&win)
+                .modal(true)
+                .default_width(360)
+                .build();
+            let bx = GtkBox::new(Orientation::Vertical, 10);
+            bx.set_margin_top(16);
+            bx.set_margin_bottom(16);
+            bx.set_margin_start(16);
+            bx.set_margin_end(16);
+            let ent = Entry::builder().text(st.title_lbl.text()).build();
+            let ok = Button::with_label(tr(en, "settings.save"));
+            ok.add_css_class("lna-primary-btn");
+            let st2 = st.clone();
+            let dlg2 = dlg.clone();
+            ok.connect_clicked(move |_| {
+                let t = ent.text().trim().to_string();
+                if !t.is_empty() {
+                    let _ = call_core(&st2.core, "notebook.rename", json!({ "notebook_id": nid, "title": t }));
+                    refresh_all(&st2);
+                }
+                dlg2.close();
+            });
+            bx.append(&ent);
+            bx.append(&ok);
+            dlg.set_child(Some(&bx));
+            dlg.present();
+        });
+    }
+    {
+        let st = state.clone();
+        let pop = more_popover.clone();
+        export_lna_btn.connect_clicked(move |_| {
+            pop.popdown();
+            let nid = st.active_notebook_id.borrow().clone();
+            if nid.is_empty() { return; }
+            let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            let out_path = out_dir.join(format!("notebook-{nid}.lna"));
+            if call_core(&st.core, "notebook.export", json!({ "notebook_id": nid, "output_path": out_path.to_string_lossy(), "format": "lna" })).is_ok() {
+                let en = st.is_en();
+                st.status_label.set_text(&if en {
+                    format!("Exported to {}", out_path.display())
+                } else {
+                    format!("已导出至 {}", out_path.display())
+                });
+            }
+        });
+    }
+    {
+        let st = state.clone();
+        let pop = more_popover.clone();
+        export_md_btn.connect_clicked(move |_| {
+            pop.popdown();
+            let nid = st.active_notebook_id.borrow().clone();
+            if nid.is_empty() { return; }
+            let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            let out_path = out_dir.join(format!("notebook-{nid}.md"));
+            if call_core(&st.core, "notebook.export", json!({ "notebook_id": nid, "output_path": out_path.to_string_lossy(), "format": "markdown" })).is_ok() {
+                let en = st.is_en();
+                st.status_label.set_text(&if en {
+                    format!("Exported to {}", out_path.display())
+                } else {
+                    format!("已导出至 {}", out_path.display())
+                });
+            }
+        });
+    }
+    {
+        let st = state.clone();
+        let win = window.clone();
+        let pop = more_popover.clone();
+        import_lna_btn.connect_clicked(move |_| {
+            pop.popdown();
+            let en = st.is_en();
+            let dlg = gtk4::FileChooserNative::new(
+                Some(tr(en, "nb.import_lna")),
+                Some(&win),
+                gtk4::FileChooserAction::Open,
+                None,
+                None,
+            );
+            let st2 = st.clone();
+            dlg.connect_response(move |d, resp| {
+                if resp == gtk4::ResponseType::Accept {
+                    if let Some(file) = d.file() {
+                        if let Some(p) = file.path() {
+                            if let Ok(res) = call_core(&st2.core, "notebook.import", json!({ "input_path": p.to_string_lossy() })) {
+                                if let Some(new_id) = res.get("notebook_id").and_then(Value::as_str) {
+                                    *st2.active_notebook_id.borrow_mut() = new_id.to_string();
+                                    refresh_all(&st2);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            dlg.show();
+        });
+    }
+
     // Wire Unified Settings dialog
     {
         let st = state.clone();
@@ -575,6 +823,35 @@ fn refresh_all(st: &Rc<UiState>) {
         return;
     }
     let en = st.is_en();
+
+    // Update notebook switcher popover & current title
+    clear_box(&st.nb_switch_popover_box);
+    if let Ok(list) = call_core(&st.core, "notebook.list", json!({})) {
+        if let Some(arr) = list.get("notebooks").and_then(Value::as_array) {
+            for nb_item in arr {
+                let id = nb_item.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                let title = nb_item.get("title").and_then(Value::as_str).unwrap_or(tr(en, "nb.untitled"));
+                if id == nid {
+                    st.title_lbl.set_text(title);
+                }
+                let btn = Button::with_label(if id == nid {
+                    format!("✓ {title}")
+                } else {
+                    title.to_string()
+                });
+                btn.add_css_class("lna-ghost-btn");
+                let st2 = st.clone();
+                btn.connect_clicked(move |_| {
+                    *st2.active_notebook_id.borrow_mut() = id.clone();
+                    if let Some(pop) = st2.nb_switch_btn.popover() {
+                        pop.popdown();
+                    }
+                    refresh_all(&st2);
+                });
+                st.nb_switch_popover_box.append(&btn);
+            }
+        }
+    }
 
     if let Ok(nb) = call_core(&st.core, "notebook.get", json!({ "notebook_id": nid })) {
         let sum = nb
@@ -1252,14 +1529,50 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
     st.inner_paned.set_position(360);
 }
 
+fn open_privacy_dialog(parent: &ApplicationWindow, en: bool) {
+    let dlg = gtk4::Window::builder()
+        .title(tr(en, "nb.privacy"))
+        .transient_for(parent)
+        .modal(true)
+        .default_width(480)
+        .default_height(320)
+        .build();
+    let bx = GtkBox::new(Orientation::Vertical, 12);
+    bx.set_margin_top(18);
+    bx.set_margin_bottom(18);
+    bx.set_margin_start(18);
+    bx.set_margin_end(18);
+    let body = Label::new(Some(if en {
+        "• All notebooks, sources, embeddings, and chat history are stored locally on this device.\n\
+         • API keys are stored in the system keyring (Secret Service).\n\
+         • Only queries and selected excerpts sent during chat or Studio generation leave your device to your configured AI endpoint.\n\
+         • Local semantic search embeddings run completely offline."
+    } else {
+        "• 所有笔记本、来源资料、本地向量索引与对话记录均存储在本地设备。\n\
+         • API Key 保存在系统密钥环（Secret Service）中。\n\
+         • 仅在发起对话、Studio 生成或使用云端视觉/音视频模型时，相关内容会发送至你配置的 AI 接口。\n\
+         • 本地语义检索嵌入模型完全离线运行，不上传任何数据。"
+    }));
+    body.set_wrap(true);
+    body.set_xalign(0.0);
+    let close_btn = Button::with_label(tr(en, "studio.close"));
+    close_btn.add_css_class("lna-primary-btn");
+    let d2 = dlg.clone();
+    close_btn.connect_clicked(move |_| d2.close());
+    bx.append(&body);
+    bx.append(&close_btn);
+    dlg.set_child(Some(&bx));
+    dlg.present();
+}
+
 fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let en = st.is_en();
     let win = gtk4::Window::builder()
         .title(tr(en, "settings.title"))
         .transient_for(parent)
         .modal(true)
-        .default_width(540)
-        .default_height(500)
+        .default_width(640)
+        .default_height(620)
         .build();
 
     let tabs = Notebook::new();
@@ -1281,11 +1594,48 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         _ => 0,
     });
 
+    let theme_ids = ["dark", "light", "system", "midnight", "forest", "warm_paper", "rose_dusk"];
+    let theme_labels = if en {
+        [
+            "Obsidian Dark (Default)",
+            "Paper Light",
+            "Follow System",
+            "Midnight Indigo",
+            "Nordic Forest",
+            "Warm Parchment",
+            "Rose Dusk",
+        ]
+    } else {
+        [
+            "黑曜深色（默认）",
+            "纸感浅色",
+            "跟随系统",
+            "午夜靛蓝",
+            "北欧森绿",
+            "暖纸羊皮",
+            "暮色蔷薇",
+        ]
+    };
     let theme_dd = DropDown::new(
-        Some(StringList::new(&["dark", "light"])),
+        Some(StringList::new(&theme_labels)),
         None::<gtk4::Expression>,
     );
-    theme_dd.set_selected(if st.prefs.borrow().theme == "light" { 1 } else { 0 });
+    let cur_theme_idx = theme_ids
+        .iter()
+        .position(|&id| id == st.prefs.borrow().theme)
+        .unwrap_or(0) as u32;
+    theme_dd.set_selected(cur_theme_idx);
+
+    let font_sizes = [14, 15, 17];
+    let font_dd = DropDown::new(
+        Some(StringList::new(&["14 px", "15 px", "17 px"])),
+        None::<gtk4::Expression>,
+    );
+    let cur_font_idx = font_sizes
+        .iter()
+        .position(|&s| s == st.prefs.borrow().font_size)
+        .unwrap_or(1) as u32;
+    font_dd.set_selected(cur_font_idx);
 
     let fs_anim_row = GtkBox::new(Orientation::Horizontal, 10);
     let fs_lbl = Label::new(Some(tr(en, "settings.fullscreen_anim")));
@@ -1300,6 +1650,8 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     app_box.append(&lang_dd);
     app_box.append(&Label::new(Some(tr(en, "settings.theme"))));
     app_box.append(&theme_dd);
+    app_box.append(&Label::new(Some(tr(en, "settings.font_size"))));
+    app_box.append(&font_dd);
     app_box.append(&fs_anim_row);
 
     // --- Tab 2: General ---
@@ -1327,14 +1679,50 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     sug_row.append(&sug_lbl);
     sug_row.append(&sug_sw);
 
+    let studio_lang_dd = DropDown::new(
+        Some(StringList::new(&[
+            if en { "Follow UI language" } else { "跟随界面语言" },
+            "简体中文",
+            "English",
+        ])),
+        None::<gtk4::Expression>,
+    );
+    studio_lang_dd.set_selected(match st.prefs.borrow().default_studio_lang.as_str() {
+        "zh-CN" => 1,
+        "en-US" => 2,
+        _ => 0,
+    });
+
+    let quiz_view_dd = DropDown::new(
+        Some(StringList::new(&[
+            if en { "Continuous scroll" } else { "连续滚动显示" },
+            if en { "One question at a time" } else { "逐题展示" },
+        ])),
+        None::<gtk4::Expression>,
+    );
+    quiz_view_dd.set_selected(if st.prefs.borrow().quiz_view_mode == "one_by_one" { 1 } else { 0 });
+
+    let quiz_submit_dd = DropDown::new(
+        Some(StringList::new(&[
+            if en { "Manual submit" } else { "手动提交答案" },
+            if en { "Auto check on select" } else { "选择即自动判题" },
+        ])),
+        None::<gtk4::Expression>,
+    );
+    quiz_submit_dd.set_selected(if st.prefs.borrow().quiz_submit_mode == "auto" { 1 } else { 0 });
+
     let save_prefs_btn = Button::with_label(tr(en, "settings.save"));
     save_prefs_btn.add_css_class("lna-primary-btn");
     let st_p = st.clone();
     let lang_dd_c = lang_dd.clone();
     let theme_dd_c = theme_dd.clone();
+    let font_dd_c = font_dd.clone();
     let fs_sw_c = fs_sw.clone();
     let exp_sw_c = exp_sw.clone();
     let sug_sw_c = sug_sw.clone();
+    let studio_lang_dd_c = studio_lang_dd.clone();
+    let quiz_view_dd_c = quiz_view_dd.clone();
+    let quiz_submit_dd_c = quiz_submit_dd.clone();
     save_prefs_btn.connect_clicked(move |_| {
         {
             let mut p = st_p.prefs.borrow_mut();
@@ -1343,10 +1731,33 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 2 => "en-US".into(),
                 _ => "auto".into(),
             };
-            p.theme = if theme_dd_c.selected() == 1 { "light".into() } else { "dark".into() };
+            p.theme = theme_ids
+                .get(theme_dd_c.selected() as usize)
+                .copied()
+                .unwrap_or("dark")
+                .into();
+            p.font_size = font_sizes
+                .get(font_dd_c.selected() as usize)
+                .copied()
+                .unwrap_or(15);
             p.fullscreen_animation = fs_sw_c.is_active();
             p.expand_thoughts_by_default = exp_sw_c.is_active();
             p.show_suggested_questions = sug_sw_c.is_active();
+            p.default_studio_lang = match studio_lang_dd_c.selected() {
+                1 => "zh-CN".into(),
+                2 => "en-US".into(),
+                _ => String::new(),
+            };
+            p.quiz_view_mode = if quiz_view_dd_c.selected() == 1 {
+                "one_by_one".into()
+            } else {
+                "continuous".into()
+            };
+            p.quiz_submit_mode = if quiz_submit_dd_c.selected() == 1 {
+                "auto".into()
+            } else {
+                "manual".into()
+            };
             let _ = call_core(
                 &st_p.core,
                 "settings.set",
@@ -1364,65 +1775,142 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         refresh_all(&st_p);
     });
 
+    let save_app_btn = Button::with_label(tr(en, "settings.save"));
+    save_app_btn.add_css_class("lna-primary-btn");
+    let save_prefs_btn_clone = save_prefs_btn.clone();
+    save_app_btn.connect_clicked(move |_| {
+        save_prefs_btn_clone.emit_clicked();
+    });
+    app_box.append(&save_app_btn);
+
+    let gen_extra_row = GtkBox::new(Orientation::Horizontal, 8);
+    let gen_privacy_btn = Button::with_label(tr(en, "nb.privacy"));
+    gen_privacy_btn.add_css_class("lna-pill-btn");
+    let gen_diag_btn = Button::with_label(tr(en, "nb.export_diag"));
+    gen_diag_btn.add_css_class("lna-pill-btn");
+    let win_priv = win.clone();
+    let st_priv = st.clone();
+    gen_privacy_btn.connect_clicked(move |_| open_privacy_dialog(parent, st_priv.is_en()));
+    let _ = win_priv;
+    let st_diag = st.clone();
+    gen_diag_btn.connect_clicked(move |_| {
+        let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let out_path = out_dir.join("local-notebook-diagnostics.zip");
+        if call_core(&st_diag.core, "diagnostics.export", json!({ "output_path": out_path.to_string_lossy() })).is_ok() {
+            st_diag.status_label.set_text(&format!("Diagnostics: {}", out_path.display()));
+        }
+    });
+    gen_extra_row.append(&gen_privacy_btn);
+    gen_extra_row.append(&gen_diag_btn);
+
     gen_box.append(&exp_row);
     gen_box.append(&sug_row);
+    gen_box.append(&Label::new(Some(tr(en, "settings.default_studio_lang"))));
+    gen_box.append(&studio_lang_dd);
+    gen_box.append(&Label::new(Some(if en { "Quiz view mode" } else { "测验显示方式" })));
+    gen_box.append(&quiz_view_dd);
+    gen_box.append(&Label::new(Some(if en { "Quiz submit mode" } else { "测验提交方式" })));
+    gen_box.append(&quiz_submit_dd);
+    gen_box.append(&gen_extra_row);
     gen_box.append(&save_prefs_btn);
 
-    // --- Tab 3: AI Models (moved from top bar) ---
+    // --- Tab 3: AI Models (Full parity: Profiles, Presets, Discover, Modality Routing, Advanced, Test, Clear Key) ---
     let model_box = GtkBox::new(Orientation::Vertical, 10);
     model_box.set_margin_top(16);
     model_box.set_margin_bottom(16);
     model_box.set_margin_start(16);
     model_box.set_margin_end(16);
 
-    let proto_entry = Entry::builder()
-        .text("chat_completion")
-        .placeholder_text("chat_completion / responses / anthropic / gemini")
-        .build();
+    let profiles_state: Rc<RefCell<Vec<Value>>> = Rc::new(RefCell::new(
+        call_core(&st.core, "profile.list", json!({}))
+            .ok()
+            .and_then(|v| v.get("profiles").and_then(Value::as_array).cloned())
+            .unwrap_or_default(),
+    ));
+    let current_profile_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let current_keychain_ref: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+
+    let profile_row = GtkBox::new(Orientation::Horizontal, 8);
+    let profile_dd = DropDown::from_strings(&[if en { "— New Profile —" } else { "— 新建配置 —" }]);
+    profile_dd.set_hexpand(true);
+    let new_prof_btn = Button::with_label(if en { "New" } else { "新建" });
+    new_prof_btn.add_css_class("lna-pill-btn");
+    let del_prof_btn = Button::with_label(if en { "Delete" } else { "删除" });
+    del_prof_btn.add_css_class("lna-pill-btn");
+    profile_row.append(&profile_dd);
+    profile_row.append(&new_prof_btn);
+    profile_row.append(&del_prof_btn);
+
+    let proto_ids = ["chat_completion", "responses", "anthropic", "gemini"];
+    let proto_dd = DropDown::from_strings(&[
+        "chat_completion (OpenAI Compatible)",
+        "responses (OpenAI Responses)",
+        "anthropic (Anthropic Messages)",
+        "gemini (Gemini GenerateContent)",
+    ]);
     let url_entry = Entry::builder()
         .placeholder_text("Base URL (e.g. https://api.openai.com/v1)")
         .build();
-    let model_entry = Entry::builder().placeholder_text("Model ID").build();
+    let model_row = GtkBox::new(Orientation::Horizontal, 8);
+    let model_entry = Entry::builder().placeholder_text("Model ID").hexpand(true).build();
+    let discover_btn = Button::with_label(if en { "Fetch Models" } else { "获取模型列表" });
+    discover_btn.add_css_class("lna-pill-btn");
+    model_row.append(&model_entry);
+    model_row.append(&discover_btn);
+
+    let discovered_models: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let discovered_dd = DropDown::from_strings(&[if en { "Discovered models..." } else { "已获取的模型列表…" }]);
+    discovered_dd.set_visible(false);
+
     let key_entry = Entry::builder()
         .placeholder_text("API Key")
         .visibility(false)
         .build();
-    let save_model_btn = Button::with_label(tr(en, "settings.save"));
-    save_model_btn.add_css_class("lna-primary-btn");
 
-    let presets_val = call_core(&st.core, "profile.presets", json!({}))
-        .ok()
-        .and_then(|v| v.get("presets").and_then(Value::as_array).cloned())
-        .unwrap_or_default();
-    let mut preset_labels: Vec<String> = vec![if en {
-        "— Select Provider Preset —".into()
-    } else {
-        "— 选择 AI 提供商预设（快速填充）—".into()
-    }];
-    for pr in &presets_val {
-        let lbl = if en {
-            pr.get("name_en").and_then(Value::as_str)
-        } else {
-            pr.get("name").and_then(Value::as_str)
-        }
-        .unwrap_or("");
-        preset_labels.push(lbl.to_string());
-    }
-    let preset_label_refs: Vec<&str> = preset_labels.iter().map(String::as_str).collect();
-    let preset_dd = DropDown::from_strings(&preset_label_refs);
+    let insecure_http_sw = Switch::new();
+    let insecure_row = GtkBox::new(Orientation::Horizontal, 8);
+    let insecure_lbl = Label::new(Some(if en { "Allow non-loopback HTTP" } else { "允许非回环 HTTP 明文传输" }));
+    insecure_lbl.set_hexpand(true);
+    insecure_lbl.set_xalign(0.0);
+    insecure_row.append(&insecure_lbl);
+    insecure_row.append(&insecure_http_sw);
 
-    model_box.append(&Label::new(Some(if en {
-        "Provider Preset"
-    } else {
-        "AI 提供商预设"
-    })));
-    model_box.append(&preset_dd);
-    model_box.append(&Label::new(Some("Protocol (chat_completion / responses / anthropic / gemini)")));
-    model_box.append(&proto_entry);
-    model_box.append(&Label::new(Some("Base URL")));
-    model_box.append(&url_entry);
-    model_box.append(&Label::new(Some("Model ID")));
-    model_box.append(&model_entry);
+    let active_chat_sw = Switch::new();
+    active_chat_sw.set_active(true);
+    let active_row = GtkBox::new(Orientation::Horizontal, 8);
+    let active_lbl = Label::new(Some(if en { "Set as default chat model" } else { "设为当前默认对话模型" }));
+    active_lbl.set_hexpand(true);
+    active_lbl.set_xalign(0.0);
+    active_row.append(&active_lbl);
+    active_row.append(&active_chat_sw);
+
+    let mod_row = GtkBox::new(Orientation::Horizontal, 14);
+    let vision_chk = CheckButton::with_label(if en { "Vision (images/PDF)" } else { "图文视觉" });
+    let audio_chk = CheckButton::with_label(if en { "Audio" } else { "音频" });
+    let video_chk = CheckButton::with_label(if en { "Video" } else { "视频" });
+    mod_row.append(&vision_chk);
+    mod_row.append(&audio_chk);
+    mod_row.append(&video_chk);
+
+    // Advanced Options Expander
+    let adv_exp = Expander::new(Some(if en { "Advanced Options" } else { "高级选项" }));
+    let adv_box = GtkBox::new(Orientation::Vertical, 8);
+    let thinking_sw = Switch::new();
+    thinking_sw.set_active(true);
+    let thinking_row = GtkBox::new(Orientation::Horizontal, 8);
+    let thinking_lbl = Label::new(Some(if en { "Show thinking process" } else { "显示模型思考过程" }));
+    thinking_lbl.set_hexpand(true);
+    thinking_lbl.set_xalign(0.0);
+    thinking_row.append(&thinking_lbl);
+    thinking_row.append(&thinking_sw);
+
+    let effort_ids = ["", "low", "medium", "high"];
+    let effort_dd = DropDown::from_strings(&[if en { "Default" } else { "默认" }, "low", "medium", "high"]);
+    let ctx_entry = Entry::builder().text("32000").placeholder_text("Context Window").build();
+    let out_entry = Entry::builder().text("8000").placeholder_text("Max Output Tokens").build();
+    let price_in_entry = Entry::builder().placeholder_text("Input price ($/1M)").build();
+    let price_out_entry = Entry::builder().placeholder_text("Output price ($/1M)").build();
+
     let extra_headers_rows: Rc<RefCell<Vec<(Entry, Entry)>>> = Rc::new(RefCell::new(Vec::new()));
     let headers_list = GtkBox::new(Orientation::Vertical, 6);
     let headers_hdr = GtkBox::new(Orientation::Horizontal, 8);
@@ -1455,67 +1943,547 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     headers_hdr.append(&headers_lbl);
     headers_hdr.append(&add_hdr_btn);
 
-    let proto_p = proto_entry.clone();
-    let url_p = url_entry.clone();
-    let model_p = model_entry.clone();
-    let rows_p = extra_headers_rows.clone();
-    let list_p = headers_list.clone();
-    preset_dd.connect_selected_notify(move |dd| {
-        let idx = dd.selected() as usize;
-        if idx == 0 {
-            return;
+    adv_box.append(&thinking_row);
+    adv_box.append(&Label::new(Some(if en { "Reasoning Effort" } else { "推理强度" })));
+    adv_box.append(&effort_dd);
+    adv_box.append(&Label::new(Some(if en { "Context Window / Max Output Tokens" } else { "上下文窗口 / 最大输出 Token" })));
+    adv_box.append(&ctx_entry);
+    adv_box.append(&out_entry);
+    adv_box.append(&price_in_entry);
+    adv_box.append(&price_out_entry);
+    adv_box.append(&headers_hdr);
+    adv_box.append(&headers_list);
+    adv_exp.set_child(Some(&adv_box));
+
+    // Media Processing & Per-Modality Model Assignment Card
+    let media_card = GtkBox::new(Orientation::Vertical, 8);
+    media_card.add_css_class("lna-card");
+    let av_row = GtkBox::new(Orientation::Horizontal, 8);
+    let av_lbl = Label::new(Some(if en {
+        "Enable native audio/video processing"
+    } else {
+        "允许处理音视频文件（直接交给原生支持音视频的 AI 处理）"
+    }));
+    av_lbl.set_hexpand(true);
+    av_lbl.set_xalign(0.0);
+    av_lbl.set_wrap(true);
+    let av_sw = Switch::new();
+    av_row.append(&av_lbl);
+    av_row.append(&av_sw);
+
+    let media_val = call_core(&st.core, "settings.get", json!({ "key": "media_processing" }))
+        .ok()
+        .and_then(|r| r.get("value").cloned())
+        .unwrap_or(Value::Null);
+    let av_init = media_val.get("audio_video_enabled").and_then(Value::as_bool).unwrap_or(true);
+    av_sw.set_active(av_init);
+
+    let vision_prof_ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![String::new()]));
+    let audio_prof_ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![String::new()]));
+    let video_prof_ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![String::new()]));
+    let vision_mod_dd = DropDown::from_strings(&[if en { "Auto (prefer default chat)" } else { "自动（优先默认对话模型）" }]);
+    let audio_mod_dd = DropDown::from_strings(&[if en { "Auto (prefer default chat)" } else { "自动（优先默认对话模型）" }]);
+    let video_mod_dd = DropDown::from_strings(&[if en { "Auto (prefer default chat)" } else { "自动（优先默认对话模型）" }]);
+    let routing_summary_lbl = Label::new(None);
+    routing_summary_lbl.set_xalign(0.0);
+    routing_summary_lbl.set_wrap(true);
+    routing_summary_lbl.add_css_class("lna-muted");
+
+    media_card.append(&av_row);
+    media_card.append(&Label::new(Some(if en { "Vision (Image/PDF)" } else { "图文处理模型" })));
+    media_card.append(&vision_mod_dd);
+    media_card.append(&Label::new(Some(if en { "Audio" } else { "音频处理模型" })));
+    media_card.append(&audio_mod_dd);
+    media_card.append(&Label::new(Some(if en { "Video" } else { "视频处理模型" })));
+    media_card.append(&video_mod_dd);
+    media_card.append(&routing_summary_lbl);
+
+    let model_status_lbl = Label::new(None);
+    model_status_lbl.set_xalign(0.0);
+    model_status_lbl.set_wrap(true);
+    model_status_lbl.add_css_class("lna-muted");
+
+    let model_actions = GtkBox::new(Orientation::Horizontal, 8);
+    let save_model_btn = Button::with_label(tr(en, "settings.save"));
+    save_model_btn.add_css_class("lna-primary-btn");
+    let test_model_btn = Button::with_label(if en { "Test Connection" } else { "测试连接" });
+    test_model_btn.add_css_class("lna-pill-btn");
+    let clear_key_btn = Button::with_label(if en { "Clear Key" } else { "清除密钥" });
+    clear_key_btn.add_css_class("lna-pill-btn");
+    model_actions.append(&save_model_btn);
+    model_actions.append(&test_model_btn);
+    model_actions.append(&clear_key_btn);
+
+    let presets_val = call_core(&st.core, "profile.presets", json!({}))
+        .ok()
+        .and_then(|v| v.get("presets").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    let mut preset_labels: Vec<String> = vec![if en {
+        "— Select Provider Preset —".into()
+    } else {
+        "— 选择 AI 提供商预设（快速填充）—".into()
+    }];
+    for pr in &presets_val {
+        let lbl = if en {
+            pr.get("name_en").and_then(Value::as_str)
+        } else {
+            pr.get("name").and_then(Value::as_str)
         }
-        let Some(pr) = presets_val.get(idx - 1) else {
-            return;
-        };
-        if let Some(p) = pr.get("protocol").and_then(Value::as_str) {
-            proto_p.set_text(p);
+        .unwrap_or("");
+        preset_labels.push(lbl.to_string());
+    }
+    let preset_label_refs: Vec<&str> = preset_labels.iter().map(String::as_str).collect();
+    let preset_dd = DropDown::from_strings(&preset_label_refs);
+
+    let refresh_modality_dropdowns = {
+        let profiles_state = profiles_state.clone();
+        let vision_prof_ids = vision_prof_ids.clone();
+        let audio_prof_ids = audio_prof_ids.clone();
+        let video_prof_ids = video_prof_ids.clone();
+        let vision_mod_dd = vision_mod_dd.clone();
+        let audio_mod_dd = audio_mod_dd.clone();
+        let video_mod_dd = video_mod_dd.clone();
+        let av_sw = av_sw.clone();
+        let routing_summary_lbl = routing_summary_lbl.clone();
+        let core = st.core.clone();
+        move || {
+            let mv = call_core(&core, "settings.get", json!({ "key": "media_processing" }))
+                .ok()
+                .and_then(|r| r.get("value").cloned())
+                .unwrap_or(Value::Null);
+            let vp = mv.get("vision_profile_id").and_then(Value::as_str).unwrap_or("").to_string();
+            let ap = mv.get("audio_profile_id").and_then(Value::as_str).unwrap_or("").to_string();
+            let vidp = mv.get("video_profile_id").and_then(Value::as_str).unwrap_or("").to_string();
+            let av_on = av_sw.is_active();
+            audio_mod_dd.set_sensitive(av_on);
+            video_mod_dd.set_sensitive(av_on);
+
+            let auto_lbl = if en { "Auto (prefer default chat)" } else { "自动（优先默认对话模型）" };
+            let profs = profiles_state.borrow();
+            let fill_dd = |dd: &DropDown, ids_rc: &Rc<RefCell<Vec<String>>>, cap: &str, selected_id: &str| {
+                let mut labels = vec![auto_lbl.to_string()];
+                let mut ids = vec![String::new()];
+                for p in profs.iter() {
+                    if p.pointer(&format!("/capabilities/{cap}")).and_then(Value::as_bool).unwrap_or(false) {
+                        ids.push(p.get("id").and_then(Value::as_str).unwrap_or("").to_string());
+                        labels.push(p.get("display_name").and_then(Value::as_str).unwrap_or("").to_string());
+                    }
+                }
+                let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                dd.set_model(Some(&StringList::new(&refs)));
+                let sel_idx = ids.iter().position(|x| x == selected_id).unwrap_or(0) as u32;
+                dd.set_selected(sel_idx);
+                *ids_rc.borrow_mut() = ids;
+            };
+            fill_dd(&vision_mod_dd, &vision_prof_ids, "supports_vision", &vp);
+            fill_dd(&audio_mod_dd, &audio_prof_ids, "supports_audio", &ap);
+            fill_dd(&video_mod_dd, &video_prof_ids, "supports_video", &vidp);
+
+            let chat_m = profs.iter().find(|p| p.get("is_active").and_then(Value::as_bool).unwrap_or(false));
+            let chat_name = chat_m.and_then(|p| p.get("display_name").and_then(Value::as_str)).unwrap_or(if en { "Not configured" } else { "未配置" });
+            let pick_mod = |exp_id: &str, cap: &str, empty_lbl: &str| -> String {
+                if !exp_id.is_empty() {
+                    if let Some(m) = profs.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(exp_id) && p.pointer(&format!("/capabilities/{cap}")).and_then(Value::as_bool).unwrap_or(false)) {
+                        return m.get("display_name").and_then(Value::as_str).unwrap_or(empty_lbl).to_string();
+                    }
+                }
+                if let Some(cm) = chat_m {
+                    if cm.pointer(&format!("/capabilities/{cap}")).and_then(Value::as_bool).unwrap_or(false) {
+                        return cm.get("display_name").and_then(Value::as_str).unwrap_or(empty_lbl).to_string();
+                    }
+                }
+                profs.iter()
+                    .find(|p| p.pointer(&format!("/capabilities/{cap}")).and_then(Value::as_bool).unwrap_or(false))
+                    .and_then(|p| p.get("display_name").and_then(Value::as_str))
+                    .unwrap_or(empty_lbl)
+                    .to_string()
+            };
+            let summary = if en {
+                format!(
+                    "Current model routing:\n• Chat: {}\n• Vision: {}\n• Audio: {}\n• Video: {}",
+                    chat_name,
+                    pick_mod(&vp, "supports_vision", "None (local OCR fallback)"),
+                    if av_on { pick_mod(&ap, "supports_audio", "Not assigned") } else { "Disabled".into() },
+                    if av_on { pick_mod(&vidp, "supports_video", "Not assigned") } else { "Disabled".into() },
+                )
+            } else {
+                format!(
+                    "当前多模型分配：\n• 默认对话：{}\n• 图文处理：{}\n• 音频处理：{}\n• 视频处理：{}",
+                    chat_name,
+                    pick_mod(&vp, "supports_vision", "未指定（将尝试本地 OCR）"),
+                    if av_on { pick_mod(&ap, "supports_audio", "未指定") } else { "已关闭".into() },
+                    if av_on { pick_mod(&vidp, "supports_video", "未指定") } else { "已关闭".into() },
+                )
+            };
+            routing_summary_lbl.set_text(&summary);
         }
-        if let Some(u) = pr.get("base_url").and_then(Value::as_str) {
-            url_p.set_text(u);
+    };
+
+    let save_media_settings = {
+        let core = st.core.clone();
+        let av_sw = av_sw.clone();
+        let vision_mod_dd = vision_mod_dd.clone();
+        let audio_mod_dd = audio_mod_dd.clone();
+        let video_mod_dd = video_mod_dd.clone();
+        let vision_prof_ids = vision_prof_ids.clone();
+        let audio_prof_ids = audio_prof_ids.clone();
+        let video_prof_ids = video_prof_ids.clone();
+        move || {
+            let mut obj = serde_json::Map::new();
+            obj.insert("audio_video_enabled".into(), Value::Bool(av_sw.is_active()));
+            if let Some(id) = vision_prof_ids.borrow().get(vision_mod_dd.selected() as usize).filter(|s| !s.is_empty()) {
+                obj.insert("vision_profile_id".into(), Value::String(id.clone()));
+            }
+            if let Some(id) = audio_prof_ids.borrow().get(audio_mod_dd.selected() as usize).filter(|s| !s.is_empty()) {
+                obj.insert("audio_profile_id".into(), Value::String(id.clone()));
+            }
+            if let Some(id) = video_prof_ids.borrow().get(video_mod_dd.selected() as usize).filter(|s| !s.is_empty()) {
+                obj.insert("video_profile_id".into(), Value::String(id.clone()));
+            }
+            let _ = call_core(&core, "settings.set", json!({ "key": "media_processing", "value": Value::Object(obj) }));
         }
-        if let Some(m) = pr.get("default_model").and_then(Value::as_str) {
-            model_p.set_text(m);
-        }
-        rows_p.borrow_mut().clear();
-        while let Some(child) = list_p.first_child() {
-            list_p.remove(&child);
-        }
-        if let Some(hdrs) = pr.get("extra_headers").and_then(Value::as_object) {
-            for (hk, hv) in hdrs {
-                let row_box = GtkBox::new(Orientation::Horizontal, 6);
-                let k_ent = Entry::builder().text(hk).hexpand(true).build();
-                let v_ent = Entry::builder()
-                    .text(hv.as_str().unwrap_or(""))
-                    .hexpand(true)
-                    .build();
-                let del_btn = Button::with_label(if en { "Delete" } else { "删除" });
-                del_btn.add_css_class("lna-pill-btn");
-                row_box.append(&k_ent);
-                row_box.append(&v_ent);
-                row_box.append(&del_btn);
-                list_p.append(&row_box);
-                rows_p.borrow_mut().push((k_ent.clone(), v_ent.clone()));
-                let rows_del = rows_p.clone();
-                let list_del = list_p.clone();
-                let row_del = row_box.clone();
-                del_btn.connect_clicked(move |_| {
-                    rows_del.borrow_mut().retain(|(k, _)| k != &k_ent);
-                    list_del.remove(&row_del);
+    };
+
+    {
+        let sm = save_media_settings.clone();
+        let rm = refresh_modality_dropdowns.clone();
+        av_sw.connect_state_set(move |_, _| {
+            sm();
+            rm();
+            glib::Propagation::Proceed
+        });
+    }
+    for dd in [&vision_mod_dd, &audio_mod_dd, &video_mod_dd] {
+        let sm = save_media_settings.clone();
+        let rm = refresh_modality_dropdowns.clone();
+        dd.connect_selected_notify(move |_| {
+            sm();
+            rm();
+        });
+    }
+
+    let populate_profile_form = {
+        let current_profile_id = current_profile_id.clone();
+        let current_keychain_ref = current_keychain_ref.clone();
+        let proto_dd = proto_dd.clone();
+        let url_entry = url_entry.clone();
+        let model_entry = model_entry.clone();
+        let key_entry = key_entry.clone();
+        let insecure_http_sw = insecure_http_sw.clone();
+        let active_chat_sw = active_chat_sw.clone();
+        let vision_chk = vision_chk.clone();
+        let audio_chk = audio_chk.clone();
+        let video_chk = video_chk.clone();
+        let thinking_sw = thinking_sw.clone();
+        let effort_dd = effort_dd.clone();
+        let ctx_entry = ctx_entry.clone();
+        let out_entry = out_entry.clone();
+        let price_in_entry = price_in_entry.clone();
+        let price_out_entry = price_out_entry.clone();
+        let rows_p = extra_headers_rows.clone();
+        let list_p = headers_list.clone();
+        let model_status_lbl = model_status_lbl.clone();
+        move |p_opt: Option<&Value>| {
+            rows_p.borrow_mut().clear();
+            clear_box(&list_p);
+            key_entry.set_text("");
+            if let Some(p) = p_opt {
+                *current_profile_id.borrow_mut() = p.get("id").and_then(Value::as_str).map(String::from);
+                *current_keychain_ref.borrow_mut() = p.get("keychain_ref").and_then(Value::as_str).unwrap_or("").to_string();
+                let pr = p.get("protocol").and_then(Value::as_str).unwrap_or("chat_completion");
+                proto_dd.set_selected(proto_ids.iter().position(|&x| x == pr).unwrap_or(0) as u32);
+                url_entry.set_text(p.get("base_url").and_then(Value::as_str).unwrap_or(""));
+                model_entry.set_text(p.get("model_id").and_then(Value::as_str).unwrap_or(""));
+                insecure_http_sw.set_active(p.get("allow_insecure_http").and_then(Value::as_bool).unwrap_or(false));
+                active_chat_sw.set_active(p.get("is_active").and_then(Value::as_bool).unwrap_or(false));
+                vision_chk.set_active(p.pointer("/capabilities/supports_vision").and_then(Value::as_bool).unwrap_or(false));
+                audio_chk.set_active(p.pointer("/capabilities/supports_audio").and_then(Value::as_bool).unwrap_or(false));
+                video_chk.set_active(p.pointer("/capabilities/supports_video").and_then(Value::as_bool).unwrap_or(false));
+                thinking_sw.set_active(p.get("show_thinking").and_then(Value::as_bool).unwrap_or(true));
+                let eff = p.get("effort").and_then(Value::as_str).unwrap_or("");
+                effort_dd.set_selected(effort_ids.iter().position(|&x| x == eff).unwrap_or(0) as u32);
+                ctx_entry.set_text(&p.get("context_window").and_then(Value::as_i64).unwrap_or(32000).to_string());
+                out_entry.set_text(&p.get("max_output_tokens").and_then(Value::as_i64).unwrap_or(8000).to_string());
+                price_in_entry.set_text(&p.get("input_price_per_m").and_then(Value::as_f64).map(|x| x.to_string()).unwrap_or_default());
+                price_out_entry.set_text(&p.get("output_price_per_m").and_then(Value::as_f64).map(|x| x.to_string()).unwrap_or_default());
+                if let Some(hdrs) = p.get("extra_headers").and_then(Value::as_object) {
+                    for (hk, hv) in hdrs {
+                        let row_box = GtkBox::new(Orientation::Horizontal, 6);
+                        let k_ent = Entry::builder().text(hk).hexpand(true).build();
+                        let v_ent = Entry::builder().text(hv.as_str().unwrap_or("")).hexpand(true).build();
+                        let del_btn = Button::with_label(if en { "Delete" } else { "删除" });
+                        del_btn.add_css_class("lna-pill-btn");
+                        row_box.append(&k_ent);
+                        row_box.append(&v_ent);
+                        row_box.append(&del_btn);
+                        list_p.append(&row_box);
+                        rows_p.borrow_mut().push((k_ent.clone(), v_ent.clone()));
+                        let rows_del = rows_p.clone();
+                        let list_del = list_p.clone();
+                        let row_del = row_box.clone();
+                        del_btn.connect_clicked(move |_| {
+                            rows_del.borrow_mut().retain(|(k, _)| k != &k_ent);
+                            list_del.remove(&row_del);
+                        });
+                    }
+                }
+                let has_sec = p.get("has_secret").and_then(Value::as_bool).unwrap_or(false);
+                model_status_lbl.set_text(if has_sec {
+                    if en { "Key status: saved in system keyring." } else { "密钥状态：已保存在系统密钥环。" }
+                } else {
+                    if en { "Key status: not saved." } else { "密钥状态：未保存。" }
+                });
+            } else {
+                *current_profile_id.borrow_mut() = None;
+                *current_keychain_ref.borrow_mut() = String::new();
+                proto_dd.set_selected(0);
+                url_entry.set_text("");
+                model_entry.set_text("");
+                insecure_http_sw.set_active(false);
+                active_chat_sw.set_active(false);
+                vision_chk.set_active(false);
+                audio_chk.set_active(false);
+                video_chk.set_active(false);
+                thinking_sw.set_active(true);
+                effort_dd.set_selected(0);
+                ctx_entry.set_text("32000");
+                out_entry.set_text("8000");
+                price_in_entry.set_text("");
+                price_out_entry.set_text("");
+                model_status_lbl.set_text(if en {
+                    "Editing new profile. Choose a preset or fill in details and save."
+                } else {
+                    "正在编辑新配置，可选择预设或手动填写后保存。"
                 });
             }
         }
-    });
+    };
 
+    let reload_profile_dropdown = {
+        let profiles_state = profiles_state.clone();
+        let profile_dd = profile_dd.clone();
+        let core = st.core.clone();
+        let populate = populate_profile_form.clone();
+        let refresh_mods = refresh_modality_dropdowns.clone();
+        move |select_id: Option<&str>| {
+            let profs = call_core(&core, "profile.list", json!({}))
+                .ok()
+                .and_then(|v| v.get("profiles").and_then(Value::as_array).cloned())
+                .unwrap_or_default();
+            let mut labels = vec![if en { "— New Profile —".to_string() } else { "— 新建配置 —".to_string() }];
+            let mut target_idx = 0usize;
+            for (i, p) in profs.iter().enumerate() {
+                let id = p.get("id").and_then(Value::as_str).unwrap_or("");
+                let name = p.get("display_name").and_then(Value::as_str).unwrap_or("");
+                let act = if p.get("is_active").and_then(Value::as_bool).unwrap_or(false) {
+                    if en { " (Default)" } else { "（默认对话）" }
+                } else {
+                    ""
+                };
+                labels.push(format!("{name}{act}"));
+                if let Some(sid) = select_id {
+                    if id == sid {
+                        target_idx = i + 1;
+                    }
+                } else if p.get("is_active").and_then(Value::as_bool).unwrap_or(false) {
+                    target_idx = i + 1;
+                }
+            }
+            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+            profile_dd.set_model(Some(&StringList::new(&refs)));
+            profile_dd.set_selected(target_idx as u32);
+            *profiles_state.borrow_mut() = profs;
+            let borrowed = profiles_state.borrow();
+            if target_idx > 0 {
+                populate(borrowed.get(target_idx - 1));
+            } else {
+                populate(None);
+            }
+            drop(borrowed);
+            refresh_mods();
+        }
+    };
+    reload_profile_dropdown(None);
+
+    {
+        let profiles_state = profiles_state.clone();
+        let populate = populate_profile_form.clone();
+        profile_dd.connect_selected_notify(move |dd| {
+            let idx = dd.selected() as usize;
+            let borrowed = profiles_state.borrow();
+            if idx == 0 {
+                populate(None);
+            } else {
+                populate(borrowed.get(idx - 1));
+            }
+        });
+    }
+    {
+        let profile_dd = profile_dd.clone();
+        let populate = populate_profile_form.clone();
+        new_prof_btn.connect_clicked(move |_| {
+            profile_dd.set_selected(0);
+            populate(None);
+        });
+    }
+    {
+        let core = st.core.clone();
+        let current_profile_id = current_profile_id.clone();
+        let reload = reload_profile_dropdown.clone();
+        del_prof_btn.connect_clicked(move |_| {
+            let pid = current_profile_id.borrow().clone();
+            if let Some(id) = pid {
+                let _ = call_core(&core, "profile.delete", json!({ "profile_id": id }));
+                reload(None);
+            }
+        });
+    }
+
+    {
+        let proto_dd = proto_dd.clone();
+        let url_p = url_entry.clone();
+        let model_p = model_entry.clone();
+        let ctx_p = ctx_entry.clone();
+        let out_p = out_entry.clone();
+        let v_p = vision_chk.clone();
+        let a_p = audio_chk.clone();
+        let vid_p = video_chk.clone();
+        let rows_p = extra_headers_rows.clone();
+        let list_p = headers_list.clone();
+        preset_dd.connect_selected_notify(move |dd| {
+            let idx = dd.selected() as usize;
+            if idx == 0 {
+                return;
+            }
+            let Some(pr) = presets_val.get(idx - 1) else {
+                return;
+            };
+            if let Some(p) = pr.get("protocol").and_then(Value::as_str) {
+                proto_dd.set_selected(proto_ids.iter().position(|&x| x == p).unwrap_or(0) as u32);
+            }
+            if let Some(u) = pr.get("base_url").and_then(Value::as_str) {
+                url_p.set_text(u);
+            }
+            if let Some(m) = pr.get("default_model").and_then(Value::as_str) {
+                model_p.set_text(m);
+            }
+            if let Some(cw) = pr.get("context_window").and_then(Value::as_i64) {
+                ctx_p.set_text(&cw.to_string());
+            }
+            if let Some(mo) = pr.get("max_output_tokens").and_then(Value::as_i64) {
+                out_p.set_text(&mo.to_string());
+            }
+            v_p.set_active(pr.get("supports_vision").and_then(Value::as_bool).unwrap_or(false));
+            a_p.set_active(pr.get("supports_audio").and_then(Value::as_bool).unwrap_or(false));
+            vid_p.set_active(pr.get("supports_video").and_then(Value::as_bool).unwrap_or(false));
+            rows_p.borrow_mut().clear();
+            clear_box(&list_p);
+            if let Some(hdrs) = pr.get("extra_headers").and_then(Value::as_object) {
+                for (hk, hv) in hdrs {
+                    let row_box = GtkBox::new(Orientation::Horizontal, 6);
+                    let k_ent = Entry::builder().text(hk).hexpand(true).build();
+                    let v_ent = Entry::builder()
+                        .text(hv.as_str().unwrap_or(""))
+                        .hexpand(true)
+                        .build();
+                    let del_btn = Button::with_label(if en { "Delete" } else { "删除" });
+                    del_btn.add_css_class("lna-pill-btn");
+                    row_box.append(&k_ent);
+                    row_box.append(&v_ent);
+                    row_box.append(&del_btn);
+                    list_p.append(&row_box);
+                    rows_p.borrow_mut().push((k_ent.clone(), v_ent.clone()));
+                    let rows_del = rows_p.clone();
+                    let list_del = list_p.clone();
+                    let row_del = row_box.clone();
+                    del_btn.connect_clicked(move |_| {
+                        rows_del.borrow_mut().retain(|(k, _)| k != &k_ent);
+                        list_del.remove(&row_del);
+                    });
+                }
+            }
+        });
+    }
+
+    {
+        let core = st.core.clone();
+        let current_profile_id = current_profile_id.clone();
+        let proto_dd = proto_dd.clone();
+        let url_entry = url_entry.clone();
+        let key_entry = key_entry.clone();
+        let discovered_models = discovered_models.clone();
+        let discovered_dd = discovered_dd.clone();
+        let model_status_lbl = model_status_lbl.clone();
+        discover_btn.connect_clicked(move |_| {
+            let pid = current_profile_id.borrow().clone().unwrap_or_default();
+            let proto = proto_ids.get(proto_dd.selected() as usize).copied().unwrap_or("chat_completion");
+            match call_core(
+                &core,
+                "profile.discover_models",
+                json!({
+                    "profile_id": pid,
+                    "base_url": url_entry.text().trim(),
+                    "protocol": proto,
+                    "api_key": key_entry.text().trim(),
+                }),
+            ) {
+                Ok(res) => {
+                    let list: Vec<String> = res
+                        .get("models")
+                        .and_then(Value::as_array)
+                        .map(|arr| arr.iter().filter_map(|m| m.get("id").and_then(Value::as_str).map(String::from)).collect())
+                        .unwrap_or_default();
+                    let refs: Vec<&str> = list.iter().map(String::as_str).collect();
+                    discovered_dd.set_model(Some(&StringList::new(&refs)));
+                    discovered_dd.set_visible(!list.is_empty());
+                    model_status_lbl.set_text(&if en {
+                        format!("Found {} models.", list.len())
+                    } else {
+                        format!("找到 {} 个模型。", list.len())
+                    });
+                    *discovered_models.borrow_mut() = list;
+                }
+                Err(e) => model_status_lbl.set_text(&friendly_err(en, e)),
+            }
+        });
+    }
+    {
+        let discovered_models = discovered_models.clone();
+        let model_entry = model_entry.clone();
+        discovered_dd.connect_selected_notify(move |dd| {
+            if let Some(m) = discovered_models.borrow().get(dd.selected() as usize) {
+                model_entry.set_text(m);
+            }
+        });
+    }
+
+    model_box.append(&Label::new(Some(if en { "Saved Profiles" } else { "已保存的配置" })));
+    model_box.append(&profile_row);
+    model_box.append(&Label::new(Some(if en { "Provider Preset" } else { "AI 提供商预设" })));
+    model_box.append(&preset_dd);
+    model_box.append(&Label::new(Some(if en { "Protocol" } else { "协议" })));
+    model_box.append(&proto_dd);
+    model_box.append(&Label::new(Some("Base URL")));
+    model_box.append(&url_entry);
+    model_box.append(&Label::new(Some("Model ID")));
+    model_box.append(&model_row);
+    model_box.append(&discovered_dd);
     model_box.append(&Label::new(Some("API Key")));
     model_box.append(&key_entry);
-    model_box.append(&headers_hdr);
-    model_box.append(&headers_list);
-    model_box.append(&save_model_btn);
+    model_box.append(&insecure_row);
+    model_box.append(&active_row);
+    model_box.append(&mod_row);
+    model_box.append(&adv_exp);
+    model_box.append(&media_card);
+    model_box.append(&model_actions);
+    model_box.append(&model_status_lbl);
 
     let st_m = st.clone();
-    let w_m = win.clone();
     let rows_save = extra_headers_rows.clone();
+    let current_profile_id_s = current_profile_id.clone();
+    let reload_s = reload_profile_dropdown.clone();
+    let save_media_s = save_media_settings.clone();
+    let model_status_s = model_status_lbl.clone();
     save_model_btn.connect_clicked(move |_| {
         let mut hdr_map = serde_json::Map::new();
         for (k_ent, v_ent) in rows_save.borrow().iter() {
@@ -1524,32 +2492,97 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 hdr_map.insert(k, Value::String(v_ent.text().trim().to_string()));
             }
         }
-        let proto = proto_entry.text().to_string();
-        let url = url_entry.text().to_string();
-        let model = model_entry.text().to_string();
+        let proto = proto_ids.get(proto_dd.selected() as usize).copied().unwrap_or("chat_completion");
+        let url = url_entry.text().trim().to_string();
+        let model = model_entry.text().trim().to_string();
         let key = key_entry.text().to_string();
+        let eff = effort_ids.get(effort_dd.selected() as usize).copied().unwrap_or("");
+        let cw: i64 = ctx_entry.text().trim().parse().unwrap_or(32000);
+        let mo: i64 = out_entry.text().trim().parse().unwrap_or(8000);
         let en_now = st_m.is_en();
-        if let Ok(prof) = call_core(
-            &st_m.core,
-            "profile.upsert",
-            json!({
-                "display_name": format!("{proto} / {model}"),
-                "protocol": proto,
-                "base_url": url,
-                "model_id": model,
-                "extra_headers": Value::Object(hdr_map),
-                "activate": true
-            }),
-        ) {
-            if let Some(kref) = prof.get("keychain_ref").and_then(Value::as_str) {
-                if !key.is_empty() {
-                    let _ = call_core(&st_m.core, "secret.set", json!({ "keychain_ref": kref, "secret": key }));
+        let mut payload = json!({
+            "display_name": format!("{proto} / {model}"),
+            "protocol": proto,
+            "base_url": url,
+            "model_id": model,
+            "allow_insecure_http": insecure_http_sw.is_active(),
+            "activate": active_chat_sw.is_active(),
+            "show_thinking": thinking_sw.is_active(),
+            "context_window": cw,
+            "max_output_tokens": mo,
+            "supports_vision": vision_chk.is_active(),
+            "supports_audio": audio_chk.is_active(),
+            "supports_video": video_chk.is_active(),
+            "extra_headers": Value::Object(hdr_map),
+        });
+        if !eff.is_empty() {
+            payload["effort"] = Value::String(eff.to_string());
+        }
+        if let Ok(pi) = price_in_entry.text().trim().parse::<f64>() {
+            payload["input_price_per_m"] = json!(pi);
+        }
+        if let Ok(po) = price_out_entry.text().trim().parse::<f64>() {
+            payload["output_price_per_m"] = json!(po);
+        }
+        if let Some(pid) = current_profile_id_s.borrow().as_ref() {
+            payload["id"] = Value::String(pid.clone());
+        }
+        match call_core(&st_m.core, "profile.upsert", payload) {
+            Ok(prof) => {
+                let new_id = prof.get("id").and_then(Value::as_str).map(String::from);
+                if let Some(kref) = prof.get("keychain_ref").and_then(Value::as_str) {
+                    if !key.is_empty() {
+                        let _ = call_core(&st_m.core, "secret.set", json!({ "keychain_ref": kref, "secret": key }));
+                    }
                 }
+                if active_chat_sw.is_active() {
+                    if let Some(ref nid) = new_id {
+                        let _ = call_core(&st_m.core, "profile.activate", json!({ "profile_id": nid }));
+                    }
+                }
+                save_media_s();
+                reload_s(new_id.as_deref());
+                model_status_s.set_text(tr(en_now, "settings.saved"));
+                st_m.status_label.set_text(tr(en_now, "settings.saved"));
             }
-            st_m.status_label.set_text(tr(en_now, "settings.saved"));
-            w_m.close();
+            Err(e) => model_status_s.set_text(&friendly_err(en_now, e)),
         }
     });
+
+    {
+        let core = st.core.clone();
+        let current_profile_id = current_profile_id.clone();
+        let model_status_lbl = model_status_lbl.clone();
+        test_model_btn.connect_clicked(move |_| {
+            let Some(pid) = current_profile_id.borrow().clone() else {
+                model_status_lbl.set_text(if en { "Save profile first." } else { "请先保存配置。" });
+                return;
+            };
+            match call_core(&core, "profile.test", json!({ "profile_id": pid })) {
+                Ok(res) => {
+                    let reply = res.get("reply").and_then(Value::as_str).unwrap_or("OK");
+                    model_status_lbl.set_text(&if en { format!("Connected: {reply}") } else { format!("连接成功：{reply}") });
+                }
+                Err(e) => model_status_lbl.set_text(&friendly_err(en, e)),
+            }
+        });
+    }
+    {
+        let core = st.core.clone();
+        let current_keychain_ref = current_keychain_ref.clone();
+        let model_status_lbl = model_status_lbl.clone();
+        clear_key_btn.connect_clicked(move |_| {
+            let kref = current_keychain_ref.borrow().clone();
+            if kref.is_empty() {
+                return;
+            }
+            if call_core(&core, "secret.clear", json!({ "keychain_ref": kref })).is_ok() {
+                model_status_lbl.set_text(if en { "API key cleared." } else { "密钥已清除。" });
+            }
+        });
+    }
+
+    let model_scroll = ScrolledWindow::builder().child(&model_box).vexpand(true).build();
 
     // --- Tab 4: Semantic Search ---
     let emb_box = GtkBox::new(Orientation::Vertical, 10);
@@ -1557,20 +2590,50 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     emb_box.set_margin_bottom(16);
     emb_box.set_margin_start(16);
     emb_box.set_margin_end(16);
-    let emb_status = Label::new(Some(if en { "Local embedding model status" } else { "本地语义检索模型状态" }));
+    let emb_status_text = if let Ok(es) = call_core(&st.core, "embedding.status", json!({})) {
+        let active = es.get("active").and_then(Value::as_bool).unwrap_or(false);
+        let ready = es.get("ready_chunks").and_then(Value::as_i64).unwrap_or(0);
+        let total = es.get("total_chunks").and_then(Value::as_i64).unwrap_or(0);
+        if en {
+            format!("Status: {} ({ready}/{total} chunks indexed)", if active { "Enabled" } else { "Not enabled" })
+        } else {
+            format!("状态：{}（已索引 {ready}/{total} 个片段）", if active { "已启用" } else { "未启用" })
+        }
+    } else if en {
+        "Local embedding model status".into()
+    } else {
+        "本地语义检索模型状态".into()
+    };
+    let emb_status = Label::new(Some(&emb_status_text));
     emb_status.set_xalign(0.0);
+    let emb_actions = GtkBox::new(Orientation::Horizontal, 8);
     let dl_btn = Button::with_label(if en { "Download & Enable" } else { "下载并启用" });
     dl_btn.add_css_class("lna-primary-btn");
+    let cancel_dl_btn = Button::with_label(if en { "Cancel" } else { "取消" });
+    cancel_dl_btn.add_css_class("lna-pill-btn");
+    let rebuild_btn = Button::with_label(if en { "Rebuild Index" } else { "重建索引" });
+    rebuild_btn.add_css_class("lna-pill-btn");
     let st_e = st.clone();
     dl_btn.connect_clicked(move |_| {
         let _ = call_core(&st_e.core, "embedding.download", json!({}));
     });
+    let st_c = st.clone();
+    cancel_dl_btn.connect_clicked(move |_| {
+        let _ = call_core(&st_c.core, "embedding.download_cancel", json!({}));
+    });
+    let st_rb = st.clone();
+    rebuild_btn.connect_clicked(move |_| {
+        let _ = call_core(&st_rb.core, "embedding.rebuild", json!({ "force": true }));
+    });
+    emb_actions.append(&dl_btn);
+    emb_actions.append(&cancel_dl_btn);
+    emb_actions.append(&rebuild_btn);
     emb_box.append(&emb_status);
-    emb_box.append(&dl_btn);
+    emb_box.append(&emb_actions);
 
     tabs.append_page(&app_box, Some(&Label::new(Some(tr(en, "settings.tab_appearance")))));
     tabs.append_page(&gen_box, Some(&Label::new(Some(tr(en, "settings.tab_general")))));
-    tabs.append_page(&model_box, Some(&Label::new(Some(tr(en, "settings.tab_models")))));
+    tabs.append_page(&model_scroll, Some(&Label::new(Some(tr(en, "settings.tab_models")))));
     tabs.append_page(&emb_box, Some(&Label::new(Some(tr(en, "settings.tab_embedding")))));
 
     win.set_child(Some(&tabs));

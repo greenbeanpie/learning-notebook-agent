@@ -559,3 +559,117 @@ async fn scanned_pdf_triggers_vision_ocr_with_page_numbers() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn explicit_per_modality_profile_assignment_overrides_active_chat() {
+    let dir = temp_dir("explicit_modality_routing");
+    let paths = StoragePaths::from_root(&dir).unwrap();
+    let db = Database::open(paths).unwrap();
+
+    // Active chat model also has vision+audio+video enabled by preset
+    lna_storage::upsert_profile(
+        &db,
+        &ProfileUpsertParams {
+            id: Some("prof_active".into()),
+            display_name: "Active Chat".into(),
+            protocol: ProtocolKind::ChatCompletion,
+            base_url: "https://api.example.com/v1".into(),
+            model_id: "gpt-4o".into(),
+            show_thinking: false,
+            effort: None,
+            context_window: 32000,
+            max_output_tokens: 4000,
+            extra_headers: BTreeMap::new(),
+            input_price_per_m: None,
+            output_price_per_m: None,
+            capabilities: None,
+            supports_vision: Some(true),
+            supports_audio: Some(false),
+            supports_video: Some(false),
+            activate: true,
+        },
+    )
+    .unwrap();
+
+    lna_storage::upsert_profile(
+        &db,
+        &ProfileUpsertParams {
+            id: Some("prof_vision_only".into()),
+            display_name: "Dedicated Vision".into(),
+            protocol: ProtocolKind::ChatCompletion,
+            base_url: "https://api.example.com/v1".into(),
+            model_id: "qwen-vl-max".into(),
+            show_thinking: false,
+            effort: None,
+            context_window: 32000,
+            max_output_tokens: 4000,
+            extra_headers: BTreeMap::new(),
+            input_price_per_m: None,
+            output_price_per_m: None,
+            capabilities: None,
+            supports_vision: Some(true),
+            supports_audio: Some(false),
+            supports_video: Some(false),
+            activate: false,
+        },
+    )
+    .unwrap();
+
+    lna_storage::upsert_profile(
+        &db,
+        &ProfileUpsertParams {
+            id: Some("prof_av".into()),
+            display_name: "Dedicated Audio/Video".into(),
+            protocol: ProtocolKind::Gemini,
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            model_id: "gemini-2.5-flash".into(),
+            show_thinking: false,
+            effort: None,
+            context_window: 1000000,
+            max_output_tokens: 8000,
+            extra_headers: BTreeMap::new(),
+            input_price_per_m: None,
+            output_price_per_m: None,
+            capabilities: None,
+            supports_vision: Some(true),
+            supports_audio: Some(true),
+            supports_video: Some(true),
+            activate: false,
+        },
+    )
+    .unwrap();
+
+    // Without explicit assignment, active chat wins for vision
+    assert_eq!(
+        lna_storage::resolve_modality_profile(&db, "vision").unwrap().unwrap().id,
+        "prof_active"
+    );
+
+    // With explicit assignment, vision -> prof_vision_only, audio/video -> prof_av
+    lna_storage::set_setting_json(
+        &db,
+        MEDIA_SETTINGS_KEY,
+        &json!({
+            "audio_video_enabled": true,
+            "vision_profile_id": "prof_vision_only",
+            "audio_profile_id": "prof_av",
+            "video_profile_id": "prof_av"
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(
+        lna_storage::resolve_modality_profile(&db, "vision").unwrap().unwrap().id,
+        "prof_vision_only"
+    );
+    assert_eq!(
+        lna_storage::resolve_modality_profile(&db, "audio").unwrap().unwrap().id,
+        "prof_av"
+    );
+    assert_eq!(
+        lna_storage::resolve_modality_profile(&db, "video").unwrap().unwrap().id,
+        "prof_av"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

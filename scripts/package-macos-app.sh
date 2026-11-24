@@ -27,13 +27,32 @@ fi
 
 echo "Assembling $OUT_APP..."
 rm -rf "$OUT_APP"
-mkdir -p "$OUT_APP/Contents/MacOS" "$OUT_APP/Contents/Frameworks"
+mkdir -p "$OUT_APP/Contents/MacOS" "$OUT_APP/Contents/Frameworks" "$OUT_APP/Contents/Resources"
 
 cp "$BIN_PATH" "$OUT_APP/Contents/MacOS/LocalNotebook"
 chmod +x "$OUT_APP/Contents/MacOS/LocalNotebook"
 
 cp "$DYLIB_PATH" "$OUT_APP/Contents/Frameworks/liblna_ffi.dylib"
 chmod +x "$OUT_APP/Contents/Frameworks/liblna_ffi.dylib"
+
+LOGO_SVG="$ROOT_DIR/assets/logo.svg"
+if [[ -f "$LOGO_SVG" ]]; then
+  cp "$LOGO_SVG" "$OUT_APP/Contents/Resources/logo.svg"
+  echo "Generating AppIcon.icns from assets/logo.svg..."
+  ICON_TMP="$(mktemp -d)"
+  ICONSET_DIR="$ICON_TMP/AppIcon.iconset"
+  mkdir -p "$ICONSET_DIR"
+  if qlmanage -t -s 1024 -o "$ICON_TMP" "$LOGO_SVG" >/dev/null 2>&1 && [[ -f "$ICON_TMP/logo.svg.png" ]]; then
+    BASE_PNG="$ICON_TMP/logo.svg.png"
+    for sz in 16 32 128 256 512; do
+      sips -z "$sz" "$sz" "$BASE_PNG" --out "$ICONSET_DIR/icon_${sz}x${sz}.png" >/dev/null
+      sz2=$((sz * 2))
+      sips -z "$sz2" "$sz2" "$BASE_PNG" --out "$ICONSET_DIR/icon_${sz}x${sz}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$ICONSET_DIR" -o "$OUT_APP/Contents/Resources/AppIcon.icns"
+  fi
+  rm -rf "$ICON_TMP"
+fi
 
 cat > "$OUT_APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -52,6 +71,8 @@ cat > "$OUT_APP/Contents/Info.plist" <<'PLIST'
     <string>LocalNotebook</string>
     <key>CFBundleDisplayName</key>
     <string>Local Notebook</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

@@ -14,6 +14,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.localnotebook.agent.core.L10n
+import com.localnotebook.agent.core.MediaRoutingConfig
+import com.localnotebook.agent.core.ModelProfileItem
 import com.localnotebook.agent.core.ProviderPresetItem
 import com.localnotebook.agent.core.UiPreferences
 
@@ -22,8 +24,11 @@ import com.localnotebook.agent.core.UiPreferences
 fun UnifiedSettingsSheet(
     prefs: UiPreferences,
     presets: List<ProviderPresetItem> = emptyList(),
+    profiles: List<ModelProfileItem> = emptyList(),
+    mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
     onSavePrefs: (UiPreferences) -> Unit,
     onSaveModel: (
+        profileId: String?,
         protocol: String,
         baseUrl: String,
         modelId: String,
@@ -31,10 +36,16 @@ fun UnifiedSettingsSheet(
         extraHeaders: Map<String, String>,
         contextWindow: Int,
         maxOutputTokens: Int,
+        activateChat: Boolean,
+        allowInsecureHttp: Boolean,
         supportsVision: Boolean,
         supportsAudio: Boolean,
         supportsVideo: Boolean,
     ) -> Unit,
+    onDeleteProfile: (String) -> Unit = {},
+    onTestProfile: (String) -> Unit = {},
+    onClearKey: (String) -> Unit = {},
+    onSaveMediaRouting: (MediaRoutingConfig) -> Unit = {},
     onDownloadEmbedding: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -42,17 +53,39 @@ fun UnifiedSettingsSheet(
     var tabIndex by remember { mutableIntStateOf(0) }
     var draftPrefs by remember(prefs) { mutableStateOf(prefs) }
 
+    val activeOrFirst = profiles.firstOrNull { it.isActive } ?: profiles.firstOrNull()
+    var selectedProfileId by remember(profiles) { mutableStateOf(activeOrFirst?.id ?: "") }
     var selectedPresetId by remember { mutableStateOf("") }
-    var protocol by remember { mutableStateOf("chat_completion") }
-    var baseUrl by remember { mutableStateOf("") }
-    var modelId by remember { mutableStateOf("") }
+    var protocol by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.protocol ?: "chat_completion") }
+    var baseUrl by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.baseUrl ?: "") }
+    var modelId by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.modelId ?: "") }
     var apiKey by remember { mutableStateOf("") }
-    var contextWindow by remember { mutableIntStateOf(32000) }
-    var maxOutputTokens by remember { mutableIntStateOf(8000) }
-    var supportsVision by remember { mutableStateOf(false) }
-    var supportsAudio by remember { mutableStateOf(false) }
-    var supportsVideo by remember { mutableStateOf(false) }
-    var extraHeaders by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+    var contextWindow by remember(selectedProfileId) { mutableIntStateOf(activeOrFirst?.contextWindow ?: 32000) }
+    var maxOutputTokens by remember(selectedProfileId) { mutableIntStateOf(activeOrFirst?.maxOutputTokens ?: 8000) }
+    var activateChat by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.isActive ?: true) }
+    var allowInsecureHttp by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.allowInsecureHttp ?: false) }
+    var supportsVision by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsVision ?: false) }
+    var supportsAudio by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsAudio ?: false) }
+    var supportsVideo by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsVideo ?: false) }
+    var extraHeaders by remember(selectedProfileId) {
+        mutableStateOf(activeOrFirst?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList())
+    }
+
+    fun selectProfile(p: ModelProfileItem?) {
+        selectedProfileId = p?.id ?: ""
+        protocol = p?.protocol ?: "chat_completion"
+        baseUrl = p?.baseUrl ?: ""
+        modelId = p?.modelId ?: ""
+        apiKey = ""
+        contextWindow = p?.contextWindow ?: 32000
+        maxOutputTokens = p?.maxOutputTokens ?: 8000
+        activateChat = p?.isActive ?: !profiles.any { it.isActive }
+        allowInsecureHttp = p?.allowInsecureHttp ?: false
+        supportsVision = p?.supportsVision ?: false
+        supportsAudio = p?.supportsAudio ?: false
+        supportsVideo = p?.supportsVideo ?: false
+        extraHeaders = p?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList()
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -96,8 +129,19 @@ fun UnifiedSettingsSheet(
                         }
 
                         Text(L10n.t("settings.theme", en), style = MaterialTheme.typography.labelMedium)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("dark" to (if (en) "Dark" else "深色"), "light" to (if (en) "Light" else "浅色"), "system" to (if (en) "System" else "跟随系统")).forEach { (code, lbl) ->
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(
+                                listOf(
+                                    "dark" to (if (en) "Obsidian Dark" else "黑曜深色"),
+                                    "light" to (if (en) "Paper Light" else "纸感浅色"),
+                                    "system" to (if (en) "System" else "跟随系统"),
+                                    "midnight" to (if (en) "Midnight Indigo" else "午夜靛蓝"),
+                                    "forest" to (if (en) "Nordic Forest" else "北欧森绿"),
+                                    "warm_paper" to (if (en) "Warm Parchment" else "暖纸羊皮"),
+                                    "rose_dusk" to (if (en) "Rose Dusk" else "暮色蔷薇"),
+                                ),
+                                key = { it.first },
+                            ) { (code, lbl) ->
                                 FilterChip(
                                     selected = draftPrefs.theme == code,
                                     onClick = { draftPrefs = draftPrefs.copy(theme = code) },
@@ -142,6 +186,27 @@ fun UnifiedSettingsSheet(
                     }
 
                     2 -> {
+                        Text(
+                            if (en) "Saved Profiles" else "已保存的配置",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item {
+                                FilterChip(
+                                    selected = selectedProfileId.isEmpty(),
+                                    onClick = { selectProfile(null) },
+                                    label = { Text(if (en) "+ New" else "+ 新建") },
+                                )
+                            }
+                            items(profiles, key = { it.id }) { prof ->
+                                val tag = if (prof.isActive) (if (en) " (Default)" else "（默认）") else ""
+                                FilterChip(
+                                    selected = selectedProfileId == prof.id,
+                                    onClick = { selectProfile(prof) },
+                                    label = { Text("${prof.displayName}$tag") },
+                                )
+                            }
+                        }
                         if (presets.isNotEmpty()) {
                             Text(
                                 if (en) "Provider Presets" else "提供商预设（快速填充）",
@@ -241,12 +306,108 @@ fun UnifiedSettingsSheet(
                                 }
                             }
                         }
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (en) "Set as default chat model" else "设为当前默认对话模型", modifier = Modifier.weight(1f))
+                            Switch(checked = activateChat, onCheckedChange = { activateChat = it })
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (en) "Allow non-loopback HTTP" else "允许非回环 HTTP 明文传输", modifier = Modifier.weight(1f))
+                            Switch(checked = allowInsecureHttp, onCheckedChange = { allowInsecureHttp = it })
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(
+                                selected = supportsVision,
+                                onClick = { supportsVision = !supportsVision },
+                                label = { Text(if (en) "Vision" else "图文视觉") },
+                            )
+                            FilterChip(
+                                selected = supportsAudio,
+                                onClick = { supportsAudio = !supportsAudio },
+                                label = { Text(if (en) "Audio" else "音频") },
+                            )
+                            FilterChip(
+                                selected = supportsVideo,
+                                onClick = { supportsVideo = !supportsVideo },
+                                label = { Text(if (en) "Video" else "视频") },
+                            )
+                        }
+
+                        HorizontalDivider()
+                        Text(
+                            if (en) "Per-Modality Model Assignment" else "分模态模型指定（图文 / 音视频可使用不同模型）",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                if (en) "Enable native audio/video processing" else "允许处理音视频文件",
+                                modifier = Modifier.weight(1f),
+                            )
+                            Switch(
+                                checked = mediaRouting.audioVideoEnabled,
+                                onCheckedChange = { onSaveMediaRouting(mediaRouting.copy(audioVideoEnabled = it)) },
+                            )
+                        }
+                        Text(if (en) "Vision (Image/PDF)" else "图文处理模型", style = MaterialTheme.typography.labelSmall)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item {
+                                FilterChip(
+                                    selected = mediaRouting.visionProfileId.isEmpty(),
+                                    onClick = { onSaveMediaRouting(mediaRouting.copy(visionProfileId = "")) },
+                                    label = { Text(if (en) "Auto" else "自动") },
+                                )
+                            }
+                            items(profiles.filter { it.supportsVision }, key = { "v_${it.id}" }) { p ->
+                                FilterChip(
+                                    selected = mediaRouting.visionProfileId == p.id,
+                                    onClick = { onSaveMediaRouting(mediaRouting.copy(visionProfileId = p.id)) },
+                                    label = { Text(p.displayName) },
+                                )
+                            }
+                        }
+                        if (mediaRouting.audioVideoEnabled) {
+                            Text(if (en) "Audio" else "音频处理模型", style = MaterialTheme.typography.labelSmall)
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                item {
+                                    FilterChip(
+                                        selected = mediaRouting.audioProfileId.isEmpty(),
+                                        onClick = { onSaveMediaRouting(mediaRouting.copy(audioProfileId = "")) },
+                                        label = { Text(if (en) "Auto" else "自动") },
+                                    )
+                                }
+                                items(profiles.filter { it.supportsAudio }, key = { "a_${it.id}" }) { p ->
+                                    FilterChip(
+                                        selected = mediaRouting.audioProfileId == p.id,
+                                        onClick = { onSaveMediaRouting(mediaRouting.copy(audioProfileId = p.id)) },
+                                        label = { Text(p.displayName) },
+                                    )
+                                }
+                            }
+                            Text(if (en) "Video" else "视频处理模型", style = MaterialTheme.typography.labelSmall)
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                item {
+                                    FilterChip(
+                                        selected = mediaRouting.videoProfileId.isEmpty(),
+                                        onClick = { onSaveMediaRouting(mediaRouting.copy(videoProfileId = "")) },
+                                        label = { Text(if (en) "Auto" else "自动") },
+                                    )
+                                }
+                                items(profiles.filter { it.supportsVideo }, key = { "vid_${it.id}" }) { p ->
+                                    FilterChip(
+                                        selected = mediaRouting.videoProfileId == p.id,
+                                        onClick = { onSaveMediaRouting(mediaRouting.copy(videoProfileId = p.id)) },
+                                        label = { Text(p.displayName) },
+                                    )
+                                }
+                            }
+                        }
+
                         Button(
                             onClick = {
                                 val hdrMap = extraHeaders
                                     .mapNotNull { (k, v) -> k.trim().takeIf { it.isNotEmpty() }?.let { it to v.trim() } }
                                     .toMap()
                                 onSaveModel(
+                                    selectedProfileId.ifEmpty { null },
                                     protocol,
                                     baseUrl,
                                     modelId,
@@ -254,6 +415,8 @@ fun UnifiedSettingsSheet(
                                     hdrMap,
                                     contextWindow,
                                     maxOutputTokens,
+                                    activateChat,
+                                    allowInsecureHttp,
                                     supportsVision,
                                     supportsAudio,
                                     supportsVideo,
@@ -263,6 +426,30 @@ fun UnifiedSettingsSheet(
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(L10n.t("settings.save", en))
+                        }
+                        if (selectedProfileId.isNotEmpty()) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                OutlinedButton(
+                                    onClick = { onTestProfile(selectedProfileId) },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(if (en) "Test" else "测试连接")
+                                }
+                                val curKref = profiles.firstOrNull { it.id == selectedProfileId }?.keychainRef.orEmpty()
+                                OutlinedButton(
+                                    onClick = { if (curKref.isNotEmpty()) onClearKey(curKref) },
+                                    enabled = curKref.isNotEmpty(),
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(if (en) "Clear Key" else "清除密钥")
+                                }
+                                OutlinedButton(
+                                    onClick = { onDeleteProfile(selectedProfileId) },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(if (en) "Delete" else "删除")
+                                }
+                            }
                         }
                     }
 

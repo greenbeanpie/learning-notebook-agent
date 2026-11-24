@@ -6,6 +6,18 @@ window {
     font-weight: 400;
 }
 
+window.lna-font-14 {
+    font-size: 14px;
+}
+
+window.lna-font-15 {
+    font-size: 15px;
+}
+
+window.lna-font-17 {
+    font-size: 17px;
+}
+
 window.lna-light {
     background-color: #f4f6f9;
     color: #1f2328;
@@ -23,6 +35,182 @@ window.lna-light .lna-studio-tile {
     background-color: #f0f3f8;
     color: #1f2328;
     border: 1px solid rgba(0, 0, 0, 0.10);
+}
+
+window.lna-light .lna-primary-btn {
+    background-color: #1a73e8;
+    color: #ffffff;
+}
+
+window.lna-light .lna-kg-banner {
+    background-color: #e8f0fe;
+    border: 1px solid #8ab4f8;
+    color: #174ea6;
+}
+
+window.lna-light .lna-muted {
+    color: #6b7280;
+}
+
+window.lna-midnight {
+    background-color: #0d1117;
+    color: #e6edf5;
+}
+
+window.lna-midnight .lna-panel {
+    background-color: #161b26;
+    border: 1px solid rgba(129, 140, 248, 0.14);
+}
+
+window.lna-midnight .lna-card,
+window.lna-midnight .lna-pill-btn,
+window.lna-midnight .lna-studio-tile {
+    background-color: #1f2737;
+    color: #e6edf5;
+    border: 1px solid rgba(129, 140, 248, 0.14);
+}
+
+window.lna-midnight .lna-card:hover,
+window.lna-midnight .lna-pill-btn:hover,
+window.lna-midnight .lna-studio-tile:hover,
+window.lna-midnight .lna-source-row:hover {
+    background-color: #293347;
+}
+
+window.lna-midnight .lna-primary-btn {
+    background-color: #818cf8;
+    color: #0d1117;
+}
+
+window.lna-midnight .lna-kg-banner {
+    background-color: #1e2542;
+    border: 1px solid #6366f1;
+    color: #dce1ff;
+}
+
+window.lna-forest {
+    background-color: #0f1614;
+    color: #e4efea;
+}
+
+window.lna-forest .lna-panel {
+    background-color: #17221f;
+    border: 1px solid rgba(110, 231, 183, 0.12);
+}
+
+window.lna-forest .lna-card,
+window.lna-forest .lna-pill-btn,
+window.lna-forest .lna-studio-tile {
+    background-color: #202e2a;
+    color: #e4efea;
+    border: 1px solid rgba(110, 231, 183, 0.12);
+}
+
+window.lna-forest .lna-card:hover,
+window.lna-forest .lna-pill-btn:hover,
+window.lna-forest .lna-studio-tile:hover,
+window.lna-forest .lna-source-row:hover {
+    background-color: #2a3c37;
+}
+
+window.lna-forest .lna-primary-btn {
+    background-color: #6ee7b7;
+    color: #0f1614;
+}
+
+window.lna-forest .lna-kg-banner {
+    background-color: #19332b;
+    border: 1px solid #34d399;
+    color: #d1fae5;
+}
+
+window.lna-warm-paper {
+    background-color: #f5efe6;
+    color: #2c2218;
+}
+
+window.lna-warm-paper .lna-panel {
+    background-color: #fffdf8;
+    border: 1px solid rgba(92, 70, 48, 0.12);
+    color: #2c2218;
+}
+
+window.lna-warm-paper .lna-card,
+window.lna-warm-paper .lna-pill-btn,
+window.lna-warm-paper .lna-studio-tile {
+    background-color: #efe7da;
+    color: #2c2218;
+    border: 1px solid rgba(92, 70, 48, 0.12);
+}
+
+window.lna-warm-paper .lna-card:hover,
+window.lna-warm-paper .lna-pill-btn:hover,
+window.lna-warm-paper .lna-studio-tile:hover,
+window.lna-warm-paper .lna-source-row:hover {
+    background-color: #e5dac9;
+}
+
+window.lna-warm-paper .lna-primary-btn {
+    background-color: #b45309;
+    color: #ffffff;
+}
+
+window.lna-warm-paper .lna-kg-banner {
+    background-color: #fef3c7;
+    border: 1px solid #d97706;
+    color: #78350f;
+}
+
+window.lna-warm-paper .lna-muted {
+    color: #83715d;
+}
+
+window.lna-rose-dusk {
+    background-color: #161217;
+    color: #f1e8f2;
+}
+
+window.lna-rose-dusk .lna-panel {
+    background-color: #211b23;
+    border: 1px solid rgba(244, 165, 196, 0.12);
+}
+
+window.lna-rose-dusk .lna-card,
+window.lna-rose-dusk .lna-pill-btn,
+window.lna-rose-dusk .lna-studio-tile {
+    background-color: #2c242f;
+    color: #f1e8f2;
+    border: 1px solid rgba(244, 165, 196, 0.12);
+}
+
+window.lna-rose-dusk .lna-card:hover,
+window.lna-rose-dusk .lna-pill-btn:hover,
+window.lna-rose-dusk .lna-studio-tile:hover,
+window.lna-rose-dusk .lna-source-row:hover {
+    background-color: #392f3d;
+}
+
+window.lna-rose-dusk .lna-primary-btn {
+    background-color: #f4a5c4;
+    color: #161217;
+}
+
+window.lna-rose-dusk .lna-kg-banner {
+    background-color: #372234;
+    border: 1px solid #d97ca3;
+    color: #fce7f3;
+}
+
+.lna-ghost-btn {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: 10px;
+    padding: 4px 10px;
+}
+
+.lna-ghost-btn:hover {
+    background-color: rgba(255, 255, 255, 0.08);
 }
 
 .lna-panel {

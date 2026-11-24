@@ -3,12 +3,14 @@ use serde_json::{json, Value};
 #[derive(Debug, Clone)]
 pub struct UiPreferences {
     pub language: String, // "auto" | "zh-CN" | "en-US"
-    pub theme: String,    // "dark" | "light"
-    pub font_size: i32,   // 13 | 14 | 16
+    pub theme: String,    // "dark" | "light" | "system" | "midnight" | "forest" | "warm_paper" | "rose_dusk"
+    pub font_size: i32,   // 14 | 15 | 17
     pub fullscreen_animation: bool,
     pub expand_thoughts_by_default: bool,
     pub show_suggested_questions: bool,
     pub default_studio_lang: String,
+    pub quiz_view_mode: String,   // "continuous" | "one_by_one"
+    pub quiz_submit_mode: String, // "manual" | "auto"
 }
 
 impl Default for UiPreferences {
@@ -21,6 +23,8 @@ impl Default for UiPreferences {
             expand_thoughts_by_default: false,
             show_suggested_questions: true,
             default_studio_lang: String::new(),
+            quiz_view_mode: "continuous".into(),
+            quiz_submit_mode: "manual".into(),
         }
     }
 }
@@ -39,7 +43,7 @@ impl UiPreferences {
             }
         }
         if let Some(n) = v.get("font_size").and_then(Value::as_i64) {
-            if matches!(n, 13 | 14 | 16) {
+            if matches!(n, 14 | 15 | 17) {
                 p.font_size = n as i32;
             }
         }
@@ -55,6 +59,16 @@ impl UiPreferences {
         if let Some(s) = v.get("default_studio_lang").and_then(Value::as_str) {
             p.default_studio_lang = s.to_string();
         }
+        if let Some(s) = v.get("quiz_view_mode").and_then(Value::as_str) {
+            if !s.is_empty() {
+                p.quiz_view_mode = s.to_string();
+            }
+        }
+        if let Some(s) = v.get("quiz_submit_mode").and_then(Value::as_str) {
+            if !s.is_empty() {
+                p.quiz_submit_mode = s.to_string();
+            }
+        }
         p
     }
 
@@ -67,6 +81,8 @@ impl UiPreferences {
             "expand_thoughts_by_default": self.expand_thoughts_by_default,
             "show_suggested_questions": self.show_suggested_questions,
             "default_studio_lang": self.default_studio_lang,
+            "quiz_view_mode": self.quiz_view_mode,
+            "quiz_submit_mode": self.quiz_submit_mode,
         })
     }
 
@@ -89,17 +105,27 @@ pub fn tr(en: bool, key: &str) -> &'static str {
         match key {
             "nb.new" => "New Notebook",
             "nb.untitled" => "Untitled Notebook",
+            "nb.switch" => "Switch notebook",
             "nb.rename" => "Rename Notebook",
             "nb.clear_chat" => "Clear Chat",
             "nb.delete" => "Delete Notebook",
+            "nb.export_lna" => "Export .lna Package",
+            "nb.export_md" => "Export Markdown",
+            "nb.import_lna" => "Import .lna Package",
+            "nb.export_diag" => "Export Diagnostics",
+            "nb.privacy" => "Privacy & Data",
             "sources.title" => "Sources",
             "sources.add" => "+ Add source",
+            "sources.add_files" => "Local files",
             "sources.add_paste" => "Paste text",
             "sources.add_url" => "Web URL",
             "sources.create_note" => "+ New note",
             "chat.empty_summary" => "Add sources or start asking questions.",
             "chat.placeholder" => "Ask a question or create content...",
             "chat.send" => "Send",
+            "chat.stop" => "Stop",
+            "chat.copy" => "Copy",
+            "chat.save_note" => "Save to Note",
             "chat.you" => "You",
             "chat.assistant" => "Assistant",
             "studio.audio" => "Audio Overview",
@@ -153,17 +179,27 @@ pub fn tr(en: bool, key: &str) -> &'static str {
         match key {
             "nb.new" => "新建笔记本",
             "nb.untitled" => "未命名笔记本",
+            "nb.switch" => "切换笔记本",
             "nb.rename" => "重命名笔记本",
             "nb.clear_chat" => "清空对话",
             "nb.delete" => "删除笔记本",
+            "nb.export_lna" => "导出 .lna 笔记本包",
+            "nb.export_md" => "导出 Markdown",
+            "nb.import_lna" => "导入 .lna 笔记本包",
+            "nb.export_diag" => "导出诊断日志",
+            "nb.privacy" => "隐私与数据说明",
             "sources.title" => "来源",
             "sources.add" => "+ 添加来源",
+            "sources.add_files" => "本地文件",
             "sources.add_paste" => "粘贴文本",
             "sources.add_url" => "网页地址",
             "sources.create_note" => "+ 创建笔记",
             "chat.empty_summary" => "请添加来源或直接提问。",
             "chat.placeholder" => "提问或创作内容...",
             "chat.send" => "发送",
+            "chat.stop" => "停止",
+            "chat.copy" => "复制",
+            "chat.save_note" => "存为笔记",
             "chat.you" => "你",
             "chat.assistant" => "助手",
             "studio.audio" => "音频概览",

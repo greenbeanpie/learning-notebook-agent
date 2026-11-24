@@ -2,12 +2,14 @@ import Foundation
 
 struct UiPreferences {
     var language: String = "auto"           // "auto" | "zh-CN" | "en-US"
-    var theme: String = "dark"              // "dark" | "light" | "system"
+    var theme: String = "dark"              // "dark" | "light" | "system" | "midnight" | "forest" | "warm_paper" | "rose_dusk"
     var fontSize: Double = 15               // 14 | 15 | 17
     var fullscreenAnimation: Bool = true
     var expandThoughtsByDefault: Bool = false
     var showSuggestedQuestions: Bool = true
     var defaultStudioLang: String = ""      // "" | "zh-CN" | "en"
+    var quizViewMode: String = "continuous" // "continuous" | "one_by_one"
+    var quizSubmitMode: String = "manual"   // "manual" | "auto"
 
     var isEnglish: Bool {
         if language == "en-US" { return true }
@@ -27,6 +29,8 @@ struct UiPreferences {
         if let v = d["expand_thoughts_by_default"] as? Bool { p.expandThoughtsByDefault = v }
         if let v = d["show_suggested_questions"] as? Bool { p.showSuggestedQuestions = v }
         if let v = d["default_studio_lang"] as? String { p.defaultStudioLang = v }
+        if let v = d["quiz_view_mode"] as? String, !v.isEmpty { p.quizViewMode = v }
+        if let v = d["quiz_submit_mode"] as? String, !v.isEmpty { p.quizSubmitMode = v }
         return p
     }
 
@@ -39,6 +43,8 @@ struct UiPreferences {
             "expand_thoughts_by_default": expandThoughtsByDefault,
             "show_suggested_questions": showSuggestedQuestions,
             "default_studio_lang": defaultStudioLang,
+            "quiz_view_mode": quizViewMode,
+            "quiz_submit_mode": quizSubmitMode,
         ]
     }
 }
@@ -73,11 +79,45 @@ enum L10n {
     private static let zhMap: [String: String] = [
         "nb.new": "新建笔记本",
         "nb.untitled": "未命名笔记本",
+        "nb.rename": "重命名笔记本",
+        "nb.export_lna": "导出笔记本 (.lna)",
+        "nb.export_md": "导出为 Markdown",
+        "nb.import_lna": "导入笔记本 (.lna)",
+        "nb.export_diag": "导出诊断包",
+        "nb.privacy": "隐私与数据说明",
+        "nb.clear_chat": "清空对话记录",
+        "nb.delete": "删除笔记本",
+        "nb.menu": "更多操作",
         "sources.title": "来源",
+        "sources.notes_header": "笔记",
+        "sources.rename": "重命名",
+        "sources.retry": "重试解析",
+        "sources.remove": "删除来源",
+        "notes.convert_to_source": "转为来源",
+        "notes.delete": "删除笔记",
+        "chat.copy": "复制",
+        "chat.save_note": "存为笔记",
+        "chat.regenerate": "重新生成",
+        "chat.stop": "停止生成",
+        "settings.quiz_view_mode": "测验视图模式",
+        "settings.quiz_submit_mode": "测验提交方式",
+        "quiz.view_continuous": "连续滚动",
+        "quiz.view_one": "逐题模式",
+        "quiz.submit_manual": "手动提交",
+        "quiz.submit_auto": "选完即提交",
         "sources.add": "+ 添加来源",
         "sources.add_file": "本地文件（文档 / 图片 / 音视频等）",
+        "sources.add_url": "网页链接 (URL)",
         "sources.add_paste": "粘贴文本",
         "sources.create_note": "+ 创建笔记",
+        "sources.select_all": "全选来源",
+        "sources.empty_hint": "点击上方“+ 添加来源”导入文档、网页或粘贴文本。",
+        "sources.status_queued": "排队中",
+        "sources.status_parsing": "解析中",
+        "sources.status_chunking": "分段中",
+        "sources.status_embedding": "索引中",
+        "sources.status_ready": "已就绪",
+        "sources.status_failed": "处理失败",
         "chat.empty_summary": "请添加来源或直接提问。",
         "chat.placeholder": "提问或创作内容...",
         "chat.you": "你",
@@ -90,6 +130,10 @@ enum L10n {
         "studio.quiz": "测验",
         "studio.infographic": "信息图",
         "studio.knowledge_graph": "知识点图谱",
+        "studio.empty_hint": "点击上方卡片生成音频概览、演示文稿、思维导图或测验。",
+        "studio.rename": "重命名",
+        "studio.cancel": "取消生成",
+        "studio.delete": "删除",
         "kg.build_btn": "构建知识点图谱",
         "kg.recommended": "AI 推荐：适合构建知识点图谱",
         "kg.action_quiz": "针对此知识点生成测验",
@@ -134,11 +178,45 @@ enum L10n {
     private static let enMap: [String: String] = [
         "nb.new": "New Notebook",
         "nb.untitled": "Untitled Notebook",
+        "nb.rename": "Rename Notebook",
+        "nb.export_lna": "Export Notebook (.lna)",
+        "nb.export_md": "Export as Markdown",
+        "nb.import_lna": "Import Notebook (.lna)",
+        "nb.export_diag": "Export Diagnostics",
+        "nb.privacy": "Privacy & Data",
+        "nb.clear_chat": "Clear Chat",
+        "nb.delete": "Delete Notebook",
+        "nb.menu": "More actions",
         "sources.title": "Sources",
+        "sources.notes_header": "Notes",
+        "sources.rename": "Rename",
+        "sources.retry": "Retry",
+        "sources.remove": "Delete Source",
+        "notes.convert_to_source": "Convert to Source",
+        "notes.delete": "Delete Note",
+        "chat.copy": "Copy",
+        "chat.save_note": "Save to Note",
+        "chat.regenerate": "Regenerate",
+        "chat.stop": "Stop",
+        "settings.quiz_view_mode": "Quiz View Mode",
+        "settings.quiz_submit_mode": "Quiz Submit Mode",
+        "quiz.view_continuous": "Continuous",
+        "quiz.view_one": "One by one",
+        "quiz.submit_manual": "Manual submit",
+        "quiz.submit_auto": "Auto submit",
         "sources.add": "+ Add source",
         "sources.add_file": "Local file (Docs / Images / Audio / Video)",
+        "sources.add_url": "Web URL",
         "sources.add_paste": "Paste text",
         "sources.create_note": "+ New note",
+        "sources.select_all": "Select all sources",
+        "sources.empty_hint": "Click \"+ Add source\" above to import documents, web pages, or pasted text.",
+        "sources.status_queued": "Queued",
+        "sources.status_parsing": "Parsing",
+        "sources.status_chunking": "Chunking",
+        "sources.status_embedding": "Indexing",
+        "sources.status_ready": "Ready",
+        "sources.status_failed": "Failed",
         "chat.empty_summary": "Add sources or start asking questions.",
         "chat.placeholder": "Ask a question or create content...",
         "chat.you": "You",
@@ -151,6 +229,10 @@ enum L10n {
         "studio.quiz": "Quiz",
         "studio.infographic": "Infographic",
         "studio.knowledge_graph": "Knowledge Graph",
+        "studio.empty_hint": "Pick a Studio tool above to generate audio overviews, slides, mind maps, or quizzes.",
+        "studio.rename": "Rename",
+        "studio.cancel": "Cancel",
+        "studio.delete": "Delete",
         "kg.build_btn": "Build Knowledge Graph",
         "kg.recommended": "AI Recommended: Build Knowledge Graph",
         "kg.action_quiz": "Quiz on this concept",

@@ -846,7 +846,11 @@ pub fn set_setting_json(db: &Database, key: &str, value: &serde_json::Value) -> 
 }
 
 /// Selects a model profile supporting the requested modality (`"vision" | "audio" | "video"`).
-/// Priority: active profile (if it supports the modality) -> most recently updated profile that supports it.
+/// Priority:
+/// 1. Explicit assignment in `app_settings["media_processing"]` (`vision_profile_id` / `audio_profile_id` / `video_profile_id`)
+///    if that profile exists and supports the modality.
+/// 2. Active profile (if it supports the modality).
+/// 3. Most recently updated profile that supports it.
 pub fn resolve_modality_profile(db: &Database, modality: &str) -> LnaResult<Option<ModelProfile>> {
     let profiles = list_profiles(db)?;
     let matches_modality = |p: &ModelProfile| -> bool {
@@ -857,6 +861,29 @@ pub fn resolve_modality_profile(db: &Database, modality: &str) -> LnaResult<Opti
             _ => false,
         }
     };
+    let setting_key = match modality {
+        "vision" => Some("vision_profile_id"),
+        "audio" => Some("audio_profile_id"),
+        "video" => Some("video_profile_id"),
+        _ => None,
+    };
+    if let Some(key) = setting_key {
+        if let Some(assigned_id) = get_setting_json(db, "media_processing")?
+            .and_then(|v| {
+                v.get(key)
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.trim().to_string())
+            })
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(explicit) = profiles
+                .iter()
+                .find(|p| p.id == assigned_id && matches_modality(p))
+            {
+                return Ok(Some(explicit.clone()));
+            }
+        }
+    }
     if let Some(active) = profiles.iter().find(|p| p.is_active && matches_modality(p)) {
         return Ok(Some(active.clone()));
     }

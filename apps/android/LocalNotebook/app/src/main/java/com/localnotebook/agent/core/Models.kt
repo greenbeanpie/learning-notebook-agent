@@ -112,3 +112,28 @@ data class ProviderPresetItem(
     val supportsVideo: Boolean,
     val extraHeaders: Map<String, String>,
 )
+
+data class ModelProfileItem(
+    val id: String,
+    val displayName: String,
+    val protocol: String,
+    val baseUrl: String,
+    val modelId: String,
+    val keychainRef: String,
+    val hasSecret: Boolean,
+    val isActive: Boolean,
+    val allowInsecureHttp: Boolean,
+    val contextWindow: Int,
+    val maxOutputTokens: Int,
+    val supportsVision: Boolean,
+    val supportsAudio: Boolean,
+    val supportsVideo: Boolean,
+    val extraHeaders: Map<String, String>,
+)
+
+data class MediaRoutingConfig(
+    val audioVideoEnabled: Boolean = true,
+    val visionProfileId: String = "",
+    val audioProfileId: String = "",
+    val videoProfileId: String = "",
+)

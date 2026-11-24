@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="128dp"
+    android:height="128dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <!-- Outer obsidian squircle badge -->
+    <path
+        android:fillColor="#191B20"
+        android:pathData="M136,24 L376,24 C437.86,24 488,74.14 488,136 L488,376 C488,437.86 437.86,488 376,488 L136,488 C74.14,488 24,437.86 24,376 L24,136 C24,74.14 74.14,24 136,24 Z" />
+    <!-- Stacked back page -->
+    <path
+        android:fillColor="#23262E"
+        android:fillAlpha="0.72"
+        android:strokeColor="#3C4048"
+        android:strokeWidth="4"
+        android:pathData="M182,102 L348,102 C366.78,102 382,117.22 382,136 L382,364 C382,382.78 366.78,398 348,398 L182,398 C163.22,398 148,382.78 148,364 L148,136 C148,117.22 163.22,102 182,102 Z" />
+    <!-- Main notebook cover -->
+    <path
+        android:fillColor="#252831"
+        android:strokeColor="#90B8FA"
+        android:strokeWidth="11"
+        android:pathData="M162,114 L328,114 C346.78,114 362,129.22 362,148 L362,376 C362,394.78 346.78,410 328,410 L162,410 C143.22,410 128,394.78 128,376 L128,148 C128,129.22 143.22,114 162,114 Z" />
+    <!-- Spine tint -->
+    <path
+        android:fillColor="#A8C7FA"
+        android:fillAlpha="0.20"
+        android:pathData="M162,119.5 L182,119.5 L182,404.5 L162,404.5 C146.26,404.5 133.5,391.74 133.5,376 L133.5,148 C133.5,132.26 146.26,119.5 162,119.5 Z" />
+    <path
+        android:strokeColor="#90B8FA"
+        android:strokeAlpha="0.65"
+        android:strokeWidth="6"
+        android:pathData="M182,119.5 L182,404.5" />
+    <!-- Bookmark ribbon -->
+    <path
+        android:fillColor="#F5B942"
+        android:pathData="M294,114 L326,114 L326,174 L310,160 L294,174 Z" />
+    <!-- Content lines -->
+    <path
+        android:strokeColor="#EEF2F8"
+        android:strokeWidth="13"
+        android:strokeLineCap="round"
+        android:pathData="M212,202 L322,202" />
+    <path
+        android:strokeColor="#BFC7D4"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:pathData="M212,244 L306,244" />
+    <path
+        android:strokeColor="#8C95A6"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:pathData="M212,286 L274,286" />
+    <!-- Primary AI sparkle -->
+    <path
+        android:fillColor="#90B8FA"
+        android:pathData="M348,286 C352,322 374,344 410,348 C374,352 352,374 348,410 C344,374 322,352 286,348 C322,344 344,322 348,286 Z" />
+    <!-- Secondary micro-sparkle -->
+    <path
+        android:fillColor="#E3EEFF"
+        android:fillAlpha="0.92"
+        android:pathData="M396,270 C398,284 406,292 420,294 C406,296 398,304 396,318 C394,304 386,296 372,294 C386,292 394,284 396,270 Z" />
+</vector>

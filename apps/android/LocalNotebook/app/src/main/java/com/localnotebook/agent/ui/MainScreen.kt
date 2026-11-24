@@ -227,8 +227,14 @@ fun MainScreen(vm: AppViewModel) {
         UnifiedSettingsSheet(
             prefs = state.prefs,
             presets = state.providerPresets,
+            profiles = state.modelProfiles,
+            mediaRouting = state.mediaRouting,
             onSavePrefs = vm::updatePreferences,
             onSaveModel = vm::saveModelProfile,
+            onDeleteProfile = vm::deleteModelProfile,
+            onTestProfile = vm::testModelProfile,
+            onClearKey = vm::clearModelKey,
+            onSaveMediaRouting = vm::saveMediaRouting,
             onDownloadEmbedding = vm::downloadEmbeddingModel,
             onDismiss = { vm.setShowSettings(false) },
         )

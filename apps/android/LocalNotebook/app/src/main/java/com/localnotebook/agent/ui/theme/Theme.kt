@@ -44,16 +44,68 @@ private val LightColors = lightColorScheme(
     outline = Color(0xFFD0D7DE),
 )
 
+private val MidnightColors = darkColorScheme(
+    primary = Color(0xFF818CF8),
+    onPrimary = Color(0xFF0D1117),
+    background = Color(0xFF0D1117),
+    onBackground = Color(0xFFE6EDF5),
+    surface = Color(0xFF161B26),
+    onSurface = Color(0xFFE6EDF5),
+    surfaceVariant = Color(0xFF1F2737),
+    onSurfaceVariant = Color(0xFFB8C4D8),
+    outline = Color(0xFF38455E),
+)
+
+private val ForestColors = darkColorScheme(
+    primary = Color(0xFF6EE7B7),
+    onPrimary = Color(0xFF0F1614),
+    background = Color(0xFF0F1614),
+    onBackground = Color(0xFFE4EFEA),
+    surface = Color(0xFF17221F),
+    onSurface = Color(0xFFE4EFEA),
+    surfaceVariant = Color(0xFF202E2A),
+    onSurfaceVariant = Color(0xFFB6CCC3),
+    outline = Color(0xFF354F47),
+)
+
+private val WarmPaperColors = lightColorScheme(
+    primary = Color(0xFFB45309),
+    onPrimary = Color.White,
+    background = Color(0xFFF5EFE6),
+    onBackground = Color(0xFF2C2218),
+    surface = Color(0xFFFFFDF8),
+    onSurface = Color(0xFF2C2218),
+    surfaceVariant = Color(0xFFEFE7DA),
+    onSurfaceVariant = Color(0xFF5B4B3A),
+    outline = Color(0xFFCBBBA4),
+)
+
+private val RoseDuskColors = darkColorScheme(
+    primary = Color(0xFFF4A5C4),
+    onPrimary = Color(0xFF161217),
+    background = Color(0xFF161217),
+    onBackground = Color(0xFFF1E8F2),
+    surface = Color(0xFF211B23),
+    onSurface = Color(0xFFF1E8F2),
+    surfaceVariant = Color(0xFF2C242F),
+    onSurfaceVariant = Color(0xFFCABCC9),
+    outline = Color(0xFF4E3F54),
+)
+
 @Composable
 fun LocalNotebookTheme(
     themeMode: String,
     baseFontSize: Int,
     content: @Composable () -> Unit,
 ) {
-    val dark = when (themeMode) {
-        "light" -> false
-        "system" -> isSystemInDarkTheme()
-        else -> true
+    val colorScheme = when (themeMode) {
+        "light" -> LightColors
+        "system" -> if (isSystemInDarkTheme()) DarkColors else LightColors
+        "midnight" -> MidnightColors
+        "forest" -> ForestColors
+        "warm_paper" -> WarmPaperColors
+        "rose_dusk" -> RoseDuskColors
+        else -> DarkColors
     }
     val fs = baseFontSize.coerceIn(13, 18)
     val typography = Typography(
@@ -65,7 +117,7 @@ fun LocalNotebookTheme(
     )
 
     MaterialTheme(
-        colorScheme = if (dark) DarkColors else LightColors,
+        colorScheme = colorScheme,
         typography = typography,
         content = content,
     )

@@ -35,11 +35,15 @@ public sealed partial class MainWindow
         var presetRes = await CoreAsync("profile.presets", Args(), L10n.T("settings.tab_models"));
         var presets = presetRes is { } pr ? Arr(pr, "presets").ToList() : new List<JsonElement>();
         var avEnabled = true;
+        string visionProfileId = "", audioProfileId = "", videoProfileId = "";
         var mediaSet = await Api.CallAsync("settings.get", Args(("key", "media_processing")));
         if (mediaSet.Result is { } ms && ms.TryGetProperty("value", out var mv) && mv.ValueKind == JsonValueKind.Object)
         {
             if (mv.TryGetProperty("audio_video_enabled", out var avp) && avp.ValueKind == JsonValueKind.False)
                 avEnabled = false;
+            visionProfileId = Str(mv, "vision_profile_id");
+            audioProfileId = Str(mv, "audio_profile_id");
+            videoProfileId = Str(mv, "video_profile_id");
         }
 
         // ---- Tab 1: Appearance & Interface ----
@@ -49,7 +53,16 @@ public sealed partial class MainWindow
         langBox.SelectedIndex = Math.Max(0, Array.FindIndex(langOpts, x => x.Item2 == L10n.Prefs.Language));
 
         var themeBox = new ComboBox { Header = L10n.T("settings.theme"), HorizontalAlignment = HorizontalAlignment.Stretch };
-        var themeOpts = new[] { (L10n.T("settings.theme_dark"), "dark"), (L10n.T("settings.theme_light"), "light"), (L10n.T("settings.theme_system"), "system") };
+        var themeOpts = new[]
+        {
+            (L10n.T("settings.theme_dark"), "dark"),
+            (L10n.T("settings.theme_light"), "light"),
+            (L10n.T("settings.theme_system"), "system"),
+            (L10n.T("settings.theme_midnight"), "midnight"),
+            (L10n.T("settings.theme_forest"), "forest"),
+            (L10n.T("settings.theme_warm_paper"), "warm_paper"),
+            (L10n.T("settings.theme_rose_dusk"), "rose_dusk"),
+        };
         foreach (var (lbl, tag) in themeOpts) themeBox.Items.Add(new ComboBoxItem { Content = lbl, Tag = tag });
         themeBox.SelectedIndex = Math.Max(0, Array.FindIndex(themeOpts, x => x.Item2 == L10n.Prefs.Theme));
 
@@ -270,8 +283,13 @@ public sealed partial class MainWindow
         void UpdateMediaSummary()
         {
             var chatModel = profiles.FirstOrDefault(p => Bool(p, "is_active"));
-            string PickMod(string capKey, string emptyLabel)
+            string PickMod(string explicitId, string capKey, string emptyLabel)
             {
+                if (!string.IsNullOrEmpty(explicitId))
+                {
+                    var exp = profiles.FirstOrDefault(p => Str(p, "id") == explicitId && Bool(Obj(p, "capabilities"), capKey));
+                    if (exp.ValueKind == JsonValueKind.Object) return Str(exp, "display_name");
+                }
                 if (chatModel.ValueKind == JsonValueKind.Object && Bool(Obj(chatModel, "capabilities"), capKey))
                     return Str(chatModel, "display_name");
                 var m = profiles.FirstOrDefault(p => Bool(Obj(p, "capabilities"), capKey));
@@ -279,8 +297,17 @@ public sealed partial class MainWindow
             }
             var chatName = chatModel.ValueKind == JsonValueKind.Object ? Str(chatModel, "display_name") : (L10n.IsEnglish ? "Not configured" : "未配置");
             mediaRoutingSummary.Text = L10n.IsEnglish
-                ? $"Current model routing:\n• Chat: {chatName}\n• Vision: {PickMod("supports_vision", "None (local OCR fallback)")}\n• Audio: {(audioVideoToggle.IsOn ? PickMod("supports_audio", "Not assigned") : "Disabled")}\n• Video: {(audioVideoToggle.IsOn ? PickMod("supports_video", "Not assigned") : "Disabled")}"
-                : $"当前多模型分配：\n• 默认对话：{chatName}\n• 图文处理：{PickMod("supports_vision", "未指定（将尝试本地 OCR）")}\n• 音频处理：{(audioVideoToggle.IsOn ? PickMod("supports_audio", "未指定") : "已关闭")}\n• 视频处理：{(audioVideoToggle.IsOn ? PickMod("supports_video", "未指定") : "已关闭")}";
+                ? $"Current model routing:\n• Chat: {chatName}\n• Vision: {PickMod(visionProfileId, "supports_vision", "None (local OCR fallback)")}\n• Audio: {(audioVideoToggle.IsOn ? PickMod(audioProfileId, "supports_audio", "Not assigned") : "Disabled")}\n• Video: {(audioVideoToggle.IsOn ? PickMod(videoProfileId, "supports_video", "Not assigned") : "Disabled")}"
+                : $"当前多模型分配：\n• 默认对话：{chatName}\n• 图文处理：{PickMod(visionProfileId, "supports_vision", "未指定（将尝试本地 OCR）")}\n• 音频处理：{(audioVideoToggle.IsOn ? PickMod(audioProfileId, "supports_audio", "未指定") : "已关闭")}\n• 视频处理：{(audioVideoToggle.IsOn ? PickMod(videoProfileId, "supports_video", "未指定") : "已关闭")}";
+        }
+
+        async Task SaveMediaSettingsAsync()
+        {
+            var args = new List<(string, object?)> { ("audio_video_enabled", audioVideoToggle.IsOn) };
+            if (!string.IsNullOrEmpty(visionProfileId)) args.Add(("vision_profile_id", visionProfileId));
+            if (!string.IsNullOrEmpty(audioProfileId)) args.Add(("audio_profile_id", audioProfileId));
+            if (!string.IsNullOrEmpty(videoProfileId)) args.Add(("video_profile_id", videoProfileId));
+            await Api.CallAsync("settings.set", Args(("key", "media_processing"), ("value", Args(args.ToArray()))));
         }
 
         void Fill(JsonElement? p)
@@ -475,7 +502,7 @@ public sealed partial class MainWindow
                 ? (L10n.IsEnglish ? "Saved (leave blank to keep)" : "已保存，留空则保持不变")
                 : (L10n.IsEnglish ? "Enter API Key (optional for local models)" : "输入 API Key（本地模型可留空）");
             if (makeActive) await CoreAsync("profile.activate", Args(("profile_id", profileId)), L10n.T("common.save"));
-            await Api.CallAsync("settings.set", Args(("key", "media_processing"), ("value", Args(("audio_video_enabled", audioVideoToggle.IsOn)))));
+            await SaveMediaSettingsAsync();
             status.Text = L10n.IsEnglish ? "Model profile saved." : "模型配置已保存。";
             var relist = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
             if (relist is { } rl)
@@ -506,7 +533,7 @@ public sealed partial class MainWindow
 
         audioVideoToggle.Toggled += async (_, _) =>
         {
-            await Api.CallAsync("settings.set", Args(("key", "media_processing"), ("value", Args(("audio_video_enabled", audioVideoToggle.IsOn)))));
+            await SaveMediaSettingsAsync();
             UpdateMediaSummary();
         };
 

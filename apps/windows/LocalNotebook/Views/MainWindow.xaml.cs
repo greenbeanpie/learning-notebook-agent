@@ -120,15 +120,123 @@ public sealed partial class MainWindow : Window
         ApplyUiPreferences();
     }
 
+    private static Windows.UI.Color HexColor(string hex)
+    {
+        var s = hex.TrimStart('#');
+        if (s.Length == 8)
+            return Windows.UI.Color.FromArgb(
+                Convert.ToByte(s[0..2], 16),
+                Convert.ToByte(s[2..4], 16),
+                Convert.ToByte(s[4..6], 16),
+                Convert.ToByte(s[6..8], 16));
+        return Windows.UI.Color.FromArgb(
+            255,
+            Convert.ToByte(s[0..2], 16),
+            Convert.ToByte(s[2..4], 16),
+            Convert.ToByte(s[4..6], 16));
+    }
+
+    private static void SetThemeBrush(string key, string hex)
+    {
+        if (Application.Current.Resources.TryGetValue(key, out var obj) && obj is Microsoft.UI.Xaml.Media.SolidColorBrush brush)
+            brush.Color = HexColor(hex);
+    }
+
     private void ApplyUiPreferences()
     {
-        var theme = L10n.Prefs.Theme switch
+        var t = L10n.Prefs.Theme;
+        var theme = t switch
         {
-            "light" => ElementTheme.Light,
+            "light" or "warm_paper" => ElementTheme.Light,
             "system" => ElementTheme.Default,
             _ => ElementTheme.Dark,
         };
         if (RootGrid != null) RootGrid.RequestedTheme = theme;
+
+        var isSysLight = t == "system" && Application.Current.RequestedTheme == ApplicationTheme.Light;
+        var paletteKey = isSysLight ? "light" : (t == "system" ? "dark" : t);
+        switch (paletteKey)
+        {
+            case "light":
+                SetThemeBrush("CanvasBgBrush", "#F4F6F9");
+                SetThemeBrush("PanelBgBrush", "#FFFFFF");
+                SetThemeBrush("ElevatedBgBrush", "#F0F3F8");
+                SetThemeBrush("HoverBgBrush", "#E5EAF2");
+                SetThemeBrush("SubtleBorderBrush", "#14000000");
+                SetThemeBrush("StrongBorderBrush", "#CBD5E1");
+                SetThemeBrush("TextPrimaryBrush", "#1F2328");
+                SetThemeBrush("TextSecondaryBrush", "#4B5563");
+                SetThemeBrush("TextMutedBrush", "#6B7280");
+                SetThemeBrush("AccentBlueBrush", "#1A73E8");
+                SetThemeBrush("AccentBlueTextBrush", "#FFFFFF");
+                break;
+            case "midnight":
+                SetThemeBrush("CanvasBgBrush", "#0D1117");
+                SetThemeBrush("PanelBgBrush", "#161B26");
+                SetThemeBrush("ElevatedBgBrush", "#1F2737");
+                SetThemeBrush("HoverBgBrush", "#293347");
+                SetThemeBrush("SubtleBorderBrush", "#24818CF8");
+                SetThemeBrush("StrongBorderBrush", "#38455E");
+                SetThemeBrush("TextPrimaryBrush", "#E6EDF5");
+                SetThemeBrush("TextSecondaryBrush", "#B8C4D8");
+                SetThemeBrush("TextMutedBrush", "#7D8DA6");
+                SetThemeBrush("AccentBlueBrush", "#818CF8");
+                SetThemeBrush("AccentBlueTextBrush", "#0D1117");
+                break;
+            case "forest":
+                SetThemeBrush("CanvasBgBrush", "#0F1614");
+                SetThemeBrush("PanelBgBrush", "#17221F");
+                SetThemeBrush("ElevatedBgBrush", "#202E2A");
+                SetThemeBrush("HoverBgBrush", "#2A3C37");
+                SetThemeBrush("SubtleBorderBrush", "#1F6EE7B7");
+                SetThemeBrush("StrongBorderBrush", "#354F47");
+                SetThemeBrush("TextPrimaryBrush", "#E4EFEA");
+                SetThemeBrush("TextSecondaryBrush", "#B6CCC3");
+                SetThemeBrush("TextMutedBrush", "#7F9A90");
+                SetThemeBrush("AccentBlueBrush", "#6EE7B7");
+                SetThemeBrush("AccentBlueTextBrush", "#0F1614");
+                break;
+            case "warm_paper":
+                SetThemeBrush("CanvasBgBrush", "#F5EFE6");
+                SetThemeBrush("PanelBgBrush", "#FFFDF8");
+                SetThemeBrush("ElevatedBgBrush", "#EFE7DA");
+                SetThemeBrush("HoverBgBrush", "#E5DAC9");
+                SetThemeBrush("SubtleBorderBrush", "#1F5C4630");
+                SetThemeBrush("StrongBorderBrush", "#CBBBA4");
+                SetThemeBrush("TextPrimaryBrush", "#2C2218");
+                SetThemeBrush("TextSecondaryBrush", "#5B4B3A");
+                SetThemeBrush("TextMutedBrush", "#83715D");
+                SetThemeBrush("AccentBlueBrush", "#B45309");
+                SetThemeBrush("AccentBlueTextBrush", "#FFFFFF");
+                break;
+            case "rose_dusk":
+                SetThemeBrush("CanvasBgBrush", "#161217");
+                SetThemeBrush("PanelBgBrush", "#211B23");
+                SetThemeBrush("ElevatedBgBrush", "#2C242F");
+                SetThemeBrush("HoverBgBrush", "#392F3D");
+                SetThemeBrush("SubtleBorderBrush", "#1FF4A5C4");
+                SetThemeBrush("StrongBorderBrush", "#4E3F54");
+                SetThemeBrush("TextPrimaryBrush", "#F1E8F2");
+                SetThemeBrush("TextSecondaryBrush", "#CABCC9");
+                SetThemeBrush("TextMutedBrush", "#958496");
+                SetThemeBrush("AccentBlueBrush", "#F4A5C4");
+                SetThemeBrush("AccentBlueTextBrush", "#161217");
+                break;
+            default:
+                SetThemeBrush("CanvasBgBrush", "#131314");
+                SetThemeBrush("PanelBgBrush", "#1E1F20");
+                SetThemeBrush("ElevatedBgBrush", "#282A2C");
+                SetThemeBrush("HoverBgBrush", "#333537");
+                SetThemeBrush("SubtleBorderBrush", "#14FFFFFF");
+                SetThemeBrush("StrongBorderBrush", "#3C4043");
+                SetThemeBrush("TextPrimaryBrush", "#E3E3E3");
+                SetThemeBrush("TextSecondaryBrush", "#C4C7C5");
+                SetThemeBrush("TextMutedBrush", "#8E918F");
+                SetThemeBrush("AccentBlueBrush", "#A8C7FA");
+                SetThemeBrush("AccentBlueTextBrush", "#131314");
+                break;
+        }
+
         ChatInputBox.FontSize = L10n.Prefs.FontSize;
         ApplyLocalization();
     }

@@ -35,6 +35,8 @@ data class AppUiState(
     val studioFullscreen: Boolean = false,
     val showSettings: Boolean = false,
     val providerPresets: List<ProviderPresetItem> = emptyList(),
+    val modelProfiles: List<ModelProfileItem> = emptyList(),
+    val mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
     val statusBanner: String = "",
     val isSendingChat: Boolean = false,
 )
@@ -63,6 +65,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             loadPreferences()
             loadProviderPresets()
+            loadModelProfiles()
+            loadMediaRouting()
             loadInitialNotebook()
             launch {
                 core.events.collect { ev ->
@@ -616,7 +620,84 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadModelProfiles() {
+        viewModelScope.launch {
+            runCatching {
+                val res = core.call("profile.list")
+                val arr = res.optJSONArray("profiles") ?: return@runCatching
+                val list = buildList {
+                    for (i in 0 until arr.length()) {
+                        val o = arr.optJSONObject(i) ?: continue
+                        val caps = o.optJSONObject("capabilities")
+                        val hdrObj = o.optJSONObject("extra_headers")
+                        val hdrMap = mutableMapOf<String, String>()
+                        if (hdrObj != null) {
+                            val keys = hdrObj.keys()
+                            while (keys.hasNext()) {
+                                val k = keys.next()
+                                hdrMap[k] = hdrObj.optString(k, "")
+                            }
+                        }
+                        add(
+                            ModelProfileItem(
+                                id = o.optString("id"),
+                                displayName = o.optString("display_name"),
+                                protocol = o.optString("protocol", "chat_completion"),
+                                baseUrl = o.optString("base_url"),
+                                modelId = o.optString("model_id"),
+                                keychainRef = o.optString("keychain_ref"),
+                                hasSecret = o.optBoolean("has_secret", false),
+                                isActive = o.optBoolean("is_active", false),
+                                allowInsecureHttp = o.optBoolean("allow_insecure_http", false),
+                                contextWindow = o.optInt("context_window", 32000),
+                                maxOutputTokens = o.optInt("max_output_tokens", 8000),
+                                supportsVision = caps?.optBoolean("supports_vision", false) ?: false,
+                                supportsAudio = caps?.optBoolean("supports_audio", false) ?: false,
+                                supportsVideo = caps?.optBoolean("supports_video", false) ?: false,
+                                extraHeaders = hdrMap,
+                            )
+                        )
+                    }
+                }
+                _ui.update { it.copy(modelProfiles = list) }
+            }
+        }
+    }
+
+    private fun loadMediaRouting() {
+        viewModelScope.launch {
+            runCatching {
+                val res = core.call("settings.get", JSONObject().put("key", "media_processing"))
+                val mv = res.optJSONObject("value") ?: return@runCatching
+                _ui.update {
+                    it.copy(
+                        mediaRouting = MediaRoutingConfig(
+                            audioVideoEnabled = mv.optBoolean("audio_video_enabled", true),
+                            visionProfileId = mv.optString("vision_profile_id", ""),
+                            audioProfileId = mv.optString("audio_profile_id", ""),
+                            videoProfileId = mv.optString("video_profile_id", ""),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun saveMediaRouting(cfg: MediaRoutingConfig) {
+        _ui.update { it.copy(mediaRouting = cfg) }
+        viewModelScope.launch {
+            runCatching {
+                val v = JSONObject().put("audio_video_enabled", cfg.audioVideoEnabled)
+                if (cfg.visionProfileId.isNotEmpty()) v.put("vision_profile_id", cfg.visionProfileId)
+                if (cfg.audioProfileId.isNotEmpty()) v.put("audio_profile_id", cfg.audioProfileId)
+                if (cfg.videoProfileId.isNotEmpty()) v.put("video_profile_id", cfg.videoProfileId)
+                core.call("settings.set", JSONObject().put("key", "media_processing").put("value", v))
+            }.onFailure { reportError(it) }
+        }
+    }
+
     fun saveModelProfile(
+        profileId: String? = null,
         protocol: String,
         baseUrl: String,
         modelId: String,
@@ -624,33 +705,77 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         extraHeaders: Map<String, String> = emptyMap(),
         contextWindow: Int = 32000,
         maxOutputTokens: Int = 8000,
+        activateChat: Boolean = true,
+        allowInsecureHttp: Boolean = false,
         supportsVision: Boolean = false,
         supportsAudio: Boolean = false,
         supportsVideo: Boolean = false,
     ) {
         viewModelScope.launch {
             runCatching {
-                val prof = core.call(
-                    "profile.upsert",
-                    JSONObject()
-                        .put("display_name", "$protocol / $modelId")
-                        .put("protocol", protocol)
-                        .put("base_url", baseUrl.trim())
-                        .put("model_id", modelId.trim())
-                        .put("context_window", contextWindow)
-                        .put("max_output_tokens", maxOutputTokens)
-                        .put("supports_vision", supportsVision)
-                        .put("supports_audio", supportsAudio)
-                        .put("supports_video", supportsVideo)
-                        .put("extra_headers", JSONObject(extraHeaders))
-                        .put("activate", true),
-                )
+                val body = JSONObject()
+                    .put("display_name", "$protocol / $modelId")
+                    .put("protocol", protocol)
+                    .put("base_url", baseUrl.trim())
+                    .put("model_id", modelId.trim())
+                    .put("context_window", contextWindow)
+                    .put("max_output_tokens", maxOutputTokens)
+                    .put("allow_insecure_http", allowInsecureHttp)
+                    .put("supports_vision", supportsVision)
+                    .put("supports_audio", supportsAudio)
+                    .put("supports_video", supportsVideo)
+                    .put("extra_headers", JSONObject(extraHeaders))
+                    .put("activate", activateChat)
+                if (!profileId.isNullOrEmpty()) body.put("id", profileId)
+                val prof = core.call("profile.upsert", body)
+                val newId = prof.optString("id")
                 val kref = prof.optString("keychain_ref")
                 if (kref.isNotEmpty() && apiKey.isNotEmpty()) {
                     core.persistSecret(kref, apiKey)
                     core.call("secret.set", JSONObject().put("keychain_ref", kref).put("secret", apiKey))
                 }
+                if (activateChat && newId.isNotEmpty()) {
+                    core.call("profile.activate", JSONObject().put("profile_id", newId))
+                }
+                loadModelProfiles()
                 _ui.update { it.copy(statusBanner = L10n.t("settings.saved", it.prefs.isEnglish)) }
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun deleteModelProfile(profileId: String) {
+        viewModelScope.launch {
+            runCatching {
+                core.call("profile.delete", JSONObject().put("profile_id", profileId))
+                loadModelProfiles()
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun testModelProfile(profileId: String) {
+        viewModelScope.launch {
+            runCatching {
+                val res = core.call("profile.test", JSONObject().put("profile_id", profileId))
+                val reply = res.optString("reply", "OK")
+                _ui.update {
+                    it.copy(
+                        statusBanner = if (it.prefs.isEnglish) "Connected: $reply" else "连接成功：$reply"
+                    )
+                }
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun clearModelKey(keychainRef: String) {
+        viewModelScope.launch {
+            runCatching {
+                core.call("secret.clear", JSONObject().put("keychain_ref", keychainRef))
+                loadModelProfiles()
+                _ui.update {
+                    it.copy(
+                        statusBanner = if (it.prefs.isEnglish) "API key cleared." else "密钥已清除。"
+                    )
+                }
             }.onFailure { reportError(it) }
         }
     }

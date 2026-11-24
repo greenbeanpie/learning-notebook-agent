@@ -52,3 +52,4 @@ __pycache__/
 *.swp
 .DS_Store
 Thumbs.db
+apps/macos/LocalNotebook/.build/

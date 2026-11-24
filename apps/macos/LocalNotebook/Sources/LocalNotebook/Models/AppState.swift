@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -15,6 +16,12 @@ struct SourceItem: Identifiable {
     let status: String
     var isSelected: Bool
     let recommendKnowledgeGraph: Bool
+}
+
+struct NoteItem: Identifiable {
+    let id: String
+    let title: String
+    let bodyMd: String
 }
 
 struct ArtifactSourceRefItem: Identifiable {
@@ -66,6 +73,7 @@ final class AppState: ObservableObject {
     @Published var summaryText: String = ""
     @Published var suggestedQuestions: [String] = []
     @Published var sources: [SourceItem] = []
+    @Published var notes: [NoteItem] = []
     @Published var messages: [ChatMessageItem] = []
     @Published var artifacts: [StudioArtifactItem] = []
     @Published var activeArtifact: StudioArtifactItem?
@@ -74,6 +82,11 @@ final class AppState: ObservableObject {
     @Published var activeAiActivity: String = ""
     @Published var studioThoughts: [String: [ThoughtStepItem]] = [:]
     @Published var showSettingsSheet: Bool = false
+    @Published var showPrivacySheet: Bool = false
+    @Published var isGeneratingChat: Bool = false
+    @Published var embeddingDownloadRunning: Bool = false
+    @Published var embeddingDownloadProgress: Double = 0
+    @Published var embeddingDownloadStatus: String = ""
 
     var isEnglish: Bool { prefs.isEnglish }
     func t(_ key: String) -> String { L10n.t(key, en: isEnglish) }
@@ -86,7 +99,39 @@ final class AppState: ObservableObject {
             core.onEvent = { [weak self] ev in
                 Task { @MainActor in
                     if ev.event == "source.status" || ev.event == "studio.status" || ev.event == "chat.finished" {
+                        if ev.event == "chat.finished" {
+                            self?.isGeneratingChat = false
+                        }
                         await self?.refreshAll()
+                    } else if ev.event == "embedding.download_progress" {
+                        let total = max(1, (ev.data["overall_total"] as? Int) ?? 1)
+                        let done = (ev.data["overall_done"] as? Int) ?? 0
+                        let file = ev.data["file"] as? String ?? ""
+                        let fileIdx = ((ev.data["file_index"] as? Int) ?? 0) + 1
+                        let fileCnt = (ev.data["file_count"] as? Int) ?? 1
+                        self?.embeddingDownloadRunning = true
+                        self?.embeddingDownloadProgress = Double(done) * 100.0 / Double(total)
+                        let en = self?.isEnglish ?? true
+                        self?.embeddingDownloadStatus = en
+                            ? "Downloading \(file) (\(fileIdx)/\(fileCnt)) — \(done / 1_000_000) / \(total / 1_000_000) MB"
+                            : "正在下载 \(file) (\(fileIdx)/\(fileCnt)) — \(done / 1_000_000) / \(total / 1_000_000) MB"
+                    } else if ev.event == "embedding.download_done" {
+                        self?.embeddingDownloadRunning = false
+                        let ok = ev.data["ok"] as? Bool ?? false
+                        let en = self?.isEnglish ?? true
+                        if ok {
+                            self?.embeddingDownloadProgress = 100
+                            self?.embeddingDownloadStatus = en ? "Semantic search model enabled." : "语义检索模型已启用。"
+                            self?.statusMessage = self?.embeddingDownloadStatus ?? ""
+                        } else if let err = ev.data["error"] as? [String: Any] {
+                            let code = err["code"] as? String ?? ""
+                            let msg = err["message"] as? String ?? ""
+                            if code != "CANCELLED" {
+                                self?.embeddingDownloadStatus = msg.isEmpty ? (en ? "Download failed." : "下载失败。") : msg
+                            } else {
+                                self?.embeddingDownloadStatus = en ? "Download cancelled." : "已取消下载。"
+                            }
+                        }
                     } else if ev.event == "studio.thought" {
                         if let aid = ev.data["artifact_id"] as? String {
                             let kind = ev.data["kind"] as? String ?? "stage"
@@ -213,6 +258,16 @@ final class AppState: ObservableObject {
                 )
             }
 
+            if let noteRes = try? await core.call(method: "note.list", params: ["notebook_id": activeNotebookId]) {
+                notes = (noteRes["notes"] as? [[String: Any]] ?? []).map {
+                    NoteItem(
+                        id: $0["id"] as? String ?? "",
+                        title: $0["title"] as? String ?? "Note",
+                        bodyMd: $0["body_md"] as? String ?? ""
+                    )
+                }
+            }
+
             let chatRes = try await core.call(method: "chat.history", params: ["notebook_id": activeNotebookId])
             messages = (chatRes["messages"] as? [[String: Any]] ?? []).map { m in
                 let rawTh = m["thoughts"] as? [[String: Any]] ?? []
@@ -272,11 +327,46 @@ final class AppState: ObservableObject {
 
     func sendChat(_ text: String) async {
         guard !activeNotebookId.isEmpty, !text.isEmpty else { return }
+        isGeneratingChat = true
         do {
             _ = try await core.call(method: "chat.send", params: ["notebook_id": activeNotebookId, "text": text])
             await refreshAll()
         } catch {
             statusMessage = error.localizedDescription
+        }
+        isGeneratingChat = false
+    }
+
+    func cancelChat() async {
+        guard !activeNotebookId.isEmpty else { return }
+        _ = try? await core.call(method: "chat.cancel", params: ["notebook_id": activeNotebookId])
+        isGeneratingChat = false
+    }
+
+    func regenerateChat() async {
+        guard !activeNotebookId.isEmpty else { return }
+        isGeneratingChat = true
+        do {
+            _ = try await core.call(method: "chat.regenerate", params: ["notebook_id": activeNotebookId])
+            await refreshAll()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+        isGeneratingChat = false
+    }
+
+    func exportDiagnostics() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "diagnostics.json"
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                do {
+                    _ = try await core.call(method: "diagnostics.export", params: ["out_path": url.path])
+                    statusMessage = isEnglish ? "Diagnostics exported: \(url.lastPathComponent)" : "已导出诊断包：\(url.lastPathComponent)"
+                } catch {
+                    statusMessage = error.localizedDescription
+                }
+            }
         }
     }
 
