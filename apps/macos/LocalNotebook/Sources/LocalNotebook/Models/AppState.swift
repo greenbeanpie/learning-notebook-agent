@@ -80,6 +80,7 @@ final class AppState: ObservableObject {
     @Published var studioFullscreen: Bool = false
     @Published var statusMessage: String = ""
     @Published var showCreateNotebookSheet = false
+    @Published var indexingSourceIds: Set<String> = []
     @Published var activeAiActivity: String = ""
     @Published var studioThoughts: [String: [ThoughtStepItem]] = [:]
     @Published var showSettingsSheet: Bool = false
@@ -170,7 +171,14 @@ final class AppState: ObservableObject {
                         let active = ev.data["active"] as? Bool ?? false
                         let title = ev.data["title"] as? String ?? ""
                         let body = ev.data["body"] as? String ?? ""
-                        if active && !title.isEmpty {
+                        if (ev.data["scope"] as? String) == "source_index" {
+                            // Spinner on the source row instead of a status banner.
+                            let sid = ev.data["source_id"] as? String ?? ""
+                            if active { self?.indexingSourceIds.insert(sid) } else {
+                                self?.indexingSourceIds.remove(sid)
+                                Task { await self?.refreshAll() }
+                            }
+                        } else if active && !title.isEmpty {
                             self?.activeAiActivity = body.isEmpty ? title : "\(title) — \(body)"
                             self?.statusMessage = self?.activeAiActivity ?? ""
                         } else if !active {

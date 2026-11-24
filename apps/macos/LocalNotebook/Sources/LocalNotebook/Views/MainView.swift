@@ -402,7 +402,9 @@ struct MainView: View {
                         .lineLimit(1)
                         .font(.system(size: 13))
                         .foregroundColor(palette.textPrimary)
-                    if src.status != "READY" {
+                    if state.indexingSourceIds.contains(src.id) {
+                        ProgressView().controlSize(.small)
+                    } else if src.status != "READY" {
                         Text(sourceStatusLabel(src.status))
                             .font(.system(size: 11))
                             .foregroundColor(src.status == "FAILED" ? Color(hex: 0xFFA08C) : palette.textMuted)

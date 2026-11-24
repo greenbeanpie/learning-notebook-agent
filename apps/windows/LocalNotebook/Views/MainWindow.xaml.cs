@@ -797,6 +797,19 @@ public sealed partial class MainWindow : Window
                     case "ai.activity":
                     {
                         var act = ev.Data.TryGetProperty("active", out var aEl) && aEl.ValueKind == JsonValueKind.True;
+                        if (Str(ev.Data, "scope") == "source_index")
+                        {
+                            // Shown as an in-card spinner instead of a banner.
+                            var sid = Str(ev.Data, "source_id");
+                            if (act) _guideIndexing.Add(sid);
+                            else
+                            {
+                                _guideIndexing.Remove(sid);
+                                await RefreshNotebookDataAsync();
+                                if (_sourcePreviewOpen && _previewSourceId == sid) _ = ShowSourcePreviewAsync(sid, null, null, null);
+                            }
+                            break;
+                        }
                         var title = Str(ev.Data, "title");
                         var body = Str(ev.Data, "body");
                         if (act && !string.IsNullOrEmpty(title))

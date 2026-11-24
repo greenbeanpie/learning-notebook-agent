@@ -472,6 +472,7 @@ public sealed partial class MainWindow
     private const string ChevronDownIconPath = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z";
 
     private bool _sourcePreviewOpen;
+    private string _previewSourceId = "";
     private bool _sourceFullscreen;
     private PathIcon? _sourceFullscreenIcon;
     private WebView2? _sourcePreviewWebView;
@@ -677,6 +678,9 @@ public sealed partial class MainWindow
             _kgProgressBar.Value = prog * 100;
         }
     }
+
+    private readonly HashSet<string> _guideIndexing = new();
+    private readonly HashSet<string> _guideAutoTried = new();
 
     private FrameworkElement BuildSourceGuideCard(
         string sourceId,
@@ -1011,38 +1015,52 @@ public sealed partial class MainWindow
         }
         else
         {
+            // Guide is generated automatically after import: show a spinner while it runs
+            // (and kick it off once if it never started, e.g. model configured later).
             var hintRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
-            hintRow.Children.Add(new TextBlock
+            var ring = new ProgressRing { Width = 18, Height = 18, IsActive = true, VerticalAlignment = VerticalAlignment.Center };
+            var hintText = new TextBlock
             {
-                Text = L10n.T("sources.guide_missing"),
+                Text = L10n.T("sources.guide_generating"),
                 FontSize = 12,
                 Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
                 VerticalAlignment = VerticalAlignment.Center,
                 TextWrapping = TextWrapping.Wrap,
-            });
-            var genBtn = new Button
+            };
+            var retryBtn = new Button
             {
                 Content = L10n.T("sources.gen_guide"),
                 FontSize = 12,
                 Padding = new Thickness(10, 4, 10, 4),
                 CornerRadius = new CornerRadius(12),
+                Visibility = Visibility.Collapsed,
             };
-            genBtn.Click += async (_, _) =>
+            async Task RunGuideAsync()
             {
-                genBtn.IsEnabled = false;
-                genBtn.Content = L10n.T("sources.guide_generating");
+                retryBtn.Visibility = Visibility.Collapsed;
+                ring.IsActive = true; ring.Visibility = Visibility.Visible;
+                hintText.Text = L10n.T("sources.guide_generating");
+                _guideAutoTried.Add(sourceId);
                 var g = await CoreAsync("source.generate_guide", Args(("source_id", sourceId)), L10n.T("sources.op_gen_guide"));
                 if (g != null)
                 {
-                    await ShowSourcePreviewAsync(sourceId, null, null, sourceTitle);
+                    if (_sourcePreviewOpen) await ShowSourcePreviewAsync(sourceId, null, null, sourceTitle);
                 }
                 else
                 {
-                    genBtn.IsEnabled = true;
-                    genBtn.Content = L10n.T("sources.gen_guide");
+                    ring.IsActive = false; ring.Visibility = Visibility.Collapsed;
+                    hintText.Text = L10n.T("sources.guide_missing");
+                    retryBtn.Visibility = Visibility.Visible;
                 }
-            };
-            hintRow.Children.Add(genBtn);
+            }
+            retryBtn.Click += async (_, _) => await RunGuideAsync();
+            hintRow.Children.Add(ring);
+            hintRow.Children.Add(hintText);
+            hintRow.Children.Add(retryBtn);
+            if (!_guideIndexing.Contains(sourceId) && !_guideAutoTried.Contains(sourceId))
+            {
+                _ = RunGuideAsync();
+            }
             body.Children.Add(hintRow);
         }
 
@@ -1555,6 +1573,7 @@ public sealed partial class MainWindow
         container.Children.Add(contentHost);
 
         _sourcePreviewOpen = true;
+        _previewSourceId = sourceId;
         if (_studioFullscreen)
         {
             _studioFullscreen = false;

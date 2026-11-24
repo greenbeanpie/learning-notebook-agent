@@ -96,6 +96,7 @@ fun SourcesScreen(
         if (openSrc != null) {
             SourceGuideDetailCard(
                 source = openSrc,
+                indexing = openSrc.id in state.indexingSourceIds,
                 en = en,
                 onClose = { onOpenSource(openSrc) },
                 onOpenPdf = { onOpenPdf(openSrc, 1) },
@@ -140,7 +141,9 @@ fun SourcesScreen(
                             Spacer(Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(src.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                                if (src.status != "READY") {
+                                if (src.id in state.indexingSourceIds) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                } else if (src.status != "READY") {
                                     Text(src.status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
@@ -243,6 +246,7 @@ fun SourcesScreen(
 @Composable
 private fun SourceGuideDetailCard(
     source: SourceItem,
+    indexing: Boolean,
     en: Boolean,
     onClose: () -> Unit,
     onOpenPdf: () -> Unit,
@@ -264,6 +268,13 @@ private fun SourceGuideDetailCard(
                     TextButton(onClick = onOpenPdf) { Text("PDF") }
                 }
                 TextButton(onClick = onClose) { Text(L10n.t("common.close", en)) }
+            }
+
+            if (source.guideSummaryMd.isEmpty() && indexing) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text(L10n.t("sources.guide_generating", en), style = MaterialTheme.typography.bodyMedium, color = Color(0xFFCED4E4))
+                }
             }
 
             if (source.guideSummaryMd.isNotEmpty()) {

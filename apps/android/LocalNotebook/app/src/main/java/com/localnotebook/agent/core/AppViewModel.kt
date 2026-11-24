@@ -40,6 +40,7 @@ data class AppUiState(
     val statusBanner: String = "",
     val isSendingChat: Boolean = false,
     val showCreateNotebook: Boolean = false,
+    val indexingSourceIds: Set<String> = emptySet(),
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -111,6 +112,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             val active = ev.data.optBoolean("active", false)
                             val title = ev.data.optString("title")
                             val body = ev.data.optString("body")
+                            if (ev.data.optString("scope") == "source_index") {
+                                // Shown as an in-place spinner on the source, not a banner.
+                                val sid = ev.data.optString("source_id")
+                                _ui.update { st ->
+                                    st.copy(indexingSourceIds = if (active) st.indexingSourceIds + sid else st.indexingSourceIds - sid)
+                                }
+                                if (!active) refreshAll()
+                                return@collect
+                            }
                             _ui.update { st ->
                                 st.copy(
                                     statusBanner = if (active && title.isNotEmpty()) {
@@ -152,7 +162,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun toggleStudioFullscreen() = _ui.update { it.copy(studioFullscreen = !it.studioFullscreen) }
-    fun openSourcePreview(src: SourceItem?) = _ui.update { it.copy(activeSourcePreview = src) }
+    fun openSourcePreview(src: SourceItem?) {
+        _ui.update { it.copy(activeSourcePreview = src) }
+        // Guide is generated automatically; kick it off if it never ran for this ready source.
+        if (src != null && src.status == "READY" && src.guideSummaryMd.isEmpty() && src.id !in _ui.value.indexingSourceIds) {
+            viewModelScope.launch {
+                _ui.update { it.copy(indexingSourceIds = it.indexingSourceIds + src.id) }
+                runCatching { core.call("source.generate_guide", JSONObject().put("source_id", src.id)) }
+                _ui.update { it.copy(indexingSourceIds = it.indexingSourceIds - src.id) }
+                refreshAll()
+            }
+        }
+    }
     fun closePdfPreview() = _ui.update { it.copy(pdfPreview = null) }
     fun dismissCitation() = _ui.update { it.copy(activeCitation = null) }
 
