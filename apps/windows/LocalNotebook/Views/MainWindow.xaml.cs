@@ -292,19 +292,15 @@ public sealed partial class MainWindow : Window
         {
             _activeNotebookId = Str(first, "id");
             _activeNotebookTitle = Str(first, "title");
+            SetTitleDisplay();
+            await RefreshNotebookPickerAsync();
+            await RefreshNotebookDataAsync();
         }
         else
         {
-            var created = await CoreAsync("notebook.create", Args(("title", L10n.T("nb.untitled"))), L10n.T("nb.op_create"));
-            if (created is { } cr)
-            {
-                _activeNotebookId = Str(cr, "id");
-                _activeNotebookTitle = Str(cr, "title");
-            }
+            ShowNoNotebookState();
+            await ShowCreateNotebookDialogAsync();
         }
-        NotebookTitleText.Text = _activeNotebookTitle.Length > 0 ? _activeNotebookTitle : L10n.T("nb.untitled");
-        await RefreshNotebookPickerAsync();
-        await RefreshNotebookDataAsync();
         if (!await WarnIfNoModelAsync()) await ShowOnboardingIfFirstRunAsync();
     }
 
@@ -379,28 +375,199 @@ public sealed partial class MainWindow : Window
         _streaming = null;
         var nb = await CoreAsync("notebook.get", Args(("notebook_id", id)), L10n.T("nb.op_load"));
         _activeNotebookTitle = nb is { } n ? Str(n, "title") : "";
-        NotebookTitleText.Text = _activeNotebookTitle.Length > 0 ? _activeNotebookTitle : L10n.T("nb.untitled");
+        SetTitleDisplay();
         await RefreshNotebookPickerAsync();
         await RefreshNotebookDataAsync();
     }
 
-    private async void OnNewNotebookClick(object sender, RoutedEventArgs e)
-    {
-        var res = await CoreAsync("notebook.create", Args(("title", L10n.T("nb.new_title"))), L10n.T("nb.new"));
-        if (res is { } r) await SwitchNotebookAsync(Str(r, "id"));
-    }
+    private async void OnNewNotebookClick(object sender, RoutedEventArgs e) => await ShowCreateNotebookDialogAsync();
 
-    private async void OnRenameNotebookClick(object sender, RoutedEventArgs e)
+    private void OnRenameNotebookClick(object sender, RoutedEventArgs e)
     {
         if (_activeNotebookId == null) return;
-        var name = await PromptTextAsync(L10n.T("nb.rename"), L10n.T("common.name"), _activeNotebookTitle);
-        if (string.IsNullOrWhiteSpace(name)) return;
-        if (await CoreAsync("notebook.rename", Args(("notebook_id", _activeNotebookId), ("title", name.Trim())), L10n.T("nb.op_rename")) != null)
+        NotebookTitleText.Focus(FocusState.Programmatic);
+        NotebookTitleText.SelectAll();
+    }
+
+    // ---------- inline title editing ----------
+
+    private bool _titleCommitting;
+
+    private void SetTitleDisplay()
+    {
+        NotebookTitleText.IsEnabled = _activeNotebookId != null;
+        NotebookTitleText.PlaceholderText = L10n.T("nb.none_hint");
+        NotebookTitleText.Text = _activeNotebookId != null ? _activeNotebookTitle : "";
+        ToolTipService.SetToolTip(NotebookTitleText, L10n.T("nb.title_edit_hint"));
+    }
+
+    private void OnTitleBoxPointerEntered(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (NotebookTitleText.FocusState == FocusState.Unfocused && NotebookTitleText.IsEnabled)
+            NotebookTitleText.BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["StrongBorderBrush"];
+    }
+
+    private void OnTitleBoxPointerExited(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (NotebookTitleText.FocusState == FocusState.Unfocused)
+            NotebookTitleText.BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+    }
+
+    private void OnTitleBoxGotFocus(object sender, RoutedEventArgs e)
+    {
+        NotebookTitleText.BorderBrush = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"];
+        NotebookTitleText.SelectAll();
+    }
+
+    private async void OnTitleBoxLostFocus(object sender, RoutedEventArgs e)
+    {
+        NotebookTitleText.BorderBrush = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        await CommitTitleAsync();
+    }
+
+    private void OnTitleBoxKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (e.Key == Windows.System.VirtualKey.Enter)
         {
-            _activeNotebookTitle = name.Trim();
-            NotebookTitleText.Text = _activeNotebookTitle;
-            await RefreshNotebookPickerAsync();
+            e.Handled = true;
+            ChatInputBox.Focus(FocusState.Programmatic); // moves focus away -> LostFocus commits
         }
+        else if (e.Key == Windows.System.VirtualKey.Escape)
+        {
+            e.Handled = true;
+            NotebookTitleText.Text = _activeNotebookTitle; // revert; commit becomes a no-op
+            ChatInputBox.Focus(FocusState.Programmatic);
+        }
+    }
+
+    private async Task CommitTitleAsync()
+    {
+        if (_titleCommitting || _activeNotebookId == null) return;
+        var name = NotebookTitleText.Text.Trim();
+        if (name.Length == 0 || name == _activeNotebookTitle)
+        {
+            NotebookTitleText.Text = _activeNotebookTitle;
+            return;
+        }
+        _titleCommitting = true;
+        try
+        {
+            if (await CoreAsync("notebook.rename", Args(("notebook_id", _activeNotebookId), ("title", name)), L10n.T("nb.op_rename")) != null)
+            {
+                _activeNotebookTitle = name;
+                await RefreshNotebookPickerAsync();
+            }
+            else NotebookTitleText.Text = _activeNotebookTitle;
+        }
+        finally { _titleCommitting = false; }
+    }
+
+    // ---------- create-notebook dialog ----------
+
+    private bool _createDialogOpen;
+
+    private void ShowNoNotebookState()
+    {
+        _activeNotebookId = null;
+        _activeNotebookTitle = "";
+        _streaming = null;
+        CloseSourcePreview();
+        CloseArtifactInline();
+        SetTitleDisplay();
+        _loadingPicker = true;
+        try { NotebookPicker.Items.Clear(); } finally { _loadingPicker = false; }
+        RenderSources(null, null);
+        ChatList.Items.Clear();
+        SummaryText.Text = "";
+        SuggestedPanel.Children.Clear();
+        using var empty = JsonDocument.Parse("{\"artifacts\":[]}");
+        RenderArtifacts(empty.RootElement.Clone());
+    }
+
+    /// <summary>Modal dialog: name, details, optional source files. Returns true when a notebook was created.</summary>
+    private async Task<bool> ShowCreateNotebookDialogAsync()
+    {
+        if (_createDialogOpen) return false;
+        _createDialogOpen = true;
+        try
+        {
+            var nameBox = new TextBox { Header = L10n.T("nb.dlg_name"), PlaceholderText = L10n.T("nb.dlg_name_ph"), MinWidth = 460, MaxLength = 120 };
+            var descHint = new TextBlock { Text = L10n.T("nb.dlg_ai_hint"), TextWrapping = TextWrapping.Wrap, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"] };
+            var files = new List<string>();
+            var fileList = new StackPanel { Spacing = 4 };
+            var addBtn = new Button { Content = L10n.T("nb.dlg_add_files") };
+            var srcHeader = new TextBlock { Text = L10n.T("nb.dlg_sources"), Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"] };
+            var panel = new StackPanel { Spacing = 12 };
+            panel.Children.Add(nameBox);
+            panel.Children.Add(descHint);
+            panel.Children.Add(srcHeader);
+            panel.Children.Add(addBtn);
+            panel.Children.Add(fileList);
+
+            var dlg = new ContentDialog
+            {
+                Title = L10n.T("nb.new"),
+                Content = new ScrollViewer { Content = panel, MaxHeight = 520 },
+                PrimaryButtonText = L10n.T("common.create"),
+                CloseButtonText = L10n.T("common.cancel"),
+                DefaultButton = ContentDialogButton.Primary,
+                IsPrimaryButtonEnabled = false,
+                XamlRoot = Content.XamlRoot,
+            };
+            nameBox.TextChanged += (_, _) => dlg.IsPrimaryButtonEnabled = !string.IsNullOrWhiteSpace(nameBox.Text);
+            void Rebuild()
+            {
+                fileList.Children.Clear();
+                foreach (var f in files.ToList())
+                {
+                    var row = new Grid { ColumnSpacing = 8 };
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    var t = new TextBlock { Text = System.IO.Path.GetFileName(f), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+                    ToolTipService.SetToolTip(t, f);
+                    var rm = new Button { Content = "✕", Padding = new Thickness(8, 2, 8, 2) };
+                    Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(rm, L10n.T("common.delete"));
+                    var captured = f;
+                    rm.Click += (_, _) => { files.Remove(captured); Rebuild(); };
+                    Grid.SetColumn(rm, 1);
+                    row.Children.Add(t);
+                    row.Children.Add(rm);
+                    fileList.Children.Add(row);
+                }
+            }
+            addBtn.Click += async (_, _) =>
+            {
+                var picked = await PickOpenFilesAsync();
+                foreach (var f in picked) if (!files.Contains(f)) files.Add(f);
+                Rebuild();
+            };
+
+            if (await dlg.ShowAsync() != ContentDialogResult.Primary) return false;
+
+            var args = Args(("title", nameBox.Text.Trim()));
+            var created = await CoreAsync("notebook.create", args, L10n.T("nb.op_create"));
+            if (created is not { } cr) return false;
+            var id = Str(cr, "id");
+            await SwitchNotebookAsync(id);
+            if (files.Count > 0)
+            {
+                ShowStatus(InfoBarSeverity.Informational, L10n.T("sources.op_add"), string.Join(", ", files.Select(f => System.IO.Path.GetFileName(f))));
+                if (await CoreAsync("source.add_files", Args(("notebook_id", id), ("paths", files.ToArray())), L10n.T("sources.op_add")) != null)
+                    StatusBar.IsOpen = false;
+                await RefreshNotebookDataAsync();
+            }
+            return true;
+        }
+        finally { _createDialogOpen = false; }
+    }
+
+    private async Task<List<string>> PickOpenFilesAsync()
+    {
+        var picker = new FileOpenPicker();
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+        picker.FileTypeFilter.Add("*");
+        var picked = await picker.PickMultipleFilesAsync();
+        return picked?.Select(f => f.Path).ToList() ?? new List<string>();
     }
 
     private async void OnDeleteNotebookClick(object sender, RoutedEventArgs e)
@@ -416,8 +583,8 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            var created = await CoreAsync("notebook.create", Args(("title", L10n.T("nb.untitled"))), L10n.T("nb.op_create"));
-            if (created is { } c) await SwitchNotebookAsync(Str(c, "id"));
+            ShowNoNotebookState();
+            await ShowCreateNotebookDialogAsync();
         }
     }
 

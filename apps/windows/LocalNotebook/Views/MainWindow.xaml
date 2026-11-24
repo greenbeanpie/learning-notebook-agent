@@ -26,7 +26,10 @@
                         <SvgImageSource UriSource="ms-appx:///Assets/logo.svg" />
                     </Image.Source>
                 </Image>
-                <TextBlock x:Name="NotebookTitleText" Text="Local Notebook Agent" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center" />
+                <TextBox x:Name="NotebookTitleText" FontSize="18" FontWeight="SemiBold" MinWidth="120" MaxWidth="360" MaxLength="120"
+                         Foreground="{StaticResource TextPrimaryBrush}" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" Padding="8,4"
+                         VerticalAlignment="Center" VerticalContentAlignment="Center" AcceptsReturn="False"
+                         GotFocus="OnTitleBoxGotFocus" LostFocus="OnTitleBoxLostFocus" KeyDown="OnTitleBoxKeyDown" PointerEntered="OnTitleBoxPointerEntered" PointerExited="OnTitleBoxPointerExited" />
                 <ComboBox x:Name="NotebookPicker" MinWidth="190" MinHeight="38" Padding="12,8" VerticalAlignment="Center"
                           SelectionChanged="OnNotebookPicked" />
             </StackPanel>
