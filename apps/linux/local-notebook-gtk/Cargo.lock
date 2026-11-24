@@ -2050,6 +2050,7 @@ dependencies = [
  "glib",
  "gtk4",
  "lna-api",
+ "lna-studio",
  "lna-types",
  "serde_json",
 ]

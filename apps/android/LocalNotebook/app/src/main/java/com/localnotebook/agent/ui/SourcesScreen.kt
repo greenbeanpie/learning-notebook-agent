@@ -278,8 +278,8 @@ private fun SourceGuideDetailCard(
             }
 
             if (source.guideSummaryMd.isNotEmpty()) {
-                Text(
-                    source.guideSummaryMd.replace("**", ""),
+                MarkdownText(
+                    markdown = source.guideSummaryMd,
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color(0xFFCED4E4),
                 )

@@ -391,18 +391,11 @@ private fun ArtifactViewerScreen(
                     )
                 }
 
-                artifact.artifactType == "report" -> {
-                    val sections = artifact.payload.optJSONArray("sections")
-                    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        if (sections != null) {
-                            for (i in 0 until sections.length()) {
-                                val sec = sections.getJSONObject(i)
-                                Text(sec.optString("heading"), style = MaterialTheme.typography.titleMedium)
-                                Text(sec.optString("body_md"), style = MaterialTheme.typography.bodyLarge)
-                            }
-                        }
-                    }
-                }
+                artifact.artifactType == "report" -> ReportReadableView(artifact.payload, en)
+                artifact.artifactType == "quiz" -> QuizReadableView(artifact.payload, en)
+                artifact.artifactType == "flashcards" -> FlashcardsReadableView(artifact.payload, en)
+                artifact.artifactType == "audio" -> AudioScriptReadableView(artifact.payload)
+                artifact.artifactType == "infographic" -> InfographicReadableView(artifact.payload)
 
                 else -> {
                     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {

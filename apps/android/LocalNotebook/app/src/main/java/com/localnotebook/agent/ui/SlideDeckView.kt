@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -236,12 +237,11 @@ private fun SlideStageCanvas(slide: JSONObject, idx: Int, total: Int, deckTitle:
             val formula = slide.optString("formula")
             if (formula.isNotBlank()) {
                 Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        formula,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold,
+                    MarkdownText(
+                        markdown = "$$" + formula.trim().removePrefix("$$").removeSuffix("$$").trim('$') + "$$",
+                        style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
                         color = Color.White,
-                        fontSize = 13.sp,
+                        selectable = false,
                         modifier = Modifier.padding(10.dp),
                     )
                 }
@@ -255,7 +255,7 @@ private fun SlideStageCanvas(slide: JSONObject, idx: Int, total: Int, deckTitle:
                         Surface(color = Color.White, shape = RoundedCornerShape(6.dp), border = BorderStroke(1.dp, Color(0xFFE2E8F0)), modifier = Modifier.weight(1f)) {
                             Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(c.optString("title"), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0F172A))
-                                Text(c.optString("body"), fontSize = 10.sp, color = Color(0xFF334155))
+                                MarkdownInline(c.optString("body"), style = TextStyle(fontSize = 10.sp), color = Color(0xFF334155))
                             }
                         }
                     }
@@ -267,7 +267,7 @@ private fun SlideStageCanvas(slide: JSONObject, idx: Int, total: Int, deckTitle:
                 for (i in 0 until minOf(bullets.length(), 6)) {
                     val b = bullets.optString(i)
                     if (b.isNotBlank()) {
-                        Text("▸ $b", fontSize = 11.5.sp, color = fgBody, lineHeight = 16.sp)
+                        MarkdownInline("▸ $b", style = TextStyle(fontSize = 11.5.sp, lineHeight = 16.sp), color = fgBody)
                     }
                 }
             }

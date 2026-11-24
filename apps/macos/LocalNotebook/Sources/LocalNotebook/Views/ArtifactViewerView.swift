@@ -110,6 +110,15 @@ struct ArtifactViewerView: View {
                 feedbackBar
             } else if artifact.artifactType == "infographic" {
                 infographicBody
+            } else if artifact.artifactType == "quiz" {
+                QuizReadableView(payload: artifact.payload, en: state.isEnglish)
+                feedbackBar
+            } else if artifact.artifactType == "flashcards" {
+                FlashcardsReadableView(payload: artifact.payload, en: state.isEnglish)
+                feedbackBar
+            } else if artifact.artifactType == "audio" {
+                AudioScriptReadableView(payload: artifact.payload)
+                feedbackBar
             } else {
                 ScrollView {
                     Text(prettyPayload(artifact.payload))
@@ -265,8 +274,8 @@ struct ArtifactViewerView: View {
                     .frame(maxHeight: .infinity)
             } else {
                 ScrollView {
-                    Text(LocalizedStringKey(draftText))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    MarkdownView(markdown: draftText)
+                        .textSelection(.enabled)
                         .padding(12)
                 }
                 .background(Color(white: 0.16))
@@ -334,7 +343,7 @@ struct ArtifactViewerView: View {
                                 Text(sec["heading"] as? String ?? "")
                                     .font(.title3.bold())
                                     .id(idx)
-                                Text(LocalizedStringKey(sec["body_md"] as? String ?? ""))
+                                ReportSectionView(section: sec, en: state.isEnglish)
                                     .textSelection(.enabled)
                             }
                         }
@@ -364,7 +373,7 @@ struct ArtifactViewerView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(blk["heading"] as? String ?? "").font(.headline).foregroundColor(Color(red: 23/255, green: 58/255, blue: 122/255))
                                     Text(blk["metric"] as? String ?? "").font(.title.bold()).foregroundColor(.blue)
-                                    Text(blk["summary"] as? String ?? "").font(.caption).foregroundColor(.black.opacity(0.8))
+                                    MarkdownInlineText(text: blk["summary"] as? String ?? "", fontSize: 11, color: .black.opacity(0.8))
                                 }
                                 .padding(12)
                                 .frame(maxWidth: .infinity, alignment: .leading)

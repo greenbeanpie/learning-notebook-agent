@@ -2315,7 +2315,8 @@ internal sealed class InteractiveArtifactView : IDisposable
                 };
                 var col = new StackPanel { Spacing = 4 };
                 col.Children.Add(new TextBlock { Text = L10n.T("report.key_points"), FontWeight = FontWeights.SemiBold, FontSize = 13 });
-                foreach (var t in takeaways) col.Children.Add(new TextBlock { Text = $"- {t}", TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, FontSize = 13 });
+                // Render takeaways as Markdown so inline math ($…$, \(…\)) and bold are typeset like the body.
+                col.Children.Add(Md.Render(string.Join("\n", takeaways.Select(t => $"- {t}")), n => Md.SuperscriptCitation(n), 13, _math, _mathHost));
                 box.Child = col;
                 contentPanel.Children.Add(box);
             }

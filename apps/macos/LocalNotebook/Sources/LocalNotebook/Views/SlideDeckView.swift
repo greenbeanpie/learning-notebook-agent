@@ -184,9 +184,8 @@ struct SlideDeckView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         if let formula = slide["formula"] as? String, !formula.isEmpty {
-                            Text(formula)
-                                .font(.system(.title3, design: .monospaced).bold())
-                                .foregroundColor(.white)
+                            Text(MdAttributed.math(formula, MdInlineStyle(fontSize: 20, color: .white, accent: .white, weight: .semibold)))
+                                .multilineTextAlignment(.center)
                                 .frame(maxWidth: .infinity)
                                 .padding(12)
                                 .background(Color(red: 0.06, green: 0.09, blue: 0.16))
@@ -197,7 +196,7 @@ struct SlideDeckView: View {
                                 ForEach(Array(cards.prefix(6).enumerated()), id: \.offset) { _, c in
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(c["title"] as? String ?? "").font(.subheadline.bold()).foregroundColor(.primary)
-                                        Text(c["body"] as? String ?? "").font(.caption).foregroundColor(.secondary)
+                                        MarkdownInlineText(text: c["body"] as? String ?? "", fontSize: 11, color: .secondary)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(10)
@@ -211,7 +210,7 @@ struct SlideDeckView: View {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(c["heading"] as? String ?? "").font(.subheadline.bold())
                                         ForEach(c["items"] as? [String] ?? [], id: \.self) { it in
-                                            Text("▸ \(it)").font(.caption)
+                                            MarkdownInlineText(text: "▸ \(it)", fontSize: 11)
                                         }
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -235,16 +234,17 @@ struct SlideDeckView: View {
                             }
                         }
                         ForEach(bullets, id: \.self) { b in
-                            Text(layout == "quote" ? "“\(b)”" : "▸ \(b)")
-                                .font(.callout)
-                                .foregroundColor(isDark ? Color.white.opacity(0.85) : Color(red: 0.2, green: 0.25, blue: 0.33))
+                            MarkdownInlineText(
+                                text: layout == "quote" ? "“\(b)”" : "▸ \(b)",
+                                fontSize: 13,
+                                color: isDark ? Color.white.opacity(0.85) : Color(red: 0.2, green: 0.25, blue: 0.33)
+                            )
                         }
                     }
                 }
 
                 if !callout.isEmpty {
-                    Text("★ \(callout)")
-                        .font(.caption.bold())
+                    MarkdownInlineText(text: "★ \(callout)", fontSize: 11, weight: .semibold, color: Color(red: 0.06, green: 0.09, blue: 0.16))
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color(red: 0.94, green: 0.96, blue: 0.98))

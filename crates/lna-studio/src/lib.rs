@@ -1,3 +1,4 @@
+pub mod mdlite;
 pub mod render;
 pub mod texfmt;
 pub mod validate;

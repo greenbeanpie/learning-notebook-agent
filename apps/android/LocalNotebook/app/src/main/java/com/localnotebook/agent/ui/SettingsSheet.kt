@@ -68,7 +68,7 @@ fun UnifiedSettingsSheet(
     var supportsAudio by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsAudio ?: false) }
     var supportsVideo by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsVideo ?: false) }
     var extraHeaders by remember(selectedProfileId) {
-        mutableStateOf(activeOrFirst?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList())
+        mutableStateOf<List<Pair<String, String>>>(activeOrFirst?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList())
     }
 
     fun selectProfile(p: ModelProfileItem?) {
@@ -84,7 +84,7 @@ fun UnifiedSettingsSheet(
         supportsVision = p?.supportsVision ?: false
         supportsAudio = p?.supportsAudio ?: false
         supportsVideo = p?.supportsVideo ?: false
-        extraHeaders = p?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList()
+        extraHeaders = p?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList<Pair<String, String>>()
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {

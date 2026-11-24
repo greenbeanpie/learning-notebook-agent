@@ -11,5 +11,6 @@ gtk4 = { version = "0.9", features = ["v4_8"] }
 glib = "0.20"
 lna-api = { path = "../../../crates/lna-api" }
 lna-types = { path = "../../../crates/lna-types" }
+lna-studio = { path = "../../../crates/lna-studio" }
 serde_json = "1.0"
 dirs = "5.0"

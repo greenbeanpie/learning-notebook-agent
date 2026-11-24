@@ -57,9 +57,10 @@ fn render_slide_card(s: &Value, idx: usize, total: usize, deck_title: &str) -> G
         let f_lbl = Label::new(None);
         f_lbl.set_wrap(true);
         f_lbl.set_markup(&format!(
-            "<span font_family='monospace' size='large' weight='bold'>{}</span>",
-            glib::markup_escape_text(formula)
+            "<span size='large' weight='bold'>{}</span>",
+            crate::md_view::math_markup(formula)
         ));
+        f_lbl.set_justify(gtk4::Justification::Center);
         let f_frame = Frame::new(None);
         f_frame.set_child(Some(&f_lbl));
         body.append(&f_frame);
@@ -80,9 +81,7 @@ fn render_slide_card(s: &Value, idx: usize, total: usize, deck_title: &str) -> G
             tl.set_xalign(0.0);
             tl.set_wrap(true);
             tl.set_markup(&format!("<b>{}</b>", glib::markup_escape_text(ct)));
-            let bl = Label::new(Some(cbody));
-            bl.set_xalign(0.0);
-            bl.set_wrap(true);
+            let bl = crate::md_view::inline_label(cbody);
             cb.append(&tl);
             cb.append(&bl);
             let f = Frame::new(None);
@@ -108,9 +107,7 @@ fn render_slide_card(s: &Value, idx: usize, total: usize, deck_title: &str) -> G
             }
             if let Some(items) = c.get("items").and_then(Value::as_array) {
                 for it in items.iter().filter_map(Value::as_str) {
-                    let il = Label::new(Some(&format!("▸ {it}")));
-                    il.set_xalign(0.0);
-                    il.set_wrap(true);
+                    let il = crate::md_view::inline_label(&format!("▸ {it}"));
                     cb.append(&il);
                 }
             }
@@ -202,10 +199,7 @@ fn render_slide_card(s: &Value, idx: usize, total: usize, deck_title: &str) -> G
                 } else {
                     format!("▸  {}", b.trim())
                 };
-                let bl = Label::new(Some(&text));
-                bl.set_xalign(0.0);
-                bl.set_wrap(true);
-                bl.set_selectable(true);
+                let bl = crate::md_view::inline_label(&text);
                 body.append(&bl);
             }
         }
@@ -217,7 +211,7 @@ fn render_slide_card(s: &Value, idx: usize, total: usize, deck_title: &str) -> G
         let cl = Label::new(None);
         cl.set_xalign(0.0);
         cl.set_wrap(true);
-        cl.set_markup(&format!("<b>★ {}</b>", glib::markup_escape_text(callout)));
+        cl.set_markup(&format!("<b>★ {}</b>", crate::md_view::inline_markup(callout)));
         card.append(&cl);
     }
 

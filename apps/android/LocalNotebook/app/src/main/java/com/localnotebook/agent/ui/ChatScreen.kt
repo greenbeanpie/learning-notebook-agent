@@ -52,12 +52,10 @@ fun ChatScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = state.summaryText.ifEmpty { L10n.t("chat.empty_summary", en) },
+                MarkdownText(
+                    markdown = state.summaryText.ifEmpty { L10n.t("chat.empty_summary", en) },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 if (state.prefs.showSuggestedQuestions && state.suggestedQuestions.isNotEmpty()) {
                     FlowRow(
@@ -194,11 +192,19 @@ private fun ChatMessageCard(
             }
         }
 
-        Text(
-            text = message.content,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        if (message.role == "user") {
+            Text(
+                text = message.content,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        } else {
+            MarkdownText(
+                markdown = message.content,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
 
         if (message.citations.isNotEmpty()) {
             FlowRow(

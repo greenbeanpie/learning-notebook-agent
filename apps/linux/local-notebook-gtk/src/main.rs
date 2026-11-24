@@ -1,5 +1,6 @@
 mod i18n;
 mod icons;
+mod md_view;
 mod mindmap_view;
 mod slides_view;
 mod ui;

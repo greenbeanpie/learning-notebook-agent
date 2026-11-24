@@ -6,17 +6,80 @@
 
 use serde_json::Value;
 
+// Private-use markers wrapping script content that has no Unicode super/subscript form.
+const SUP_OPEN: char = '\u{E000}';
+const SUP_CLOSE: char = '\u{E001}';
+const SUB_OPEN: char = '\u{E002}';
+const SUB_CLOSE: char = '\u{E003}';
+
 /// Convert TeX fragments in `s` (delimited by `$…$`, `\(…\)` or bare) to Unicode text.
 /// Strings without any TeX marker characters are returned unchanged.
 pub fn tex_to_unicode(s: &str) -> String {
     if !s.contains(['\\', '^', '_', '$', '\u{0c}', '\u{08}', '\t']) {
         return s.to_string();
     }
+    let mut out = String::new();
+    for run in convert_runs(s) {
+        let mark = match run.shift {
+            1 => "^",
+            -1 => "_",
+            _ => {
+                out.push_str(&run.text);
+                continue;
+            }
+        };
+        if run.text.chars().count() == 1 {
+            out.push_str(&format!("{mark}{}", run.text));
+        } else {
+            out.push_str(&format!("{mark}({})", run.text));
+        }
+    }
+    out
+}
+
+/// A piece of converted math text. `shift` is 1 for superscript, -1 for subscript, 0 for
+/// baseline; shifted runs carry content that has no Unicode script form, for UIs that can
+/// raise/lower text themselves (Pango `<sup>`, Compose `BaselineShift`, SwiftUI `baselineOffset`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MathRun {
+    pub text: String,
+    pub shift: i8,
+}
+
+/// Convert a TeX math expression (delimiters optional) into styled runs.
+pub fn tex_to_runs(s: &str) -> Vec<MathRun> {
+    convert_runs(s)
+}
+
+fn convert_runs(s: &str) -> Vec<MathRun> {
     let repaired = repair_json_escapes(s);
     let chars: Vec<char> = repaired.chars().collect();
     let mut pos = 0;
-    let out = convert_seq(&chars, &mut pos, None);
-    collapse_spaces(&out)
+    let converted = collapse_spaces(&convert_seq(&chars, &mut pos, None));
+    let mut runs: Vec<MathRun> = Vec::new();
+    let mut cur = String::new();
+    let mut shift: i8 = 0;
+    for ch in converted.chars() {
+        let next_shift = match ch {
+            SUP_OPEN => Some(1),
+            SUB_OPEN => Some(-1),
+            SUP_CLOSE | SUB_CLOSE => Some(0),
+            _ => None,
+        };
+        match next_shift {
+            Some(ns) => {
+                if !cur.is_empty() {
+                    runs.push(MathRun { text: std::mem::take(&mut cur), shift });
+                }
+                shift = ns;
+            }
+            None => cur.push(ch),
+        }
+    }
+    if !cur.is_empty() {
+        runs.push(MathRun { text: cur, shift });
+    }
+    runs
 }
 
 /// Apply [`tex_to_unicode`] to the text fields of every mind map node in `payload`.
@@ -278,12 +341,13 @@ fn script(s: &str, sup: bool) -> String {
             if s == "⊤" { "ᵀ".into() } else { s.to_string() }
         }
         None => {
-            let mark = if sup { '^' } else { '_' };
-            if s.chars().count() == 1 {
-                format!("{mark}{s}")
-            } else {
-                format!("{mark}({s})")
-            }
+            // Nested fallbacks flatten into the outer shifted run.
+            let inner: String = s
+                .chars()
+                .filter(|c| !matches!(*c, SUP_OPEN | SUP_CLOSE | SUB_OPEN | SUB_CLOSE))
+                .collect();
+            let (open, close) = if sup { (SUP_OPEN, SUP_CLOSE) } else { (SUB_OPEN, SUB_CLOSE) };
+            format!("{open}{inner}{close}")
         }
     }
 }
@@ -395,6 +459,15 @@ mod tests {
         assert_eq!(t(r"\mathbb{R}^n"), "ℝⁿ");
         assert_eq!(t("x_{q}"), "x_q");
         assert_eq!(t(r"\det(A) \neq 0"), "det(A) ≠ 0");
+    }
+
+    #[test]
+    fn runs_mark_unmappable_scripts() {
+        use super::{tex_to_runs, MathRun};
+        let r = |t: &str, s: i8| MathRun { text: t.into(), shift: s };
+        assert_eq!(tex_to_runs("e^{i\\pi}"), vec![r("e", 0), r("iπ", 1)]);
+        assert_eq!(tex_to_runs("x_{q}+1"), vec![r("x", 0), r("q", -1), r("+1", 0)]);
+        assert_eq!(tex_to_runs("A^{-1}"), vec![r("A⁻¹", 0)]);
     }
 
     #[test]

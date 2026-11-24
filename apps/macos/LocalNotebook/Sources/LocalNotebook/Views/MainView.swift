@@ -498,9 +498,7 @@ struct MainView: View {
     private var chatPane: some View {
         VStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 10) {
-                Text(state.summaryText)
-                    .font(.system(size: state.prefs.fontSize))
-                    .foregroundColor(palette.textSecondary)
+                MarkdownInlineText(text: state.summaryText, fontSize: state.prefs.fontSize, color: palette.textSecondary, accent: palette.accent)
                     .lineLimit(6)
                     .textSelection(.enabled)
 
@@ -1184,11 +1182,23 @@ struct ChatMessageRow: View {
                 }
             }
 
-            Text(message.content)
+            if message.role == "user" {
+                Text(message.content)
+                    .textSelection(.enabled)
+                    .font(.system(size: fontSize, weight: .regular))
+                    .foregroundColor(palette.textPrimary)
+                    .lineSpacing(6)
+            } else {
+                MarkdownView(
+                    markdown: message.content,
+                    fontSize: fontSize,
+                    color: palette.textPrimary,
+                    mutedColor: palette.textSecondary,
+                    accent: palette.accent,
+                    lineSpacing: 6
+                )
                 .textSelection(.enabled)
-                .font(.system(size: fontSize, weight: .regular))
-                .foregroundColor(palette.textPrimary)
-                .lineSpacing(6)
+            }
 
             if message.role == "assistant" && !message.content.isEmpty {
                 HStack(spacing: 10) {

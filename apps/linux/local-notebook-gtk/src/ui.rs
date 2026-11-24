@@ -1055,7 +1055,7 @@ fn refresh_all(st: &Rc<UiState>) {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .unwrap_or(tr(en, "chat.empty_summary"));
-        st.summary_label.set_text(sum);
+        st.summary_label.set_markup(&crate::md_view::inline_markup(sum));
 
         while let Some(child) = st.suggested_box.first_child() {
             st.suggested_box.remove(&child);
@@ -1208,11 +1208,15 @@ fn refresh_all(st: &Rc<UiState>) {
                     }
                 }
 
-                let body_lbl = Label::new(Some(content));
-                body_lbl.set_wrap(true);
-                body_lbl.set_selectable(true);
-                body_lbl.set_xalign(0.0);
-                card.append(&body_lbl);
+                if role == "user" {
+                    let body_lbl = Label::new(Some(content));
+                    body_lbl.set_wrap(true);
+                    body_lbl.set_selectable(true);
+                    body_lbl.set_xalign(0.0);
+                    card.append(&body_lbl);
+                } else {
+                    card.append(&crate::md_view::markdown_widget(content));
+                }
                 st.chat_box.append(&card);
             }
         }
@@ -1658,17 +1662,16 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         if let Some(secs) = art.pointer("/payload/sections").and_then(Value::as_array) {
             for (i, sec) in secs.iter().enumerate() {
                 let h = sec.get("heading").and_then(Value::as_str).unwrap_or("");
-                let b = sec.get("body_md").and_then(Value::as_str).unwrap_or("");
                 let tb = Button::with_label(&format!("{}. {}", i + 1, h));
                 tb.add_css_class("lna-toc-btn");
                 toc.append(&tb);
-                let hl = Label::new(Some(h));
-                hl.set_xalign(0.0);
-                let bl = Label::new(Some(b));
-                bl.set_wrap(true);
-                bl.set_xalign(0.0);
+                let hl = crate::md_view::inline_label(h);
+                hl.set_markup(&format!(
+                    "<span size=\"large\" weight=\"bold\">{}</span>",
+                    crate::md_view::inline_markup(h)
+                ));
                 body.append(&hl);
-                body.append(&bl);
+                body.append(&crate::md_view::report_section_widget(sec, en));
             }
         }
         split.append(&ScrolledWindow::builder().child(&toc).build());
@@ -1684,13 +1687,15 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
                 let h = blk.get("heading").and_then(Value::as_str).unwrap_or("");
                 let m = blk.get("metric").and_then(Value::as_str).unwrap_or("");
                 let s = blk.get("summary").and_then(Value::as_str).unwrap_or("");
-                let line = Label::new(Some(&format!("{h} — {m}\n{s}")));
-                line.set_wrap(true);
-                line.set_xalign(0.0);
+                let line = crate::md_view::inline_label(&format!("**{h}** — {m}\n{s}"));
                 canvas.append(&line);
             }
         }
         st.studio_detail_box.append(&ScrolledWindow::builder().child(&canvas).vexpand(true).build());
+    } else if let Some(w) =
+        crate::md_view::readable_artifact_widget(kind, art.get("payload").unwrap_or(&Value::Null), en)
+    {
+        st.studio_detail_box.append(&ScrolledWindow::builder().child(&w).vexpand(true).build());
     } else {
         let preview = serde_json::to_string_pretty(art.get("payload").unwrap_or(&Value::Null)).unwrap_or_default();
         let lbl = Label::new(Some(&preview));
