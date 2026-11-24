@@ -425,8 +425,8 @@ struct ArtifactViewerView: View {
                                     Text(step.title)
                                         .font(.caption.bold())
                                 }
-                                if !step.body.isEmpty {
-                                    Text(step.body)
+                                if !step.detail.isEmpty {
+                                    Text(step.detail)
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                         .textSelection(.enabled)

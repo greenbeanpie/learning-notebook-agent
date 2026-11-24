@@ -92,14 +92,15 @@ final class AppState: ObservableObject {
                             let kind = ev.data["kind"] as? String ?? "stage"
                             if kind != "retry" {
                                 let seq = ev.data["seq"] as? Int ?? ((self?.studioThoughts[aid]?.count ?? 0) + 1)
+                                let seqId = String(seq)
                                 let item = ThoughtStepItem(
-                                    id: seq,
+                                    id: seqId,
                                     kind: kind,
                                     title: ev.data["title"] as? String ?? "",
-                                    body: ev.data["body"] as? String ?? ""
+                                    detail: ev.data["body"] as? String ?? (ev.data["detail"] as? String ?? "")
                                 )
                                 var list = self?.studioThoughts[aid] ?? []
-                                if let idx = list.firstIndex(where: { $0.id == seq }) {
+                                if let idx = list.firstIndex(where: { $0.id == seqId }) {
                                     list[idx] = item
                                 } else {
                                     list.append(item)
@@ -111,10 +112,11 @@ final class AppState: ObservableObject {
                         if let aid = ev.data["artifact_id"] as? String,
                            let seq = ev.data["seq"] as? Int,
                            let delta = ev.data["delta"] as? String {
+                            let seqId = String(seq)
                             var list = self?.studioThoughts[aid] ?? []
-                            if let idx = list.firstIndex(where: { $0.id == seq }) {
+                            if let idx = list.firstIndex(where: { $0.id == seqId }) {
                                 let cur = list[idx]
-                                list[idx] = ThoughtStepItem(id: cur.id, kind: cur.kind, title: cur.title, body: cur.body + delta)
+                                list[idx] = ThoughtStepItem(id: cur.id, kind: cur.kind, title: cur.title, detail: cur.detail + delta)
                                 self?.studioThoughts[aid] = list
                             }
                         }
@@ -278,12 +280,18 @@ final class AppState: ObservableObject {
         }
     }
 
-    func createStudio(kind: String) async {
+    func createStudio(kind: String, topic: String = "", detail: String = "standard") async {
         guard !activeNotebookId.isEmpty else { return }
         let actualType = kind == "knowledge_graph" ? "mindmap" : kind
         var cfg: [String: Any] = kind == "slides"
             ? ["pages": 8, "reviewOutline": true]
             : (kind == "knowledge_graph" ? ["mode": "knowledge_graph"] : [:])
+        if !topic.isEmpty {
+            cfg["topic"] = topic
+        }
+        if !detail.isEmpty {
+            cfg["detail"] = detail
+        }
         if !prefs.defaultStudioLang.isEmpty {
             cfg["lang"] = prefs.defaultStudioLang
         }
@@ -381,10 +389,10 @@ final class AppState: ObservableObject {
             let k = t["kind"] as? String ?? "stage"
             if k == "retry" { return nil }
             return ThoughtStepItem(
-                id: t["seq"] as? Int ?? (idx + 1),
+                id: String(t["seq"] as? Int ?? (idx + 1)),
                 kind: k,
                 title: t["title"] as? String ?? "",
-                body: t["body"] as? String ?? ""
+                detail: t["body"] as? String ?? (t["detail"] as? String ?? "")
             )
         }
         studioThoughts[artifactId] = items

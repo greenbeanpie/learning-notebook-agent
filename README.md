@@ -138,6 +138,10 @@ adb install -r apps\android\LocalNotebook\app\build\outputs\apk\debug\app-debug.
   ```
 - **macOS (SwiftUI)**：
   ```bash
+  # 方式 A：一键打包为独立 .app 应用（输出至 dist/LocalNotebook.app）
+  bash scripts/package-macos-app.sh
+
+  # 方式 B：仅分步编译二进制
   cargo build -p lna-ffi --release
   swift build --package-path apps/macos/LocalNotebook -c release
   ```

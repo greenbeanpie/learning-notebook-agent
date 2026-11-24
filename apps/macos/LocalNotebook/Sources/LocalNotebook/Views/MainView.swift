@@ -4,6 +4,9 @@ struct MainView: View {
     @EnvironmentObject var state: AppState
     @State private var chatInput = ""
     @State private var hoveredSourceId: String? = nil
+    @State private var pendingStudioKind: String? = nil
+    @State private var studioPromptInput: String = ""
+    @State private var studioDetailLevel: String = "standard"
 
     private var isLight: Bool { state.prefs.theme == "light" }
     private var canvasBg: Color { isLight ? Color(white: 0.96) : Color(red: 0x13/255, green: 0x13/255, blue: 0x14/255) }
