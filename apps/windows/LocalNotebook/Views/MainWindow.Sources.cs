@@ -1124,6 +1124,18 @@ public sealed partial class MainWindow
             return await CreateWebViewForFileAsync(blobPath, page is > 0 ? $"#page={page}" : "");
         }
 
+        // PDF always shows the original file; never fall back to the (possibly mis-recognised) OCR text layer.
+        if (kind == "pdf")
+        {
+            return new TextBlock
+            {
+                Text = L10n.T("sources.original_missing"),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(4, 12, 4, 4),
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"],
+            };
+        }
+
         // 2. Office / EPUB / CSV / RTF / HWP -> Clean dark HTML preview in WebView2
         if (!string.IsNullOrWhiteSpace(previewHtmlPath) && File.Exists(previewHtmlPath))
         {
