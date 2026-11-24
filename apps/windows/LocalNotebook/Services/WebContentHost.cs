@@ -270,8 +270,41 @@ public sealed class WebContentHost : IDisposable
             _webView.Width = atlasW;
             _webView.Height = atlasH;
             _webView.UpdateLayout();
-            // One compositor frame for the entire batch of formulas.
-            await Task.Delay(16);
+
+            // Wait for WebView2 viewport resize, font loading, and two compositor rAF frames
+            // before measuring final bounding boxes and capturing the atlas screenshot.
+            await _webView.CoreWebView2.ExecuteScriptAsync("window.lnaStartPaintWait()").AsTask();
+            for (var attempt = 0; attempt < 15; attempt++)
+            {
+                await Task.Delay(16);
+                var readyRaw = await _webView.CoreWebView2
+                    .ExecuteScriptAsync($"window.lnaIsReadyForCapture({atlasW}, {atlasH})")
+                    .AsTask();
+                if (string.Equals(readyRaw, "true", StringComparison.Ordinal))
+                    break;
+            }
+
+            var remeasureRaw = await _webView.CoreWebView2.ExecuteScriptAsync("window.lnaMeasureBatch()").AsTask();
+            var remeasureInner = JsonSerializer.Deserialize(remeasureRaw, Interop.LnaJsonContext.Default.String);
+            if (!string.IsNullOrEmpty(remeasureInner))
+            {
+                var freshMeasure = JsonSerializer.Deserialize(remeasureInner, Interop.LnaJsonContext.Default.MathBatchMeasureDto);
+                if (freshMeasure != null && freshMeasure.Items.Count == batch.Count)
+                {
+                    measure = freshMeasure;
+                    var newW = Math.Clamp(measure.AtlasWidth, 4, 1600);
+                    var newH = Math.Clamp(measure.AtlasHeight, 4, 3200);
+                    if (newW != atlasW || newH != atlasH)
+                    {
+                        atlasW = newW;
+                        atlasH = newH;
+                        _webView.Width = atlasW;
+                        _webView.Height = atlasH;
+                        _webView.UpdateLayout();
+                        await Task.Delay(32);
+                    }
+                }
+            }
 
             using var mem = new InMemoryRandomAccessStream();
             var capTask = _webView.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, mem).AsTask();
@@ -416,7 +449,22 @@ public sealed class WebContentHost : IDisposable
             };
             view.Source = new Uri($"https://{HostName}/view.html");
             var completed = await Task.WhenAny(loaded.Task, Task.Delay(RenderTimeoutMs));
-            return completed == loaded.Task && await loaded.Task;
+            if (completed != loaded.Task || !await loaded.Task)
+                return false;
+
+            // Preload all KaTeX @font-face fonts so the first batch never measures fallback glyphs.
+            var warmupRaw = await core.ExecuteScriptAsync("window.lnaWarmupFonts()").AsTask();
+            if (!string.Equals(warmupRaw, "true", StringComparison.Ordinal))
+            {
+                for (var i = 0; i < 100; i++)
+                {
+                    await Task.Delay(15);
+                    var fontsRaw = await core.ExecuteScriptAsync("window.__lnaFontsReady === true").AsTask();
+                    if (string.Equals(fontsRaw, "true", StringComparison.Ordinal))
+                        break;
+                }
+            }
+            return true;
         }
         catch
         {

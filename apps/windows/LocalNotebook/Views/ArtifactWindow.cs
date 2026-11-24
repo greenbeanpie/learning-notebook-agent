@@ -43,6 +43,7 @@ public sealed class ArtifactViewerPane : IDisposable
     private readonly Window _hostWindow;
     private readonly Action _onClose;
     private readonly Action _onToggleFullscreen;
+    private readonly Action? _onRequireFullscreen;
     private readonly Action<string>? _onQuizConcept;
     private readonly Action<string>? _onExpandMindmap;
     private readonly Action<string>? _onAskConcept;
@@ -86,6 +87,7 @@ public sealed class ArtifactViewerPane : IDisposable
         Window hostWindow,
         Action onClose,
         Action onToggleFullscreen,
+        Action? onRequireFullscreen = null,
         Action<string>? onQuizConcept = null,
         Action<string>? onExpandMindmap = null,
         Action<string>? onAskConcept = null,
@@ -96,6 +98,7 @@ public sealed class ArtifactViewerPane : IDisposable
         _hostWindow = hostWindow;
         _onClose = onClose;
         _onToggleFullscreen = onToggleFullscreen;
+        _onRequireFullscreen = onRequireFullscreen;
         _onQuizConcept = onQuizConcept;
         _onExpandMindmap = onExpandMindmap;
         _onAskConcept = onAskConcept;
@@ -230,13 +233,22 @@ public sealed class ArtifactViewerPane : IDisposable
 
         var status = Str(a, "status");
         var kind = Str(a, "artifact_type");
+        var isKnowledgeGraph = kind == "mindmap"
+            && (Str(Obj(a, "config"), "mode") == "knowledge_graph"
+                || (a.TryGetProperty("payload", out var payloadObj)
+                    && payloadObj.ValueKind == JsonValueKind.Object
+                    && Str(payloadObj, "kind") == "knowledge_graph"));
+        if (isKnowledgeGraph)
+        {
+            _onRequireFullscreen?.Invoke();
+        }
         var key = $"{status}:{Str(a, "updated_at")}:{Int(a, "updated_at")}";
         if (key == _builtFor) return;
         _builtFor = key;
         if (_builtStatus != status) _showingThoughts = false;
         _builtStatus = status;
 
-        BuildTools(kind, status);
+        BuildTools(kind, status, isKnowledgeGraph);
         RenderCurrentBody(kind, status, a);
     }
 
@@ -802,7 +814,7 @@ public sealed class ArtifactViewerPane : IDisposable
 
     // ---------- toolbar / export ----------
 
-    private void BuildTools(string kind, string status)
+    private void BuildTools(string kind, string status, bool isKnowledgeGraph = false)
     {
         _tools.Children.Clear();
         if (status == "READY")
@@ -854,7 +866,14 @@ public sealed class ArtifactViewerPane : IDisposable
             });
         }
 
-        _tools.Children.Add(IconBtn(_isFullscreen ? ExitFullscreenIconPath : FullscreenIconPath, L10n.T("studio.fullscreen_toggle"), (_, _) => _onToggleFullscreen(), out _fullscreenIcon));
+        if (!isKnowledgeGraph)
+        {
+            _tools.Children.Add(IconBtn(_isFullscreen ? ExitFullscreenIconPath : FullscreenIconPath, L10n.T("studio.fullscreen_toggle"), (_, _) => _onToggleFullscreen(), out _fullscreenIcon));
+        }
+        else
+        {
+            _fullscreenIcon = null;
+        }
         _tools.Children.Add(IconBtn(CloseIconPath, L10n.T("studio.close_detail"), (_, _) => _onClose(), out _));
     }
 

@@ -122,9 +122,9 @@ impl StudioService {
             .unwrap_or("standard");
         let on_demand_cap: i64 = match artifact_type {
             ArtifactType::Mindmap => match detail {
-                "concise" => 6_500,
-                "detailed" => 16_000,
-                _ => 11_000,
+                "concise" => 8_000,
+                "detailed" => 24_000,
+                _ => 16_000,
             },
             ArtifactType::Quiz | ArtifactType::Flashcards | ArtifactType::Infographic => 12_000,
             ArtifactType::Report | ArtifactType::Slides | ArtifactType::Audio => 16_000,
@@ -154,9 +154,9 @@ impl StudioService {
             ArtifactType::Quiz | ArtifactType::Flashcards => 2500,
             ArtifactType::Report | ArtifactType::Slides | ArtifactType::Audio => 4500,
             ArtifactType::Mindmap => match detail {
-                "concise" => 1400,
-                "detailed" => 3600,
-                _ => 2200,
+                "concise" => 2000,
+                "detailed" => 6000,
+                _ => 3800,
             },
             ArtifactType::Infographic => 1800,
         };
@@ -2033,14 +2033,15 @@ Design rules:\n\
                     "detailed" => " Detail level: DETAILED (comprehensive breakdown, 4-5 hierarchy levels, ~35-60 nodes, include key sub-concepts, mechanisms, formulas, and concrete examples within the requested scope).",
                     _ => " Detail level: STANDARD (balanced 3-4 hierarchy levels, ~20-35 nodes covering main themes, sub-topics, and key takeaways).",
                 };
+                let structure_rule = " STRUCTURE ADAPTATION: Organize the hierarchy according to the actual knowledge structure of the material rather than copying chapter headings mechanically. You may merge closely related or thin sections under a cohesive parent theme, and split dense or foundational topics into finer sub-branches so that each branch goes beyond surface table-of-contents titles to capture core definitions, theorems, formulas, and mechanisms.";
                 let kg_rule = if is_kg {
                     r#" Set "kind": "knowledge_graph". Build a concept Knowledge Graph structured as a collapsible tree from foundational prerequisites to core theorems and advanced applications. For each node, set "importance" ("core" | "key" | "detail"), a brief 1-sentence "summary", and "prerequisites" (names of prerequisite concepts when applicable)."#
                 } else {
                     ""
                 };
                 format!(
-                    " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels; keep node labels clean and readable, and leave every node's citations array empty [].{}{}",
-                    detail_rule, kg_rule
+                    " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels; keep node labels clean and readable, and leave every node's citations array empty [].{}{}{}",
+                    detail_rule, structure_rule, kg_rule
                 )
             }
             ArtifactType::Report => {
@@ -2727,9 +2728,12 @@ Design rules:\n\
         artifact_id: &str,
         topic_query: Option<&str>,
         token_budget: usize,
+        source_ids_override: Option<&[String]>,
         cancel: CancellationToken,
     ) -> LnaResult<Option<String>> {
-        let selected_json = serde_json::to_string(&art.source_ids).unwrap_or_else(|_| "[]".into());
+        let is_mindmap = art.artifact_type == ArtifactType::Mindmap;
+        let effective_source_ids = source_ids_override.unwrap_or(&art.source_ids);
+        let selected_json = serde_json::to_string(effective_source_ids).unwrap_or_else(|_| "[]".into());
         let sources_meta: Vec<(String, String, Option<String>, String, i64)> = self.db.read(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -2778,17 +2782,18 @@ Design rules:\n\
             if let Some(gmd) = guide_md.as_deref().filter(|s| !s.trim().is_empty()) {
                 catalog_lines.push(format!("  Overview: {}", truncate_str(gmd, 420)));
             }
+            let idx_limit: i64 = if is_mindmap { 160 } else { 60 };
             let idx_nodes: Vec<(String, i32, String, String, Option<i32>, Option<i32>)> =
                 self.db.read(|conn| {
                     let mut stmt = conn
                         .prepare(
                             "SELECT id, level, title, summary, page_start, page_end
                              FROM source_index_nodes WHERE source_id = ?1
-                             ORDER BY order_index ASC LIMIT 45",
+                             ORDER BY ordinal ASC LIMIT ?2",
                         )
                         .map_err(map_sql_err)?;
                     let rows = stmt
-                        .query_map([sid], |r| {
+                        .query_map(params![sid, idx_limit], |r| {
                             Ok((
                                 r.get::<_, String>(0)?,
                                 r.get::<_, i32>(1)?,
@@ -2817,7 +2822,8 @@ Design rules:\n\
                 ));
             }
         }
-        let catalog_text = truncate_str(&catalog_lines.join("\n"), 18_000).to_string();
+        let catalog_cap = if is_mindmap { 28_000 } else { 18_000 };
+        let catalog_text = truncate_str(&catalog_lines.join("\n"), catalog_cap).to_string();
 
         self.append_thought(
             artifact_id,
@@ -2867,14 +2873,20 @@ Design rules:\n\
             },
         ];
 
+        let planner_instruction = if is_mindmap {
+            "Use the reading tools to inspect the table of contents (e.g., early pages via read_source_pages) if the outline is coarse, and read key sections across ALL major chapters/themes evenly (call multiple tools in parallel) so every branch has concrete sub-topics, definitions, theorems, formulas, and details. Do NOT reply \"DONE\" until all major chapters/themes in scope are covered at uniform depth."
+        } else {
+            "Use the reading tools to fetch ONLY the specific sections or passages needed for this artifact. Call multiple tools in parallel if helpful. Once you have enough material (or if the catalog outline alone is sufficient), reply with \"DONE\" without further tool calls."
+        };
         let mut messages = vec![LlmMessage {
             role: Role::User,
             parts: vec![Part::Text(format!(
-                "Artifact type: {}\nUser config: {}\nUser topic/focus: {}\n\nSource Catalog & Outline:\n{}\n\nUse the reading tools to fetch ONLY the specific sections or passages needed for this artifact. Call multiple tools in parallel if helpful. Once you have enough material (or if the catalog outline alone is sufficient), reply with \"DONE\" without further tool calls.",
+                "Artifact type: {}\nUser config: {}\nUser topic/focus: {}\n\nSource Catalog & Outline:\n{}\n\n{}",
                 art.artifact_type.as_str(),
                 art.config,
                 topic_query.unwrap_or("Full selected scope (balanced coverage)"),
-                catalog_text
+                catalog_text,
+                planner_instruction
             ))],
         }];
 
@@ -2899,13 +2911,24 @@ Design rules:\n\
             true
         }
 
-        let max_rounds: usize = if art.artifact_type == ArtifactType::Slides { 6 } else { 3 };
+        let max_rounds: usize = if art.artifact_type == ArtifactType::Slides {
+            6
+        } else if is_mindmap {
+            5
+        } else {
+            3
+        };
+        let planner_system = if is_mindmap {
+            "You are a thorough curriculum and knowledge-structure planner for Local Notebook Studio. Your job is to inspect the source structure and gather balanced, concrete details (sub-topics, definitions, theorems, formulas, mechanisms, and examples) across EVERY major chapter or section in the requested scope using the reading tools. Call multiple tools in parallel across different chapters so no chapter is left shallow or skipped. Only reply DONE once every major branch has sufficient concrete detail to build a deep, evenly balanced hierarchy."
+        } else {
+            "You are a frugal research planner for Local Notebook Studio. Your job is to read ONLY the relevant sections on demand using tools so token usage stays low. Never request the entire book; target the requested topic/scope or sample key sections evenly. Stop as soon as you have enough evidence by replying DONE."
+        };
         for round in 0..max_rounds {
             if cancel.is_cancelled() {
                 return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
             }
             let req = LlmRequest {
-                system: "You are a frugal research planner for Local Notebook Studio. Your job is to read ONLY the relevant sections on demand using tools so token usage stays low. Never request the entire book; target the requested topic/scope or sample key sections evenly. Stop as soon as you have enough evidence by replying DONE.".into(),
+                system: planner_system.into(),
                 messages: messages.clone(),
                 tools: tools.clone(),
                 tool_mode: ToolMode::Auto,
@@ -3246,9 +3269,10 @@ Design rules:\n\
             }
         }
 
+        let outline_return_cap = if is_mindmap { 18_000 } else { 8_000 };
         Ok(Some(format!(
             "Source Outline:\n{}\n\nOn-Demand Retrieved Excerpts:\n{}",
-            truncate_str(&catalog_text, 6_000),
+            truncate_str(&catalog_text, outline_return_cap),
             collected.join("\n\n")
         )))
     }
@@ -3282,6 +3306,35 @@ Design rules:\n\
                 art.source_ids.clone()
             };
             let target_json = serde_json::to_string(&target_ids).unwrap_or_else(|_| "[]".into());
+            let target_tokens: i64 = self.db.read(|conn| {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(token_count),0) FROM sources WHERE id IN (SELECT value FROM json_each(?1)) AND status='READY'",
+                    [&target_json],
+                    |r| r.get(0),
+                )
+                .map_err(map_sql_err)
+            })?;
+            let window = resolved.context_window as usize;
+            let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
+            let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
+            let kg_budget = available_input.saturating_mul(70) / 100;
+            if target_tokens.max(0) as usize > kg_budget.min(12_000) {
+                if let Ok(Some(on_demand_text)) = self
+                    .gather_evidence_on_demand(
+                        art,
+                        profile,
+                        resolved,
+                        artifact_id,
+                        topic_query.as_deref(),
+                        kg_budget.min(28_000),
+                        Some(&target_ids),
+                        cancel.clone(),
+                    )
+                    .await
+                {
+                    return Ok(on_demand_text);
+                }
+            }
             let mut evidence_blocks: Vec<String> = Vec::new();
             let sources_meta: Vec<(String, String, Option<String>, String)> = self.db.read(|conn| {
                 let mut stmt = conn
@@ -3333,7 +3386,7 @@ Core Topics: {}", topics.join(", "))
                             .prepare(
                                 "SELECT level, title, summary, COALESCE(keywords_json, '[]'), page_start, page_end
                                  FROM source_index_nodes WHERE source_id = ?1
-                                 ORDER BY order_index ASC LIMIT 60",
+                                 ORDER BY ordinal ASC LIMIT 160",
                             )
                             .map_err(map_sql_err)?;
                         let rows = stmt
@@ -3355,6 +3408,7 @@ Core Topics: {}", topics.join(", "))
                         Ok(out)
                     })?;
 
+                let few_nodes = nodes.len() < 25;
                 if !nodes.is_empty() {
                     for (lvl, ntitle, summary, kw_json, pstart, pend) in nodes {
                         let kws: Vec<String> = serde_json::from_str(&kw_json).unwrap_or_default();
@@ -3379,7 +3433,8 @@ Core Topics: {}", topics.join(", "))
                             kw_part
                         ));
                     }
-                } else {
+                }
+                if few_nodes {
                     // Fallback when no AI index exists: sample up to 16 evenly spaced chunks (never full book)
                     let chunks: Vec<(Option<i32>, Option<String>, String)> = self.db.read(|conn| {
                         let mut stmt = conn
@@ -3514,7 +3569,8 @@ Core Topics: {}", topics.join(", "))
                 resolved,
                 artifact_id,
                 topic_query.as_deref(),
-                evidence_budget.min(if art.artifact_type == ArtifactType::Slides { 28_000 } else { 18_000 }),
+                evidence_budget.min(if matches!(art.artifact_type, ArtifactType::Slides | ArtifactType::Mindmap) { 28_000 } else { 18_000 }),
+                None,
                 cancel.clone(),
             )
             .await

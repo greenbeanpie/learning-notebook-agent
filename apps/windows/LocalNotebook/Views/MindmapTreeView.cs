@@ -46,8 +46,8 @@ internal sealed class MindmapTreeView
 
     private readonly List<MindNode> _roots = new();
     private readonly Canvas _canvas = new();
-    private readonly ScaleTransform _scale = new() { ScaleX = 1.0, ScaleY = 1.0 };
-    private readonly ScrollViewer _scroll;
+    private readonly CompositeTransform _viewTransform = new() { ScaleX = 1.0, ScaleY = 1.0, TranslateX = 0, TranslateY = 0 };
+    private readonly Grid _viewport = new();
     private readonly bool _compact;
     private readonly bool _isKnowledgeGraph;
     private readonly Action? _onDownloadSvg;
@@ -62,8 +62,11 @@ internal sealed class MindmapTreeView
     private bool _allCollapsed;
     private bool _isPanning;
     private Point _panStartPoint;
-    private double _panStartH;
-    private double _panStartV;
+    private double _panStartTx;
+    private double _panStartTy;
+
+    private const double MinZoom = 0.25;
+    private const double MaxZoom = 3.0;
 
     private const double NodeHeight = 38;
     private const double RowGap = 14;
@@ -104,23 +107,27 @@ internal sealed class MindmapTreeView
 
         var canvasHost = new Grid
         {
-            RenderTransform = _scale,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            RenderTransform = _viewTransform,
             RenderTransformOrigin = new Point(0, 0),
             Children = { _canvas },
         };
 
-        _scroll = new ScrollViewer
+        _viewport.Background = new SolidColorBrush(Color.FromArgb(255, 29, 31, 36));
+        _viewport.Children.Add(canvasHost);
+        _viewport.SizeChanged += (_, e) =>
         {
-            Content = canvasHost,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Background = new SolidColorBrush(Color.FromArgb(255, 29, 31, 36)),
+            _viewport.Clip = new RectangleGeometry
+            {
+                Rect = new Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height),
+            };
         };
-        AttachDragPan(_scroll);
-        if (_compact) NestedScrollHelper.AttachToOuterOnBoundary(_scroll);
+        AttachDragPan(_viewport);
+        AttachWheelZoom(_viewport);
 
         var controls = BuildFloatingControls();
-        var stageGrid = new Grid { Children = { _scroll, controls } };
+        var stageGrid = new Grid { Children = { _viewport, controls } };
 
         if (_isKnowledgeGraph)
         {
@@ -209,22 +216,22 @@ internal sealed class MindmapTreeView
         return Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
     }
 
-    private void AttachDragPan(ScrollViewer scroll)
+    private void AttachDragPan(UIElement viewport)
     {
-        scroll.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
+        viewport.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, e) =>
         {
-            var pt = e.GetCurrentPoint(scroll);
+            var pt = e.GetCurrentPoint(viewport);
             if (!pt.Properties.IsLeftButtonPressed) return;
             _isPanning = true;
             _panStartPoint = pt.Position;
-            _panStartH = scroll.HorizontalOffset;
-            _panStartV = scroll.VerticalOffset;
+            _panStartTx = _viewTransform.TranslateX;
+            _panStartTy = _viewTransform.TranslateY;
         }), handledEventsToo: true);
 
-        scroll.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler((_, e) =>
+        viewport.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler((_, e) =>
         {
             if (!_isPanning) return;
-            var pt = e.GetCurrentPoint(scroll);
+            var pt = e.GetCurrentPoint(viewport);
             if (!pt.Properties.IsLeftButtonPressed)
             {
                 _isPanning = false;
@@ -234,17 +241,45 @@ internal sealed class MindmapTreeView
             var dy = pt.Position.Y - _panStartPoint.Y;
             if (Math.Abs(dx) > 4 || Math.Abs(dy) > 4)
             {
-                var targetH = Math.Max(0, _panStartH - dx);
-                var targetV = Math.Max(0, _panStartV - dy);
-                scroll.ChangeView(targetH, targetV, null, disableAnimation: true);
+                _viewTransform.TranslateX = _panStartTx + dx;
+                _viewTransform.TranslateY = _panStartTy + dy;
             }
         }), handledEventsToo: true);
 
-        scroll.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => _isPanning = false), handledEventsToo: true);
-        scroll.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler((_, _) => _isPanning = false), handledEventsToo: true);
-        scroll.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler((_, e) =>
+        viewport.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => _isPanning = false), handledEventsToo: true);
+        viewport.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler((_, _) => _isPanning = false), handledEventsToo: true);
+        viewport.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler((_, e) =>
         {
-            if (!e.GetCurrentPoint(scroll).Properties.IsLeftButtonPressed) _isPanning = false;
+            if (!e.GetCurrentPoint(viewport).Properties.IsLeftButtonPressed) _isPanning = false;
+        }), handledEventsToo: true);
+    }
+
+    private void ZoomAt(double targetScale, Point anchorInViewport)
+    {
+        var oldScale = _viewTransform.ScaleX;
+        var newScale = Math.Clamp(targetScale, MinZoom, MaxZoom);
+        if (Math.Abs(newScale - oldScale) < 0.0001) return;
+
+        var worldX = (anchorInViewport.X - _viewTransform.TranslateX) / oldScale;
+        var worldY = (anchorInViewport.Y - _viewTransform.TranslateY) / oldScale;
+
+        _viewTransform.ScaleX = newScale;
+        _viewTransform.ScaleY = newScale;
+        _viewTransform.TranslateX = anchorInViewport.X - worldX * newScale;
+        _viewTransform.TranslateY = anchorInViewport.Y - worldY * newScale;
+    }
+
+    private void AttachWheelZoom(UIElement viewport)
+    {
+        viewport.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler((_, e) =>
+        {
+            var pt = e.GetCurrentPoint(viewport);
+            var delta = pt.Properties.MouseWheelDelta;
+            if (delta == 0) return;
+
+            e.Handled = true;
+            var factor = Math.Pow(1.12, delta / 120.0);
+            ZoomAt(_viewTransform.ScaleX * factor, pt.Position);
         }), handledEventsToo: true);
     }
 
@@ -713,14 +748,14 @@ internal sealed class MindmapTreeView
 
         var zoomInBtn = MakeRoundBtn(PlusIconPath, L10n.T("mindmap.zoom_in"), (_, _) =>
         {
-            var next = Math.Min(2.2, _scale.ScaleX + 0.15);
-            _scale.ScaleX = _scale.ScaleY = next;
+            var center = new Point(_viewport.ActualWidth / 2.0, _viewport.ActualHeight / 2.0);
+            ZoomAt(_viewTransform.ScaleX * 1.2, center);
         });
 
         var zoomOutBtn = MakeRoundBtn(MinusIconPath, L10n.T("mindmap.zoom_out"), (_, _) =>
         {
-            var next = Math.Max(0.45, _scale.ScaleX - 0.15);
-            _scale.ScaleX = _scale.ScaleY = next;
+            var center = new Point(_viewport.ActualWidth / 2.0, _viewport.ActualHeight / 2.0);
+            ZoomAt(_viewTransform.ScaleX / 1.2, center);
         });
 
         var stack = new StackPanel

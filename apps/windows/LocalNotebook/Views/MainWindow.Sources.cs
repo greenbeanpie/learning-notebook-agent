@@ -551,6 +551,10 @@ public sealed partial class MainWindow
     private StackPanel? _kgStepsPanel;
     private TextBlock? _kgStageLabel;
     private ProgressBar? _kgProgressBar;
+    private ProgressRing? _kgProgressRing;
+    private FontIcon? _kgDoneIcon;
+    private Button? _kgDetailBtn;
+    private Action? _onKgTerminalState;
     private readonly Dictionary<long, TextBlock> _kgStepBodies = new();
 
     private void OnKgThoughtEvent(JsonElement data)
@@ -609,6 +613,36 @@ public sealed partial class MainWindow
         card.Children.Add(bodyTb);
         _kgStepsPanel.Children.Add(card);
         if (_kgStageLabel != null && title.Length > 0) _kgStageLabel.Text = title;
+        if (title == "成品生成完成")
+        {
+            SetKgBuildingCompletedUi(succeeded: true);
+        }
+    }
+
+    private void SetKgBuildingCompletedUi(bool succeeded)
+    {
+        if (_kgProgressRing != null)
+        {
+            _kgProgressRing.IsActive = false;
+            _kgProgressRing.Visibility = Visibility.Collapsed;
+        }
+        if (_kgDoneIcon != null && succeeded)
+        {
+            _kgDoneIcon.Visibility = Visibility.Visible;
+        }
+        if (_kgDetailBtn != null)
+        {
+            _kgDetailBtn.Visibility = Visibility.Collapsed;
+        }
+        if (_kgProgressBar != null)
+        {
+            _kgProgressBar.IsIndeterminate = false;
+            if (succeeded)
+            {
+                _kgProgressBar.Value = 100;
+                _kgProgressBar.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 129, 201, 149));
+            }
+        }
     }
 
     private void OnKgThoughtDeltaEvent(JsonElement data)
@@ -626,6 +660,16 @@ public sealed partial class MainWindow
     private void OnKgStatusEvent(JsonElement data)
     {
         if (_activeKgArtifactId == null || Str(data, "artifact_id") != _activeKgArtifactId) return;
+        var status = Str(data, "status");
+        var isTerminal = status is "READY" or "FAILED" or "CANCELLED";
+        if (isTerminal)
+        {
+            SetKgBuildingCompletedUi(succeeded: status == "READY");
+            var cb = _onKgTerminalState;
+            _onKgTerminalState = null;
+            cb?.Invoke();
+            return;
+        }
         if (_kgProgressBar != null)
         {
             var prog = Num(data, "progress");
@@ -802,6 +846,14 @@ public sealed partial class MainWindow
 
             if (isKgReady && kgArtifact is { } readyKg)
             {
+                _activeKgArtifactId = null;
+                _kgProgressRing = null;
+                _kgDoneIcon = null;
+                _kgDetailBtn = null;
+                _kgStepsPanel = null;
+                _kgStageLabel = null;
+                _kgProgressBar = null;
+                _onKgTerminalState = null;
                 var (mastered, total, pct) = ComputeKgMasteryCounts(readyKg);
                 var leftStack = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
                 leftStack.Children.Add(new TextBlock
@@ -861,7 +913,17 @@ public sealed partial class MainWindow
                 topLine.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
                 var buildingRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-                buildingRow.Children.Add(new ProgressRing { IsActive = true, Width = 14, Height = 14 });
+                _kgProgressRing = new ProgressRing { IsActive = true, Width = 14, Height = 14 };
+                _kgDoneIcon = new FontIcon
+                {
+                    Glyph = "\uE73E",
+                    FontSize = 13,
+                    Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 129, 201, 149)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Visibility = Visibility.Collapsed,
+                };
+                buildingRow.Children.Add(_kgProgressRing);
+                buildingRow.Children.Add(_kgDoneIcon);
                 _kgStageLabel = new TextBlock
                 {
                     Text = L10n.T("kg.building_inline"),
@@ -874,9 +936,10 @@ public sealed partial class MainWindow
                 buildingRow.Children.Add(_kgStageLabel);
                 topLine.Children.Add(buildingRow);
 
+                _kgDetailBtn = null;
                 if (onViewKgProgress != null)
                 {
-                    var detailBtn = new Button
+                    _kgDetailBtn = new Button
                     {
                         Content = L10n.T("art.view_process"),
                         Style = (Style)Application.Current.Resources["PillButtonStyle"],
@@ -884,9 +947,9 @@ public sealed partial class MainWindow
                         Padding = new Thickness(10, 2, 10, 2),
                         FontSize = 11.5,
                     };
-                    detailBtn.Click += (_, _) => onViewKgProgress();
-                    Grid.SetColumn(detailBtn, 1);
-                    topLine.Children.Add(detailBtn);
+                    _kgDetailBtn.Click += (_, _) => onViewKgProgress();
+                    Grid.SetColumn(_kgDetailBtn, 1);
+                    topLine.Children.Add(_kgDetailBtn);
                 }
                 buildingStack.Children.Add(topLine);
 
@@ -1026,7 +1089,7 @@ public sealed partial class MainWindow
         {
             await Task.Delay(2000);
             if (!_sourcePreviewOpen) return;
-            var res = await Api.CallAsync("studio.get", Args(("id", kgId)));
+            var res = await Api.CallAsync("studio.get", Args(("artifact_id", kgId)));
             if (res.Result is { } art)
             {
                 var st = Str(art, "status");
@@ -1403,30 +1466,10 @@ public sealed partial class MainWindow
 
         void LoadKnowledgeGraphView()
         {
-            if (kgArtifact is not { } kg || Str(kg, "status") != "READY") return;
-            if (!kg.TryGetProperty("payload", out var kgPayload) || kgPayload.ValueKind != JsonValueKind.Object) return;
-            DisposeSourcePreviewWebView();
-            showingIndex = true;
-            modeBtn.Content = L10n.T("sources.original_file");
-            JsonElement? kgProgress = kg.TryGetProperty("progress_state", out var ps) && ps.ValueKind == JsonValueKind.Object
-                ? ps
-                : null;
-            var view = new MindmapTreeView(
-                kgPayload,
-                null,
-                compact: false,
-                feedbackBar: null,
-                isKnowledgeGraph: true,
-                onQuizConcept: c => _ = CreateConceptLinkArtifactAsync("quiz", c),
-                onExpandMindmap: c => _ = CreateConceptLinkArtifactAsync("mindmap", c),
-                onAskConcept: c => _ = SendChatAsync(L10n.Fmt("kg.ask_prompt", c)),
-                progressState: kgProgress,
-                onProgressChanged: newState =>
-                {
-                    if (kgId.Length > 0)
-                        _ = Api.CallAsync("studio.save_progress", Args(("id", kgId), ("state", newState)));
-                });
-            contentHost.Content = view.Root;
+            if (kgId.Length > 0)
+            {
+                OpenArtifact(kgId);
+            }
         }
 
         modeBtn.Click += async (_, _) =>
@@ -1514,7 +1557,15 @@ public sealed partial class MainWindow
 
         if (kgStatus is "PENDING" or "RUNNING" && kgId.Length > 0)
         {
+            _onKgTerminalState = () =>
+            {
+                if (_sourcePreviewOpen) _ = ShowSourcePreviewAsync(sourceId, page, focusText, title);
+            };
             _ = PollSourceKnowledgeGraphAsync(sourceId, kgId, page, focusText, title);
+        }
+        else
+        {
+            _onKgTerminalState = null;
         }
     }
 

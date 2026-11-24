@@ -271,6 +271,7 @@ public sealed partial class MainWindow
             this,
             onClose: CloseArtifactInline,
             onToggleFullscreen: ToggleStudioFullscreen,
+            onRequireFullscreen: ForceStudioFullscreen,
             onQuizConcept: concept => _ = CreateConceptLinkArtifactAsync("quiz", concept),
             onExpandMindmap: concept => _ = CreateConceptLinkArtifactAsync("mindmap", concept),
             onAskConcept: concept => _ = SendChatAsync(L10n.Fmt("kg.explain_prompt", concept)),
@@ -295,7 +296,25 @@ public sealed partial class MainWindow
         ApplyPaneLayout();
     }
 
-    private DispatcherTimer? _paneAnimTimer;
+    private Storyboard? _paneStoryboard;
+
+    private void ForceStudioFullscreen()
+    {
+        if (_studioFullscreen) return;
+        _studioFullscreen = true;
+        if (_sourceFullscreen)
+        {
+            _sourceFullscreen = false;
+            if (_sourceFullscreenIcon != null)
+            {
+                _sourceFullscreenIcon.Data = (Microsoft.UI.Xaml.Media.Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
+                    typeof(Microsoft.UI.Xaml.Media.Geometry), SourceFullscreenIconPath);
+            }
+        }
+        _activeArtifactPane?.SetFullscreenIcon(true);
+        _paneStoryboard?.Stop();
+        ApplyPaneLayout();
+    }
 
     private void ToggleStudioFullscreen()
     {
@@ -313,87 +332,41 @@ public sealed partial class MainWindow
         AnimatePaneLayout(StudioPaneBorder, _studioFullscreen);
     }
 
-    /// <summary>Smoothly animates pane width expansion or shrinking (~190ms cubic ease-out) when toggling fullscreen.</summary>
+    /// <summary>Applies target pane layout in a single pass and runs a GPU-composited opacity transition to avoid Grid reflow jitter.</summary>
     private void AnimatePaneLayout(Border targetPane, bool expanding)
     {
-        if (!L10n.Prefs.FullscreenAnimation || RootGrid == null || RootGrid.ActualWidth <= 100)
+        _paneStoryboard?.Stop();
+        _paneStoryboard = null;
+        targetPane.RenderTransform = null;
+
+        ApplyPaneLayout();
+
+        if (!L10n.Prefs.FullscreenAnimation || targetPane.Visibility != Visibility.Visible)
         {
-            ApplyPaneLayout();
+            targetPane.Opacity = 1.0;
             return;
         }
 
-        _paneAnimTimer?.Stop();
-        var startS = SourcesPaneBorder.Visibility == Visibility.Visible ? SourcesPaneBorder.ActualWidth : 0.0;
-        var startC = ChatPaneBorder.Visibility == Visibility.Visible ? ChatPaneBorder.ActualWidth : 0.0;
-        var startT = StudioPaneBorder.Visibility == Visibility.Visible ? StudioPaneBorder.ActualWidth : 0.0;
-
-        var totalW = Math.Max(300.0, RootGrid.ActualWidth - 56.0);
-        double targetS, targetC, targetT;
-        var studioOpened = _activeArtifactPane != null;
-
-        if (_sourceFullscreen && _sourcePreviewOpen)
+        targetPane.Opacity = 0.85;
+        var anim = new DoubleAnimation
         {
-            targetS = totalW; targetC = 0; targetT = 0;
-        }
-        else if (_studioFullscreen && studioOpened)
-        {
-            targetS = 0; targetC = 0; targetT = totalW;
-        }
-        else if (_sourcePreviewOpen && studioOpened)
-        {
-            targetS = totalW * (1.0 / 3.2); targetC = totalW * (1.0 / 3.2); targetT = totalW * (1.2 / 3.2);
-        }
-        else if (_sourcePreviewOpen)
-        {
-            targetT = 300;
-            var rem = Math.Max(100, totalW - targetT);
-            targetS = rem * 0.5; targetC = rem * 0.5;
-        }
-        else if (studioOpened)
-        {
-            targetS = 260;
-            var rem = Math.Max(100, totalW - targetS);
-            targetC = rem * (1.0 / 2.65); targetT = rem * (1.65 / 2.65);
-        }
-        else
-        {
-            targetS = 320; targetT = 340; targetC = Math.Max(100, totalW - targetS - targetT);
-        }
-
-        SourcesPaneBorder.Visibility = Visibility.Visible;
-        ChatPaneBorder.Visibility = Visibility.Visible;
-        StudioPaneBorder.Visibility = Visibility.Visible;
-
-        var scale = new Microsoft.UI.Xaml.Media.ScaleTransform { ScaleX = expanding ? 0.96 : 1.02, ScaleY = expanding ? 0.96 : 1.02 };
-        targetPane.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
-        targetPane.RenderTransform = scale;
-
-        var started = DateTime.UtcNow;
-        const double durationMs = 190.0;
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
-        _paneAnimTimer = timer;
-        timer.Tick += (_, _) =>
-        {
-            var elapsed = (DateTime.UtcNow - started).TotalMilliseconds;
-            var rawT = Math.Clamp(elapsed / durationMs, 0.0, 1.0);
-            var ease = 1.0 - Math.Pow(1.0 - rawT, 3.0);
-
-            SourcesCol.Width = new GridLength(Math.Max(0, startS + (targetS - startS) * ease), GridUnitType.Pixel);
-            ChatCol.Width = new GridLength(Math.Max(0, startC + (targetC - startC) * ease), GridUnitType.Pixel);
-            StudioCol.Width = new GridLength(Math.Max(0, startT + (targetT - startT) * ease), GridUnitType.Pixel);
-
-            var curScale = (expanding ? 0.96 : 1.02) + (1.0 - (expanding ? 0.96 : 1.02)) * ease;
-            scale.ScaleX = curScale;
-            scale.ScaleY = curScale;
-
-            if (rawT >= 1.0)
-            {
-                timer.Stop();
-                targetPane.RenderTransform = null;
-                ApplyPaneLayout();
-            }
+            From = 0.85,
+            To = 1.0,
+            Duration = new Duration(TimeSpan.FromMilliseconds(140)),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
         };
-        timer.Start();
+        Storyboard.SetTarget(anim, targetPane);
+        Storyboard.SetTargetProperty(anim, "Opacity");
+        var sb = new Storyboard();
+        sb.Children.Add(anim);
+        sb.Completed += (_, _) =>
+        {
+            if (ReferenceEquals(_paneStoryboard, sb))
+                _paneStoryboard = null;
+            targetPane.Opacity = 1.0;
+        };
+        _paneStoryboard = sb;
+        sb.Begin();
     }
 
     private void ApplyPaneLayout()
