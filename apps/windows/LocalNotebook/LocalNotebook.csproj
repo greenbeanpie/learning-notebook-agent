@@ -35,4 +35,7 @@
     <!-- Newer WebView2 projection: the one bundled with Windows App SDK 1.6 cannot be created under NativeAOT. -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\shared\deck_player.html" LogicalName="deck_player.html" />
+  </ItemGroup>
 </Project>

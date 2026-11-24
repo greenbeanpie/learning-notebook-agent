@@ -118,6 +118,7 @@ pub enum ArtifactType {
     Flashcards,
     Quiz,
     Infographic,
+    Lecture,
 }
 
 impl ArtifactType {
@@ -130,6 +131,7 @@ impl ArtifactType {
             Self::Flashcards => "flashcards",
             Self::Quiz => "quiz",
             Self::Infographic => "infographic",
+            Self::Lecture => "lecture",
         }
     }
 }

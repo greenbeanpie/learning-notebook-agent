@@ -35,10 +35,26 @@ fn try_render_pptx_with_python(payload: &Value, out_path: &Path) -> bool {
 /// Render a .pptx file from SlidesPayload JSON using local python-pptx tool when available,
 /// falling back to the built-in OOXML generator if Python is not installed.
 pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
+    render_pptx_in(payload, out_path, None)
+}
+
+fn deck_uses_builds_or_figures(payload: &Value) -> bool {
+    payload.get("slides").and_then(Value::as_array).is_some_and(|a| {
+        a.iter().any(|s| {
+            s.get("figure").is_some_and(|f| f.is_object())
+                || s.get("builds").and_then(Value::as_array).is_some_and(|b| !b.is_empty())
+        })
+    })
+}
+
+/// Like `render_pptx`; `asset_dir` holds `figures/<slide id>_<step>.png` written by
+/// `lecture::render_figure_assets`. Decks with figures or step builds always use the built-in
+/// generator, which embeds the figures and writes click-by-click animations (`<p:timing>`).
+pub fn render_pptx_in(payload: &Value, out_path: &Path, asset_dir: Option<&Path>) -> LnaResult<()> {
     if let Some(p) = out_path.parent() {
         std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;
     }
-    if try_render_pptx_with_python(payload, out_path) {
+    if !deck_uses_builds_or_figures(payload) && try_render_pptx_with_python(payload, out_path) {
         return Ok(());
     }
     let file = std::fs::File::create(out_path).map_err(|e| LnaError::internal(e.to_string()))?;
@@ -64,6 +80,7 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
   <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
 "#,
     );
@@ -122,73 +139,7 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
     for (idx, s) in slides.iter().enumerate() {
         let i = idx + 1;
         let title = xml_escape(s.get("title").and_then(|x| x.as_str()).unwrap_or("Slide"));
-        let mut lines: Vec<String> = Vec::new();
-        if let Some(sub) = s.get("subtitle").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
-            lines.push(sub.trim().to_string());
-        }
-        if let Some(formula) = s.get("formula").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
-            lines.push(format!("Formula: {}", formula.trim()));
-        }
-        if let Some(cards) = s.get("cards").and_then(|v| v.as_array()) {
-            for c in cards {
-                let ct = c.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                let cb = c.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                if !ct.is_empty() || !cb.is_empty() {
-                    lines.push(format!("■ {ct} — {cb}"));
-                }
-            }
-        }
-        if let Some(cols) = s.get("columns").and_then(|v| v.as_array()) {
-            for c in cols {
-                let h = c.get("heading").and_then(|v| v.as_str()).unwrap_or("");
-                if !h.is_empty() { lines.push(format!("【{h}】")); }
-                if let Some(items) = c.get("items").and_then(|v| v.as_array()) {
-                    for it in items.iter().filter_map(|v| v.as_str()) {
-                        lines.push(format!("  • {it}"));
-                    }
-                }
-            }
-        }
-        if let Some(metrics) = s.get("metrics").and_then(|v| v.as_array()) {
-            for m in metrics {
-                let val = m.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                let lbl = m.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                let det = m.get("detail").and_then(|v| v.as_str()).unwrap_or("");
-                lines.push(format!("{val} · {lbl} {det}").trim().to_string());
-            }
-        }
-        if let Some(steps) = s.get("steps").and_then(|v| v.as_array()) {
-            for (si, st) in steps.iter().enumerate() {
-                let num = st.get("step").and_then(|v| v.as_str()).unwrap_or("");
-                let stt = st.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                let stdet = st.get("detail").and_then(|v| v.as_str()).unwrap_or("");
-                let prefix = if num.is_empty() { format!("{}.", si + 1) } else { num.to_string() };
-                lines.push(format!("{prefix} {stt}: {stdet}"));
-            }
-        }
-        if let Some(tbl) = s.get("table").and_then(|v| v.as_object()) {
-            if let Some(hdrs) = tbl.get("headers").and_then(|v| v.as_array()) {
-                let hline = hdrs.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | ");
-                if !hline.is_empty() { lines.push(hline); }
-            }
-            if let Some(rows) = tbl.get("rows").and_then(|v| v.as_array()) {
-                for r in rows.iter().take(6) {
-                    if let Some(cells) = r.as_array() {
-                        lines.push(cells.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | "));
-                    }
-                }
-            }
-        }
-        if let Some(arr) = s.get("bullets").and_then(|b| b.as_array()) {
-            for t in arr.iter().filter_map(|v| v.as_str()) {
-                if !t.trim().is_empty() {
-                    lines.push(format!("• {}", t.trim()));
-                }
-            }
-        }
-        if let Some(callout) = s.get("callout").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
-            lines.push(format!("★ {}", callout.trim()));
-        }
+        let (lines, line_ids): (Vec<String>, Vec<Vec<String>>) = body_lines(s).into_iter().unzip();
         let bullets = lines
             .iter()
             .map(|t| {
@@ -199,9 +150,57 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
             })
             .collect::<String>();
 
+        // figure: cumulative PNG per build step, stacked so later layers cover earlier ones
+        let fig_steps = crate::lecture::figure_part_steps(s);
+        let mut pics: Vec<(i64, Vec<u8>)> = Vec::new();
+        if let (Some(dir), true) = (asset_dir, s.get("figure").is_some_and(|f| f.is_object())) {
+            let sid = crate::lecture::slide_file_id(s, idx);
+            let max = fig_steps.values().copied().max().unwrap_or(0);
+            for k in 0..=max {
+                if k > 0 && !fig_steps.values().any(|v| *v == k) {
+                    continue;
+                }
+                if let Ok(bytes) = std::fs::read(dir.join("figures").join(format!("{sid}_{k}.png"))) {
+                    pics.push((k, bytes));
+                }
+            }
+        }
+        let body_cx: i64 = if pics.is_empty() { 10_972_800 } else { 5_200_000 };
+        let mut pic_xml = String::new();
+        let mut pic_ids: Vec<(i64, usize)> = Vec::new();
+        if !pics.is_empty() {
+            let meta = s.pointer("/figure/meta");
+            let fw = meta.and_then(|m| m.get("width")).and_then(Value::as_f64).unwrap_or(800.0);
+            let fh = meta.and_then(|m| m.get("height")).and_then(Value::as_f64).unwrap_or(600.0);
+            let (bx, by, bw, bh): (i64, i64, i64, i64) =
+                if lines.is_empty() { (1_524_000, 1_500_000, 9_144_000, 5_000_000) } else { (6_000_000, 1_500_000, 5_600_000, 4_900_000) };
+            let scale = (bw as f64 / fw).min(bh as f64 / fh);
+            let (cx, cy) = ((fw * scale) as i64, (fh * scale) as i64);
+            let (x, y) = (bx + (bw - cx) / 2, by + (bh - cy) / 2);
+            let mut rels = String::from(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n",
+            );
+            for (pi, (k, bytes)) in pics.iter().enumerate() {
+                zip.start_file(format!("ppt/media/fig{i}_{k}.png"), opts).map_err(zip_err)?;
+                zip.write_all(bytes).map_err(io_err)?;
+                rels.push_str(&format!(
+                    "  <Relationship Id=\"rIdFig{k}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/fig{i}_{k}.png\"/>\n"
+                ));
+                let shape_id = 10 + pi;
+                pic_ids.push((*k, shape_id));
+                pic_xml.push_str(&format!(
+                    "      <p:pic><p:nvPicPr><p:cNvPr id=\"{shape_id}\" name=\"Figure {k}\"/><p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rIdFig{k}\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>\n"
+                ));
+            }
+            rels.push_str("</Relationships>");
+            zip.start_file(format!("ppt/slides/_rels/slide{i}.xml.rels"), opts).map_err(zip_err)?;
+            zip.write_all(rels.as_bytes()).map_err(io_err)?;
+        }
+        let timing = build_timing_xml(s, &line_ids, &pic_ids);
+
         let slide_xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld>
     <p:spTree>
       <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
@@ -213,11 +212,11 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
       </p:sp>
       <p:sp>
         <p:nvSpPr><p:cNvPr id="3" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
-        <p:spPr><a:xfrm><a:off x="609600" y="1600200"/><a:ext cx="10972800" cy="4572000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>
+        <p:spPr><a:xfrm><a:off x="609600" y="1600200"/><a:ext cx="{body_cx}" cy="4572000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>
         <p:txBody><a:bodyPr/><a:lstStyle/>{bullets}</p:txBody>
       </p:sp>
-    </p:spTree>
-  </p:cSld>
+{pic_xml}    </p:spTree>
+  </p:cSld>{timing}
 </p:sld>"#
         );
         zip.start_file(format!("ppt/slides/slide{i}.xml"), opts)
@@ -227,6 +226,139 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
 
     zip.finish().map_err(zip_err)?;
     Ok(())
+}
+
+/// Body paragraphs of a slide for the built-in pptx writer, each with the element ids it
+/// shows (same scheme as `lecture::slide_element_ids`) so builds can animate paragraphs.
+fn body_lines(s: &Value) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let text = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    if let Some(sub) = s.get("subtitle").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+        out.push((sub.trim().to_string(), vec!["subtitle".into()]));
+    }
+    if let Some(formula) = s.get("formula").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+        out.push((format!("Formula: {}", formula.trim()), vec!["formula".into()]));
+    }
+    for (ci, c) in s.get("cards").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+        let (ct, cb) = (text(c, "title"), text(c, "body"));
+        if !ct.is_empty() || !cb.is_empty() {
+            out.push((format!("■ {ct} — {cb}"), vec![format!("card{}", ci + 1)]));
+        }
+    }
+    for (ci, c) in s.get("columns").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+        let col = format!("col{}", ci + 1);
+        let h = text(c, "heading");
+        if !h.is_empty() {
+            out.push((format!("【{h}】"), vec![col.clone()]));
+        }
+        for (ii, it) in c.get("items").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str()).enumerate() {
+            out.push((format!("  • {it}"), vec![col.clone(), format!("{col}.i{}", ii + 1)]));
+        }
+    }
+    for (mi, m) in s.get("metrics").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+        let line = format!("{} · {} {}", text(m, "value"), text(m, "label"), text(m, "detail")).trim().to_string();
+        out.push((line, vec![format!("metric{}", mi + 1)]));
+    }
+    for (si, st) in s.get("steps").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+        let num = text(st, "step");
+        let prefix = if num.is_empty() { format!("{}.", si + 1) } else { num };
+        out.push((format!("{prefix} {}: {}", text(st, "title"), text(st, "detail")), vec![format!("step{}", si + 1)]));
+    }
+    if let Some(tbl) = s.get("table").and_then(|v| v.as_object()) {
+        if let Some(hdrs) = tbl.get("headers").and_then(|v| v.as_array()) {
+            let hline = hdrs.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | ");
+            if !hline.is_empty() {
+                out.push((hline, vec!["table".into()]));
+            }
+        }
+        for (ri, r) in tbl.get("rows").and_then(|v| v.as_array()).into_iter().flatten().take(12).enumerate() {
+            if let Some(cells) = r.as_array() {
+                let line = cells.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | ");
+                out.push((line, vec!["table".into(), format!("table.r{}", ri + 1)]));
+            }
+        }
+    }
+    for (bi, t) in s.get("bullets").and_then(|b| b.as_array()).into_iter().flatten().filter_map(|v| v.as_str()).enumerate() {
+        if !t.trim().is_empty() {
+            out.push((format!("• {}", t.trim()), vec![format!("b{}", bi + 1)]));
+        }
+    }
+    if let Some(callout) = s.get("callout").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+        out.push((format!("★ {}", callout.trim()), vec!["callout".into()]));
+    }
+    out
+}
+
+/// Click-by-click entrance animations for a slide's builds: body paragraphs (shape id 3) and
+/// figure layers (picture shape ids). Returns the `<p:timing>` element or an empty string.
+fn build_timing_xml(s: &Value, line_ids: &[Vec<String>], pic_ids: &[(i64, usize)]) -> String {
+    let Some(builds) = s.get("builds").and_then(Value::as_array).filter(|b| !b.is_empty()) else {
+        return String::new();
+    };
+    let mut steps: Vec<i64> = builds.iter().filter_map(|b| b.get("step").and_then(Value::as_i64)).collect();
+    steps.sort();
+    steps.dedup();
+    let mut clicks = String::new();
+    let mut ctn = 3;
+    let mut any_text = false;
+    for st in steps {
+        let mut paras: Vec<usize> = Vec::new();
+        let mut appear = false;
+        let mut entrance = false;
+        for b in builds.iter().filter(|b| b.get("step").and_then(Value::as_i64) == Some(st)) {
+            let eff = b.get("effect").and_then(Value::as_str).unwrap_or("fade");
+            if eff == "emphasis" || eff == "dim_others" {
+                continue;
+            }
+            entrance = true;
+            appear |= eff == "appear";
+            let targets: Vec<&str> = b.get("targets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            for (li, ids) in line_ids.iter().enumerate() {
+                if ids.iter().any(|id| targets.contains(&id.as_str())) && !paras.contains(&li) {
+                    paras.push(li);
+                }
+            }
+        }
+        let pic = pic_ids.iter().find(|(k, _)| *k == st).map(|(_, id)| *id);
+        if !entrance || (paras.is_empty() && pic.is_none()) {
+            continue;
+        }
+        any_text |= !paras.is_empty();
+        let mut targets: Vec<String> = paras
+            .iter()
+            .map(|p| format!(r#"<p:spTgt spid="3"><p:txEl><p:pRg st="{p}" end="{p}"/></p:txEl></p:spTgt>"#))
+            .collect();
+        if let Some(id) = pic {
+            targets.push(format!(r#"<p:spTgt spid="{id}"/>"#));
+        }
+        let (click_id, group_id) = (ctn, ctn + 1);
+        ctn += 2;
+        let mut effects = String::new();
+        for (ti, tgt) in targets.iter().enumerate() {
+            let (eid, sid, aid) = (ctn, ctn + 1, ctn + 2);
+            ctn += 3;
+            let node = if ti == 0 { "clickEffect" } else { "withEffect" };
+            let (preset, anim) = if appear {
+                (1, String::new())
+            } else {
+                (10, format!(r#"<p:animEffect transition="in" filter="fade"><p:cBhvr><p:cTn id="{aid}" dur="500"/><p:tgtEl>{tgt}</p:tgtEl></p:cBhvr></p:animEffect>"#))
+            };
+            effects.push_str(&format!(
+                r#"<p:par><p:cTn id="{eid}" presetID="{preset}" presetClass="entr" presetSubtype="0" fill="hold" grpId="0" nodeType="{node}"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:set><p:cBhvr><p:cTn id="{sid}" dur="1" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn><p:tgtEl>{tgt}</p:tgtEl><p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val="visible"/></p:to></p:set>{anim}</p:childTnLst></p:cTn></p:par>"#
+            ));
+        }
+        clicks.push_str(&format!(
+            r#"<p:par><p:cTn id="{click_id}" fill="hold"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst><p:par><p:cTn id="{group_id}" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>{effects}</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>"#
+        ));
+    }
+    if clicks.is_empty() {
+        return String::new();
+    }
+    let bld = if any_text { r#"<p:bldLst><p:bldP spid="3" grpId="0" build="p"/></p:bldLst>"# } else { "" };
+    format!(
+        r#"
+  <p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst><p:seq concurrent="1" nextAc="seek"><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst>{clicks}</p:childTnLst></p:cTn><p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst><p:nextCondLst><p:cond evt="onNext" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst></p:seq></p:childTnLst></p:cTn></p:par></p:tnLst>{bld}</p:timing>"#
+    )
 }
 
 /// Render a rich structured SVG Infographic from InfographicPayload JSON (image_c93c68 style).
@@ -791,7 +923,7 @@ pub fn artifact_markdown(artifact_type: &str, title: &str, payload: &Value) -> S
             walk(&nodes, None, 0, &mut md);
             md.push('\n');
         }
-        "slides" => {
+        "slides" | "lecture" => {
             for (i, sl) in payload
                 .get("slides")
                 .and_then(|x| x.as_array())

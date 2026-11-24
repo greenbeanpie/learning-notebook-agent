@@ -829,14 +829,14 @@ impl AgentService {
                 },
                 ToolDef {
                     name: "generate_studio_artifact".into(),
-                    description: "【必用·异步非阻塞】当用户要求生成测验/测试/出题/练习题(quiz)、闪卡(flashcards)、思维导图(mindmap)、研究报告/学习指南(report)、演示文稿/PPT(slides)、信息图(infographic)或音频概览/播客(audio)时，必须调用此工具；调用后会立即入队并在后台生成（不阻塞主对话），不要直接在对话中手写题目或长篇正文代替。除非用户明确要求更大数量，默认保持适中规模（quiz 5~8 题、flashcards 8~12 张、slides 6~10 页）。此工具内部会自动从已选来源检索证据，无需先逐页通读全文，只需在 topic 中写明目标章节/主题与具体要求即可。".into(),
+                    description: "【必用·异步非阻塞】当用户要求生成测验/测试/出题/练习题(quiz)、闪卡(flashcards)、思维导图(mindmap)、研究报告/学习指南(report)、演示文稿/PPT(slides)、信息图(infographic)、音频概览/播客(audio)或「讲解」课(lecture：AI 制作幻灯片并配合语音朗读、激光笔与分步动画讲解，可用于预习/复习/练习)时，必须调用此工具；调用后会立即入队并在后台生成（不阻塞主对话），不要直接在对话中手写题目或长篇正文代替。除非用户明确要求更大数量，默认保持适中规模（quiz 5~8 题、flashcards 8~12 张、slides 6~10 页）。此工具内部会自动从已选来源检索证据，无需先逐页通读全文，只需在 topic 中写明目标章节/主题与具体要求即可。".into(),
                     parameters: json!({
                         "type": "object",
                         "properties": {
                             "artifact_type": {
                                 "type": "string",
-                                "enum": ["quiz", "flashcards", "mindmap", "report", "slides", "infographic", "audio"],
-                                "description": "成品类型：quiz(测验)、flashcards(闪卡)、mindmap(思维导图)、report(研究报告)、slides(演示文稿)、infographic(信息图)、audio(音频概览)"
+                                "enum": ["quiz", "flashcards", "mindmap", "report", "slides", "infographic", "audio", "lecture"],
+                                "description": "成品类型：quiz(测验)、flashcards(闪卡)、mindmap(思维导图)、report(研究报告)、slides(演示文稿)、infographic(信息图)、audio(音频概览)、lecture(讲解)"
                             },
                             "title": { "type": "string", "description": "成品标题（可选，如「第4章正交性测验」）" },
                             "topic": { "type": "string", "description": "聚焦的主题、章节或具体出题/编写要求（可选）" },
@@ -850,7 +850,9 @@ impl AgentService {
                             },
                             "format": { "type": "string", "description": "格式：report 可选 document/interactive；audio 可选 deep_dive/debate/brief/critique" },
                             "pages": { "type": "integer", "minimum": 4, "maximum": 30, "description": "演示文稿页数（仅 slides，建议 6~10，默认 8）" },
-                            "orientation": { "type": "string", "enum": ["landscape", "portrait", "square"], "description": "信息图方向（仅 infographic）" }
+                            "orientation": { "type": "string", "enum": ["landscape", "portrait", "square"], "description": "信息图方向（仅 infographic）" },
+                            "mode": { "type": "string", "enum": ["general", "preview", "review", "practice"], "description": "讲解模式（仅 lecture）：general 通用（默认）、preview 预习、review 复习、practice 练习" },
+                            "detail": { "type": "string", "enum": ["auto", "brief", "standard", "detailed"], "description": "讲解详细程度（仅 lecture，默认 auto）" }
                         },
                         "required": ["artifact_type"]
                     }),
@@ -2342,9 +2344,10 @@ impl AgentService {
             "slides" => ArtifactType::Slides,
             "infographic" => ArtifactType::Infographic,
             "audio" => ArtifactType::Audio,
+            "lecture" => ArtifactType::Lecture,
             _ => {
                 return Err(format!(
-                    "不支持的 artifact_type：{kind_str}。可选值为 quiz、flashcards、mindmap、report、slides、infographic、audio。"
+                    "不支持的 artifact_type：{kind_str}。可选值为 quiz、flashcards、mindmap、report、slides、infographic、audio、lecture。"
                 ));
             }
         };
@@ -2356,6 +2359,7 @@ impl AgentService {
             ArtifactType::Slides => "演示文稿",
             ArtifactType::Infographic => "信息图",
             ArtifactType::Audio => "音频概览",
+            ArtifactType::Lecture => "讲解",
         };
         let title = args
             .get("title")
@@ -2474,6 +2478,23 @@ impl AgentService {
                 cfg.insert("format".into(), json!(fmt));
             }
             ArtifactType::Mindmap => {}
+            ArtifactType::Lecture => {
+                let mode = args
+                    .get("mode")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| matches!(*s, "general" | "preview" | "review" | "practice"))
+                    .unwrap_or("general");
+                let detail = args
+                    .get("detail")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| matches!(*s, "auto" | "brief" | "standard" | "detailed"))
+                    .unwrap_or("auto");
+                cfg.insert("mode".into(), json!(mode));
+                cfg.insert("detail".into(), json!(detail));
+                cfg.insert("reviewOutline".into(), json!(false));
+            }
         }
 
         let topic_ev = format!("chat:{notebook_id}");

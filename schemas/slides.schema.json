@@ -38,7 +38,8 @@
               "table",
               "quote",
               "formula",
-              "summary"
+              "summary",
+              "figure"
             ]
           },
           "title": { "type": "string" },
@@ -111,7 +112,33 @@
           "formula": { "type": "string" },
           "callout": { "type": "string" },
           "speaker_notes": { "type": "string" },
-          "citations": { "type": "array", "items": { "type": "integer" } }
+          "citations": { "type": "array", "items": { "type": "integer" } },
+          "builds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["step", "targets"],
+              "properties": {
+                "step": { "type": "integer" },
+                "targets": { "type": "array", "items": { "type": "string" } },
+                "effect": {
+                  "type": "string",
+                  "enum": ["appear", "fade", "fly_up", "draw", "emphasis", "dim_others"]
+                }
+              }
+            }
+          },
+          "figure_request": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "purpose", "details"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["plot", "plot3d", "diagram"] },
+              "purpose": { "type": "string" },
+              "details": { "type": "string" }
+            }
+          }
         }
       }
     }

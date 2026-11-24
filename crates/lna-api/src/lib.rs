@@ -369,7 +369,7 @@ impl CoreRuntime {
                 "name": "Local Notebook Agent",
                 "version": env!("CARGO_PKG_VERSION"),
                 "data_dir": self.db.paths().root,
-                "studio_modalities": ["audio","slides","mindmap","report","flashcards","quiz","infographic"]
+                "studio_modalities": ["audio","slides","mindmap","report","flashcards","quiz","infographic","lecture"]
             })),
             "usage.summary" => {
                 let nid = p.get("notebook_id").and_then(|x| x.as_str());
@@ -845,20 +845,55 @@ impl CoreRuntime {
                 let instruction = req_str(p, "instruction")?.to_string();
                 let current_draft = p.get("draft").and_then(Value::as_str).map(String::from);
                 let studio = self.studio.clone();
-                let updated = self.rt.block_on(async move {
-                    studio
-                        .revise_draft(&id, &instruction, current_draft.as_deref())
-                        .await
-                })?;
+                let updated = studio
+                    .revise_draft(&id, &instruction, current_draft.as_deref())
+                    .await?;
                 Ok(serde_json::to_value(updated).unwrap())
             }
             "studio.refine_node" => {
                 let id = req_str(p, "artifact_id")?.to_string();
                 let node_id = req_str(p, "node_id")?.to_string();
                 let studio = self.studio.clone();
-                self.rt
-                    .block_on(async move { studio.refine_node(&id, &node_id).await })
+                studio.refine_node(&id, &node_id).await
             }
+            // --- Lecture (讲解) ---
+            "lecture.ask" => {
+                let id = req_str(p, "artifact_id")?.to_string();
+                let slide_id = req_str(p, "slide_id")?.to_string();
+                let question = req_str(p, "question")?.to_string();
+                let sentence_id = p.get("sentence_id").and_then(Value::as_str).map(String::from);
+                let history: Vec<Value> = p.get("history").and_then(Value::as_array).cloned().unwrap_or_default();
+                let studio = self.studio.clone();
+                studio.lecture_ask(&id, &slide_id, sentence_id.as_deref(), &question, &history).await
+            }
+            "lecture.adapt" => {
+                let id = req_str(p, "artifact_id")?.to_string();
+                let slide_id = req_str(p, "slide_id")?.to_string();
+                let kind = req_str(p, "kind")?.to_string();
+                if !matches!(kind.as_str(), "extend" | "slower" | "simpler" | "skip_known" | "more_examples") {
+                    return Err(LnaError::invalid("kind must be extend, slower, simpler, skip_known or more_examples"));
+                }
+                let reason = p.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
+                let question = p.get("question").and_then(Value::as_str).unwrap_or("").to_string();
+                let studio = self.studio.clone();
+                studio.lecture_adapt(&id, &slide_id, &kind, &reason, &question).await
+            }
+            "lecture.undo" => {
+                let id = req_str(p, "artifact_id")?;
+                let adaptation_id = p.get("adaptation_id").and_then(Value::as_str);
+                let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
+                self.studio.lecture_undo(id, adaptation_id, all)
+            }
+            // --- Text-to-speech ---
+            "tts.get_settings" => self.studio.tts_settings(),
+            "tts.set_settings" => self.studio.set_tts_settings(p),
+            "tts.synthesize" => {
+                let text = req_str(p, "text")?.to_string();
+                let voice = p.get("voice").and_then(Value::as_str).map(String::from);
+                let studio = self.studio.clone();
+                studio.tts_synthesize(&text, voice.as_deref()).await
+            }
+            "tts.clear_cache" => Ok(json!({ "removed": self.studio.tts_clear_cache()? })),
             "studio.save_progress" => {
                 let id = req_str(p, "artifact_id")?;
                 let state = p.get("state").cloned().unwrap_or_else(|| json!({}));
@@ -1368,8 +1403,12 @@ impl CoreRuntime {
             }),
         );
         let llm = self.llm.clone();
-        let translated_res = self.rt.block_on(async move {
-            llm.complete_text(&resolved, &req, tokio_util::sync::CancellationToken::new()).await
+        // called from the async dispatcher: leave the worker thread before blocking on the call
+        let handle = self.rt.handle().clone();
+        let translated_res = tokio::task::block_in_place(move || {
+            handle.block_on(async move {
+                llm.complete_text(&resolved, &req, tokio_util::sync::CancellationToken::new()).await
+            })
         });
         self.emit(
             &format!("notebook:{notebook_id}"),

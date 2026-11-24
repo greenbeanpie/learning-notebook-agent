@@ -302,6 +302,79 @@ fn run_migrations(conn: &Connection, db_path: &Path) -> LnaResult<()> {
         conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
         tracing::info!("Applied SQLite migration 0005_studio_thoughts_and_logs.sql");
     }
+
+    if version < 6 {
+        if db_path.exists() && std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0) > 0 {
+            let backup = db_path.with_extension("db.bak");
+            let _ = std::fs::copy(db_path, backup);
+        }
+        conn.pragma_update(None, "foreign_keys", "OFF")
+            .map_err(map_sql_err)?;
+        conn.execute_batch("BEGIN IMMEDIATE;").map_err(map_sql_err)?;
+        if let Err(e) = migrate_0006_lecture_artifacts(conn) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            let _ = conn.pragma_update(None, "foreign_keys", "ON");
+            return Err(e);
+        }
+        conn.pragma_update(None, "user_version", 6)
+            .map_err(map_sql_err)?;
+        conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(map_sql_err)?;
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check").map_err(map_sql_err)?;
+        if stmt.exists([]).map_err(map_sql_err)? {
+            return Err(LnaError::internal(
+                "Foreign key check failed after migration 0006",
+            ));
+        }
+        tracing::info!("Applied SQLite migration 0006 (lecture artifact type)");
+    }
+    Ok(())
+}
+
+/// Allows `artifact_type = 'lecture'`. SQLite cannot alter a CHECK constraint, so the table is
+/// rebuilt from its own stored definition (keeping every column added by later migrations),
+/// rows are copied, and its indexes are recreated. Child tables reference it by name, so they
+/// stay valid once the new table takes the old name.
+fn migrate_0006_lecture_artifacts(conn: &Connection) -> LnaResult<()> {
+    let table_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='studio_artifacts'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(map_sql_err)?;
+    if table_sql.contains("'lecture'") {
+        return Ok(());
+    }
+    let old_list = "'quiz','infographic')";
+    if !table_sql.contains(old_list) {
+        return Err(LnaError::internal(
+            "Unexpected studio_artifacts definition; cannot add the lecture type",
+        ));
+    }
+    let new_sql = table_sql
+        .replacen(old_list, "'quiz','infographic','lecture')", 1)
+        .replacen("studio_artifacts", "studio_artifacts_new", 1);
+    let index_sql: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='studio_artifacts' AND sql IS NOT NULL")
+            .map_err(map_sql_err)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(map_sql_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(map_sql_err)?
+    };
+    conn.execute_batch(&new_sql).map_err(map_sql_err)?;
+    conn.execute_batch(
+        "INSERT INTO studio_artifacts_new SELECT * FROM studio_artifacts;
+         DROP TABLE studio_artifacts;
+         ALTER TABLE studio_artifacts_new RENAME TO studio_artifacts;",
+    )
+    .map_err(map_sql_err)?;
+    for sql in index_sql {
+        conn.execute_batch(&sql).map_err(map_sql_err)?;
+    }
     Ok(())
 }
 

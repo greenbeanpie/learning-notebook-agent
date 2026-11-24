@@ -89,6 +89,8 @@ data class StudioArtifactItem(
     val errorCode: String,
     val errorDetail: String,
     val errorLog: String,
+    val outputDir: String = "",
+    val progressState: org.json.JSONObject = org.json.JSONObject(),
 )
 
 data class PdfPreviewTarget(

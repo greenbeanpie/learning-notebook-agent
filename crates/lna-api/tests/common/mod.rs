@@ -389,7 +389,14 @@ fn serve(
         nth,
     };
     requests.lock().unwrap().push(req.clone());
-    let reply = handler(&req);
+    // like real OpenAI-compatible providers: every tool call must be answered by a tool message
+    let reply = match unanswered_tool_call(&req.body) {
+        Some(id) => Reply::Status(
+            400,
+            json!({ "error": { "message": format!("An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. Missing: {id}") } }).to_string(),
+        ),
+        None => handler(&req),
+    };
 
     let sse_head =
         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
@@ -612,7 +619,26 @@ pub const ZH_DOC: &str = "# 第三章 向量空间\n\n## 3.5 基与维数\n\n向
 /// Valid payloads for every Studio modality, chosen from the system prompt.
 pub fn studio_reply(r: &Req) -> Reply {
     let s = &r.system;
-    let json = if s.contains("for quiz,") || s.contains("生成 quiz") {
+    let user_text = r.body.to_string();
+    let json = if s.contains("for lecture outline") {
+        json!({"title":"基与维数讲解","objectives":["理解基","理解维数"],"sections":[{"title":"基与维数","focus":"3.5 节：基的定义与维数定理"}]})
+    } else if s.contains("for lecture slides") {
+        json!({"slides":[
+            {"layout":"title","title":"基与维数","narration":[{"text":"今天我们来讲基与维数。","cues":[{"type":"laser","target":"title","shape":"ellipse","scale":1.2,"speed":0.8,"duration_ms":1500}]}]},
+            {"layout":"figure","title":"一条曲线","bullets":["要点"],"citations":[1],
+             "figure_request":{"kind":"plot","purpose":"示意","details":"curve id f: y=x^2"},
+             "builds":[{"step":1,"targets":["figure:f"],"effect":"draw"}],
+             "narration":[{"text":"先看这条曲线。","cues":[{"type":"step","n":1},{"type":"laser","target":"figure:f","shape":"circle","speed":1.0,"duration_ms":2000}]}]}
+        ]})
+    } else if s.contains("structured JSON for figure") {
+        if user_text.contains("Render report") {
+            json!({"ok": true})
+        } else {
+            json!({"kind":"plot","x_range":[-2,2],"elements":[{"id":"f","type":"curve","expr":"x^2","label":"y=x²"}]})
+        }
+    } else if s.contains("for lecture answer") {
+        json!({"answer":"基是线性无关且张成空间的向量组[1]。","speak":"基是线性无关并且张成整个空间的向量组。","adapt":{"kind":"extend","reason":"需要补充基的例子"}})
+    } else if s.contains("for quiz,") || s.contains("生成 quiz") {
         json!({"title":"测验","questions":[
             {"id":"q1","type":"single","difficulty":"medium","prompt":"n+1 个向量必然？","options":["线性相关","线性无关"],"answer_indices":[0],"accepted_answers":[],"rubric":"","explanation":"维数定理","citations":[1]}]})
     } else if s.contains("for flashcards,") || s.contains("生成 flashcards") {
@@ -764,4 +790,26 @@ impl FileServer {
         });
         FileServer { port, hits, ranges }
     }
+}
+
+/// The first tool_call id of an assistant message that is not answered by a following
+/// `role: tool` message (chat-completions request bodies only).
+pub fn unanswered_tool_call(body: &Value) -> Option<String> {
+    let msgs = body["messages"].as_array()?;
+    for (i, m) in msgs.iter().enumerate() {
+        if m["role"] != json!("assistant") {
+            continue;
+        }
+        for call in m["tool_calls"].as_array().into_iter().flatten() {
+            let id = call["id"].as_str().unwrap_or("");
+            let answered = msgs[i + 1..]
+                .iter()
+                .take_while(|x| x["role"] == json!("tool"))
+                .any(|x| x["tool_call_id"].as_str() == Some(id));
+            if !answered {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
 }

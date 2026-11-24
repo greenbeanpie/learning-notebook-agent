@@ -4,6 +4,8 @@ plugins {
 }
 
 android {
+    // shared slide deck / lecture player page (apps/shared/deck_player.html)
+    sourceSets["main"].assets.srcDir("../../../shared")
     namespace = "com.localnotebook.agent"
     compileSdk = 37
     buildToolsVersion = "37.0.0"

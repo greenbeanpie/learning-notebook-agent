@@ -44,6 +44,7 @@ fun StudioScreen(
     onAskConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
     onRefineNode: (artifactId: String, nodeId: String, label: String) -> Unit = { _, _, _ -> },
+    core: com.localnotebook.agent.core.CoreClient? = null,
 ) {
     val en = state.prefs.isEnglish
     val openArt = state.activeArtifact
@@ -67,6 +68,7 @@ fun StudioScreen(
             onAskConcept = onAskConcept,
             modifier = modifier,
             onRefineNode = { nodeId, label -> onRefineNode(openArt.id, nodeId, label) },
+            core = core,
         )
         return
     }
@@ -80,6 +82,7 @@ fun StudioScreen(
         Triple("quiz", L10n.t("studio.quiz", en), Color(0xFF78D9EC)),
         Triple("infographic", L10n.t("studio.infographic", en), Color(0xFFFCAD70)),
         Triple("knowledge_graph", L10n.t("studio.knowledge_graph", en), Color(0xFF64B5F6)),
+        Triple("lecture", L10n.t("studio.lecture", en), Color(0xFFF28B82)),
     )
 
     Column(
@@ -90,9 +93,13 @@ fun StudioScreen(
     ) {
         // 4x2 Symmetrical 8-tile Studio Grid
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (rowIdx in 0 until 4) {
+            for (rowIdx in 0 until (tiles.size + 1) / 2) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     for (colIdx in 0 until 2) {
+                        if (rowIdx * 2 + colIdx >= tiles.size) {
+                            Spacer(Modifier.weight(1f))
+                            continue
+                        }
                         val (kind, label, tint) = tiles[rowIdx * 2 + colIdx]
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceVariant,
@@ -146,7 +153,9 @@ fun StudioScreen(
 
     pendingKind?.let { kind ->
         var topicInput by remember(kind) { mutableStateOf("") }
-        var detailLevel by remember(kind) { mutableStateOf("standard") }
+        var detailLevel by remember(kind) { mutableStateOf(if (kind == "lecture") "auto" else "standard") }
+        var lectureMode by remember(kind) { mutableStateOf("general") }
+        var confirmScope by remember(kind) { mutableStateOf(true) }
         AlertDialog(
             onDismissRequest = { pendingKind = null },
             title = { Text(if (en) "Configure ${L10n.t("studio.$kind", en)}" else "生成配置 · ${L10n.t("studio.$kind", en)}") },
@@ -176,6 +185,25 @@ fun StudioScreen(
                                 )
                             }
                         }
+                    } else if (kind == "lecture") {
+                        Text(L10n.t("studio.cfg.lecture_mode_header", en), style = MaterialTheme.typography.labelMedium)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("general", "preview", "review", "practice").forEach { code ->
+                                FilterChip(selected = lectureMode == code, onClick = { lectureMode = code }, label = { Text(L10n.t("studio.cfg.lecture_mode_$code", en)) })
+                            }
+                        }
+                        Text(if (en) "Detail" else "详细程度", style = MaterialTheme.typography.labelMedium)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("auto" to "studio.cfg.level_auto", "brief" to "", "standard" to "", "detailed" to "").forEach { (code, key) ->
+                                val lbl = when (code) { "auto" -> L10n.t(key, en); "brief" -> if (en) "Brief" else "简要"; "standard" -> if (en) "Standard" else "标准"; else -> if (en) "Detailed" else "详细" }
+                                FilterChip(selected = detailLevel == code, onClick = { detailLevel = code }, label = { Text(lbl) })
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = confirmScope, onCheckedChange = { confirmScope = it })
+                            Text(L10n.t("studio.cfg.btn_lecture_confirm_scope", en))
+                        }
+                        Text(L10n.t("studio.cfg.lecture_hint", en), style = MaterialTheme.typography.bodySmall)
                     } else if (kind == "report") {
                         Text(if (en) "Report Depth" else "报告深度", style = MaterialTheme.typography.labelMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -196,7 +224,7 @@ fun StudioScreen(
             },
             confirmButton = {
                 Button(onClick = {
-                    onCreateStudio(kind, topicInput.trim(), detailLevel)
+                    onCreateStudio(kind, topicInput.trim(), if (kind == "lecture") "$lectureMode|$detailLevel|${if (confirmScope) 1 else 0}" else detailLevel)
                     pendingKind = null
                 }) {
                     Text(if (en) "Generate" else "开始生成")
@@ -230,6 +258,7 @@ private fun ArtifactViewerScreen(
     onAskConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
     onRefineNode: (nodeId: String, label: String) -> Unit = { _, _ -> },
+    core: com.localnotebook.agent.core.CoreClient? = null,
 ) {
     var showPromptDialog by remember { mutableStateOf(false) }
     var showDiagLog by remember { mutableStateOf(false) }
@@ -395,6 +424,7 @@ private fun ArtifactViewerScreen(
                     )
                 }
 
+                artifact.artifactType == "lecture" -> LecturePlayerView(artifact, core, en)
                 artifact.artifactType == "report" -> ReportReadableView(artifact.payload, en)
                 artifact.artifactType == "quiz" -> QuizReadableView(artifact.payload, en)
                 artifact.artifactType == "flashcards" -> FlashcardsReadableView(artifact.payload, en)

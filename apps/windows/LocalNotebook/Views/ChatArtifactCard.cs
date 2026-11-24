@@ -368,6 +368,7 @@ internal sealed class ChatArtifactCard : IDisposable
         "flashcards" => L10n.T("studio.flashcards"),
         "quiz" => L10n.T("studio.quiz"),
         "infographic" => L10n.T("studio.infographic"),
+        "lecture" => L10n.T("studio.lecture"),
         _ => kind,
     };
 
@@ -395,6 +396,7 @@ internal sealed class ChatArtifactCard : IDisposable
             "mindmap" => ("nodes", L10n.T("art.unit_nodes")),
             "report" => ("sections", L10n.T("art.unit_sections")),
             "slides" => ("slides", L10n.T("art.unit_slides")),
+            "lecture" => ("slides", L10n.T("art.unit_slides")),
             "infographic" => ("blocks", L10n.T("art.unit_blocks")),
             "audio" => ("turns", L10n.T("art.unit_turns")),
             _ => ("", ""),

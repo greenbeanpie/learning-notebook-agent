@@ -1,6 +1,10 @@
+pub mod expr;
+pub mod figure;
+pub mod lecture;
 pub mod mdlite;
 pub mod render;
 pub mod texfmt;
+pub mod tts;
 pub mod validate;
 
 use lna_jobs::JobQueue;
@@ -130,6 +134,7 @@ impl StudioService {
             },
             ArtifactType::Quiz | ArtifactType::Flashcards | ArtifactType::Infographic => 12_000,
             ArtifactType::Report | ArtifactType::Slides | ArtifactType::Audio => 16_000,
+            ArtifactType::Lecture => 24_000,
         };
         // All Studio artifacts use on-demand reading (compact structural catalog + targeted section reads)
         // for large sources instead of passing an entire book at once.
@@ -161,6 +166,7 @@ impl StudioService {
                 _ => 3800,
             },
             ArtifactType::Infographic => 1800,
+            ArtifactType::Lecture => 12_000,
         };
         let estimated_cost_usd = active_profile.as_ref().and_then(|profile| {
             match (profile.input_price_per_m, profile.output_price_per_m) {
@@ -253,6 +259,7 @@ impl StudioService {
                 ArtifactType::Flashcards => "Flashcards",
                 ArtifactType::Quiz => "Quiz",
                 ArtifactType::Infographic => "Infographic",
+                ArtifactType::Lecture => "Lecture",
             }
         } else {
             match artifact_type {
@@ -264,6 +271,7 @@ impl StudioService {
                 ArtifactType::Flashcards => "学习闪卡",
                 ArtifactType::Quiz => "知识测验",
                 ArtifactType::Infographic => "信息图",
+                ArtifactType::Lecture => "讲解",
             }
         };
         let title = title.unwrap_or(default_title);
@@ -348,6 +356,7 @@ impl StudioService {
             ArtifactType::Flashcards => "学习闪卡",
             ArtifactType::Quiz => "知识测验",
             ArtifactType::Infographic => "信息图",
+            ArtifactType::Lecture => "讲解",
         };
         let title = title
             .map(str::trim)
@@ -1328,18 +1337,30 @@ User Revision Instruction:
             *current_stage = "PLAN".to_string();
             self.set_stage(artifact_id, "RUNNING", "PLAN", 0.35, &topic)?;
             let is_report = art.artifact_type == ArtifactType::Report;
+            let is_lecture = art.artifact_type == ArtifactType::Lecture;
             self.append_thought(
                 artifact_id,
                 &art.notebook_id,
                 "stage",
-                if is_report { "规划报告提纲" } else { "规划演示文稿提纲" },
-                if is_report {
+                if is_lecture { "确定讲解范围与大纲" } else if is_report { "规划报告提纲" } else { "规划演示文稿提纲" },
+                if is_lecture {
+                    "正在根据你给出的题目或范围，在来源中定位对应章节，并规划学习目标与讲解小节…"
+                } else if is_report {
                     "正在基于已选来源梳理报告章节结构、论点脉络与核心证据…"
                 } else {
                     "正在基于已选来源梳理演示文稿章节结构与每页要点…"
                 },
             );
-            let outline_sys = if is_report {
+            let lecture_sys = format!(
+                "You are a lecture planner. The learner wants a narrated lesson on the topic, problem or unit given in config.topic (the whole selection if empty). Output a clean, human-readable Markdown outline for the learner to confirm: `# Lecture title`, a line `范围 / Scope:` naming exactly which chapters, sections or pages of the sources it covers, `## 学习目标 / Objectives` with bullets, then `## Section N: Title` with bullets for the concepts, examples or problems each section covers. {} Match the language requested in config or the primary language of the sources. Never output JSON or fenced code blocks.",
+                lecture::lecture_rules(
+                    art.config.get("mode").and_then(Value::as_str).unwrap_or("general"),
+                    art.config.get("detail").and_then(Value::as_str).unwrap_or("auto"),
+                )
+            );
+            let outline_sys = if is_lecture {
+                lecture_sys.as_str()
+            } else if is_report {
                 "You are a research report outline planner. Output a clean, human-readable Markdown outline (using `# Report Title`, `## Section N: Section Heading`, `- Key findings, analysis points, and supporting evidence`). Match the language requested in config or the primary language of the sources. Be concise, well-structured, and accurate; never output JSON or fenced code blocks."
             } else {
                 "You are a presentation outline planner. Output a clean, human-readable Markdown outline (using `# Title`, `## Slide N: Slide Title`, `- Key points`, and `> Speaker notes`). Match the language requested in config or the primary language of the sources. Be concise and accurate; never output JSON or fenced code blocks."
@@ -1496,6 +1517,7 @@ User Revision Instruction:
                 dir.is_dir()
                     && match art.artifact_type {
                         ArtifactType::Slides => dir.join("slides.pptx").is_file(),
+                        ArtifactType::Lecture => dir.join("lecture.pptx").is_file(),
                         ArtifactType::Infographic => dir.join("infographic.svg").is_file(),
                         ArtifactType::Audio => dir.join("overview.wav").is_file(),
                         _ => true,
@@ -1517,7 +1539,12 @@ User Revision Instruction:
             };
             match art.artifact_type {
                 ArtifactType::Slides => {
-                    render::render_pptx(&payload, &out_dir.join("slides.pptx"))?;
+                    lecture::render_figure_assets(&payload, &out_dir)?;
+                    render::render_pptx_in(&payload, &out_dir.join("slides.pptx"), Some(&out_dir))?;
+                }
+                ArtifactType::Lecture => {
+                    lecture::render_figure_assets(&payload, &out_dir)?;
+                    render::render_pptx_in(&payload, &out_dir.join("lecture.pptx"), Some(&out_dir))?;
                 }
                 ArtifactType::Infographic => {
                     render::render_infographic_svg(&payload, &out_dir.join("infographic.svg"))?;
@@ -1606,7 +1633,22 @@ User Revision Instruction:
         max_repairs: usize,
         cancel: CancellationToken,
     ) -> LnaResult<(Value, Usage)> {
+        if art.artifact_type == ArtifactType::Lecture {
+            return self
+                .generate_lecture_multipass(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    evidence_txt,
+                    reasoning,
+                    max_repairs,
+                    cancel,
+                )
+                .await;
+        }
         let (schema_str, schema_name) = match art.artifact_type {
+            ArtifactType::Lecture => (SCHEMA_SLIDES, "lecture_payload"),
             ArtifactType::Quiz => (SCHEMA_QUIZ, "quiz_payload"),
             ArtifactType::Flashcards => (SCHEMA_FLASHCARDS, "flashcards_payload"),
             ArtifactType::Mindmap => (SCHEMA_MINDMAP, "mindmap_payload"),
@@ -1929,7 +1971,9 @@ Design rules:\n\
 2. Use rich, varied layouts across slides: `title` (slide 1), `agenda`, `section`, `cards` (3-6 insight cards with tag/title/body), `two_column` (2 titled comparison columns with items), `metrics` (2-4 KPI highlight cards with value/label/detail), `timeline` (3-5 sequential steps with step/title/detail), `table` (structured comparison table with headers and rows), `formula` (highlighted equation/reaction in `formula` plus explanation in `bullets`), `quote`, `bullets` (sparingly), and `summary` (final slide).\n\
 3. Populate the layout-specific fields (`cards`, `columns`, `metrics`, `steps`, `table`, `formula`, `subtitle`, `callout`) whenever using those layouts, AND always include concise `bullets` (can be empty [] when structured fields carry the slide), thorough `speaker_notes`, and valid `citations`.\n\
 4. Keep on-slide text crisp and scannable (short headlines, concise card bodies, zero walls of text) while putting deeper explanation in `speaker_notes`.\n\
-5. Match the language requested in config or the primary language of the sources.".into(),
+5. Step-by-step builds (optional): for derivations, procedures, comparisons or lists that are presented one item at a time, add `builds`: [{\"step\":1,\"targets\":[ids],\"effect\":\"fade|appear|fly_up|draw|emphasis|dim_others\"}] with steps numbered 1..K; ids: title, subtitle, b1..bN, card1.., metric1.., step1.., col1, col1.i2, table, table.r1, formula, callout, figure, figure:<part id>. Elements not listed are visible from the start. Keep simple slides static.\n\
+6. Figures (optional): when a function graph, 3-D surface, geometric figure or physics diagram genuinely helps, use layout `figure` with `figure_request`: {\"kind\":\"plot|plot3d|diagram\",\"purpose\":...,\"details\": exact functions/ranges/points/forces/labels and the part ids you reference}. A separate step draws it precisely; never describe SVG.\n\
+7. Match the language requested in config or the primary language of the sources.".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
@@ -2018,6 +2062,29 @@ Design rules:\n\
                     usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u3.input_tokens);
                     usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u3.output_tokens);
                     usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u3.cached_tokens);
+                }
+            }
+
+            // Stage 4: figures (each in its own clean-context call) and step builds
+            if let Some(slides) = deck.get_mut("slides").and_then(Value::as_array_mut) {
+                if slides.iter().any(|s| s.get("figure_request").is_some_and(|r| r.is_object())) {
+                    self.append_thought(artifact_id, &art.notebook_id, "stage", "绘制配图", "正在为需要配图的页面单独绘制函数图 / 示意图，并检查渲染结果…");
+                    let u4 = self
+                        .fulfil_figure_requests(art, profile, resolved, artifact_id, slides, evidence_txt, cancel.clone())
+                        .await?;
+                    add_usage(&mut usage_sum, &u4);
+                }
+                for s in slides.iter_mut() {
+                    lecture::texify_slide_text(s);
+                }
+                let log = lecture::sanitize_deck_builds(slides);
+                if !log.is_empty() {
+                    self.append_thought(artifact_id, &art.notebook_id, "stage", "分步动画校验", &log.join("\n"));
+                }
+                for s in slides.iter_mut() {
+                    if let Some(o) = s.as_object_mut() {
+                        o.remove("figure_request");
+                    }
                 }
             }
 
@@ -2394,7 +2461,14 @@ Design rules:\n\
                 &payload,
                 out_path,
             ),
-            "pptx" => render::render_pptx(&payload, out_path),
+            "pptx" => {
+                // figure assets live next to the artifact; (re)write them so the deck embeds them
+                let asset_dir = art.output_dir.as_deref().map(std::path::PathBuf::from).unwrap_or_else(|| self.db.paths().artifacts_dir.join(artifact_id));
+                if let Err(e) = lecture::render_figure_assets(&payload, &asset_dir) {
+                    tracing::warn!("figure assets for export: {}", e.message);
+                }
+                render::render_pptx_in(&payload, out_path, Some(&asset_dir))
+            }
             _ => {
                 let md =
                     render::artifact_markdown(art.artifact_type.as_str(), &art.title, &payload);
@@ -3833,7 +3907,7 @@ Design rules:\n\
                 parts: assistant_parts,
             });
             messages.push(LlmMessage {
-                role: Role::User,
+                role: Role::Tool,
                 parts: tool_results,
             });
             self.append_thought(
@@ -4960,6 +5034,7 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<St
         "report" => ArtifactType::Report,
         "flashcards" => ArtifactType::Flashcards,
         "quiz" => ArtifactType::Quiz,
+        "lecture" => ArtifactType::Lecture,
         _ => ArtifactType::Infographic,
     };
     let st_s: String = r.get(4)?;

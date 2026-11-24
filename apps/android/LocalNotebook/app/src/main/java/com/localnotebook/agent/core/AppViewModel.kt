@@ -394,6 +394,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     errorCode = a.optString("error_code", ""),
                     errorDetail = a.optString("error_detail", ""),
                     errorLog = a.optString("error_log", ""),
+                    outputDir = a.optString("output_dir", ""),
+                    progressState = a.optJSONObject("progress_state") ?: JSONObject(),
                 )
             }
 
@@ -552,6 +554,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (topic.isNotBlank()) cfg.put("topic", topic)
                 if (kind == "mindmap" || kind == "knowledge_graph") cfg.put("detail", detail)
                 if (kind == "report") cfg.put("depth", detail)
+                if (kind == "lecture") {
+                    // detail carries "mode|detail|confirm" from the lecture dialog
+                    val parts = detail.split("|")
+                    cfg.put("mode", parts.getOrNull(0)?.ifEmpty { null } ?: "general")
+                    cfg.put("detail", parts.getOrNull(1)?.ifEmpty { null } ?: "auto")
+                    cfg.put("reviewOutline", parts.getOrNull(2) == "1")
+                }
                 if (kind == "slides") {
                     cfg.put("pages", 8)
                     cfg.put("reviewOutline", true)

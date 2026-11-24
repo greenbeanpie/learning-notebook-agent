@@ -553,3 +553,84 @@ fn studio_export_supports_all_formats_and_audio_end_to_end() {
     assert_eq!(&wav_bytes[0..4], b"RIFF");
     assert_eq!(&wav_bytes[8..12], b"WAVE");
 }
+
+/// Lecture (讲解): outline → section with a figure, step build and laser cues → figure assets
+/// and pptx; interruption Q&A, adaptation (insert / regenerate) and undo.
+#[test]
+fn lecture_generates_figures_and_adapts() {
+    let mock = studio_mock();
+    let env = Env::new("lecture");
+    let nid = small_notebook(&env);
+    env.profile(&mock, 32000, false);
+    let id = create(&env, &nid, "lecture", json!({ "mode": "general", "detail": "auto", "topic": "基与维数" }));
+    let art = studio_wait(&env, &id, "READY", 60);
+    let p = &art["payload"];
+    assert_eq!(p["mode"], json!("general"));
+    let slides = p["slides"].as_array().unwrap();
+    assert_eq!(slides.len(), 2, "{p}");
+    assert_eq!(slides[0]["id"], json!("s1-1"));
+    assert_eq!(slides[1]["narration"][0]["id"], json!("s1-2.1"));
+    assert!(slides[1].get("figure_request").is_none());
+    assert!(slides[1]["figure"]["meta"]["parts"].as_array().unwrap().iter().any(|x| x["id"] == json!("f")));
+    // the step and laser cues on the figure part survived validation
+    assert_eq!(slides[1]["narration"][0]["cues"].as_array().unwrap().len(), 2);
+    assert!(p["estimated_minutes"].as_f64().unwrap() > 0.0);
+    let dir = std::path::PathBuf::from(art["output_dir"].as_str().unwrap());
+    assert!(dir.join("figures/s1-2.svg").is_file());
+    assert!(dir.join("figures/s1-2_0.png").is_file() && dir.join("figures/s1-2_1.png").is_file());
+    assert!(dir.join("lecture.pptx").is_file());
+
+    let ans = env.ok(
+        "lecture.ask",
+        json!({ "artifact_id": id, "slide_id": "s1-2", "sentence_id": "s1-2.1", "question": "什么是基？" }),
+    );
+    assert!(ans["answer"].as_str().unwrap().contains("基"));
+    assert_eq!(ans["adapt"]["needed"], json!(true));
+    assert_eq!(ans["adapt"]["kind"], json!("extend"));
+
+    // insert supplementary slides after s1-1, then undo
+    let r = env.ok(
+        "lecture.adapt",
+        json!({ "artifact_id": id, "slide_id": "s1-1", "kind": "extend", "reason": "补充", "question": "什么是基？" }),
+    );
+    let s2 = r["artifact"]["payload"]["slides"].as_array().unwrap();
+    assert_eq!(s2.len(), 4);
+    assert!(s2[1]["id"].as_str().unwrap().starts_with("a1-"), "{}", s2[1]["id"]);
+    assert_eq!(r["adaptation"]["inserted_titles"].as_array().unwrap().len(), 2);
+    let u = env.ok("lecture.undo", json!({ "artifact_id": id }));
+    assert_eq!(u["artifact"]["payload"]["slides"].as_array().unwrap().len(), 2);
+
+    // regenerate everything after s1-1 more slowly, then restore the original
+    let r = env.ok(
+        "lecture.adapt",
+        json!({ "artifact_id": id, "slide_id": "s1-1", "kind": "slower", "reason": "太快", "question": "慢一点" }),
+    );
+    let s3 = r["artifact"]["payload"]["slides"].as_array().unwrap();
+    assert_eq!(s3[0]["id"], json!("s1-1"));
+    assert!(s3.iter().all(|s| s["id"] != json!("s1-2")), "old slide replaced");
+    assert_eq!(r["adaptation"]["removed_titles"], json!(["一条曲线"]));
+    let u = env.ok("lecture.undo", json!({ "artifact_id": id, "all": true }));
+    let restored = u["artifact"]["payload"]["slides"].as_array().unwrap();
+    assert_eq!(restored.iter().map(|s| s["id"].clone()).collect::<Vec<_>>(), vec![json!("s1-1"), json!("s1-2")]);
+
+    // exported deck embeds the figure layers
+    let out = env.dir.join("lecture_export.pptx");
+    env.ok("studio.export", json!({ "artifact_id": id, "format": "pptx", "out_path": out.display().to_string() }));
+    let bytes = std::fs::read(&out).unwrap();
+    let hay = String::from_utf8_lossy(&bytes);
+    assert!(hay.contains("ppt/media/fig2_0.png") && hay.contains("ppt/media/fig2_1.png"));
+}
+
+/// Routes that run async Studio work from the (async) dispatcher must not nest runtimes.
+#[test]
+fn refine_node_route_runs_inside_dispatcher() {
+    let mock = studio_mock();
+    let env = Env::new("refine_route");
+    let nid = small_notebook(&env);
+    env.profile(&mock, 32000, false);
+    let id = create(&env, &nid, "mindmap", json!({ "detail": "concise" }));
+    studio_wait(&env, &id, "READY", 30);
+    let r = env.ok("studio.refine_node", json!({ "artifact_id": id, "node_id": "n2" }));
+    assert!(r.get("refined").is_some(), "{r}");
+    assert_eq!(r["artifact"]["id"], json!(id));
+}

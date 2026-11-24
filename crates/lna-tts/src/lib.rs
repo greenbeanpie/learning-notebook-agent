@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
+pub mod cloud;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Voice {
     pub id: String,

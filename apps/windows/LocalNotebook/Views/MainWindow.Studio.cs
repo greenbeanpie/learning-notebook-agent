@@ -35,6 +35,7 @@ public sealed partial class MainWindow
         "flashcards" => L10n.T("studio.flashcards"),
         "quiz" => L10n.T("studio.quiz"),
         "infographic" => L10n.T("studio.infographic"),
+        "lecture" => L10n.T("studio.lecture"),
         "knowledge_graph" => L10n.T("kg.title"),
         _ => kind,
     };
@@ -99,6 +100,7 @@ public sealed partial class MainWindow
             "mindmap" => ("#C58AF9", "M12,2A3,3 0 0,1 15,5C15,6.28 14.19,7.38 13.06,7.81L14.5,10.5H16A3,3 0 0,1 19,13.5A3,3 0 0,1 16,16.5C14.68,16.5 13.56,15.66 13.16,14.5H10.84C10.44,15.66 9.32,16.5 8,16.5A3,3 0 0,1 5,13.5A3,3 0 0,1 8,10.5H9.5L10.94,7.81C9.81,7.38 9,6.28 9,5A3,3 0 0,1 12,2Z"),
             "report" => ("#81C995", "M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M8,12H16V14H8V12M8,16H13V18H8V16Z"),
             "flashcards" => ("#F6AEA9", "M4,6H2V20A2,2 0 0,0 4,22H18V20H4V6M20,2H8A2,2 0 0,0 6,4V16A2,2 0 0,0 8,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M20,16H8V4H20V16Z"),
+            "lecture" => ("#F28B82", "M20,17A2,2 0 0,0 22,15V4A2,2 0 0,0 20,2H9.46C9.81,2.61 10,3.3 10,4H20V15H11V17M15,7V9H9V22H7V16H5V22H3V14H1.5V9A2,2 0 0,1 3.5,7H15M8,4A2,2 0 0,1 6,6A2,2 0 0,1 4,4A2,2 0 0,1 6,2A2,2 0 0,1 8,4Z"),
             "quiz" => ("#78D9EC", "M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M11,16.5L18,9.5L16.59,8.09L11,13.67L7.91,10.59L6.5,12L11,16.5Z"),
             _ => ("#FCAD70", "M3,3V21H21V19H5V3H3M9,17H7V10H9V17M13,17H11V7H13V17M17,17H15V13H17V17Z"),
         };
@@ -773,6 +775,7 @@ public sealed partial class MainWindow
         Func<string>? getDepth = null;
         Func<string>? getLength = null;
         Func<string>? getOrientation = null;
+        Func<string>? getMode = null;
 
         string InitStr(string key, string fallback) =>
             initialConfig is { } ic && Str(ic, key) is { Length: > 0 } v ? v : fallback;
@@ -907,6 +910,37 @@ public sealed partial class MainWindow
 
                 break;
             }
+            case "lecture":
+            {
+                topic.Header = L10n.T("studio.cfg.lecture_topic_header");
+                topic.PlaceholderText = L10n.T("studio.cfg.lecture_topic_placeholder");
+                var (modeCtl, modeGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.lecture_mode_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.lecture_mode_general"), "general"),
+                        (L10n.T("studio.cfg.lecture_mode_preview"), "preview"),
+                        (L10n.T("studio.cfg.lecture_mode_review"), "review"),
+                        (L10n.T("studio.cfg.lecture_mode_practice"), "practice"),
+                    },
+                    InitStr("mode", "general"));
+                getMode = modeGet;
+                panel.Children.Add(modeCtl);
+                var (detCtl, detGet) = BuildSegmentedOption(
+                    L10n.T("studio.cfg.detail_header"),
+                    new[]
+                    {
+                        (L10n.T("studio.cfg.level_auto"), "auto"),
+                        (L10n.T("studio.cfg.level_concise"), "brief"),
+                        (L10n.T("studio.cfg.level_balanced"), "standard"),
+                        (L10n.T("studio.cfg.level_detailed"), "detailed"),
+                    },
+                    InitStr("detail", "auto"));
+                getDetail = detGet;
+                panel.Children.Add(detCtl);
+                panel.Children.Add(new TextBlock { Text = L10n.T("studio.cfg.lecture_hint"), FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap });
+                break;
+            }
             case "infographic":
             {
                 var (oriCtl, oriGet) = BuildSegmentedOption(
@@ -955,14 +989,18 @@ public sealed partial class MainWindow
         }
 
         var supportsOutlineSplit = kind is "slides" or "report";
+        var isLecture = kind == "lecture";
         var dlg = new ContentDialog
         {
             Title = isUpdate ? L10n.Fmt("studio.cfg.title_update", KindName(kind)) : L10n.Fmt("studio.cfg.title_create", KindName(kind)),
             Content = new ScrollViewer { Content = panel, MaxHeight = 560 },
-            PrimaryButtonText = supportsOutlineSplit
-                ? L10n.T("studio.cfg.btn_one_click")
-                : (isUpdate ? L10n.T("studio.cfg.btn_update") : L10n.T("studio.cfg.btn_create")),
-            SecondaryButtonText = supportsOutlineSplit ? L10n.T("studio.cfg.btn_outline_preview") : "",
+            // lectures confirm the resolved scope + outline first by default
+            PrimaryButtonText = isLecture
+                ? L10n.T("studio.cfg.btn_lecture_confirm_scope")
+                : supportsOutlineSplit
+                    ? L10n.T("studio.cfg.btn_one_click")
+                    : (isUpdate ? L10n.T("studio.cfg.btn_update") : L10n.T("studio.cfg.btn_create")),
+            SecondaryButtonText = isLecture ? L10n.T("studio.cfg.btn_one_click") : supportsOutlineSplit ? L10n.T("studio.cfg.btn_outline_preview") : "",
             CloseButtonText = L10n.T("common.cancel"),
             DefaultButton = ContentDialogButton.Primary,
             XamlRoot = Content.XamlRoot,
@@ -1009,6 +1047,11 @@ public sealed partial class MainWindow
                 break;
             case "infographic":
                 kv.Add(("orientation", getOrientation?.Invoke() ?? "landscape"));
+                break;
+            case "lecture":
+                kv.Add(("mode", getMode?.Invoke() ?? "general"));
+                kv.Add(("detail", getDetail?.Invoke() ?? "auto"));
+                kv.Add(("reviewOutline", dlgRes == ContentDialogResult.Primary));
                 break;
             case "audio":
                 kv.Add(("format", getFormat?.Invoke() ?? "deep_dive"));

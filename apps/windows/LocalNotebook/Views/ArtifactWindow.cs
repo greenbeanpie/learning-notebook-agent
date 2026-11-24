@@ -880,6 +880,7 @@ public sealed class ArtifactViewerPane : IDisposable
                 "mindmap" => new[] { ("Markdown", "markdown", ".md"), ("SVG", "svg", ".svg") },
                 "report" => new[] { ("Markdown", "markdown", ".md"), ("HTML", "html", ".html") },
                 "slides" => new[] { ("PPTX", "pptx", ".pptx"), ("Markdown", "markdown", ".md") },
+                "lecture" => new[] { ("PPTX", "pptx", ".pptx"), ("Markdown", "markdown", ".md"), ("JSON", "json", ".json") },
                 "infographic" => new[] { ("SVG", "svg", ".svg"), ("Markdown", "markdown", ".md") },
                 "audio" => new[] { ("WAV", "wav", ".wav"), (L10n.T("art.transcript"), "markdown", ".md") },
                 _ => new[] { ("Markdown", "markdown", ".md") },
@@ -1431,6 +1432,7 @@ internal sealed class InteractiveArtifactView : IDisposable
             "mindmap" => BuildMindmap(payload),
             "report" => BuildReport(payload),
             "slides" => BuildSlides(payload),
+            "lecture" => BuildLecture(),
             "infographic" => BuildInfographic(payload),
             "audio" => BuildAudio(payload),
             _ => Message(L10n.T("art.unsupported")),
@@ -1442,6 +1444,7 @@ internal sealed class InteractiveArtifactView : IDisposable
         if (_disposed) return;
         _disposed = true;
         DisposeAudio();
+        _lecture?.Dispose();
     }
 
     private static Geometry Geom(string path) =>
@@ -2416,11 +2419,21 @@ internal sealed class InteractiveArtifactView : IDisposable
         return split;
     }
 
+    // lecture -----------------------------------------------------------------
+
+    private LecturePlayer? _lecture;
+
+    private FrameworkElement BuildLecture()
+    {
+        _lecture = new LecturePlayer(_artifactId, _art, _notify);
+        return _lecture.Root;
+    }
+
     // slides ------------------------------------------------------------------
 
     private FrameworkElement BuildSlides(JsonElement payload)
     {
-        return new SlideDeckViewer(payload, _compact, AppendFeedbackIfPresent).Root;
+        return new SlideDeckViewer(payload, _compact, AppendFeedbackIfPresent, Str(_art, "output_dir")).Root;
     }
 
     // infographic -------------------------------------------------------------

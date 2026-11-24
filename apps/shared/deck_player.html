@@ -1,0 +1,792 @@
+<!-- Shared slide deck / lecture player (Windows WebView2 + Android WebView). Tokens: __LANG__, __PAYLOAD__, __LECTURE__, __T_*__ (plain text), __T_*_JSON__ (JSON string). -->
+<!doctype html>
+<html lang="__LANG__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --ui-bg: #131418;
+    --ui-panel: #1b1d24;
+    --ui-border: rgba(255,255,255,0.10);
+    --ui-text: #e8eaed;
+    --ui-muted: #9aa0a6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--ui-bg);
+    color: var(--ui-text);
+    font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+  .app {
+    display: flex; flex-direction: column;
+    width: 100%; height: 100%;
+    padding: 12px 14px 10px 14px;
+    gap: 10px;
+  }
+  .stage-wrap {
+    flex: 1; min-height: 0;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .deck-frame {
+    position: relative;
+    width: 100%; max-width: 1080px;
+    aspect-ratio: 16 / 9;
+    max-height: 100%;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 18px 48px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,255,255,0.08);
+    background: #0f172a;
+  }
+  .autoplay-bar {
+    position: absolute; top: 0; left: 0; height: 3px; width: 0%;
+    background: linear-gradient(90deg, var(--accent, #38bdf8), var(--primary, #3b82f6));
+    z-index: 30;
+  }
+  .slide-layer {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  /* Slide transitions */
+  .anim-slide-next { animation: slideInNext 0.36s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .anim-slide-prev { animation: slideInPrev 0.36s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  .anim-fade       { animation: fadeInSlide 0.34s ease-out both; }
+  .anim-zoom       { animation: zoomInSlide 0.36s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  @keyframes slideInNext {
+    from { opacity: 0; transform: translateX(48px) scale(0.985); }
+    to   { opacity: 1; transform: translateX(0) scale(1); }
+  }
+  @keyframes slideInPrev {
+    from { opacity: 0; transform: translateX(-48px) scale(0.985); }
+    to   { opacity: 1; transform: translateX(0) scale(1); }
+  }
+  @keyframes fadeInSlide {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes zoomInSlide {
+    from { opacity: 0; transform: scale(0.94); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  @keyframes elemRise {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .stagger { animation: elemRise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+  /* Click zones on left/right slide edges */
+  .edge-nav {
+    position: absolute; top: 0; bottom: 0; width: 11%;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 20; cursor: pointer; opacity: 0; transition: opacity 0.18s;
+  }
+  .edge-nav:hover { opacity: 1; }
+  .edge-nav.left  { left: 0; background: linear-gradient(90deg, rgba(0,0,0,0.28), transparent); }
+  .edge-nav.right { right: 0; background: linear-gradient(270deg, rgba(0,0,0,0.28), transparent); }
+  .edge-pill {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: rgba(15,23,42,0.72); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; border: 1px solid rgba(255,255,255,0.2);
+  }
+
+  /* Slide internal typography & components */
+  .s-top-bar { height: 5px; width: 100%; background: var(--primary); flex-shrink: 0; }
+  .s-pad { padding: 3.6% 5% 2.6% 5%; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .s-eyebrow { font-size: clamp(9px, 1.05vw, 12px); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary); margin-bottom: 4px; }
+  .s-title { font-size: clamp(18px, 2.5vw, 30px); font-weight: 700; line-height: 1.22; color: var(--text-dark); }
+  .s-sub { font-size: clamp(11px, 1.25vw, 15px); color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+  .s-rule { height: 1px; background: var(--border); margin: 10px 0 14px 0; flex-shrink: 0; }
+  .s-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  .s-callout {
+    margin-top: auto; padding: 9px 14px; border-radius: 8px;
+    background: var(--card-alt); border: 1px solid var(--border);
+    border-left: 4px solid var(--primary);
+    font-size: clamp(11px, 1.2vw, 14px); font-weight: 600; color: var(--text-dark);
+  }
+  .s-footer {
+    padding: 0 5% 1.8% 5%;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: clamp(9px, 0.95vw, 11px); color: var(--text-muted); flex-shrink: 0;
+  }
+
+  /* Dark cover / section / summary */
+  .s-dark { background: var(--dark-bg); color: var(--text-on-dark); position: relative; }
+  .s-dark-rail { position: absolute; right: 0; top: 0; bottom: 0; width: 20%; background: var(--dark-surface); border-left: 4px solid var(--accent); }
+  .s-cover-inner { position: relative; z-index: 2; padding: 11% 24% 6% 7%; flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+  .s-cover-bar { width: 72px; height: 5px; border-radius: 3px; background: var(--accent); }
+  .s-cover-title { font-size: clamp(22px, 3.6vw, 44px); font-weight: 700; line-height: 1.18; color: var(--text-on-dark); }
+  .s-cover-sub { font-size: clamp(12px, 1.5vw, 18px); color: var(--text-on-dark-sub); line-height: 1.45; }
+  .s-cover-list { display: flex; flex-direction: column; gap: 7px; margin-top: 6px; }
+  .s-cover-item { font-size: clamp(11px, 1.3vw, 16px); color: var(--text-on-dark-sub); }
+  .s-section-num { font-size: clamp(34px, 5.2vw, 64px); font-weight: 800; color: var(--accent); line-height: 1; }
+
+  /* Cards grid */
+  .grid-cards { display: grid; gap: 12px; flex: 1; min-height: 0; }
+  .grid-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .card {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+    border-top: 4px solid var(--primary); padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 6px; overflow: hidden;
+  }
+  .card-tag { font-size: clamp(9px, 0.95vw, 11px); font-weight: 700; color: var(--primary); text-transform: uppercase; }
+  .card-t { font-size: clamp(12px, 1.4vw, 17px); font-weight: 700; color: var(--text-dark); line-height: 1.3; }
+  .card-b { font-size: clamp(11px, 1.18vw, 14px); color: var(--text-body); line-height: 1.48; }
+
+  /* Two-column */
+  .col-card {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+    border-top: 4px solid var(--primary); padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .col-item { font-size: clamp(11px, 1.25vw, 15px); color: var(--text-body); line-height: 1.45; }
+
+  /* Metrics */
+  .metric-card {
+    background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+    border-top: 4px solid var(--primary); padding: 16px 12px;
+    text-align: center; display: flex; flex-direction: column; justify-content: center; gap: 6px;
+  }
+  .metric-val { font-size: clamp(22px, 3vw, 36px); font-weight: 800; color: var(--primary); }
+  .metric-lbl { font-size: clamp(11px, 1.25vw, 15px); font-weight: 700; color: var(--text-dark); }
+  .metric-det { font-size: clamp(10px, 1.05vw, 12.5px); color: var(--text-muted); }
+
+  /* Timeline */
+  .timeline-row { display: flex; gap: 12px; flex: 1; align-items: stretch; position: relative; padding-top: 8px; }
+  .tl-step { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .tl-dot {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: var(--primary); color: #fff; font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.16);
+  }
+  .tl-card {
+    flex: 1; width: 100%; background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 12px; text-align: center;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+
+  /* Table */
+  .ppt-table { width: 100%; border-collapse: collapse; font-size: clamp(11px, 1.18vw, 14px); border-radius: 8px; overflow: hidden; }
+  .ppt-table th { background: var(--primary); color: #fff; padding: 9px 12px; text-align: left; font-weight: 700; }
+  .ppt-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-body); background: var(--card-bg); }
+  .ppt-table tr:nth-child(even) td { background: var(--card-alt); }
+  .ppt-table td:first-child { font-weight: 700; color: var(--text-dark); }
+
+  /* Hero Formula / Quote */
+  .hero-box {
+    background: var(--dark-bg); color: var(--text-on-dark);
+    border-radius: 10px; border-left: 6px solid var(--accent);
+    padding: 18px 24px; text-align: center;
+    font-size: clamp(15px, 2vw, 24px); line-height: 1.45;
+  }
+  .hero-formula { font-family: "Consolas", "Cambria Math", monospace; font-weight: 700; }
+  .hero-quote { font-style: italic; }
+
+  /* Bullet cards */
+  .bullet-row {
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-left: 4px solid var(--primary); border-radius: 8px;
+    padding: 9px 14px; font-size: clamp(11px, 1.28vw, 15px);
+    color: var(--text-body); line-height: 1.45;
+  }
+
+  /* Agenda */
+  .agenda-item {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px;
+  }
+  .agenda-num {
+    width: 34px; height: 34px; border-radius: 8px;
+    background: var(--primary); color: #fff; font-weight: 700; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+
+  /* Control bar & thumbnail strip */
+  .controls {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; flex-wrap: wrap;
+    background: var(--ui-panel); border: 1px solid var(--ui-border);
+    border-radius: 10px; padding: 6px 10px; flex-shrink: 0;
+  }
+  .ctrl-group { display: flex; align-items: center; gap: 6px; }
+  button.btn, select.sel {
+    background: rgba(255,255,255,0.07); color: var(--ui-text);
+    border: 1px solid var(--ui-border); border-radius: 16px;
+    padding: 5px 12px; font-size: 12px; cursor: pointer;
+    font-family: inherit; transition: background 0.15s;
+  }
+  button.btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); }
+  button.btn:disabled { opacity: 0.35; cursor: default; }
+  button.btn.primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+  button.btn.primary:hover { background: #1d4ed8; }
+  .counter { font-size: 12.5px; color: var(--ui-muted); min-width: 54px; text-align: center; font-variant-numeric: tabular-nums; }
+
+  .thumbs {
+    display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; flex-shrink: 0;
+  }
+  .thumb {
+    flex: 0 0 auto; min-width: 96px; max-width: 140px;
+    background: var(--ui-panel); border: 1px solid var(--ui-border);
+    border-radius: 8px; padding: 5px 8px; cursor: pointer;
+    font-size: 11px; color: var(--ui-muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .thumb.active { border-color: #60a5fa; background: rgba(59,130,246,0.18); color: #fff; font-weight: 600; }
+
+  .notes-box {
+    background: var(--ui-panel); border: 1px solid var(--ui-border);
+    border-radius: 10px; padding: 8px 12px; font-size: 12.5px;
+    color: var(--ui-muted); max-height: 92px; overflow-y: auto;
+    line-height: 1.5; user-select: text; display: none; flex-shrink: 0;
+  }
+  .notes-box.open { display: block; }
+
+  /* Figures (rendered by the core as SVG with data-part groups) */
+  .fig-wrap { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr; gap: 14px; }
+  .fig-wrap.with-text { grid-template-columns: 2fr 3fr; }
+  .fig-text { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden; }
+  .fig-box { background: #fff; border: 1px solid var(--border); border-radius: 10px; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .fig-box svg { width: 100%; height: 100%; display: block; }
+
+  /* Step builds */
+  #slideMount [data-el], #slideMount [data-part] { transition: opacity .45s ease, transform .45s ease, filter .3s ease, box-shadow .3s ease; }
+  #slideMount .bld-hidden { opacity: 0 !important; }
+  #slideMount .bld-hidden.bld-fly_up { transform: translateY(18px); }
+  #slideMount .bld-emph { box-shadow: 0 0 0 3px var(--accent); border-radius: 8px; }
+  #slideMount g.bld-emph { filter: drop-shadow(0 0 4px #f59e0b) drop-shadow(0 0 2px #f59e0b); }
+  #slideMount .bld-dim { opacity: .28 !important; }
+
+  /* Laser pointer + captions */
+  #laserLayer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 25; }
+  .caption { position: absolute; left: 6%; right: 6%; bottom: 9%; z-index: 26; display: none;
+    background: rgba(15,23,42,0.78); color: #fff; border-radius: 8px; padding: 8px 14px;
+    font-size: clamp(12px, 1.5vw, 18px); line-height: 1.5; text-align: center; }
+
+  /* Lecture mode: the host app drives navigation */
+  body.lecture .controls, body.lecture .thumbs, body.lecture .notes-box, body.lecture .edge-nav { display: none !important; }
+  body.lecture .app { padding: 6px; }
+  body.lecture .deck-frame { max-width: none; }
+</style>
+</head>
+<body>
+<div class="app" id="appRoot">
+  <div class="stage-wrap">
+    <div class="deck-frame" id="deckFrame">
+      <div class="autoplay-bar" id="autoBar"></div>
+      <div class="edge-nav left" id="edgePrev"><div class="edge-pill">‹</div></div>
+      <div class="edge-nav right" id="edgeNext"><div class="edge-pill">›</div></div>
+      <div id="slideMount" class="slide-layer"></div>
+      <canvas id="laserLayer"></canvas>
+      <div class="caption" id="captionBox"></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="ctrl-group">
+      <button class="btn" id="btnPrev">‹ __T_PREV__</button>
+      <span class="counter" id="lblCounter">1 / 1</span>
+      <button class="btn" id="btnNext">__T_NEXT__ ›</button>
+    </div>
+    <div class="ctrl-group">
+      <button class="btn primary" id="btnPlay">▶ __T_PLAY__</button>
+      <select class="sel" id="selAnim">
+        <option value="slide">__T_ANIMSLIDE__</option>
+        <option value="fade">__T_ANIMFADE__</option>
+        <option value="zoom">__T_ANIMZOOM__</option>
+      </select>
+      <button class="btn" id="btnSteps">__T_STEPS__</button>
+      <button class="btn" id="btnNotes">__T_NOTES__</button>
+      <button class="btn" id="btnFs">⛶ __T_FULLSCREEN__</button>
+    </div>
+  </div>
+
+  <div class="thumbs" id="thumbStrip"></div>
+  <div class="notes-box" id="notesBox"></div>
+</div>
+
+<script>
+const PAYLOAD = __PAYLOAD__;
+const LECTURE = __LECTURE__;
+const T_PLAY = __T_PLAY_JSON__;
+const T_PAUSE = __T_PAUSE_JSON__;
+const T_NO_NOTES = __T_NONOTES_JSON__;
+
+const THEMES = {
+  executive_navy:  { darkBg:'#0f172a', darkSurf:'#1e293b', lightBg:'#f8fafc', cardBg:'#ffffff', cardAlt:'#f1f5f9', primary:'#1d4ed8', accent:'#0ea5e9', warm:'#d97706', border:'#e2e8f0', textDark:'#0f172a', textBody:'#334155', textMuted:'#64748b', textOnDark:'#f8fafc', textOnDarkSub:'#cbd5e1' },
+  editorial_slate: { darkBg:'#18181b', darkSurf:'#27272a', lightBg:'#fafaf9', cardBg:'#ffffff', cardAlt:'#f4f4f5', primary:'#4f46e5', accent:'#06b6d4', warm:'#e11d48', border:'#e4e4e7', textDark:'#18181b', textBody:'#3f3f46', textMuted:'#71717a', textOnDark:'#fafafa', textOnDarkSub:'#d4d4d8' },
+  academic_sage:   { darkBg:'#132a22', darkSurf:'#1e3b30', lightBg:'#f7faf8', cardBg:'#ffffff', cardAlt:'#ecf4f0', primary:'#0f766e', accent:'#059669', warm:'#b45309', border:'#d8e6df', textDark:'#132a22', textBody:'#2d473e', textMuted:'#5c766c', textOnDark:'#f2faf6', textOnDarkSub:'#c2dcd1' },
+  warm_terracotta: { darkBg:'#291c17', darkSurf:'#3d2b24', lightBg:'#fdfaf6', cardBg:'#ffffff', cardAlt:'#f6eee6', primary:'#c2410c', accent:'#d97706', warm:'#9a3412', border:'#e8dacc', textDark:'#291c17', textBody:'#4a372f', textMuted:'#7c665c', textOnDark:'#fffbf5', textOnDarkSub:'#e5d3c6' },
+  midnight_aurora: { darkBg:'#0d1117', darkSurf:'#161b22', lightBg:'#f5f7fb', cardBg:'#ffffff', cardAlt:'#ebf0f7', primary:'#2563eb', accent:'#7c3aed', warm:'#0891b2', border:'#dce3ee', textDark:'#111827', textBody:'#374151', textMuted:'#6b7280', textOnDark:'#f3f4f6', textOnDarkSub:'#c7d2fe' }
+};
+
+const theme = THEMES[(PAYLOAD.theme || 'executive_navy').toLowerCase()] || THEMES.executive_navy;
+const deckTitle = PAYLOAD.title || 'Presentation';
+let slides = Array.isArray(PAYLOAD.slides) && PAYLOAD.slides.length ? PAYLOAD.slides : [{ layout:'title', title: deckTitle, bullets:[] }];
+if (LECTURE) document.body.classList.add('lecture');
+
+const rootStyle = document.getElementById('deckFrame').style;
+rootStyle.setProperty('--dark-bg', theme.darkBg);
+rootStyle.setProperty('--dark-surface', theme.darkSurf);
+rootStyle.setProperty('--light-bg', theme.lightBg);
+rootStyle.setProperty('--card-bg', theme.cardBg);
+rootStyle.setProperty('--card-alt', theme.cardAlt);
+rootStyle.setProperty('--primary', theme.primary);
+rootStyle.setProperty('--accent', theme.accent);
+rootStyle.setProperty('--warm', theme.warm);
+rootStyle.setProperty('--border', theme.border);
+rootStyle.setProperty('--text-dark', theme.textDark);
+rootStyle.setProperty('--text-body', theme.textBody);
+rootStyle.setProperty('--text-muted', theme.textMuted);
+rootStyle.setProperty('--text-on-dark', theme.textOnDark);
+rootStyle.setProperty('--text-on-dark-sub', theme.textOnDarkSub);
+
+let current = 0;
+let playing = false;
+let playTimer = null;
+const PLAY_MS = 5200;
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmt(s) {
+  return esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code>$1</code>');
+}
+function stagger(i) { return `style="animation-delay:${Math.min(i * 75, 450)}ms"`; }
+// element ids (same scheme as the core's lecture::slide_element_ids) for laser targets and builds
+function el(id) { return id ? ` data-el="${esc(id)}"` : ''; }
+
+function renderSlideHtml(s, idx) {
+  const layout = (s.layout || 'bullets').toLowerCase();
+  const title = s.title || `Slide ${idx + 1}`;
+  const ownSub = s.subtitle || '';
+  const sub = ownSub || (idx === 0 ? (PAYLOAD.subtitle || '') : '');
+  const subEl = ownSub ? 'subtitle' : '';
+  const bl = (Array.isArray(s.bullets) ? s.bullets : []).map((b, i) => ({ text: b, id: 'b' + (i + 1) })).filter(x => String(x.text || '').trim());
+  const callout = s.callout ? `<div class="s-callout stagger"${el('callout')} ${stagger(5)}>${fmt(s.callout)}</div>` : '';
+  const footer = (dark) => `<div class="s-footer" style="color:${dark ? 'var(--text-on-dark-sub)' : 'var(--text-muted)'}"><span>${esc(deckTitle)}</span><strong>${idx + 1} / ${slides.length}</strong></div>`;
+
+  if (s.figure_svg) {
+    const textHtml = (s.formula ? `<div class="hero-box hero-formula"${el('formula')}>${fmt(s.formula)}</div>` : '') +
+      bl.slice(0, 6).map(b => `<div class="bullet-row"${el(b.id)}>${fmt(b.text)}</div>`).join('');
+    return `<div class="slide-layer" style="background:var(--light-bg)">
+      <div class="s-top-bar"></div>
+      <div class="s-pad">
+        <div class="s-title"${el('title')}>${fmt(title)}</div>
+        ${sub ? `<div class="s-sub"${el(subEl)}>${fmt(sub)}</div>` : ''}
+        <div class="s-rule"></div>
+        <div class="s-body"><div class="fig-wrap${textHtml ? ' with-text' : ''}">
+          ${textHtml ? `<div class="fig-text">${textHtml}</div>` : ''}
+          <div class="fig-box"${el('figure')}>${s.figure_svg}</div>
+        </div>${callout}</div>
+      </div>
+      ${footer(false)}
+    </div>`;
+  }
+
+  if (layout === 'title' || layout === 'summary') {
+    const kicker = layout === 'summary' ? 'KEY TAKEAWAYS & SUMMARY' : 'PRESENTATION';
+    const items = bl.slice(0,5).map((b, i) => `<div class="s-cover-item stagger"${el(b.id)} ${stagger(i+2)}>▸ ${fmt(b.text)}</div>`).join('');
+    return `<div class="slide-layer s-dark">
+      <div class="s-dark-rail"></div>
+      <div class="s-cover-inner">
+        <div class="s-eyebrow stagger" style="color:var(--accent)">${kicker}</div>
+        <div class="s-cover-bar stagger" ${stagger(1)}></div>
+        <div class="s-cover-title stagger"${el('title')} ${stagger(1)}>${fmt(title)}</div>
+        ${sub ? `<div class="s-cover-sub stagger"${el(subEl)} ${stagger(2)}>${fmt(sub)}</div>` : ''}
+        ${items ? `<div class="s-cover-list">${items}</div>` : ''}
+      </div>
+      ${footer(true)}
+    </div>`;
+  }
+
+  if (layout === 'section') {
+    const num = s.section_number || String(idx + 1).padStart(2, '0');
+    const desc = sub || (bl[0] ? bl[0].text : '');
+    const descEl = sub ? subEl : (bl[0] ? bl[0].id : '');
+    return `<div class="slide-layer s-dark" style="border-left:10px solid var(--primary)">
+      <div class="s-cover-inner" style="padding-right:10%">
+        <div class="s-section-num stagger">${esc(num)}</div>
+        <div class="s-cover-bar stagger" ${stagger(1)}></div>
+        <div class="s-cover-title stagger"${el('title')} ${stagger(2)}>${fmt(title)}</div>
+        ${desc ? `<div class="s-cover-sub stagger"${el(descEl)} ${stagger(3)}>${fmt(desc)}</div>` : ''}
+      </div>
+      ${footer(true)}
+    </div>`;
+  }
+
+  let eyebrow = '';
+  let bodyHtml = '';
+  const accents = ['var(--primary)', 'var(--accent)', 'var(--warm)'];
+  const fromBullets = () => bl.map(b => {
+    const p = String(b.text).split(/[:：]/);
+    return { id: b.id, title: p[0], detail: p.slice(1).join('：'), body: p.slice(1).join('：') };
+  });
+
+  if (layout === 'agenda') {
+    eyebrow = 'Agenda';
+    const steps = Array.isArray(s.steps) && s.steps.length ? s.steps.map((st, i) => ({ ...st, id: 'step' + (i + 1) })) : fromBullets();
+    const cls = steps.length > 3 ? 'grid-cards grid-2' : 's-body';
+    bodyHtml = `<div class="${cls}">${steps.slice(0,6).map((st, i) => `
+      <div class="agenda-item stagger"${el(st.id)} ${stagger(i+1)}>
+        <div class="agenda-num" style="background:${accents[i%3]}">${esc(st.step || String(i+1).padStart(2,'0'))}</div>
+        <div><div class="card-t">${fmt(st.title)}</div>${st.detail ? `<div class="card-b">${fmt(st.detail)}</div>` : ''}</div>
+      </div>`).join('')}</div>`;
+  } else if (layout === 'cards') {
+    const cards = Array.isArray(s.cards) && s.cards.length ? s.cards.map((c, i) => ({ ...c, id: 'card' + (i + 1) })) : fromBullets().map(c => ({ ...c, tag: '' }));
+    const gridCls = (cards.length === 3 || cards.length >= 5) ? 'grid-cards grid-3' : 'grid-cards grid-2';
+    bodyHtml = `<div class="${gridCls}">${cards.slice(0,6).map((c, i) => `
+      <div class="card stagger"${el(c.id)} ${stagger(i+1)} style="border-top-color:${accents[i%3]}">
+        ${c.tag ? `<div class="card-tag" style="color:${accents[i%3]}">${esc(c.tag)}</div>` : ''}
+        <div class="card-t">${fmt(c.title)}</div>
+        <div class="card-b">${fmt(c.body)}</div>
+      </div>`).join('')}</div>`;
+  } else if (layout === 'two_column') {
+    let cols = Array.isArray(s.columns) && s.columns.length >= 2
+      ? s.columns.slice(0,2).map((c, ci) => ({ id: 'col' + (ci + 1), heading: c.heading, items: (c.items || []).map((it, j) => ({ text: it, id: `col${ci + 1}.i${j + 1}` })) }))
+      : null;
+    if (!cols) {
+      const mid = Math.ceil(bl.length / 2);
+      cols = [{ id: '', heading: '', items: bl.slice(0, mid) }, { id: '', heading: '', items: bl.slice(mid) }];
+    }
+    bodyHtml = `<div class="grid-cards grid-2">${cols.map((c, ci) => `
+      <div class="col-card stagger"${el(c.id)} ${stagger(ci+1)} style="border-top-color:${accents[ci%2]}">
+        ${c.heading ? `<div class="card-t">${fmt(c.heading)}</div>` : ''}
+        ${c.items.slice(0,6).map(it => `<div class="col-item"${el(it.id)}>▸ ${fmt(it.text)}</div>`).join('')}
+      </div>`).join('')}</div>`;
+  } else if (layout === 'metrics') {
+    eyebrow = 'Key Metrics';
+    const ms = Array.isArray(s.metrics) && s.metrics.length ? s.metrics.slice(0,4).map((m, i) => ({ ...m, id: 'metric' + (i + 1) })) : bl.slice(0,3).map(b => ({ id: b.id, value: String(b.text).slice(0,10), label: b.text, detail: '' }));
+    const colsCss = `grid-template-columns:repeat(${Math.max(ms.length,1)},1fr)`;
+    const extra = Array.isArray(s.metrics) && s.metrics.length ? bl.slice(0,3) : [];
+    bodyHtml = `<div class="grid-cards" style="${colsCss};flex:0 0 auto">${ms.map((m, i) => `
+      <div class="metric-card stagger"${el(m.id)} ${stagger(i+1)} style="border-top-color:${accents[i%3]}">
+        <div class="metric-val" style="color:${accents[i%3]}">${esc(m.value)}</div>
+        <div class="metric-lbl">${fmt(m.label)}</div>
+        ${m.detail ? `<div class="metric-det">${fmt(m.detail)}</div>` : ''}
+      </div>`).join('')}</div>` +
+      (extra.length ? `<div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">${extra.map((b,i) => `<div class="bullet-row stagger"${el(b.id)} ${stagger(i+3)}>${fmt(b.text)}</div>`).join('')}</div>` : '');
+  } else if (layout === 'timeline') {
+    eyebrow = 'Timeline & Process';
+    const steps = Array.isArray(s.steps) && s.steps.length ? s.steps.slice(0,5).map((st, i) => ({ ...st, id: 'step' + (i + 1) })) : fromBullets().slice(0,5);
+    bodyHtml = `<div class="timeline-row">${steps.map((st, i) => `
+      <div class="tl-step stagger"${el(st.id)} ${stagger(i+1)}>
+        <div class="tl-dot" style="background:${accents[i%2]}">${esc(st.step || String(i+1).padStart(2,'0'))}</div>
+        <div class="tl-card">
+          <div class="card-t">${fmt(st.title)}</div>
+          <div class="card-b">${fmt(st.detail)}</div>
+        </div>
+      </div>`).join('')}</div>`;
+  } else if (layout === 'table' && s.table && Array.isArray(s.table.headers) && s.table.headers.length) {
+    eyebrow = 'Comparison';
+    const ths = s.table.headers.map(h => `<th>${fmt(h)}</th>`).join('');
+    const trs = (s.table.rows || []).slice(0,7).map((r, ri) => `<tr class="stagger"${el('table.r' + (ri + 1))} ${stagger(ri+1)}>${s.table.headers.map((_, ci) => `<td>${fmt(r[ci] || '')}</td>`).join('')}</tr>`).join('');
+    bodyHtml = `<table class="ppt-table"${el('table')}><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+  } else if (layout === 'formula' || layout === 'quote') {
+    eyebrow = layout === 'formula' ? 'Core Formula' : 'Key Insight';
+    const useFormula = layout === 'formula' && s.formula;
+    const hero = useFormula ? s.formula : (bl[0] ? bl[0].text : '');
+    const heroId = useFormula ? 'formula' : (bl[0] ? bl[0].id : '');
+    const rest = useFormula ? bl : bl.slice(1);
+    bodyHtml = `<div class="hero-box stagger ${layout === 'formula' ? 'hero-formula' : 'hero-quote'}"${el(heroId)}>${layout === 'quote' ? '“' + fmt(hero) + '”' : fmt(hero)}</div>` +
+      rest.slice(0,4).map((b, i) => `<div class="bullet-row stagger"${el(b.id)} ${stagger(i+2)}>${fmt(b.text)}</div>`).join('');
+  } else {
+    bodyHtml = bl.slice(0,6).map((b, i) => `<div class="bullet-row stagger"${el(b.id)} ${stagger(i+1)} style="border-left-color:${accents[i%2]}">${fmt(b.text)}</div>`).join('');
+  }
+
+  return `<div class="slide-layer" style="background:var(--light-bg)">
+    <div class="s-top-bar"></div>
+    <div class="s-pad">
+      ${eyebrow ? `<div class="s-eyebrow">${esc(eyebrow)}</div>` : ''}
+      <div class="s-title"${el('title')}>${fmt(title)}</div>
+      ${sub ? `<div class="s-sub"${el(subEl)}>${fmt(sub)}</div>` : ''}
+      <div class="s-rule"></div>
+      <div class="s-body">${bodyHtml}${callout}</div>
+    </div>
+    ${footer(false)}
+  </div>`;
+}
+
+// ---- step builds ------------------------------------------------------------
+const ENTRANCE = new Set(['appear', 'fade', 'fly_up', 'draw']);
+let stepIdx = 0;
+function stepsEnabled() {
+  if (LECTURE) return true;
+  try { return localStorage.getItem('lna.steps') !== '0'; } catch (e) { return true; }
+}
+function buildsOf(s) { return s && Array.isArray(s.builds) ? s.builds : []; }
+function maxStep(s) { return buildsOf(s).reduce((m, b) => Math.max(m, b.step | 0), 0); }
+function targetEls(id) {
+  id = String(id || '');
+  if (id.startsWith('figure:')) {
+    const part = CSS.escape(id.slice(7));
+    return [...document.querySelectorAll(`#slideMount [data-el="figure"] [data-part="${part}"]`)];
+  }
+  return [...document.querySelectorAll(`#slideMount [data-el="${CSS.escape(id)}"]`)];
+}
+function drawIn(g) {
+  g.querySelectorAll('path').forEach(p => {
+    if ((p.getAttribute('fill') || 'none') !== 'none' && p.getAttribute('fill-opacity') !== '0.00') return;
+    let len = 0;
+    try { len = p.getTotalLength(); } catch (e) { return; }
+    if (!len) return;
+    p.style.transition = 'none';
+    p.style.strokeDasharray = len;
+    p.style.strokeDashoffset = len;
+    void p.getBoundingClientRect();
+    p.style.transition = 'stroke-dashoffset 1.1s ease';
+    p.style.strokeDashoffset = 0;
+    setTimeout(() => { p.style.strokeDasharray = ''; p.style.strokeDashoffset = ''; p.style.transition = ''; }, 1200);
+  });
+}
+function applyStep(k, animate) {
+  const s = slides[current];
+  const max = maxStep(s);
+  if (!stepsEnabled()) k = max;
+  stepIdx = Math.max(0, Math.min(max, k));
+  document.querySelectorAll('#slideMount .bld-hidden, #slideMount .bld-emph, #slideMount .bld-dim').forEach(e => {
+    e.classList.remove('bld-hidden', 'bld-emph', 'bld-dim', 'bld-fade', 'bld-appear', 'bld-fly_up', 'bld-draw');
+  });
+  for (const b of buildsOf(s)) {
+    const eff = b.effect || 'fade';
+    const els = (b.targets || []).flatMap(targetEls);
+    if (ENTRANCE.has(eff)) {
+      if (b.step > stepIdx) {
+        els.forEach(e => e.classList.add('bld-hidden', 'bld-' + eff));
+      } else if (b.step === stepIdx && animate) {
+        els.forEach(e => {
+          e.classList.add('bld-hidden', 'bld-' + eff);
+          void e.getBoundingClientRect();
+          e.classList.remove('bld-hidden');
+          if (eff === 'draw') drawIn(e);
+        });
+      }
+    } else if (b.step === stepIdx) {
+      if (eff === 'emphasis') {
+        els.forEach(e => e.classList.add('bld-emph'));
+      } else if (eff === 'dim_others') {
+        const keep = new Set(els);
+        document.querySelectorAll('#slideMount [data-el], #slideMount [data-el="figure"] [data-part]').forEach(e => {
+          if (keep.has(e) || els.some(x => x.contains(e) || e.contains(x))) return;
+          e.classList.add('bld-dim');
+        });
+      }
+    }
+  }
+}
+function next() {
+  if (stepsEnabled() && stepIdx < maxStep(slides[current])) { applyStep(stepIdx + 1, true); return true; }
+  if (current < slides.length - 1) { go(current + 1, 1, 0); return true; }
+  return false;
+}
+function prev() {
+  if (stepsEnabled() && stepIdx > 0) { applyStep(stepIdx - 1, false); return; }
+  if (current > 0) go(current - 1, -1, 'end');
+}
+
+// ---- laser pointer ------------------------------------------------------------
+const laserCanvas = document.getElementById('laserLayer');
+const deckFrameEl = document.getElementById('deckFrame');
+let laserState = null;
+function partAngle(id) {
+  if (!String(id).startsWith('figure:')) return 0;
+  const parts = (((slides[current] || {}).figure || {}).meta || {}).parts || [];
+  const p = parts.find(x => x.id === String(id).slice(7));
+  return p && typeof p.angle_deg === 'number' ? p.angle_deg : 0;
+}
+// cfg: { target, shape: circle|ellipse, scale, angle_deg (math, counter-clockwise), speed (rev/s), duration_ms }
+function laser(cfg) {
+  const els = targetEls(cfg.target);
+  if (!els.length) return false;
+  const frame = deckFrameEl.getBoundingClientRect();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  els.forEach(e => { const r = e.getBoundingClientRect(); x0 = Math.min(x0, r.left); y0 = Math.min(y0, r.top); x1 = Math.max(x1, r.right); y1 = Math.max(y1, r.bottom); });
+  const scale = typeof cfg.scale === 'number' ? cfg.scale : 1.2;
+  // screen rotation (clockwise); a figure part defaults to its own direction
+  let rot = typeof cfg.angle_deg === 'number' ? -cfg.angle_deg : partAngle(cfg.target);
+  let w = x1 - x0, h = y1 - y0;
+  if (rot) {
+    // un-rotate the axis-aligned box of a slanted part to estimate its own extent
+    const a = Math.abs(rot) * Math.PI / 180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+    const det = c * c - s * s;
+    if (Math.abs(det) > 0.2) { const ww = (w * c - h * s) / det, hh = (h * c - w * s) / det; if (ww > 0 && hh > 0) { w = ww; h = hh; } }
+    else { const d = Math.sqrt(w * w + h * h); w = d; h = Math.min(w, h) * 0.35 + 10; }
+  }
+  let rx = Math.max(14, w / 2 * scale), ry = Math.max(12, h / 2 * scale);
+  if ((cfg.shape || 'ellipse') === 'circle') { rx = ry = Math.max(rx, ry); }
+  laserState = {
+    cx: (x0 + x1) / 2 - frame.left, cy: (y0 + y1) / 2 - frame.top, rx, ry, rot,
+    speed: typeof cfg.speed === 'number' ? cfg.speed : 0.8,
+    dur: typeof cfg.duration_ms === 'number' ? cfg.duration_ms : 2500,
+    t0: performance.now(), trail: [],
+  };
+  requestAnimationFrame(drawLaser);
+  return true;
+}
+function stopLaser() { laserState = null; }
+function drawLaser(now) {
+  const dpr = window.devicePixelRatio || 1;
+  const fw = deckFrameEl.clientWidth, fh = deckFrameEl.clientHeight;
+  if (laserCanvas.width !== Math.round(fw * dpr) || laserCanvas.height !== Math.round(fh * dpr)) {
+    laserCanvas.width = Math.round(fw * dpr); laserCanvas.height = Math.round(fh * dpr);
+  }
+  const ctx = laserCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, fw, fh);
+  const st = laserState;
+  if (!st) return;
+  const el = now - st.t0;
+  if (el > st.dur + 350) { laserState = null; ctx.clearRect(0, 0, fw, fh); return; }
+  const fade = el > st.dur ? 1 - (el - st.dur) / 350 : Math.min(1, el / 150);
+  const th = 2 * Math.PI * st.speed * el / 1000;
+  const ex = st.rx * Math.cos(th), ey = st.ry * Math.sin(th);
+  const c = Math.cos(st.rot * Math.PI / 180), s = Math.sin(st.rot * Math.PI / 180);
+  const x = st.cx + ex * c - ey * s, y = st.cy + ex * s + ey * c;
+  st.trail.push({ x, y, t: now });
+  while (st.trail.length && now - st.trail[0].t > 320) st.trail.shift();
+  for (let i = 1; i < st.trail.length; i++) {
+    const a = st.trail[i - 1], b = st.trail[i];
+    const age = (now - b.t) / 320;
+    ctx.strokeStyle = `rgba(255,45,45,${(0.55 * (1 - age) * fade).toFixed(3)})`;
+    ctx.lineWidth = 6 * (1 - age) + 1;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.shadowColor = `rgba(255,30,30,${fade})`;
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = `rgba(255,40,40,${fade})`;
+  ctx.beginPath(); ctx.arc(x, y, 6.5, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = `rgba(255,235,235,${fade})`;
+  ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(drawLaser);
+}
+
+function go(nextIdx, dir = 1, step = 0) {
+  current = Math.max(0, Math.min(slides.length - 1, nextIdx));
+  stopLaser();
+  const mount = document.getElementById('slideMount');
+  const mode = document.getElementById('selAnim').value;
+  const animCls = mode === 'fade' ? 'anim-fade' : mode === 'zoom' ? 'anim-zoom' : (dir >= 0 ? 'anim-slide-next' : 'anim-slide-prev');
+
+  mount.className = 'slide-layer';
+  mount.innerHTML = renderSlideHtml(slides[current], current);
+  if (buildsOf(slides[current]).length) mount.querySelectorAll('.stagger').forEach(e => e.classList.remove('stagger'));
+  applyStep(step === 'end' ? maxStep(slides[current]) : step, false);
+  void mount.offsetWidth;
+  mount.classList.add(animCls);
+
+  document.getElementById('lblCounter').textContent = `${current + 1} / ${slides.length}`;
+  document.getElementById('btnPrev').disabled = current === 0;
+  document.getElementById('btnNext').disabled = current === slides.length - 1;
+
+  const notes = slides[current].speaker_notes || '';
+  document.getElementById('notesBox').textContent = notes.trim() ? notes : T_NO_NOTES;
+
+  document.querySelectorAll('.thumb').forEach((el, i) => el.classList.toggle('active', i === current));
+  const activeThumb = document.querySelector('.thumb.active');
+  if (activeThumb) activeThumb.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+}
+
+function startAutoPlay() {
+  stopAutoPlay();
+  playing = true;
+  document.getElementById('btnPlay').textContent = '⏸ ' + T_PAUSE;
+  const bar = document.getElementById('autoBar');
+  function stepBar() {
+    bar.style.transition = 'none';
+    bar.style.width = '0%';
+    void bar.offsetWidth;
+    bar.style.transition = `width ${PLAY_MS}ms linear`;
+    bar.style.width = '100%';
+  }
+  stepBar();
+  playTimer = setInterval(() => {
+    if (next()) {
+      stepBar();
+    } else {
+      stopAutoPlay();
+    }
+  }, PLAY_MS);
+}
+
+function stopAutoPlay() {
+  playing = false;
+  if (playTimer) { clearInterval(playTimer); playTimer = null; }
+  document.getElementById('btnPlay').textContent = '▶ ' + T_PLAY;
+  const bar = document.getElementById('autoBar');
+  bar.style.transition = 'none';
+  bar.style.width = '0%';
+}
+
+// Build thumbnail strip
+const strip = document.getElementById('thumbStrip');
+slides.forEach((s, i) => {
+  const d = document.createElement('div');
+  d.className = 'thumb';
+  d.textContent = `${i + 1}. ${s.title || ''}`;
+  d.onclick = () => { stopAutoPlay(); go(i, i >= current ? 1 : -1); };
+  strip.appendChild(d);
+});
+
+document.getElementById('btnPrev').onclick = () => { stopAutoPlay(); prev(); };
+document.getElementById('btnNext').onclick = () => { stopAutoPlay(); next(); };
+document.getElementById('edgePrev').onclick = () => { stopAutoPlay(); prev(); };
+document.getElementById('edgeNext').onclick = () => { stopAutoPlay(); next(); };
+document.getElementById('btnPlay').onclick = () => playing ? stopAutoPlay() : startAutoPlay();
+document.getElementById('btnNotes').onclick = () => document.getElementById('notesBox').classList.toggle('open');
+const btnSteps = document.getElementById('btnSteps');
+function syncStepsBtn() { btnSteps.classList.toggle('primary', stepsEnabled()); }
+btnSteps.onclick = () => {
+  try { localStorage.setItem('lna.steps', stepsEnabled() ? '0' : '1'); } catch (e) { }
+  syncStepsBtn();
+  applyStep(stepsEnabled() ? 0 : maxStep(slides[current]), false);
+};
+syncStepsBtn();
+document.getElementById('btnFs').onclick = () => {
+  const el = document.getElementById('appRoot');
+  if (!document.fullscreenElement) el.requestFullscreen?.();
+  else document.exitFullscreen?.();
+};
+
+window.addEventListener('keydown', (e) => {
+  if (LECTURE) {
+    // the host app owns playback; forward the keys it cares about
+    if ([' ', 'ArrowRight', 'ArrowLeft', 'PageDown', 'PageUp', 'Escape'].includes(e.key)) {
+      e.preventDefault();
+      window.chrome?.webview?.postMessage(JSON.stringify({ type: 'key', key: e.key }));
+    }
+    return;
+  }
+  if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); stopAutoPlay(); next(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); stopAutoPlay(); prev(); }
+  else if (e.key === 'Home') { stopAutoPlay(); go(0, -1); }
+  else if (e.key === 'End') { stopAutoPlay(); go(slides.length - 1, 1, 'end'); }
+  else if (e.key === 'f' || e.key === 'F') { document.getElementById('btnFs').click(); }
+});
+
+// API for the lecture player (called through ExecuteScriptAsync)
+window.lecture = {
+  show(i, step) { stopAutoPlay(); if (i !== current) go(i, i >= current ? 1 : -1, step || 0); else applyStep(step || 0, false); },
+  step(k) { if (k > stepIdx) applyStep(k, true); },
+  laser(cfg) { return laser(cfg); },
+  stopLaser() { stopLaser(); },
+  caption(text) { const c = document.getElementById('captionBox'); c.textContent = text || ''; c.style.display = text ? 'block' : 'none'; },
+  setSlides(arr, i, step) { if (Array.isArray(arr) && arr.length) { slides = arr; go(Math.min(i, slides.length - 1), 0, step || 0); } },
+  current() { return current; },
+};
+
+go(0, 1);
+if (LECTURE) window.chrome?.webview?.postMessage(JSON.stringify({ type: 'ready' }));
+</script>
+</body>
+</html>
