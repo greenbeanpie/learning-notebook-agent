@@ -39,6 +39,7 @@ data class AppUiState(
     val mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
     val statusBanner: String = "",
     val isSendingChat: Boolean = false,
+    val showCreateNotebook: Boolean = false,
 )
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -201,14 +202,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching {
             val list = core.call("notebook.list")
             val arr = list.optJSONArray("notebooks") ?: JSONArray()
-            val id = if (arr.length() > 0) {
-                arr.getJSONObject(0).optString("id")
+            if (arr.length() > 0) {
+                _ui.update { it.copy(activeNotebookId = arr.getJSONObject(0).optString("id")) }
+                refreshAll()
             } else {
-                val created = core.call("notebook.create", JSONObject().put("title", L10n.t("nb.untitled", _ui.value.prefs.isEnglish)))
-                created.optString("id")
+                _ui.update { it.copy(activeNotebookId = "", notebooks = emptyList(), showCreateNotebook = true) }
             }
-            _ui.update { it.copy(activeNotebookId = id) }
-            refreshAll()
         }
     }
 
@@ -217,17 +216,60 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { refreshAll() }
     }
 
-    fun createNotebook() {
+    fun createNotebook() = _ui.update { it.copy(showCreateNotebook = true) }
+
+    fun dismissCreateNotebook() = _ui.update { it.copy(showCreateNotebook = false) }
+
+    /** Creates a notebook from the dialog; [files] are optional sources imported right after creation. */
+    fun confirmCreateNotebook(title: String, files: List<Uri>) {
+        val name = title.trim()
+        if (name.isEmpty()) return
+        _ui.update { it.copy(showCreateNotebook = false) }
         viewModelScope.launch {
             runCatching {
-                val en = _ui.value.prefs.isEnglish
-                val created = core.call("notebook.create", JSONObject().put("title", L10n.t("nb.new", en)))
+                val created = core.call("notebook.create", JSONObject().put("title", name))
                 val id = created.optString("id")
                 if (id.isNotEmpty()) {
                     _ui.update { it.copy(activeNotebookId = id, activeArtifact = null, activeSourcePreview = null) }
                     refreshAll()
+                    if (files.isNotEmpty()) {
+                        val paths = JSONArray()
+                        for (u in files) paths.put(copyUriToCache(u).absolutePath)
+                        core.call("source.add_files", JSONObject().put("notebook_id", id).put("paths", paths))
+                        refreshAll()
+                    }
                 }
             }.onFailure { reportError(it) }
+        }
+    }
+
+    fun renameNotebook(title: String) {
+        val nid = _ui.value.activeNotebookId
+        val name = title.trim()
+        if (nid.isEmpty() || name.isEmpty()) return
+        if (_ui.value.notebooks.firstOrNull { it.id == nid }?.title == name) return
+        viewModelScope.launch {
+            runCatching {
+                core.call("notebook.rename", JSONObject().put("notebook_id", nid).put("title", name))
+                refreshAll()
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    private suspend fun copyUriToCache(uri: Uri): File {
+        val ctx = getApplication<Application>()
+        return withContext(Dispatchers.IO) {
+            var name = "imported_file"
+            ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && c.moveToFirst()) name = c.getString(idx) ?: name
+            }
+            val dir = File(ctx.cacheDir, "imports").apply { mkdirs() }
+            val out = File(dir, "${System.currentTimeMillis()}_$name")
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                out.outputStream().use { output -> input.copyTo(output) }
+            }
+            out
         }
     }
 

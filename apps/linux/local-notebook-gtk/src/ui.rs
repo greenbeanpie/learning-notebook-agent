@@ -55,7 +55,7 @@ struct UiState {
     outer_paned: Paned,
     inner_paned: Paned,
     // Localizable labels
-    title_lbl: Label,
+    title_lbl: Entry,
     nb_switch_btn: MenuButton,
     nb_switch_popover_box: GtkBox,
     new_nb_btn: Button,
@@ -147,8 +147,15 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     // Top bar (synced with macOS & Windows: Logo + Title + Notebook Switcher + New + Settings + More)
     let header = GtkBox::new(Orientation::Horizontal, 10);
     let logo_img = svg_image(include_str!("../assets/logo.svg"), 26);
-    let title_lbl = Label::new(Some(tr(en, "nb.untitled")));
-    title_lbl.set_halign(gtk4::Align::Start);
+    // Editable notebook title: click to rename in place (Enter / focus loss commits, Esc reverts).
+    let title_lbl = Entry::builder()
+        .has_frame(false)
+        .placeholder_text(tr(en, "nb.none_hint"))
+        .tooltip_text(tr(en, "nb.title_edit_hint"))
+        .width_chars(14)
+        .max_width_chars(40)
+        .build();
+    title_lbl.add_css_class("lna-title-entry");
 
     let nb_switch_btn = MenuButton::builder().label(tr(en, "nb.switch")).build();
     nb_switch_btn.add_css_class("lna-ghost-btn");
@@ -536,18 +543,34 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         });
     }
 
-    // Wire New Notebook
+    // Wire New Notebook (opens the create dialog)
     {
         let st = state.clone();
-        new_nb_btn.connect_clicked(move |_| {
-            let en = st.is_en();
-            if let Ok(nb) = call_core(&st.core, "notebook.create", json!({ "title": tr(en, "nb.new") })) {
-                if let Some(id) = nb.get("id").and_then(Value::as_str) {
-                    *st.active_notebook_id.borrow_mut() = id.to_string();
-                    refresh_all(&st);
-                }
-            }
+        new_nb_btn.connect_clicked(move |_| open_create_notebook_dialog(&st));
+    }
+
+    // Wire inline title rename
+    {
+        let st = state.clone();
+        title_lbl.connect_activate(move |_| {
+            commit_title(&st);
+            st.chat_entry.grab_focus();
         });
+        let st = state.clone();
+        let fc = gtk4::EventControllerFocus::new();
+        fc.connect_leave(move |_| commit_title(&st));
+        title_lbl.add_controller(fc);
+        let st = state.clone();
+        let kc = gtk4::EventControllerKey::new();
+        kc.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Escape {
+                revert_title(&st);
+                st.chat_entry.grab_focus();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        title_lbl.add_controller(kc);
     }
 
     // Wire Add Paste Text & Add Note
@@ -602,13 +625,12 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             if let Ok(list) = call_core(&st.core, "notebook.list", json!({})) {
                 if let Some(id) = list.pointer("/notebooks/0/id").and_then(Value::as_str) {
                     *st.active_notebook_id.borrow_mut() = id.to_string();
-                } else if let Ok(nb) = call_core(&st.core, "notebook.create", json!({ "title": tr(st.is_en(), "nb.untitled") })) {
-                    if let Some(id) = nb.get("id").and_then(Value::as_str) {
-                        *st.active_notebook_id.borrow_mut() = id.to_string();
-                    }
+                    refresh_all(&st);
+                } else {
+                    enter_empty_state(&st);
+                    open_create_notebook_dialog(&st);
                 }
             }
-            refresh_all(&st);
         });
     }
     {
@@ -643,37 +665,9 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         let pop = more_popover.clone();
         rename_nb_btn.connect_clicked(move |_| {
             pop.popdown();
-            let nid = st.active_notebook_id.borrow().clone();
-            if nid.is_empty() { return; }
-            let en = st.is_en();
-            let dlg = gtk4::Window::builder()
-                .title(tr(en, "nb.rename"))
-                .transient_for(&win)
-                .modal(true)
-                .default_width(360)
-                .build();
-            let bx = GtkBox::new(Orientation::Vertical, 10);
-            bx.set_margin_top(16);
-            bx.set_margin_bottom(16);
-            bx.set_margin_start(16);
-            bx.set_margin_end(16);
-            let ent = Entry::builder().text(st.title_lbl.text()).build();
-            let ok = Button::with_label(tr(en, "settings.save"));
-            ok.add_css_class("lna-primary-btn");
-            let st2 = st.clone();
-            let dlg2 = dlg.clone();
-            ok.connect_clicked(move |_| {
-                let t = ent.text().trim().to_string();
-                if !t.is_empty() {
-                    let _ = call_core(&st2.core, "notebook.rename", json!({ "notebook_id": nid, "title": t }));
-                    refresh_all(&st2);
-                }
-                dlg2.close();
-            });
-            bx.append(&ent);
-            bx.append(&ok);
-            dlg.set_child(Some(&bx));
-            dlg.present();
+            if st.active_notebook_id.borrow().is_empty() { return; }
+            st.title_lbl.grab_focus();
+            st.title_lbl.select_region(0, -1);
         });
     }
     {
@@ -755,19 +749,221 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     }
 
     // Initialize first notebook
+    let mut need_create = false;
     if let Ok(list) = call_core(&core, "notebook.list", json!({})) {
         if let Some(id) = list.pointer("/notebooks/0/id").and_then(Value::as_str) {
             *state.active_notebook_id.borrow_mut() = id.to_string();
-        } else if let Ok(nb) = call_core(&core, "notebook.create", json!({ "title": tr(en, "nb.untitled") })) {
-            if let Some(id) = nb.get("id").and_then(Value::as_str) {
-                *state.active_notebook_id.borrow_mut() = id.to_string();
-            }
+        } else {
+            need_create = true;
         }
     }
     refresh_all(&state);
 
     window.set_child(Some(&root));
     window.present();
+
+    if need_create {
+        enter_empty_state(&state);
+        let st = state.clone();
+        glib::idle_add_local_once(move || open_create_notebook_dialog(&st));
+    }
+}
+
+/// No notebook exists: clear the workspace so the user is asked to create one.
+fn enter_empty_state(st: &Rc<UiState>) {
+    st.active_notebook_id.borrow_mut().clear();
+    st.title_lbl.set_text("");
+    clear_box(&st.nb_switch_popover_box);
+    clear_box(&st.sources_box);
+    clear_box(&st.chat_box);
+    clear_box(&st.artifacts_box);
+    while let Some(c) = st.suggested_box.first_child() {
+        st.suggested_box.remove(&c);
+    }
+    st.summary_label.set_text("");
+}
+
+fn current_notebook_title(st: &Rc<UiState>) -> String {
+    let nid = st.active_notebook_id.borrow().clone();
+    if nid.is_empty() {
+        return String::new();
+    }
+    call_core(&st.core, "notebook.get", json!({ "notebook_id": nid }))
+        .ok()
+        .and_then(|nb| nb.get("title").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn revert_title(st: &Rc<UiState>) {
+    let cur = current_notebook_title(st);
+    st.title_lbl.set_text(&cur);
+}
+
+fn commit_title(st: &Rc<UiState>) {
+    let nid = st.active_notebook_id.borrow().clone();
+    if nid.is_empty() {
+        return;
+    }
+    let name = st.title_lbl.text().trim().to_string();
+    let cur = current_notebook_title(st);
+    if name.is_empty() {
+        st.title_lbl.set_text(&cur);
+        return;
+    }
+    if name != cur {
+        let _ = call_core(&st.core, "notebook.rename", json!({ "notebook_id": nid, "title": name }));
+        refresh_all(st);
+    }
+}
+
+fn rebuild_file_list(list: &GtkBox, files: &Rc<RefCell<Vec<String>>>) {
+    clear_box(list);
+    for path in files.borrow().iter() {
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        let lbl = Label::new(Some(&name));
+        lbl.set_hexpand(true);
+        lbl.set_xalign(0.0);
+        lbl.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+        lbl.set_tooltip_text(Some(path));
+        let rm = Button::with_label("✕");
+        rm.add_css_class("lna-ghost-btn");
+        let (list2, files2, path2) = (list.clone(), files.clone(), path.clone());
+        rm.connect_clicked(move |_| {
+            files2.borrow_mut().retain(|p| p != &path2);
+            rebuild_file_list(&list2, &files2);
+        });
+        row.append(&lbl);
+        row.append(&rm);
+        list.append(&row);
+    }
+}
+
+/// Modal "New Notebook" dialog: name, a note that details are AI-generated, optional source files.
+fn open_create_notebook_dialog(st: &Rc<UiState>) {
+    let en = st.is_en();
+    let dlg = gtk4::Window::builder()
+        .title(tr(en, "nb.new"))
+        .transient_for(&st.window)
+        .modal(true)
+        .default_width(440)
+        .build();
+    let bx = GtkBox::new(Orientation::Vertical, 10);
+    bx.set_margin_top(16);
+    bx.set_margin_bottom(16);
+    bx.set_margin_start(16);
+    bx.set_margin_end(16);
+
+    let name_lbl = Label::new(Some(tr(en, "nb.dlg_name")));
+    name_lbl.set_xalign(0.0);
+    let name_entry = Entry::builder().placeholder_text(tr(en, "nb.dlg_name_ph")).activates_default(true).build();
+    let hint = Label::new(Some(tr(en, "nb.dlg_ai_hint")));
+    hint.set_wrap(true);
+    hint.set_xalign(0.0);
+    hint.add_css_class("lna-muted");
+    let src_lbl = Label::new(Some(tr(en, "nb.dlg_sources")));
+    src_lbl.set_xalign(0.0);
+    let upload_btn = Button::with_label(tr(en, "nb.dlg_add_files"));
+    upload_btn.set_halign(gtk4::Align::Start);
+    let file_list = GtkBox::new(Orientation::Vertical, 4);
+    let files: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let btn_row = GtkBox::new(Orientation::Horizontal, 8);
+    btn_row.set_halign(gtk4::Align::End);
+    let cancel_btn = Button::with_label(tr(en, "common.cancel"));
+    let create_btn = Button::with_label(tr(en, "common.create"));
+    create_btn.add_css_class("lna-primary-btn");
+    create_btn.set_sensitive(false);
+    btn_row.append(&cancel_btn);
+    btn_row.append(&create_btn);
+
+    for w in [
+        name_lbl.upcast_ref::<gtk4::Widget>(),
+        name_entry.upcast_ref(),
+        hint.upcast_ref(),
+        src_lbl.upcast_ref(),
+        upload_btn.upcast_ref(),
+        file_list.upcast_ref(),
+        btn_row.upcast_ref(),
+    ] {
+        bx.append(w);
+    }
+    dlg.set_child(Some(&bx));
+    dlg.set_default_widget(Some(&create_btn));
+
+    {
+        let create_btn = create_btn.clone();
+        name_entry.connect_changed(move |e| create_btn.set_sensitive(!e.text().trim().is_empty()));
+    }
+    {
+        let dlg = dlg.clone();
+        cancel_btn.connect_clicked(move |_| dlg.close());
+    }
+    {
+        let (win, file_list, files) = (dlg.clone(), file_list.clone(), files.clone());
+        upload_btn.connect_clicked(move |_| {
+            let chooser = gtk4::FileChooserNative::new(
+                Some(tr(en, "nb.dlg_add_files")),
+                Some(&win),
+                gtk4::FileChooserAction::Open,
+                None,
+                None,
+            );
+            chooser.set_select_multiple(true);
+            let keep = chooser.clone(); // keep the native dialog alive until it responds
+            let (file_list, files) = (file_list.clone(), files.clone());
+            chooser.connect_response(move |d, resp| {
+                let _keep = &keep;
+                if resp == gtk4::ResponseType::Accept {
+                    let model = d.files();
+                    for i in 0..model.n_items() {
+                        if let Some(f) = model.item(i).and_then(|o| o.downcast::<gtk4::gio::File>().ok()) {
+                            if let Some(p) = f.path() {
+                                let p = p.to_string_lossy().to_string();
+                                if !files.borrow().contains(&p) {
+                                    files.borrow_mut().push(p);
+                                }
+                            }
+                        }
+                    }
+                    rebuild_file_list(&file_list, &files);
+                }
+            });
+            chooser.show();
+        });
+    }
+    {
+        let (st, dlg, files, name_entry) = (st.clone(), dlg.clone(), files.clone(), name_entry.clone());
+        create_btn.connect_clicked(move |_| {
+            let title = name_entry.text().trim().to_string();
+            if title.is_empty() {
+                return;
+            }
+            let en = st.is_en();
+            match call_core(&st.core, "notebook.create", json!({ "title": title })) {
+                Ok(nb) => {
+                    if let Some(id) = nb.get("id").and_then(Value::as_str) {
+                        *st.active_notebook_id.borrow_mut() = id.to_string();
+                        refresh_all(&st);
+                        let paths = files.borrow().clone();
+                        if !paths.is_empty() {
+                            match call_core(&st.core, "source.add_files", json!({ "notebook_id": id, "paths": paths })) {
+                                Ok(_) => refresh_all(&st),
+                                Err(e) => st.status_label.set_text(&friendly_err(en, e)),
+                            }
+                        }
+                    }
+                    dlg.close();
+                }
+                Err(e) => st.status_label.set_text(&friendly_err(en, e)),
+            }
+        });
+    }
+    dlg.present();
+    name_entry.grab_focus();
 }
 
 fn clear_box(b: &GtkBox) {

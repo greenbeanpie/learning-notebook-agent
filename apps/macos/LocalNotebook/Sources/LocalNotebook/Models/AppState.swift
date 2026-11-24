@@ -79,6 +79,7 @@ final class AppState: ObservableObject {
     @Published var activeArtifact: StudioArtifactItem?
     @Published var studioFullscreen: Bool = false
     @Published var statusMessage: String = ""
+    @Published var showCreateNotebookSheet = false
     @Published var activeAiActivity: String = ""
     @Published var studioThoughts: [String: [ThoughtStepItem]] = [:]
     @Published var showSettingsSheet: Bool = false
@@ -219,13 +220,64 @@ final class AppState: ObservableObject {
             let rawList = res["notebooks"] as? [[String: Any]] ?? []
             if let first = rawList.first, let id = first["id"] as? String {
                 activeNotebookId = id
+                await refreshAll()
             } else {
-                let created = try await core.call(method: "notebook.create", params: ["title": t("nb.untitled")])
-                activeNotebookId = created["id"] as? String ?? ""
+                enterEmptyNotebookState()
             }
-            await refreshAll()
         } catch {
             statusMessage = error.localizedDescription
+        }
+    }
+
+    /// No notebook exists: clear the workspace and ask the user to create one.
+    func enterEmptyNotebookState() {
+        activeNotebookId = ""
+        notebooks = []
+        summaryText = ""
+        suggestedQuestions = []
+        sources = []
+        notes = []
+        messages = []
+        artifacts = []
+        activeArtifact = nil
+        showCreateNotebookSheet = true
+    }
+
+    func createNotebook(title: String, filePaths: [String]) async {
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        do {
+            let created = try await core.call(method: "notebook.create", params: ["title": name])
+            guard let id = created["id"] as? String else { return }
+            activeNotebookId = id
+            await refreshAll()
+            if !filePaths.isEmpty {
+                _ = try await core.call(method: "source.add_files", params: ["notebook_id": id, "paths": filePaths])
+                await refreshAll()
+            }
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func renameActiveNotebook(_ title: String) async {
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !activeNotebookId.isEmpty, !name.isEmpty,
+              notebooks.first(where: { $0.id == activeNotebookId })?.title != name else { return }
+        _ = try? await core.call(method: "notebook.rename", params: ["notebook_id": activeNotebookId, "title": name])
+        await refreshAll()
+    }
+
+    func deleteActiveNotebook() async {
+        guard !activeNotebookId.isEmpty else { return }
+        _ = try? await core.call(method: "notebook.delete", params: ["notebook_id": activeNotebookId])
+        let res = try? await core.call(method: "notebook.list")
+        let rest = res?["notebooks"] as? [[String: Any]] ?? []
+        if let first = rest.first, let id = first["id"] as? String {
+            activeNotebookId = id
+            await refreshAll()
+        } else {
+            enterEmptyNotebookState()
         }
     }
 

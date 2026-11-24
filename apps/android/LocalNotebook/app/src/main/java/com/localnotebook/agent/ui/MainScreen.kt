@@ -7,6 +7,13 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -30,17 +37,57 @@ fun MainScreen(vm: AppViewModel) {
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val isTablet = screenWidthDp >= 840
 
+    if (state.showCreateNotebook) {
+        CreateNotebookDialog(
+            en = en,
+            onDismiss = vm::dismissCreateNotebook,
+            onCreate = vm::confirmCreateNotebook,
+        )
+    }
+
     Scaffold(
         topBar = {
             if (!state.studioFullscreen) {
                 TopAppBar(
                     title = {
                         Box {
-                            val activeTitle = state.notebooks.firstOrNull { it.id == state.activeNotebookId }?.title
-                                ?: L10n.t("app.title", en)
-                            TextButton(onClick = { showNbMenu = true }) {
-                                Text(activeTitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                            val activeTitle = state.notebooks.firstOrNull { it.id == state.activeNotebookId }?.title ?: ""
+                            val focusManager = LocalFocusManager.current
+                            var draft by remember(activeTitle) { mutableStateOf(activeTitle) }
+                            var focused by remember { mutableStateOf(false) }
+                            val hasNotebook = state.activeNotebookId.isNotEmpty()
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                BasicTextField(
+                                    value = draft,
+                                    onValueChange = { draft = it },
+                                    enabled = hasNotebook,
+                                    singleLine = true,
+                                    textStyle = MaterialTheme.typography.titleMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+                                    modifier = Modifier
+                                        .widthIn(min = 80.dp, max = 220.dp)
+                                        .onFocusChanged { f ->
+                                            if (focused && !f.isFocused) vm.renameNotebook(draft)
+                                            focused = f.isFocused
+                                        },
+                                    decorationBox = { inner ->
+                                        Box(contentAlignment = Alignment.CenterStart) {
+                                            if (draft.isEmpty()) {
+                                                Text(
+                                                    L10n.t("nb.none_hint", en),
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                            inner()
+                                        }
+                                    },
+                                )
+                                IconButton(onClick = { showNbMenu = true }) {
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                }
                             }
                             DropdownMenu(expanded = showNbMenu, onDismissRequest = { showNbMenu = false }) {
                                 state.notebooks.forEach { nb ->

@@ -13,8 +13,9 @@ struct MainView: View {
     @State private var studioDetailLevel: String = "standard"
 
     // Windows-synced helper dialogs
-    @State private var showRenameNotebookSheet = false
-    @State private var renameNotebookInput = ""
+    @State private var titleDraft = ""
+    @State private var titleHovered = false
+    @FocusState private var titleFocused: Bool
     @State private var showAddUrlSheet = false
     @State private var addUrlInput = ""
     @State private var showPasteTextSheet = false
@@ -35,7 +36,7 @@ struct MainView: View {
         if let nb = state.notebooks.first(where: { $0.id == state.activeNotebookId }), !nb.title.isEmpty {
             return nb.title
         }
-        return "Local Notebook Agent"
+        return ""
     }
 
     var body: some View {
@@ -94,8 +95,9 @@ struct MainView: View {
         .sheet(isPresented: $state.showPrivacySheet) {
             PrivacyInfoSheet().environmentObject(state)
         }
-        .sheet(isPresented: $showRenameNotebookSheet) {
-            renameNotebookSheet
+        .sheet(isPresented: $state.showCreateNotebookSheet) {
+            CreateNotebookSheet(palette: palette, preferredScheme: themeId.preferredColorScheme)
+                .environmentObject(state)
         }
         .sheet(isPresented: $showAddUrlSheet) {
             addUrlSheet
@@ -120,10 +122,35 @@ struct MainView: View {
         HStack(spacing: 12) {
             AppLogoView(size: 30, accent: palette.accent)
 
-            Text(activeNotebookTitle)
+            // Click the title to rename in place (Return / focus loss commits, Esc reverts).
+            TextField(state.t("nb.none_hint"), text: $titleDraft)
+                .textFieldStyle(.plain)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(palette.textPrimary)
                 .lineLimit(1)
+                .focused($titleFocused)
+                .disabled(state.activeNotebookId.isEmpty)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .frame(minWidth: 120, maxWidth: 320)
+                .fixedSize(horizontal: false, vertical: true)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(titleFocused ? palette.accent : (titleHovered ? palette.subtleBorder : Color.clear), lineWidth: 1)
+                )
+                .onHover { titleHovered = $0 }
+                .help(state.t("nb.title_edit_hint"))
+                .onAppear { titleDraft = activeNotebookTitle }
+                .onChange(of: activeNotebookTitle) { _, new in if !titleFocused { titleDraft = new } }
+                .onSubmit { titleFocused = false }
+                .onExitCommand { titleDraft = activeNotebookTitle; titleFocused = false }
+                .onChange(of: titleFocused) { _, focused in
+                    if !focused {
+                        let draft = titleDraft
+                        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { titleDraft = activeNotebookTitle }
+                        else { Task { await state.renameActiveNotebook(draft) } }
+                    }
+                }
 
             // Notebook switcher styled consistently with "+ Add source" menu
             Menu {
@@ -162,13 +189,7 @@ struct MainView: View {
             Spacer()
 
             PillButton(title: state.t("nb.new"), palette: palette) {
-                Task {
-                    if let res = try? await state.core.call(method: "notebook.create", params: ["title": state.t("nb.new")]),
-                       let id = res["id"] as? String {
-                        state.activeNotebookId = id
-                        await state.refreshAll()
-                    }
-                }
+                state.showCreateNotebookSheet = true
             }
 
             PillButton(title: state.t("settings.title"), systemImage: "gearshape", palette: palette) {
@@ -177,8 +198,7 @@ struct MainView: View {
 
             Menu {
                 Button(state.t("nb.rename")) {
-                    renameNotebookInput = activeNotebookTitle
-                    showRenameNotebookSheet = true
+                    titleFocused = true
                 }
                 Button(state.t("nb.export_lna")) { exportNotebook(format: "lna", ext: "lna") }
                 Button(state.t("nb.export_md")) { exportNotebook(format: "markdown", ext: "md") }
@@ -191,11 +211,7 @@ struct MainView: View {
                     }
                 }
                 Button(state.t("nb.delete"), role: .destructive) {
-                    Task {
-                        let deletingId = state.activeNotebookId
-                        _ = try? await state.core.call(method: "notebook.delete", params: ["notebook_id": deletingId])
-                        await state.refreshAll()
-                    }
+                    Task { await state.deleteActiveNotebook() }
                 }
                 Divider()
                 Button(state.t("nb.export_diag")) { state.exportDiagnostics() }
@@ -802,36 +818,6 @@ struct MainView: View {
         }
         .padding(20)
         .frame(width: 460)
-        .background(palette.panelBg)
-        .preferredColorScheme(themeId.preferredColorScheme)
-    }
-
-    private var renameNotebookSheet: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(state.t("nb.rename"))
-                .font(.headline)
-            TextField(state.isEnglish ? "Notebook name" : "笔记本名称", text: $renameNotebookInput)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                Spacer()
-                Button(state.isEnglish ? "Cancel" : "取消") { showRenameNotebookSheet = false }
-                Button(state.t("settings.save")) {
-                    let trimmed = renameNotebookInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                    showRenameNotebookSheet = false
-                    guard !trimmed.isEmpty else { return }
-                    Task {
-                        _ = try? await state.core.call(method: "notebook.rename", params: [
-                            "notebook_id": state.activeNotebookId,
-                            "title": trimmed
-                        ])
-                        await state.refreshAll()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
         .background(palette.panelBg)
         .preferredColorScheme(themeId.preferredColorScheme)
     }

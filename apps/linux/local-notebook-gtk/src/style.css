@@ -339,3 +339,21 @@ window.lna-light .lna-source-row:hover {
     border-radius: 14px;
     padding: 18px;
 }
+
+.lna-title-entry {
+    background: transparent;
+    border: 1px solid transparent;
+    box-shadow: none;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.lna-title-entry:hover {
+    border-color: rgba(255, 255, 255, 0.25);
+}
+
+.lna-title-entry:focus-within {
+    border-color: #a8c7fa;
+}

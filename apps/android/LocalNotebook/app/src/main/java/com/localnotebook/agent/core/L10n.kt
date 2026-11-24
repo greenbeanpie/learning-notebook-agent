@@ -139,6 +139,13 @@ object L10n {
         "common.close" to "关闭",
         "common.cancel" to "取消",
         "common.ok" to "确定",
+        "common.create" to "创建",
+        "nb.none_hint" to "请新建笔记本",
+        "nb.dlg_name" to "笔记本名称",
+        "nb.dlg_name_ph" to "例如：物理",
+        "nb.dlg_ai_hint" to "笔记本详情（摘要与推荐问题）将由 AI 根据来源自动生成。",
+        "nb.dlg_sources" to "来源（可选）",
+        "nb.dlg_add_files" to "上传文件…",
     )
 
     private val enMap = mapOf(
@@ -206,5 +213,12 @@ object L10n {
         "common.close" to "Close",
         "common.cancel" to "Cancel",
         "common.ok" to "OK",
+        "common.create" to "Create",
+        "nb.none_hint" to "Create a notebook",
+        "nb.dlg_name" to "Notebook name",
+        "nb.dlg_name_ph" to "e.g. Physics",
+        "nb.dlg_ai_hint" to "Notebook details (summary and suggested questions) will be generated automatically by AI from your sources.",
+        "nb.dlg_sources" to "Sources (optional)",
+        "nb.dlg_add_files" to "Upload files…",
     )
 }
