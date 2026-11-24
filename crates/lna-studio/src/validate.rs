@@ -318,6 +318,7 @@ pub fn enforce_mindmap_limits_with_detail(payload: &mut Value, detail: &str) {
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("nodes".into(), Value::Array(kept));
     }
+    crate::texfmt::convert_mindmap_payload(payload);
 }
 
 #[cfg(test)]

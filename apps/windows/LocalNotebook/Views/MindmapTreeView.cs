@@ -162,26 +162,6 @@ internal sealed class MindmapTreeView
                 Child = progressStack,
             };
             stageGrid.Children.Add(progressPill);
-
-            var badge = new Border
-            {
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Top,
-                Margin = new Thickness(0, 14, 16, 0),
-                Padding = new Thickness(10, 4, 10, 4),
-                CornerRadius = new CornerRadius(12),
-                Background = new SolidColorBrush(Color.FromArgb(225, 36, 56, 72)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 92, 146, 196)),
-                BorderThickness = new Thickness(1),
-                Child = new TextBlock
-                {
-                    Text = L10n.T("kg.badge_hint"),
-                    FontSize = 11.5,
-                    FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI"),
-                    Foreground = new SolidColorBrush(Color.FromArgb(255, 196, 224, 250)),
-                },
-            };
-            stageGrid.Children.Add(badge);
             UpdateKgProgressBanner();
         }
 
@@ -763,7 +743,8 @@ internal sealed class MindmapTreeView
             Spacing = 8,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(14, 18, 0, 0),
+            // Knowledge graphs show the progress pill top-left; keep the controls clear of it.
+            Margin = new Thickness(14, _isKnowledgeGraph ? 74 : 18, 0, 0),
         };
         stack.Children.Add(expandBtn);
 

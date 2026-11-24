@@ -1,4 +1,5 @@
 pub mod render;
+pub mod texfmt;
 pub mod validate;
 
 use lna_jobs::JobQueue;
@@ -2040,7 +2041,7 @@ Design rules:\n\
                     ""
                 };
                 format!(
-                    " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels; keep node labels clean and readable, and leave every node's citations array empty [].{}{}{}",
+                    " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels; keep node labels clean and readable, and leave every node's citations array empty []. Node labels are shown as plain text, so write any math in labels as compact Unicode (e.g. A=SΛS⁻¹, Aᵀ, x₁, ℝⁿ, √2) instead of LaTeX.{}{}{}",
                     detail_rule, structure_rule, kg_rule
                 )
             }
@@ -4193,6 +4194,13 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<St
     let in_studio: i64 = r.get(22)?;
     let origin_message_id: Option<String> = r.get(23)?;
     let error_log: Option<String> = r.get(24)?;
+    let mut payload: Option<Value> = payload_s.and_then(|s| serde_json::from_str(&s).ok());
+    if artifact_type == ArtifactType::Mindmap {
+        // Node labels are drawn natively on every client; turn TeX into Unicode math here.
+        if let Some(p) = payload.as_mut() {
+            texfmt::convert_mindmap_payload(p);
+        }
+    }
 
     Ok(StudioArtifact {
         id: r.get(0)?,
@@ -4212,7 +4220,7 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<St
         sources_fingerprint: fp,
         profile_id: r.get(10)?,
         draft: draft_s.and_then(|s| serde_json::from_str(&s).ok()),
-        payload: payload_s.and_then(|s| serde_json::from_str(&s).ok()),
+        payload,
         output_dir: r.get(13)?,
         estimated_input_tokens: r.get(14)?,
         estimated_output_tokens: r.get(15)?,
