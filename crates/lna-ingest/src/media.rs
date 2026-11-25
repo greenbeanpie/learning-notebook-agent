@@ -205,6 +205,71 @@ fn try_ffmpeg_to_mp3(input_path: &Path) -> Option<Vec<u8>> {
     bytes
 }
 
+/// The media part for an audio or video file as `resolved` accepts it: inline or uploaded
+/// (Gemini; large files go through the Files API and the returned name must be deleted after
+/// use), or wav/mp3 audio for Chat Completion. Other protocols cannot take raw audio/video.
+pub async fn media_part_for_file(
+    llm: &LlmClient,
+    resolved: &ResolvedProfile,
+    path: &Path,
+    ext: &str,
+    kind: SourceKind,
+    title: &str,
+) -> LnaResult<(Part, Option<String>)> {
+    let label = if kind == SourceKind::Video { "视频" } else { "音频" };
+    let mime = formats::mime_type_for_ext(ext).to_string();
+    let meta = std::fs::metadata(path).map_err(|e| LnaError::internal(e.to_string()))?;
+    match resolved.protocol {
+        ProtocolKind::Gemini => {
+            if meta.len() > GEMINI_INLINE_MAX_BYTES {
+                let (uri, name) = llm.upload_gemini_file(resolved, path, &mime, title).await?;
+                Ok((
+                    Part::Media { mime_type: mime, data_base64: None, file_uri: Some(uri), audio_format: None },
+                    Some(name),
+                ))
+            } else {
+                let bytes = std::fs::read(path).map_err(|e| LnaError::internal(e.to_string()))?;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+                Ok((
+                    Part::Media { mime_type: mime, data_base64: Some(b64), file_uri: None, audio_format: None },
+                    None,
+                ))
+            }
+        }
+        ProtocolKind::ChatCompletion if kind == SourceKind::Audio => {
+            let e = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+            if e == "wav" || e == "mp3" {
+                let bytes = std::fs::read(path).map_err(|err| LnaError::internal(err.to_string()))?;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+                Ok((
+                    Part::Media { mime_type: mime, data_base64: Some(b64), file_uri: None, audio_format: Some(e) },
+                    None,
+                ))
+            } else if let Some(mp3_bytes) = try_ffmpeg_to_mp3(path) {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(mp3_bytes);
+                Ok((
+                    Part::Media {
+                        mime_type: "audio/mpeg".into(),
+                        data_base64: Some(b64),
+                        file_uri: None,
+                        audio_format: Some("mp3".into()),
+                    },
+                    None,
+                ))
+            } else {
+                Err(LnaError::new(
+                    ErrorCode::CapabilityMissing,
+                    format!("Chat Completion 协议仅支持原生 wav/mp3；格式 .{e} 请在“模型协议配置”中为音频勾选 Gemini 模型"),
+                ))
+            }
+        }
+        _ => Err(LnaError::new(
+            ErrorCode::CapabilityMissing,
+            format!("当前勾选处理{label}的模型协议（{}）不支持原生{label}输入，请在“模型协议配置”中使用 Gemini 协议模型。", resolved.protocol.as_str()),
+        )),
+    }
+}
+
 pub async fn ingest_audio_video(
     db: &Database,
     secrets: &Arc<dyn SecretStore>,
@@ -237,69 +302,8 @@ pub async fn ingest_audio_video(
         )
     })?;
 
-    let mime = formats::mime_type_for_ext(ext).to_string();
-    let meta = std::fs::metadata(blob_path).map_err(|e| LnaError::internal(e.to_string()))?;
-    let mut uploaded_gemini_name: Option<String> = None;
-
-    let media_part = match resolved.protocol {
-        ProtocolKind::Gemini => {
-            if meta.len() > GEMINI_INLINE_MAX_BYTES {
-                let (uri, name) = llm
-                    .upload_gemini_file(&resolved, blob_path, &mime, &src.title)
-                    .await?;
-                uploaded_gemini_name = Some(name);
-                Part::Media {
-                    mime_type: mime,
-                    data_base64: None,
-                    file_uri: Some(uri),
-                    audio_format: None,
-                }
-            } else {
-                let bytes =
-                    std::fs::read(blob_path).map_err(|e| LnaError::internal(e.to_string()))?;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-                Part::Media {
-                    mime_type: mime,
-                    data_base64: Some(b64),
-                    file_uri: None,
-                    audio_format: None,
-                }
-            }
-        }
-        ProtocolKind::ChatCompletion if src.kind == SourceKind::Audio => {
-            let e = ext.trim().trim_start_matches('.').to_ascii_lowercase();
-            if e == "wav" || e == "mp3" {
-                let bytes =
-                    std::fs::read(blob_path).map_err(|err| LnaError::internal(err.to_string()))?;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-                Part::Media {
-                    mime_type: mime,
-                    data_base64: Some(b64),
-                    file_uri: None,
-                    audio_format: Some(e),
-                }
-            } else if let Some(mp3_bytes) = try_ffmpeg_to_mp3(blob_path) {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(mp3_bytes);
-                Part::Media {
-                    mime_type: "audio/mpeg".into(),
-                    data_base64: Some(b64),
-                    file_uri: None,
-                    audio_format: Some("mp3".into()),
-                }
-            } else {
-                return Err(LnaError::new(
-                    ErrorCode::CapabilityMissing,
-                    format!("Chat Completion 协议仅支持原生 wav/mp3；格式 .{e} 请在“模型协议配置”中为音频勾选 Gemini 模型"),
-                ));
-            }
-        }
-        _ => {
-            return Err(LnaError::new(
-                ErrorCode::CapabilityMissing,
-                format!("当前勾选处理{label}的模型协议（{}）不支持原生{label}输入，请在“模型协议配置”中使用 Gemini 协议模型。", resolved.protocol.as_str()),
-            ));
-        }
-    };
+    let (media_part, uploaded_gemini_name) =
+        media_part_for_file(llm, &resolved, blob_path, ext, src.kind, &src.title).await?;
 
     let prompt = if src.kind == SourceKind::Video {
         format!(

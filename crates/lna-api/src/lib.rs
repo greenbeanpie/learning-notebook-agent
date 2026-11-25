@@ -59,8 +59,13 @@ impl CoreRuntime {
         {
             // D5: persist capabilities learned from "unsupported parameter" responses.
             let db = db.clone();
-            llm.set_capability_sink(move |profile_id, caps| {
-                let _ = lna_storage::update_profile_capabilities(&db, profile_id, caps);
+            llm.set_capability_sink(move |profile_id, wire| {
+                let _ = lna_storage::update_profile_wire_params(
+                    &db,
+                    profile_id,
+                    wire.stream_usage,
+                    wire.max_tokens_field.as_deref(),
+                );
             });
         }
         let embedding = EmbeddingService::new(db.clone(), secrets.clone());
@@ -149,6 +154,124 @@ impl CoreRuntime {
         );
     }
 
+    /// Probes streaming, tool calling, JSON schema and JSON mode against the live endpoint.
+    /// Connection/auth failures of the plain ping are returned as errors.
+    async fn probe_capabilities(
+        &self,
+        resolved: &lna_llm::ResolvedProfile,
+        base: ModelCapabilities,
+    ) -> LnaResult<(ModelCapabilities, String)> {
+        let (txt, ping_usage) = self.ping(resolved).await?;
+
+        let mut caps = base;
+        caps.streaming = true;
+        caps.stream_usage = ping_usage.input_tokens > 0 || ping_usage.output_tokens > 0;
+
+        let tool_req = LlmRequest {
+            system: "You must call the lna_capability_probe tool exactly once with {\"ok\":true}. Do not answer in natural language.".into(),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text("Call the capability probe now.".into())],
+            }],
+            tools: vec![ToolDef {
+                name: "lna_capability_probe".into(),
+                description: "Capability detection probe".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": { "ok": { "type": "boolean" } },
+                    "required": ["ok"],
+                    "additionalProperties": false
+                }),
+            }],
+            tool_mode: ToolMode::Auto,
+            output: OutputMode::Text,
+            max_output_tokens: 64,
+            reasoning: ReasoningOptions::default(),
+        };
+        let mut tool_called = false;
+        if self
+            .llm
+            .stream_strict(&resolved, &tool_req, CancellationToken::new(), |event| {
+                if matches!(event, LlmEvent::ToolCallStart { .. }) {
+                    tool_called = true;
+                }
+            })
+            .await
+            .is_ok()
+        {
+            caps.tools = tool_called;
+        } else {
+            caps.tools = false;
+        }
+
+        let probe_schema = json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } },
+            "required": ["ok"],
+            "additionalProperties": false
+        });
+        let schema_req = LlmRequest {
+            system: "Return only a JSON object with ok set to true.".into(),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text("Return the probe object.".into())],
+            }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::JsonSchema {
+                name: "lna_capability_probe".into(),
+                schema: probe_schema.clone(),
+            },
+            max_output_tokens: 64,
+            reasoning: ReasoningOptions::default(),
+        };
+        caps.json_schema = self
+            .llm
+            .complete_text_strict(&resolved, &schema_req, CancellationToken::new())
+            .await
+            .ok()
+            .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
+            .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
+            .unwrap_or(false);
+
+        let json_mode_req = LlmRequest {
+            system: "Return only a JSON object with ok set to true.".into(),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text("Return the probe object.".into())],
+            }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::JsonObject,
+            max_output_tokens: 64,
+            reasoning: ReasoningOptions::default(),
+        };
+        caps.json_mode = self
+            .llm
+            .complete_text_strict(&resolved, &json_mode_req, CancellationToken::new())
+            .await
+            .ok()
+            .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
+            .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
+            .unwrap_or(false);
+
+        caps.probed_at = Some(lna_types::now_ms());
+        Ok((caps, txt))
+    }
+
+    async fn ping(&self, resolved: &lna_llm::ResolvedProfile) -> LnaResult<(String, lna_llm::Usage)> {
+        let req = LlmRequest {
+            system: "Reply with OK.".into(),
+            messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text("ping".into())] }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            max_output_tokens: 16,
+            reasoning: ReasoningOptions::default(),
+        };
+        self.llm.complete_text_strict(resolved, &req, CancellationToken::new()).await
+    }
+
     fn spawn_background_loops(self: &Arc<Self>) {
         // S3: Delayed 5s orphan file cleanup
         let weak_clean = Arc::downgrade(self);
@@ -156,6 +279,31 @@ impl CoreRuntime {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             if let Some(core) = weak_clean.upgrade() {
                 let _ = lna_ingest::IngestService::cleanup_orphan_files(&core.db);
+                // pictures from lecture questions and failed sends, once a day old
+                lna_ingest::attachments::sweep_orphans(&core.db, std::time::Duration::from_secs(24 * 3600));
+            }
+        });
+
+        // Profiles saved before the tool / structured-output requirement were never probed:
+        // probe them once so unqualified ones are refused from then on.
+        let weak_probe = Arc::downgrade(self);
+        self.rt.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let Some(core) = weak_probe.upgrade() else { return };
+            let pending: Vec<ModelProfile> = lna_storage::list_profiles(&core.db)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| {
+                    let c = &p.capabilities;
+                    !c.embedding_only && c.probed_at.is_none() && c.chat_missing().is_some()
+                })
+                .collect();
+            for prof in pending {
+                let Ok(resolved) = core.agent.resolve_profile(&prof) else { continue };
+                // unreachable endpoints stay pending and are probed again on the next start
+                if let Ok((caps, _)) = core.probe_capabilities(&resolved, prof.capabilities.clone()).await {
+                    let _ = lna_storage::update_profile_capabilities(&core.db, &prof.id, &caps);
+                }
             }
         });
 
@@ -361,6 +509,33 @@ impl CoreRuntime {
         serde_json::to_string(&resp).unwrap_or_default()
     }
 
+    /// Stores the pictures of a request's `images` parameter (see `lna_ingest::attachments`).
+    /// Pictures (`images`), one-off reference files (`files`) and web links (`links`) of a
+    /// request, stored. Nothing is kept when one of them is rejected.
+    fn save_request_images(&self, p: &Value) -> LnaResult<Vec<Attachment>> {
+        let non_empty = |k: &str| p.get(k).filter(|v| v.as_array().is_some_and(|a| !a.is_empty()));
+        let mut out = Vec::new();
+        let res = (|| -> LnaResult<()> {
+            if let Some(items) = non_empty("images") {
+                out.extend(lna_ingest::attachments::save_images(&self.db.paths().root, items)?);
+            }
+            if let Some(items) = non_empty("files") {
+                let saved = lna_ingest::context_files::save_files(&self.db, items, out.len())?;
+                out.extend(saved);
+            }
+            if let Some(items) = non_empty("links") {
+                let saved = lna_ingest::context_files::save_links(&self.db, items, out.len())?;
+                out.extend(saved);
+            }
+            Ok(())
+        })();
+        if let Err(e) = res {
+            lna_ingest::attachments::delete_files(&out);
+            return Err(e);
+        }
+        Ok(out)
+    }
+
     pub async fn dispatch(&self, req: ApiRequest) -> LnaResult<Value> {
         let p = &req.params;
         match req.method.as_str() {
@@ -431,7 +606,13 @@ impl CoreRuntime {
             }
             "notebook.delete" => {
                 let id = req_str(p, "notebook_id")?;
+                // pictures of its chat messages and Studio requests go with it
+                let pictures = self.agent.attachments_of_notebook(id);
+                let studio_pics = self.studio.attachments_of_notebook(id);
                 lna_storage::delete_notebook(&self.db, id)?;
+                for atts in pictures.iter().chain(studio_pics.iter()) {
+                    lna_ingest::attachments::delete_files(atts);
+                }
                 Ok(json!({ "ok": true }))
             }
 
@@ -526,9 +707,36 @@ impl CoreRuntime {
             }
             "chat.send" => {
                 let nid = req_str(p, "notebook_id")?;
-                let text = req_str(p, "text")?;
-                let msg = self.agent.send_message(nid, text).await?;
+                let atts = self.save_request_images(p)?;
+                let text = match p.get("text").and_then(Value::as_str).map(str::trim) {
+                    Some(t) if !t.is_empty() => t,
+                    // a picture on its own is a valid message
+                    _ if !atts.is_empty() => "",
+                    _ => return Err(LnaError::invalid("text required")),
+                };
+                // On failure the user message (with its pictures) is usually already stored, so the
+                // files are kept; pictures no message refers to are removed by the orphan sweep.
+                let msg = self.agent.send_message(nid, text, atts).await?;
                 Ok(serde_json::to_value(msg).unwrap())
+            }
+            "attachment.promote" => {
+                let nid = req_str(p, "notebook_id")?;
+                let id = req_str(p, "attachment_id")?;
+                let found = lna_ingest::attachments::resolve(&self.db.paths().root, &json!([id]));
+                let att = found.into_iter().next().ok_or_else(|| LnaError::not_found("附件不存在"))?;
+                let (src, dup) = if att.kind == "link" {
+                    self.ingest.add_url(nid, att.url.as_deref().unwrap_or_default()).await?
+                } else {
+                    // imported under its original name; the attachment itself stays with the message
+                    let tmp = std::env::temp_dir().join(format!("lna_promote_{}", att.id));
+                    std::fs::create_dir_all(&tmp).map_err(|e| LnaError::internal(e.to_string()))?;
+                    let named = tmp.join(&att.name);
+                    std::fs::copy(&att.path, &named).map_err(|e| LnaError::internal(e.to_string()))?;
+                    let r = self.ingest.add_file(nid, &named);
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    r?
+                };
+                Ok(json!({ "source": src, "duplicate": dup }))
             }
             "chat.cancel" => {
                 let nid = req_str(p, "notebook_id")?;
@@ -543,7 +751,19 @@ impl CoreRuntime {
                 for prof in profiles.iter_mut() {
                     self.refresh_has_secret(prof);
                 }
-                Ok(json!({ "profiles": profiles }))
+                let rows: Vec<Value> = profiles
+                    .iter()
+                    .map(|prof| {
+                        let mut v = serde_json::to_value(prof).unwrap_or_default();
+                        let caps = &prof.capabilities;
+                        v["purpose"] = json!(if caps.embedding_only { "embedding" } else { "chat" });
+                        v["eligible"] = json!(caps.embedding_only || caps.chat_missing().is_none());
+                        v["probe_pending"] = json!(!caps.embedding_only && caps.probed_at.is_none() && caps.chat_missing().is_some());
+                        v["unsupported_reason"] = json!(if caps.probed_at.is_some() { caps.chat_missing() } else { None });
+                        v
+                    })
+                    .collect();
+                Ok(json!({ "profiles": rows }))
             }
             "profile.upsert" => {
                 let mut params_in: ProfileUpsertParams = serde_json::from_value(p.clone())
@@ -559,7 +779,71 @@ impl CoreRuntime {
                         "Non-loopback http:// model endpoints transmit credentials in plaintext. Set allow_insecure_http=true to confirm explicitly.",
                     ));
                 }
+                let api_key = p
+                    .get("api_key")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty())
+                    .map(str::to_string);
+                let existing = match params_in.id.as_deref() {
+                    Some(id) => lna_storage::get_profile(&self.db, id).ok(),
+                    None => None,
+                };
+                let embedding_only = p.get("purpose").and_then(Value::as_str) == Some("embedding")
+                    || (p.get("purpose").is_none()
+                        && existing.as_ref().is_some_and(|e| e.capabilities.embedding_only));
+                // Tool / JSON flags are never taken from the client: they come from the probe.
+                let mut base = existing.as_ref().map(|e| e.capabilities.clone()).unwrap_or_default();
+                if let Some(v) = params_in.supports_vision { base.supports_vision = v; }
+                if let Some(v) = params_in.supports_audio { base.supports_audio = v; }
+                if let Some(v) = params_in.supports_video { base.supports_video = v; }
+                if let Some(c) = params_in.capabilities.as_ref() {
+                    if params_in.supports_vision.is_none() { base.supports_vision = c.supports_vision; }
+                    if params_in.supports_audio.is_none() { base.supports_audio = c.supports_audio; }
+                    if params_in.supports_video.is_none() { base.supports_video = c.supports_video; }
+                    base.max_tokens_field = c.max_tokens_field.clone().or(base.max_tokens_field);
+                    base.anthropic_thinking = c.anthropic_thinking.clone().or(base.anthropic_thinking);
+                }
+                base.embedding_only = embedding_only;
+                if embedding_only && params_in.activate {
+                    return Err(LnaError::invalid("仅用于向量化的配置不能设为对话模型"));
+                }
+                let caps = if embedding_only {
+                    base
+                } else {
+                    let key = match api_key.as_ref() {
+                        Some(k) => Some(SecretString::from(k.clone())),
+                        None => match existing.as_ref().and_then(|e| e.keychain_ref.clone()) {
+                            Some(kref) => self.secrets.get(&kref)?,
+                            None => None,
+                        },
+                    };
+                    let probe_target = lna_llm::ResolvedProfile {
+                        id: params_in.id.clone().unwrap_or_default(),
+                        display_name: params_in.display_name.clone(),
+                        protocol: params_in.protocol,
+                        base_url: params_in.base_url.clone(),
+                        model_id: params_in.model_id.clone(),
+                        api_key: key,
+                        show_thinking: params_in.show_thinking,
+                        effort: params_in.effort.clone(),
+                        context_window: params_in.context_window,
+                        max_output_tokens: params_in.max_output_tokens,
+                        capabilities: base.clone(),
+                        extra_headers: params_in.extra_headers.clone(),
+                        anthropic_version: "2023-06-01".to_string(),
+                    };
+                    let (caps, _) = self.probe_capabilities(&probe_target, base).await?;
+                    if let Some(reason) = caps.chat_missing() {
+                        return Err(LnaError::new(ErrorCode::CapabilityMissing, reason));
+                    }
+                    caps
+                };
+                params_in.capabilities = Some(caps);
                 let mut prof = lna_storage::upsert_profile(&self.db, &params_in)?;
+                if let (Some(k), Some(kref)) = (api_key, prof.keychain_ref.as_deref()) {
+                    self.secrets.set(kref, SecretString::from(k))?;
+                }
                 self.refresh_has_secret(&mut prof);
                 if params_in.activate {
                     self.enqueue_missing_summaries();
@@ -581,116 +865,15 @@ impl CoreRuntime {
                 let id = req_str(p, "profile_id")?;
                 let prof = lna_storage::get_profile(&self.db, id)?;
                 let resolved = self.agent.resolve_profile(&prof)?;
-                let req = LlmRequest {
-                    system: "Reply with OK.".into(),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text("ping".into())],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::Text,
-                    max_output_tokens: 16,
-                    reasoning: ReasoningOptions::default(),
-                };
-                let (txt, ping_usage) = self
-                    .llm
-                    .complete_text_strict(&resolved, &req, CancellationToken::new())
-                    .await?;
-
-                let mut caps = prof.capabilities.clone();
-                caps.streaming = true;
-                caps.stream_usage = ping_usage.input_tokens > 0 || ping_usage.output_tokens > 0;
-
-                let tool_req = LlmRequest {
-                    system: "You must call the lna_capability_probe tool exactly once with {\"ok\":true}. Do not answer in natural language.".into(),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text("Call the capability probe now.".into())],
-                    }],
-                    tools: vec![ToolDef {
-                        name: "lna_capability_probe".into(),
-                        description: "Capability detection probe".into(),
-                        parameters: json!({
-                            "type": "object",
-                            "properties": { "ok": { "type": "boolean" } },
-                            "required": ["ok"],
-                            "additionalProperties": false
-                        }),
-                    }],
-                    tool_mode: ToolMode::Auto,
-                    output: OutputMode::Text,
-                    max_output_tokens: 64,
-                    reasoning: ReasoningOptions::default(),
-                };
-                let mut tool_called = false;
-                if self
-                    .llm
-                    .stream_strict(&resolved, &tool_req, CancellationToken::new(), |event| {
-                        if matches!(event, LlmEvent::ToolCallStart { .. }) {
-                            tool_called = true;
-                        }
-                    })
-                    .await
-                    .is_ok()
-                {
-                    caps.tools = tool_called;
-                } else {
-                    caps.tools = false;
+                if prof.capabilities.embedding_only {
+                    let (txt, _) = self.ping(&resolved).await?;
+                    return Ok(json!({ "ok": true, "reply": txt, "capabilities": prof.capabilities }));
                 }
-
-                let probe_schema = json!({
-                    "type": "object",
-                    "properties": { "ok": { "type": "boolean" } },
-                    "required": ["ok"],
-                    "additionalProperties": false
-                });
-                let schema_req = LlmRequest {
-                    system: "Return only a JSON object with ok set to true.".into(),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text("Return the probe object.".into())],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::JsonSchema {
-                        name: "lna_capability_probe".into(),
-                        schema: probe_schema.clone(),
-                    },
-                    max_output_tokens: 64,
-                    reasoning: ReasoningOptions::default(),
-                };
-                caps.json_schema = self
-                    .llm
-                    .complete_text_strict(&resolved, &schema_req, CancellationToken::new())
-                    .await
-                    .ok()
-                    .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
-                    .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
-                    .unwrap_or(false);
-
-                let json_mode_req = LlmRequest {
-                    system: "Return only a JSON object with ok set to true.".into(),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text("Return the probe object.".into())],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::JsonObject,
-                    max_output_tokens: 64,
-                    reasoning: ReasoningOptions::default(),
-                };
-                caps.json_mode = self
-                    .llm
-                    .complete_text_strict(&resolved, &json_mode_req, CancellationToken::new())
-                    .await
-                    .ok()
-                    .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
-                    .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
-                    .unwrap_or(false);
-
+                let (caps, txt) = self.probe_capabilities(&resolved, prof.capabilities.clone()).await?;
                 lna_storage::update_profile_capabilities(&self.db, id, &caps)?;
+                if let Some(reason) = caps.chat_missing() {
+                    return Err(LnaError::new(ErrorCode::CapabilityMissing, reason));
+                }
                 Ok(json!({ "ok": true, "reply": txt, "capabilities": caps }))
             }
             "profile.discover_models" => {
@@ -827,8 +1010,28 @@ impl CoreRuntime {
                 )
                 .map_err(|e| LnaError::invalid(e.to_string()))?;
                 let title = p.get("title").and_then(|x| x.as_str());
-                let cfg = p.get("config").cloned().unwrap_or_else(|| json!({}));
-                let art = self.studio.create(nid, at, title, cfg)?;
+                let mut cfg = p.get("config").cloned().unwrap_or_else(|| json!({}));
+                let atts = self.save_request_images(p)?;
+                if !atts.is_empty() {
+                    if let Some(obj) = cfg.as_object_mut() {
+                        // only ids: the config is echoed into prompts (see attachments::resolve)
+                        let pics = lna_ingest::attachments::images(&atts);
+                        let files = lna_ingest::context_files::context_items(&atts);
+                        if !pics.is_empty() {
+                            obj.insert("images".into(), lna_ingest::attachments::ids_of(&pics));
+                        }
+                        if !files.is_empty() {
+                            obj.insert("files".into(), lna_ingest::attachments::ids_of(&files));
+                        }
+                    }
+                }
+                let art = match self.studio.create(nid, at, title, cfg) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        lna_ingest::attachments::delete_files(&atts);
+                        return Err(e);
+                    }
+                };
                 Ok(serde_json::to_value(art).unwrap())
             }
             "studio.get" => {
@@ -844,10 +1047,14 @@ impl CoreRuntime {
                 let id = req_str(p, "artifact_id")?.to_string();
                 let instruction = req_str(p, "instruction")?.to_string();
                 let current_draft = p.get("draft").and_then(Value::as_str).map(String::from);
+                let atts = self.save_request_images(p)?;
                 let studio = self.studio.clone();
+                // the pictures only inform this one revision; they are not kept afterwards
                 let updated = studio
-                    .revise_draft(&id, &instruction, current_draft.as_deref())
-                    .await?;
+                    .revise_draft(&id, &instruction, current_draft.as_deref(), &atts)
+                    .await;
+                lna_ingest::attachments::delete_files(&atts);
+                let updated = updated?;
                 Ok(serde_json::to_value(updated).unwrap())
             }
             "studio.refine_node" => {
@@ -863,8 +1070,17 @@ impl CoreRuntime {
                 let question = req_str(p, "question")?.to_string();
                 let sentence_id = p.get("sentence_id").and_then(Value::as_str).map(String::from);
                 let history: Vec<Value> = p.get("history").and_then(Value::as_array).cloned().unwrap_or_default();
+                let atts = self.save_request_images(p)?;
                 let studio = self.studio.clone();
-                studio.lecture_ask(&id, &slide_id, sentence_id.as_deref(), &question, &history).await
+                // the pictures stay on disk so the question panel can keep showing them; the
+                // periodic attachment sweep removes them later
+                let mut out = studio
+                    .lecture_ask(&id, &slide_id, sentence_id.as_deref(), &question, &history, &atts)
+                    .await?;
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("attachments".into(), serde_json::to_value(&atts).unwrap_or_default());
+                }
+                Ok(out)
             }
             "lecture.adapt" => {
                 let id = req_str(p, "artifact_id")?.to_string();
@@ -928,7 +1144,8 @@ impl CoreRuntime {
                     .get("use_selected_sources")
                     .and_then(|x| x.as_bool())
                     .unwrap_or(true);
-                Ok(serde_json::to_value(self.studio.regenerate(id, config, use_selected)?).unwrap())
+                let atts = self.save_request_images(p)?;
+                Ok(serde_json::to_value(self.studio.regenerate(id, config, use_selected, atts)?).unwrap())
             }
             "studio.import_to_studio" => {
                 let id = req_str(p, "artifact_id")?;
@@ -1407,7 +1624,16 @@ impl CoreRuntime {
         let handle = self.rt.handle().clone();
         let translated_res = tokio::task::block_in_place(move || {
             handle.block_on(async move {
-                llm.complete_text(&resolved, &req, tokio_util::sync::CancellationToken::new()).await
+                let schema = json!({
+                    "type": "object",
+                    "properties": {
+                        "summary_md": { "type": "string" },
+                        "suggested_questions": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["summary_md", "suggested_questions"],
+                    "additionalProperties": false
+                });
+                llm.complete_structured(&resolved, &req, "ui_translation", &schema, tokio_util::sync::CancellationToken::new()).await
             })
         });
         self.emit(
@@ -1424,14 +1650,8 @@ impl CoreRuntime {
             }),
         );
 
-        if let Ok((raw, _)) = translated_res {
-            let trimmed = raw
-                .trim()
-                .trim_start_matches("```json")
-                .trim_start_matches("```")
-                .trim_end_matches("```")
-                .trim();
-            if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+        if let Ok((parsed, _)) = translated_res {
+            {
                 let new_sum = parsed.get("summary_md").and_then(Value::as_str).map(String::from);
                 let new_sq: Option<String> = parsed
                     .get("suggested_questions")

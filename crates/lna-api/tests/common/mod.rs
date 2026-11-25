@@ -127,6 +127,8 @@ pub struct MockLlm {
     pub requests: Arc<Mutex<Vec<Req>>>,
     tracker: Arc<Tracker>,
     stop: Arc<AtomicBool>,
+    /// When set, capability-probe requests reach the handler (tests about the probe itself).
+    pub raw_probe: Arc<AtomicBool>,
 }
 
 impl MockLlm {
@@ -141,6 +143,8 @@ impl MockLlm {
         let embedded_texts = Arc::new(AtomicUsize::new(0));
         let embeddings_fail = Arc::new(AtomicBool::new(false));
         let emb_ctx = (embedder, embedded_texts.clone(), embeddings_fail.clone());
+        let raw_probe = Arc::new(AtomicBool::new(false));
+        let raw_probe_out = raw_probe.clone();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -162,8 +166,9 @@ impl MockLlm {
                             let counts = counts.clone();
                             let tracker = tracker.clone();
                             let emb_ctx = emb_ctx.clone();
+                            let raw = raw_probe.load(Ordering::SeqCst);
                             std::thread::spawn(move || {
-                                let _ = serve(stream, h, requests, counts, tracker, emb_ctx);
+                                let _ = serve(stream, h, requests, counts, tracker, emb_ctx, raw);
                             });
                         }
                         Err(_) => std::thread::sleep(Duration::from_millis(10)),
@@ -178,11 +183,17 @@ impl MockLlm {
             requests,
             tracker: tracker_out,
             stop,
+            raw_probe: raw_probe_out,
         }
     }
 
     pub fn base_url(&self) -> String {
         format!("http://127.0.0.1:{}/v1", self.port)
+    }
+
+    #[allow(dead_code)]
+    pub fn all_requests(&self) -> Vec<Req> {
+        self.requests.lock().unwrap().clone()
     }
 
     pub fn of_kind(&self, k: Kind) -> Vec<Req> {
@@ -264,6 +275,7 @@ fn serve(
     counts: Arc<Mutex<Vec<(Kind, usize)>>>,
     tracker: Arc<Tracker>,
     emb_ctx: (Option<Embedder>, Arc<AtomicUsize>, Arc<AtomicBool>),
+    raw_probe: bool,
 ) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -365,6 +377,9 @@ fn serve(
                 .join("\n")
         })
         .unwrap_or_default();
+    if let Some(reply) = probe_reply(&system, &body).filter(|_| !raw_probe) {
+        return write_reply(stream, reply);
+    }
     let kind = classify(&system, &body);
     let guard = tracker.enter(kind);
     let nth = {
@@ -398,6 +413,38 @@ fn serve(
         None => handler(&req),
     };
 
+    write_reply_inner(&mut stream, reply)?;
+    drop(guard);
+    // Close gracefully so buffered data is not discarded by a TCP reset on Windows.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    std::thread::sleep(Duration::from_millis(100));
+    Ok(())
+}
+
+/// The capability probe run by `profile.upsert` / `profile.test` is answered like a fully capable
+/// model (a tool call and valid JSON) and is not recorded, so tests only see their own traffic.
+fn probe_reply(system: &str, body: &Value) -> Option<Reply> {
+    let tools = body["tools"].as_array();
+    if tools.is_some_and(|a| a.iter().any(|t| t["function"]["name"] == json!("lna_capability_probe"))) {
+        return Some(Reply::Tool { id: "probe_1".into(), name: "lna_capability_probe".into(), args: json!({ "ok": true }) });
+    }
+    if system.starts_with("Return only a JSON object with ok set to true.") {
+        return Some(Reply::Text(json!({ "ok": true }).to_string()));
+    }
+    if system == "Reply with OK." {
+        return Some(Reply::Text("OK".into()));
+    }
+    None
+}
+
+fn write_reply(mut stream: TcpStream, reply: Reply) -> std::io::Result<()> {
+    write_reply_inner(&mut stream, reply)?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    std::thread::sleep(Duration::from_millis(100));
+    Ok(())
+}
+
+fn write_reply_inner(stream: &mut TcpStream, reply: Reply) -> std::io::Result<()> {
     let sse_head =
         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
     let frame = |v: Value| format!("data: {v}\n\n");
@@ -486,12 +533,7 @@ fn serve(
             }
         }
     }
-    stream.flush()?;
-    drop(guard);
-    // Close gracefully so buffered data is not discarded by a TCP reset on Windows.
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-    std::thread::sleep(Duration::from_millis(100));
-    Ok(())
+    stream.flush()
 }
 
 pub fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -578,14 +620,14 @@ impl Env {
     }
 
     /// Creates and activates a chat_completion profile that points at the mock.
-    pub fn profile(&self, mock: &MockLlm, ctx: u32, tools: bool) -> Value {
+    /// Saving runs the capability probe, which the mock answers as a fully capable model.
+    pub fn profile(&self, mock: &MockLlm, ctx: u32) -> Value {
         self.ok(
             "profile.upsert",
             json!({
                 "display_name": "mock", "protocol": "chat_completion",
                 "base_url": mock.base_url(), "model_id": "mock-model", "activate": true,
-                "context_window": ctx, "max_output_tokens": 1000,
-                "capabilities": { "streaming": true, "tools": tools, "stream_usage": true }
+                "context_window": ctx, "max_output_tokens": 1000
             }),
         )
     }

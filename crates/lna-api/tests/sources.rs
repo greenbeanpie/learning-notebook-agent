@@ -387,9 +387,10 @@ fn ai_source_guide_and_hierarchical_index_work_on_import_and_on_demand() {
               "guide_summary_md": "本文系统讲解了**微积分基础**与**微分中值定理**，帮助读者建立严谨逻辑。",
               "guide_topics": ["微积分基础", "微分中值定理", "积分计算"],
               "nodes": [
-                {"id": "n1", "parent_id": null, "level": 1, "title": "第1章 实数与极限", "summary": "介绍实数完备性与函数极限", "keywords": ["实数", "极限"], "page_start": 1, "page_end": 20},
-                {"id": "n2", "parent_id": null, "level": 1, "title": "第2章 导数与微分中值定理", "summary": "罗尔定理与拉格朗日中值定理", "keywords": ["导数", "中值定理"], "page_start": 21, "page_end": 50}
-              ]
+                {"id": "n1", "parent_id": null, "level": 1, "title": "第1章 实数与极限", "summary": "介绍实数完备性与函数极限", "keywords": ["实数", "极限"], "page_start": 1, "page_end": 20, "char_start": null, "char_end": null},
+                {"id": "n2", "parent_id": null, "level": 1, "title": "第2章 导数与微分中值定理", "summary": "罗尔定理与拉格朗日中值定理", "keywords": ["导数", "中值定理"], "page_start": 21, "page_end": 50, "char_start": null, "char_end": null}
+              ],
+              "page_texts": []
             }"#
             .into(),
         ),
@@ -406,7 +407,7 @@ fn ai_source_guide_and_hierarchical_index_work_on_import_and_on_demand() {
     assert_eq!(preview_before["ai_indexed"], false);
 
     // Configure model and trigger on-demand guide generation
-    env.profile(&ai_mock, 32000, false);
+    env.profile(&ai_mock, 32000);
     let gen = env.ok("source.generate_guide", json!({ "source_id": legacy_id }));
     assert_eq!(gen["source"]["ai_indexed"], true);
     assert!(gen["source"]["guide_summary_md"]

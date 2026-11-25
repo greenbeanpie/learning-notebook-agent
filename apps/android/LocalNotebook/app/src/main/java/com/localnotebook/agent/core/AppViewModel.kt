@@ -1,5 +1,7 @@
 package com.localnotebook.agent.core
 
+import com.localnotebook.agent.ui.putAttachments
+
 import android.app.Application
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -362,12 +364,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         quote = c.optString("quote"),
                     )
                 }
-                ChatMessageItem(m.optString("id"), m.optString("role", "assistant"), m.optString("content"), thoughts, citations)
+                val attArr = m.optJSONArray("attachments") ?: JSONArray()
+                val attachments = (0 until attArr.length()).map { j ->
+                    val a = attArr.getJSONObject(j)
+                    ChatAttachment(
+                        a.optString("name"),
+                        a.optString("path"),
+                        kind = a.optString("kind", "image"),
+                        url = a.optString("url").takeIf { it.isNotEmpty() },
+                        bytes = a.optLong("bytes", 0),
+                        id = a.optString("id"),
+                    )
+                }.filter { it.path.isNotEmpty() }
+                ChatMessageItem(m.optString("id"), m.optString("role", "assistant"), m.optString("content"), thoughts, citations, attachments)
             }
 
             val artRes = core.call("studio.list", JSONObject().put("notebook_id", nid))
             val artArr = artRes.optJSONArray("artifacts") ?: JSONArray()
-            val artifacts = (0 until artArr.length()).reversed().map { i ->
+            // the core lists newest first; keep that order
+            val artifacts = (0 until artArr.length()).map { i ->
                 val a = artArr.getJSONObject(i)
                 val cfg = a.optJSONObject("config") ?: JSONObject()
                 val payload = a.optJSONObject("payload") ?: JSONObject()
@@ -396,6 +411,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     errorLog = a.optString("error_log", ""),
                     outputDir = a.optString("output_dir", ""),
                     progressState = a.optJSONObject("progress_state") ?: JSONObject(),
+                    createdAt = a.optLong("created_at", 0L),
                 )
             }
 
@@ -494,13 +510,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun sendChat(text: String) {
+    fun sendChat(text: String, images: JSONArray? = null) {
         val clean = text.trim()
-        if (clean.isEmpty()) return
+        if (clean.isEmpty() && images == null) return
         viewModelScope.launch {
             _ui.update { it.copy(isSendingChat = true) }
             runCatching {
-                core.call("chat.send", JSONObject().put("notebook_id", _ui.value.activeNotebookId).put("text", clean))
+                val params = JSONObject().put("notebook_id", _ui.value.activeNotebookId)
+                if (clean.isNotEmpty()) params.put("text", clean)
+                params.putAttachments(images)
+                core.call("chat.send", params)
                 refreshAll()
             }.onFailure { reportError(it) }
             _ui.update { it.copy(isSendingChat = false) }
@@ -545,7 +564,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createStudio(kind: String, topic: String = "", sourceId: String? = null, detail: String = "standard") {
+    fun createStudio(kind: String, topic: String = "", sourceId: String? = null, detail: String = "standard", images: JSONArray? = null) {
         viewModelScope.launch {
             runCatching {
                 val en = _ui.value.prefs.isEnglish
@@ -576,6 +595,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (kind == "knowledge_graph" && topic.isNotBlank()) {
                     params.put("title", if (en) "$topic - Knowledge Graph" else "$topic · 知识点图谱")
                 }
+                params.putAttachments(images)
                 core.call("studio.create", params)
                 refreshAll()
             }.onFailure { reportError(it) }
@@ -616,18 +636,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun reviseDraft(artifactId: String, instruction: String, currentDraft: String, onRevised: (String) -> Unit) {
+    /** Adds a one-off attachment of a message to the notebook's sources. */
+    fun promoteAttachment(attachmentId: String) {
+        viewModelScope.launch {
+            runCatching {
+                core.call(
+                    "attachment.promote",
+                    JSONObject().put("notebook_id", _ui.value.activeNotebookId).put("attachment_id", attachmentId),
+                )
+                refreshAll()
+                _ui.update { it.copy(statusBanner = L10n.t("ctx.promoted", it.prefs.isEnglish)) }
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun reviseDraft(artifactId: String, instruction: String, currentDraft: String, images: JSONArray?, onRevised: (String) -> Unit) {
         val instr = instruction.trim()
         if (instr.isEmpty()) return
         viewModelScope.launch {
             runCatching {
-                val res = core.call(
-                    "studio.revise_draft",
-                    JSONObject()
-                        .put("artifact_id", artifactId)
-                        .put("instruction", instr)
-                        .put("draft", currentDraft),
-                )
+                val params = JSONObject()
+                    .put("artifact_id", artifactId)
+                    .put("instruction", instr)
+                    .put("draft", currentDraft)
+                params.putAttachments(images)
+                val res = core.call("studio.revise_draft", params)
                 val newMd = res.optString("draft")
                 if (newMd.isNotEmpty()) onRevised(newMd)
                 refreshAll()
@@ -749,6 +782,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 supportsAudio = caps?.optBoolean("supports_audio", false) ?: false,
                                 supportsVideo = caps?.optBoolean("supports_video", false) ?: false,
                                 extraHeaders = hdrMap,
+                                eligible = o.optBoolean("eligible", true),
+                                unsupportedReason = o.optString("unsupported_reason").takeIf { it.isNotEmpty() && it != "null" },
+                                probePending = o.optBoolean("probe_pending", false),
+                                capsSummary = capsSummary(caps, _ui.value.prefs.isEnglish),
                             )
                         )
                     }
@@ -821,18 +858,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     .put("extra_headers", JSONObject(extraHeaders))
                     .put("activate", activateChat)
                 if (!profileId.isNullOrEmpty()) body.put("id", profileId)
+                // the core probes tool calling and structured output with this key before saving
+                if (apiKey.isNotEmpty()) body.put("api_key", apiKey)
+                val en = _ui.value.prefs.isEnglish
+                _ui.update { it.copy(statusBanner = L10n.t("model.probing", en)) }
                 val prof = core.call("profile.upsert", body)
                 val newId = prof.optString("id")
                 val kref = prof.optString("keychain_ref")
                 if (kref.isNotEmpty() && apiKey.isNotEmpty()) {
                     core.persistSecret(kref, apiKey)
-                    core.call("secret.set", JSONObject().put("keychain_ref", kref).put("secret", apiKey))
                 }
                 if (activateChat && newId.isNotEmpty()) {
                     core.call("profile.activate", JSONObject().put("profile_id", newId))
                 }
                 loadModelProfiles()
-                _ui.update { it.copy(statusBanner = L10n.t("settings.saved", it.prefs.isEnglish)) }
+                _ui.update { it.copy(statusBanner = L10n.t("model.saved_checked", it.prefs.isEnglish)) }
             }.onFailure { reportError(it) }
         }
     }
@@ -857,6 +897,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }.onFailure { reportError(it) }
+            loadModelProfiles()
         }
     }
 
@@ -882,7 +923,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun reportError(err: Throwable) {
         val en = _ui.value.prefs.isEnglish
-        val msg = if (err is CoreCallException) {
+        val msg = if (err is CoreCallException && err.code == "CAPABILITY_MISSING" && !err.message.isNullOrEmpty()) {
+            // a refused model says exactly what it lacks
+            String.format(L10n.t("model.refused", en), err.message)
+        } else if (err is CoreCallException) {
             L10n.advice(err.code, en) ?: err.message
         } else {
             err.message ?: L10n.t("studio.failed", en)
@@ -891,6 +935,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        /** "工具调用 ✓ · 结构化输出 ✓ · 识图" for the model list. */
+        fun capsSummary(caps: JSONObject?, en: Boolean): String {
+            if (caps == null) return ""
+            if (caps.optBoolean("embedding_only", false)) return L10n.t("model.embedding_only", en)
+            if (caps.isNull("probed_at") || !caps.has("probed_at")) return L10n.t("model.probe_pending", en)
+            val parts = mutableListOf(
+                L10n.t("model.cap_tools", en) + if (caps.optBoolean("tools")) " ✓" else " ✗",
+                L10n.t("model.cap_structured", en) +
+                    if (caps.optBoolean("json_schema") || caps.optBoolean("json_mode")) " ✓" else " ✗",
+            )
+            if (caps.optBoolean("supports_vision")) parts += if (en) "Vision" else "识图"
+            if (caps.optBoolean("supports_audio")) parts += if (en) "Audio" else "音频"
+            if (caps.optBoolean("supports_video")) parts += if (en) "Video" else "视频"
+            return parts.joinToString(" · ")
+        }
+
         private val dotLeaderRegex = Regex("[·.…•\u2024\u2026]{3,}")
         private val spacedDotRegex = Regex("(\\s*[.·]\\s*){4,}")
         private val multiSpaceRegex = Regex("\\s{2,}")

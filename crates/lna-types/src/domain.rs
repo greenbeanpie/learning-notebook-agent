@@ -248,6 +248,39 @@ pub struct ModelCapabilities {
     pub supports_audio: bool,
     #[serde(default)]
     pub supports_video: bool,
+    /// When the tool/structured-output probe last ran (ms). `None`: never probed.
+    #[serde(default)]
+    pub probed_at: Option<i64>,
+    /// Profile only serves an embedding endpoint; chat requirements do not apply.
+    #[serde(default)]
+    pub embedding_only: bool,
+}
+
+impl ModelCapabilities {
+    /// Chat models must call tools and produce structured output (JSON schema or JSON mode).
+    /// Returns the missing abilities in user-facing wording, or `None` when the model qualifies.
+    pub fn chat_missing(&self) -> Option<String> {
+        if self.embedding_only {
+            return None;
+        }
+        let mut miss = Vec::new();
+        if !self.tools {
+            miss.push("工具调用（tool / function call）");
+        }
+        if !self.json_schema && !self.json_mode {
+            miss.push("结构化输出（JSON Schema / JSON 模式）");
+        }
+        if miss.is_empty() {
+            None
+        } else {
+            Some(format!("该模型不支持{}，无法使用。", miss.join("和")))
+        }
+    }
+
+    /// Usable for chat-type work: qualifies, or has not been probed yet (probe pending).
+    pub fn chat_usable(&self) -> bool {
+        self.embedding_only || self.probed_at.is_none() || self.chat_missing().is_none()
+    }
 }
 
 fn default_true() -> bool {
@@ -317,7 +350,43 @@ pub struct ChatMessage {
     pub feedback: Option<i32>,
     #[serde(default)]
     pub artifacts: Vec<StudioArtifact>,
+    /// Images the user attached to this message (user messages only).
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
     pub created_at: i64,
+}
+
+/// Something the user attached to a chat message or a Studio request: a picture (downscaled), a
+/// one-off reference file (kept as uploaded, read by the agent on demand) or a web link. Files
+/// live under `<data root>/attachments/`; clients show or open them from `path` / `url`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Attachment {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub path: String,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    #[serde(default)]
+    pub bytes: u64,
+    /// `image` | `file` | `link` (older rows have no kind: they are images).
+    #[serde(default = "default_attachment_kind")]
+    pub kind: String,
+    /// Web address of a `link` attachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+fn default_attachment_kind() -> String {
+    "image".into()
+}
+
+impl Attachment {
+    pub fn is_image(&self) -> bool {
+        self.kind == "image"
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -112,7 +112,7 @@ pub fn rewrite_reason(
 
 /// Parses `{"standalone": "...", "queries": [...]}` into at most three distinct queries.
 /// The standalone question comes first; the original question is always kept as a fallback.
-pub fn parse_rewrite(raw: &str, original: &str) -> Vec<String> {
+pub fn parse_rewrite(v: &serde_json::Value, original: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |s: &str| {
         let s = s.trim();
@@ -120,14 +120,12 @@ pub fn parse_rewrite(raw: &str, original: &str) -> Vec<String> {
             out.push(s.to_string());
         }
     };
-    if let Some(v) = extract_json(raw) {
-        if let Some(s) = v.get("standalone").and_then(|x| x.as_str()) {
-            push(s);
-        }
-        if let Some(arr) = v.get("queries").and_then(|x| x.as_array()) {
-            for q in arr.iter().filter_map(|x| x.as_str()) {
-                push(q);
-            }
+    if let Some(s) = v.get("standalone").and_then(|x| x.as_str()) {
+        push(s);
+    }
+    if let Some(arr) = v.get("queries").and_then(|x| x.as_array()) {
+        for q in arr.iter().filter_map(|x| x.as_str()) {
+            push(q);
         }
     }
     let original = original.trim();
@@ -144,15 +142,13 @@ pub fn parse_rewrite(raw: &str, original: &str) -> Vec<String> {
 }
 
 /// Parses `{"questions": [...]}`: at most three non-empty, distinct questions.
-pub fn parse_followups(raw: &str) -> Vec<String> {
+pub fn parse_followups(v: &serde_json::Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    if let Some(v) = extract_json(raw) {
-        if let Some(arr) = v.get("questions").and_then(|x| x.as_array()) {
-            for q in arr.iter().filter_map(|x| x.as_str()) {
-                let q = q.trim();
-                if !q.is_empty() && q.chars().count() <= 80 && !out.iter().any(|x| x == q) {
-                    out.push(q.to_string());
-                }
+    if let Some(arr) = v.get("questions").and_then(|x| x.as_array()) {
+        for q in arr.iter().filter_map(|x| x.as_str()) {
+            let q = q.trim();
+            if !q.is_empty() && q.chars().count() <= 80 && !out.iter().any(|x| x == q) {
+                out.push(q.to_string());
             }
         }
     }
@@ -160,14 +156,25 @@ pub fn parse_followups(raw: &str) -> Vec<String> {
     out
 }
 
-/// Models sometimes wrap JSON in prose or code fences; take the outermost object.
-pub fn extract_json(raw: &str) -> Option<serde_json::Value> {
-    let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
-    if end < start {
-        return None;
-    }
-    serde_json::from_str(&raw[start..=end]).ok()
+pub fn rewrite_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "standalone": { "type": "string" },
+            "queries": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["standalone", "queries"],
+        "additionalProperties": false
+    })
+}
+
+pub fn followups_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": { "questions": { "type": "array", "items": { "type": "string" } } },
+        "required": ["questions"],
+        "additionalProperties": false
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -267,29 +274,28 @@ mod tests {
 
     #[test]
     fn parse_rewrite_dedupes_caps_at_three_and_keeps_original_as_fallback() {
-        let raw = "```json\n{\"standalone\":\"光合作用的暗反应发生在哪里\",\"queries\":[\"暗反应 位置\",\"Calvin cycle location\",\"光合作用的暗反应发生在哪里\",\"extra\"]}\n```";
-        let q = parse_rewrite(raw, "那暗反应呢");
+        use serde_json::json;
+        let v = json!({"standalone":"光合作用的暗反应发生在哪里","queries":["暗反应 位置","Calvin cycle location","光合作用的暗反应发生在哪里","extra"]});
+        let q = parse_rewrite(&v, "那暗反应呢");
         assert_eq!(q.len(), 3);
         assert_eq!(q[0], "光合作用的暗反应发生在哪里");
         assert!(q.contains(&"Calvin cycle location".to_string()));
 
-        // garbage → original question only
-        assert_eq!(
-            parse_rewrite("not json", " 原问题 "),
-            vec!["原问题".to_string()]
-        );
+        // empty object → original question only
+        assert_eq!(parse_rewrite(&json!({}), " 原问题 "), vec!["原问题".to_string()]);
         // original is appended when there is room
-        let q = parse_rewrite(r#"{"standalone":"A","queries":[]}"#, "B");
+        let q = parse_rewrite(&json!({"standalone":"A","queries":[]}), "B");
         assert_eq!(q, vec!["A".to_string(), "B".to_string()]);
     }
 
     #[test]
     fn parse_followups_keeps_three_distinct_short_questions() {
-        let q = parse_followups(r#"{"questions":["a?","a?","b?","c?","d?"]}"#);
+        use serde_json::json;
+        let q = parse_followups(&json!({"questions":["a?","a?","b?","c?","d?"]}));
         assert_eq!(q, vec!["a?", "b?", "c?"]);
-        assert!(parse_followups("oops").is_empty());
+        assert!(parse_followups(&json!({})).is_empty());
         let long = "x".repeat(200);
-        assert!(parse_followups(&format!(r#"{{"questions":["{long}"]}}"#)).is_empty());
+        assert!(parse_followups(&json!({"questions":[long]})).is_empty());
     }
 
     #[test]

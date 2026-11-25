@@ -30,14 +30,17 @@ import com.localnotebook.agent.core.L10n
 @Composable
 fun ChatScreen(
     state: AppUiState,
-    onSendChat: (String) -> Unit,
+    onSendChat: (String, org.json.JSONArray?) -> Unit,
     onClickCitation: (messageId: String, citationNo: Int) -> Unit,
     onDismissCitation: () -> Unit,
     onOpenCitationPdf: (sourceId: String, page: Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val en = state.prefs.isEnglish
-    var input by remember { mutableStateOf("") }
+    // the unsent text and attachments belong to the notebook they were typed in
+    val draft = remember(state.activeNotebookId) { ChatDrafts.of(state.activeNotebookId) }
+    var input by draft.text
+    val attached = draft.attached
 
     Column(
         modifier = modifier
@@ -64,7 +67,7 @@ fun ChatScreen(
                     ) {
                         for (q in state.suggestedQuestions.take(6)) {
                             SuggestionChip(
-                                onClick = { onSendChat(q) },
+                                onClick = { onSendChat(q, null) },
                                 label = { Text(q, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             )
                         }
@@ -95,10 +98,13 @@ fun ChatScreen(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
             modifier = Modifier.fillMaxWidth(),
         ) {
+          Column {
+            AttachStrip(attached, en, Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                modifier = Modifier.padding(start = 4.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
             ) {
+                AttachImageButton(attached, en, enabled = !state.isSendingChat)
                 TextField(
                     value = input,
                     onValueChange = { input = it },
@@ -113,17 +119,19 @@ fun ChatScreen(
                 )
                 FilledIconButton(
                     onClick = {
-                        if (input.isNotBlank()) {
-                            onSendChat(input)
+                        if (input.isNotBlank() || attached.hasItems) {
+                            onSendChat(input, attached.toJson())
                             input = ""
+                            attached.clear()
                         }
                     },
-                    enabled = input.isNotBlank() && !state.isSendingChat,
+                    enabled = (input.isNotBlank() || attached.hasItems) && !state.isSendingChat,
                     shape = CircleShape,
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                 }
             }
+          }
         }
     }
 
@@ -193,7 +201,23 @@ private fun ChatMessageCard(
         }
 
         if (message.role == "user") {
-            Text(
+            val pics = message.attachments.filter { it.kind == "image" }
+            val others = message.attachments.filter { it.kind != "image" }
+            if (pics.isNotEmpty()) AttachmentGallery(pics.map { it.path })
+            if (others.isNotEmpty()) {
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (a in others) {
+                        AttachmentChip(
+                            a.kind,
+                            a.name,
+                            if (a.kind == "link") a.url.orEmpty() else if (a.bytes > 0) "${maxOf(1, a.bytes / 1024)} KB" else "",
+                            onClick = { openAttachment(ctx, a.kind, a.path, a.url) },
+                        )
+                    }
+                }
+            }
+            if (message.content.isNotBlank()) Text(
                 text = message.content,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -278,4 +302,15 @@ private fun CitationReferenceDialog(
             TextButton(onClick = onDismiss) { Text(L10n.t("common.close", en)) }
         },
     )
+}
+
+/** Unsent chat input per notebook, kept while the app runs (switching notebooks or tabs keeps it). */
+private class ChatDraft {
+    val text = mutableStateOf("")
+    val attached = ImageAttachState()
+}
+
+private object ChatDrafts {
+    private val drafts = mutableMapOf<String, ChatDraft>()
+    fun of(notebookId: String): ChatDraft = drafts.getOrPut(notebookId) { ChatDraft() }
 }

@@ -27,6 +27,14 @@ fn call_core(core: &Arc<CoreRuntime>, method: &str, params: Value) -> Result<Val
 }
 
 fn friendly_err(en: bool, err: (String, String)) -> String {
+    // a model refused for missing tool calling / structured output says exactly what it lacks
+    if err.0 == "CAPABILITY_MISSING" && !err.1.is_empty() {
+        return if en {
+            format!("{} This app only works with models that support tool calling and structured output.", err.1)
+        } else {
+            format!("{} 本应用只支持具备工具调用和结构化输出的模型。", err.1)
+        };
+    }
     if let Some(adv) = user_error_advice(en, &err.0) {
         adv.to_string()
     } else if !err.1.is_empty() {
@@ -1222,7 +1230,7 @@ fn refresh_all(st: &Rc<UiState>) {
     clear_box(&st.artifacts_box);
     if let Ok(res) = call_core(&st.core, "studio.list", json!({ "notebook_id": nid })) {
         if let Some(arr) = res.get("artifacts").and_then(Value::as_array) {
-            for a in arr.iter().rev() {
+            for a in arr.iter() {
                 let aid = a.get("id").and_then(Value::as_str).unwrap_or("").to_string();
                 let kind = a.get("artifact_type").and_then(Value::as_str).unwrap_or("report");
                 let title = a.get("title").and_then(Value::as_str).unwrap_or("Artifact");
@@ -2525,7 +2533,12 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 } else {
                     ""
                 };
-                labels.push(format!("{name}{act}"));
+                let disabled = if p.get("eligible").and_then(Value::as_bool) == Some(false) {
+                    if en { " (unsupported, disabled)" } else { "（不支持，已停用）" }
+                } else {
+                    ""
+                };
+                labels.push(format!("{name}{act}{disabled}"));
                 if let Some(sid) = select_id {
                     if id == sid {
                         target_idx = i + 1;
@@ -2772,14 +2785,13 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         if let Some(pid) = current_profile_id_s.borrow().as_ref() {
             payload["id"] = Value::String(pid.clone());
         }
+        // the core probes tool calling and structured output with this key before saving
+        if !key.is_empty() {
+            payload["api_key"] = Value::String(key.clone());
+        }
         match call_core(&st_m.core, "profile.upsert", payload) {
             Ok(prof) => {
                 let new_id = prof.get("id").and_then(Value::as_str).map(String::from);
-                if let Some(kref) = prof.get("keychain_ref").and_then(Value::as_str) {
-                    if !key.is_empty() {
-                        let _ = call_core(&st_m.core, "secret.set", json!({ "keychain_ref": kref, "secret": key }));
-                    }
-                }
                 if active_chat_sw.is_active() {
                     if let Some(ref nid) = new_id {
                         let _ = call_core(&st_m.core, "profile.activate", json!({ "profile_id": nid }));

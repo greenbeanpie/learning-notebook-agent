@@ -62,14 +62,51 @@ public sealed partial class MainWindow
     {
         ArtifactsList.Items.Clear();
         _studioLiveStepLabels.Clear();
+        _ageUpdaters.Clear();
         var any = false;
-        foreach (var a in Arr(art, "artifacts").Reverse())
+        // the core lists newest first; keep that order
+        foreach (var a in Arr(art, "artifacts"))
         {
             if (Str(Obj(a, "config"), "mode") == "knowledge_graph" && Str(a, "status") is not ("PENDING" or "RUNNING")) continue;
             any = true;
             ArtifactsList.Items.Add(ArtifactRow(a));
         }
         if (!any) ArtifactsList.Items.Add(Line(L10n.T("studio.empty_hint")));
+        if (_ageUpdaters.Count > 0)
+        {
+            _ageTimer ??= CreateAgeTimer();
+            _ageTimer.Start();
+        }
+        else
+        {
+            _ageTimer?.Stop();
+        }
+    }
+
+    private readonly List<Action> _ageUpdaters = new();
+    private Microsoft.UI.Xaml.DispatcherTimer? _ageTimer;
+
+    private Microsoft.UI.Xaml.DispatcherTimer CreateAgeTimer()
+    {
+        var t = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        t.Tick += (_, _) => { foreach (var u in _ageUpdaters) u(); };
+        return t;
+    }
+
+    /// <summary>"3 分钟前" style age of a timestamp (unix ms).</summary>
+    internal static string TimeAgo(long createdMs)
+    {
+        if (createdMs <= 0) return "";
+        var secs = Math.Max(0, (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - createdMs) / 1000);
+        if (secs < 60) return L10n.T("time.just_now");
+        var mins = secs / 60;
+        if (mins < 60) return L10n.Fmt("time.minutes", mins);
+        var hours = mins / 60;
+        if (hours < 24) return L10n.Fmt("time.hours", hours);
+        var days = hours / 24;
+        if (days < 30) return L10n.Fmt("time.days", days);
+        if (days < 365) return L10n.Fmt("time.months", days / 30);
+        return L10n.Fmt("time.years", days / 365);
     }
 
     private UIElement ArtifactRow(JsonElement a)
@@ -138,7 +175,16 @@ public sealed partial class MainWindow
             "FAILED" => L10n.T("studio.click_error_log"),
             _ => "",
         };
-        titleStack.Children.Add(new TextBlock { Text = $"{KindName(kind)} · {ArtifactStatusLabel(status, stage)}{hintSuffix}", FontSize = 11, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"] });
+        var createdAt = Int(a, "created_at");
+        var statusLine = new TextBlock { FontSize = 11, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"], TextWrapping = TextWrapping.Wrap };
+        void SetStatusLine()
+        {
+            var age = TimeAgo(createdAt);
+            statusLine.Text = $"{KindName(kind)} · {ArtifactStatusLabel(status, stage)}{(age.Length > 0 ? " · " + age : "")}{hintSuffix}";
+        }
+        SetStatusLine();
+        _ageUpdaters.Add(SetStatusLine);
+        titleStack.Children.Add(statusLine);
         Grid.SetColumn(titleStack, 1);
         row.Children.Add(titleStack);
         head.Children.Add(row);
@@ -164,7 +210,7 @@ public sealed partial class MainWindow
             {
                 var updated = await ConfigureArtifactAsync(kind, existingCfg, isUpdate: true);
                 if (updated is not { } cfg) return;
-                await CoreAsync("studio.regenerate", Args(("artifact_id", id), ("config", cfg), ("use_selected_sources", true)), L10n.T("studio.op_update"));
+                await CoreAsync("studio.regenerate", WithImages(Args(("artifact_id", id), ("config", cfg), ("use_selected_sources", true))), L10n.T("studio.op_update"));
             });
         }
         Add(L10n.T("common.delete"), async () =>
@@ -460,9 +506,17 @@ public sealed partial class MainWindow
         var finalConfig = kind == "knowledge_graph"
             ? MergeKnowledgeGraphMode(config)
             : config;
-        var res = await CoreAsync("studio.create", Args(("notebook_id", _activeNotebookId), ("artifact_type", actualType), ("config", finalConfig)), KindName(kind));
+        var res = await CoreAsync("studio.create", WithImages(Args(("notebook_id", _activeNotebookId), ("artifact_type", actualType), ("config", finalConfig))), KindName(kind));
         if (res != null) ShowStatus(InfoBarSeverity.Success, KindName(kind), L10n.T("studio.queued_msg"));
         await RefreshNotebookDataAsync();
+    }
+
+    /// <summary>Adds the dialog's pictures (if any) to a request, then forgets them.</summary>
+    private JsonElement WithImages(JsonElement args)
+    {
+        var atts = _cfgImages;
+        _cfgImages = null;
+        return ImageAttachments.Merge(args, atts);
     }
 
     private static JsonElement MergeKnowledgeGraphMode(JsonElement cfg)
@@ -727,8 +781,12 @@ public sealed partial class MainWindow
         return (wrapper, () => options.Where(o => selected.Contains(o.Tag)).Select(o => o.Tag).ToArray());
     }
 
+    /// <summary>Pictures attached in the last generation dialog (null when none); sent as <c>images</c>.</summary>
+    private JsonElement? _cfgImages;
+
     private async Task<JsonElement?> ConfigureArtifactAsync(string kind, JsonElement? initialConfig = null, bool isUpdate = false)
     {
+        _cfgImages = null;
         var panel = new StackPanel { Spacing = 12, MinWidth = 460 };
         if (isUpdate)
         {
@@ -765,6 +823,23 @@ public sealed partial class MainWindow
             lang.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
         lang.SelectedIndex = Math.Max(0, Array.FindIndex(langTags, x => x.Item2 == initLang));
         panel.Children.Add(topic);
+        var cfgImages = new ImageAttachments(
+            () => WinRT.Interop.WindowNative.GetWindowHandle(this),
+            () => Content.XamlRoot,
+            msg => ShowStatus(InfoBarSeverity.Warning, L10n.T("img.title"), msg));
+        var imageRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        imageRow.Children.Add(cfgImages.AttachButton);
+        imageRow.Children.Add(new TextBlock
+        {
+            Text = isUpdate ? L10n.T("img.cfg_hint_update") : L10n.T("img.cfg_hint"),
+            FontSize = 12,
+            Opacity = 0.7,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        panel.Children.Add(imageRow);
+        panel.Children.Add(cfgImages.Strip);
+        cfgImages.Hook(panel, topic);
         panel.Children.Add(lang);
 
         Func<string>? getQuantity = null;
@@ -1009,6 +1084,7 @@ public sealed partial class MainWindow
         if (dlgRes == ContentDialogResult.None) return null;
         var wantOutlinePreview = supportsOutlineSplit && dlgRes == ContentDialogResult.Secondary;
 
+        _cfgImages = cfgImages.ToArgs();
         var kv = new List<(string, object?)>();
         if (topic.Text.Trim().Length > 0) kv.Add(("topic", topic.Text.Trim()));
         if ((lang.SelectedItem as ComboBoxItem)?.Tag is string l && l.Length > 0) kv.Add(("lang", l));

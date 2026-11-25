@@ -310,6 +310,27 @@ public sealed partial class MainWindow
             await Api.CallAsync("settings.set", Args(("key", "media_processing"), ("value", Args(args.ToArray()))));
         }
 
+        // "工具调用 ✓ · 结构化输出 ✓ · 识图" or the reason the profile cannot be used
+        string CapsLine(JsonElement prof)
+        {
+            var c = prof.TryGetProperty("capabilities", out var cc) ? cc : prof;
+            if (c.ValueKind != JsonValueKind.Object) return "";
+            var reason = Str(prof, "unsupported_reason");
+            if (reason.Length > 0) return "⚠ " + reason;
+            if (Bool(c, "embedding_only")) return L10n.T("model.embedding_only");
+            if (!c.TryGetProperty("probed_at", out var pa) || pa.ValueKind != JsonValueKind.Number)
+                return L10n.T("model.probe_pending");
+            var parts = new List<string>
+            {
+                L10n.T("model.cap_tools") + (Bool(c, "tools") ? " ✓" : " ✗"),
+                L10n.T("model.cap_structured") + (Bool(c, "json_schema") || Bool(c, "json_mode") ? " ✓" : " ✗"),
+            };
+            if (Bool(c, "supports_vision")) parts.Add(L10n.IsEnglish ? "Vision" : "识图");
+            if (Bool(c, "supports_audio")) parts.Add(L10n.IsEnglish ? "Audio" : "音频");
+            if (Bool(c, "supports_video")) parts.Add(L10n.IsEnglish ? "Video" : "视频");
+            return string.Join(" · ", parts);
+        }
+
         void Fill(JsonElement? p)
         {
             if (p is not { } prof)
@@ -354,7 +375,7 @@ public sealed partial class MainWindow
             visionBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_vision");
             audioBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_audio");
             videoBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_video");
-            caps.Text = "";
+            caps.Text = CapsLine(prof);
             status.Text = hasSecret
                 ? (L10n.IsEnglish ? "Key status: saved in Windows Credential Manager." : "密钥状态：已保存在 Windows 凭据管理器。")
                 : (L10n.IsEnglish ? "Key status: not saved." : "密钥状态：未保存。");
@@ -372,6 +393,8 @@ public sealed partial class MainWindow
                 if (Bool(c, "supports_video")) mods.Add(L10n.IsEnglish ? "Video" : "视频");
                 var modTag = mods.Count > 0 ? $" [{string.Join("/", mods)}]" : "";
                 var defTag = Bool(p, "is_active") ? (L10n.IsEnglish ? " (Default)" : "（默认对话）") : "";
+                if (p.TryGetProperty("eligible", out var el) && el.ValueKind == JsonValueKind.False)
+                    defTag += L10n.T("model.disabled_tag");
                 var item = new ComboBoxItem { Content = $"{Str(p, "display_name")}{defTag}{modTag}", Tag = Str(p, "id") };
                 picker.Items.Add(item);
                 if (Str(p, "id") == select) picker.SelectedItem = item;
@@ -486,16 +509,23 @@ public sealed partial class MainWindow
             if (!double.IsNaN(priceIn.Value)) up.Add(("input_price_per_m", priceIn.Value));
             if (!double.IsNaN(priceOut.Value)) up.Add(("output_price_per_m", priceOut.Value));
             if (profileId != null) up.Add(("id", profileId));
-            var saved = await CoreAsync("profile.upsert", Args(up.ToArray()), L10n.T("common.save"));
-            if (saved is not { } sv) { status.Text = L10n.IsEnglish ? "Failed to save profile." : "保存失败。"; return; }
+            // the core probes tool calling and structured output with this key before saving
+            if (keyBox.Password.Length > 0) up.Add(("api_key", keyBox.Password));
+            status.Text = L10n.T("model.probing");
+            saveModelBtn.IsEnabled = false;
+            var (saved, saveErr) = await Api.CallAsync("profile.upsert", Args(up.ToArray()));
+            saveModelBtn.IsEnabled = true;
+            if (saveErr is { } se || saved is not { } sv)
+            {
+                status.Text = saveErr is { Code: "CAPABILITY_MISSING" } ce
+                    ? L10n.Fmt("model.refused", ce.Message)
+                    : L10n.Fmt("model.save_failed", saveErr?.Message ?? "");
+                return;
+            }
             profileId = Str(sv, "id");
             keychainRef = Str(sv, "keychain_ref");
-            if (keyBox.Password.Length > 0)
-            {
-                var set = await CoreAsync("secret.set", Args(("keychain_ref", keychainRef), ("secret", keyBox.Password)), "API Key");
-                if (set == null) return;
-                keyBox.Password = string.Empty;
-            }
+            keyBox.Password = string.Empty;
+            caps.Text = CapsLine(sv);
             var ex = await CoreAsync("secret.exists", Args(("keychain_ref", keychainRef)), "API Key");
             hasSecret = ex is { } er && Bool(er, "exists");
             keyBox.PlaceholderText = hasSecret
@@ -503,7 +533,7 @@ public sealed partial class MainWindow
                 : (L10n.IsEnglish ? "Enter API Key (optional for local models)" : "输入 API Key（本地模型可留空）");
             if (makeActive) await CoreAsync("profile.activate", Args(("profile_id", profileId)), L10n.T("common.save"));
             await SaveMediaSettingsAsync();
-            status.Text = L10n.IsEnglish ? "Model profile saved." : "模型配置已保存。";
+            status.Text = L10n.T("model.saved_checked");
             var relist = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
             if (relist is { } rl)
             {
@@ -525,10 +555,20 @@ public sealed partial class MainWindow
         {
             if (profileId == null) { status.Text = L10n.IsEnglish ? "Save the profile before testing." : "请先保存配置，再测试连接。"; return; }
             status.Text = L10n.IsEnglish ? "Testing connection..." : "正在测试连接…";
-            var test = await CoreAsync("profile.test", Args(("profile_id", profileId)), "Test");
-            status.Text = test is { } tr
-                ? (L10n.IsEnglish ? $"Connected: {Str(tr, "reply")}" : $"连接成功：{Str(tr, "reply")}")
-                : (L10n.IsEnglish ? "Connection test failed." : "连接测试失败。");
+            var (test, testErr) = await Api.CallAsync("profile.test", Args(("profile_id", profileId)));
+            if (test is { } tr)
+            {
+                status.Text = L10n.IsEnglish ? $"Connected: {Str(tr, "reply")}" : $"连接成功：{Str(tr, "reply")}";
+                caps.Text = CapsLine(tr);
+            }
+            else
+            {
+                status.Text = testErr is { Code: "CAPABILITY_MISSING" } ce
+                    ? L10n.Fmt("model.refused", ce.Message)
+                    : (L10n.IsEnglish ? $"Connection test failed: {testErr?.Message}" : $"连接测试失败：{testErr?.Message}");
+            }
+            var relistT = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
+            if (relistT is { } rt) { profiles = Arr(rt, "profiles").ToList(); LoadPicker(profileId); }
         };
 
         audioVideoToggle.Toggled += async (_, _) =>

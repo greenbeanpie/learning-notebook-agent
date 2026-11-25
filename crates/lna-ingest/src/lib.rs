@@ -1,5 +1,7 @@
 pub mod ai_indexer;
+pub mod attachments;
 pub mod chunker;
+pub mod context_files;
 pub mod formats;
 pub mod media;
 pub mod office;

@@ -11,6 +11,7 @@ lna-secrets = { path = "../lna-secrets" }
 lna-jobs = { path = "../lna-jobs" }
 lna-llm = { path = "../lna-llm" }
 lna-retrieval = { path = "../lna-retrieval" }
+lna-ingest = { path = "../lna-ingest" }
 lna-tts = { path = "../lna-tts" }
 rusqlite.workspace = true
 serde.workspace = true

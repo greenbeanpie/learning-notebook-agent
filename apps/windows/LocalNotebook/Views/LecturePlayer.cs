@@ -59,10 +59,11 @@ internal sealed class LecturePlayer : IDisposable
     private readonly StackPanel _qaList;
     private readonly ScrollViewer _qaScroll;
     private readonly TextBox _askBox;
+    private readonly ImageAttachments _askImages;
     private readonly StackPanel _checkpointHost;
     private readonly List<JsonElement> _history = new();
 
-    public LecturePlayer(string artifactId, JsonElement artifact, Action<InfoBarSeverity, string, string> notify)
+    public LecturePlayer(string artifactId, JsonElement artifact, Action<InfoBarSeverity, string, string> notify, Func<nint> hwnd)
     {
         _artifactId = artifactId;
         _art = artifact;
@@ -185,6 +186,10 @@ internal sealed class LecturePlayer : IDisposable
                 await SendQuestionAsync();
             }
         };
+        _askImages = new ImageAttachments(
+            hwnd,
+            () => Root.XamlRoot,
+            msg => notify(InfoBarSeverity.Warning, L10n.T("img.title"), msg));
         var send = new Button { Content = L10n.T("lec.send"), HorizontalAlignment = HorizontalAlignment.Right };
         send.Click += async (_, _) => await SendQuestionAsync();
         var close = new Button { Content = new FontIcon { Glyph = "", FontSize = 12 }, Padding = new Thickness(6), HorizontalAlignment = HorizontalAlignment.Right };
@@ -203,8 +208,18 @@ internal sealed class LecturePlayer : IDisposable
         sideGrid.Children.Add(_checkpointHost);
         Grid.SetRow(_qaScroll, 2);
         sideGrid.Children.Add(_qaScroll);
-        Grid.SetRow(_askBox, 3);
-        sideGrid.Children.Add(_askBox);
+        var askBar = new Grid { ColumnSpacing = 6 };
+        askBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        askBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(_askImages.AttachButton, 0);
+        Grid.SetColumn(_askBox, 1);
+        askBar.Children.Add(_askImages.AttachButton);
+        askBar.Children.Add(_askBox);
+        var askStack = new StackPanel { Spacing = 6 };
+        askStack.Children.Add(_askImages.Strip);
+        askStack.Children.Add(askBar);
+        Grid.SetRow(askStack, 3);
+        sideGrid.Children.Add(askStack);
         Grid.SetRow(send, 4);
         sideGrid.Children.Add(send);
         _side = new Border
@@ -627,13 +642,17 @@ internal sealed class LecturePlayer : IDisposable
     private async Task SendQuestionAsync()
     {
         var q = _askBox.Text.Trim();
-        if (q.Length == 0) return;
+        if (q.Length == 0 && !_askImages.HasItems) return;
+        if (q.Length == 0) q = L10n.T("img.ask_default");
+        var images = _askImages.ToArgs();
+        var shown = _askImages.Snapshot();
         _askBox.Text = "";
+        _askImages.Clear();
         if (_playing) Pause();
-        await AskAsync(q, adapt: true);
+        await AskAsync(q, adapt: true, images, shown);
     }
 
-    private async Task AskAsync(string question, bool adapt)
+    private async Task AskAsync(string question, bool adapt, JsonElement? images = null, IReadOnlyList<PendingItem>? shown = null)
     {
         if (_seq.Count == 0) return;
         _side.Visibility = Visibility.Visible;
@@ -647,6 +666,8 @@ internal sealed class LecturePlayer : IDisposable
             HorizontalAlignment = HorizontalAlignment.Right,
             Child = new TextBlock { Text = question, TextWrapping = TextWrapping.Wrap },
         });
+        if (shown is { Count: > 0 })
+            entry.Children.Insert(0, ImageAttachments.PendingGallery(shown, () => Root.XamlRoot));
         var thinking = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         thinking.Children.Add(new ProgressRing { IsActive = true, Width = 16, Height = 16 });
         thinking.Children.Add(new TextBlock { Text = L10n.T("lec.thinking"), Opacity = 0.7 });
@@ -656,7 +677,10 @@ internal sealed class LecturePlayer : IDisposable
 
         var hist = new JsonArray();
         foreach (var h in _history.TakeLast(6)) hist.Add(JsonNode.Parse(h.GetRawText()));
-        var args = Args(("artifact_id", _artifactId), ("slide_id", s.SlideId), ("sentence_id", s.Id), ("question", question), ("history", JsonDocument.Parse(hist.ToJsonString()).RootElement.Clone()));
+        var histEl = JsonDocument.Parse(hist.ToJsonString()).RootElement.Clone();
+        var args = ImageAttachments.Merge(
+            Args(("artifact_id", _artifactId), ("slide_id", s.SlideId), ("sentence_id", s.Id), ("question", question), ("history", histEl)),
+            images);
         var (res, err) = await CallAsync("lecture.ask", args);
         entry.Children.Remove(thinking);
         if (err is { } e || res is not { } r)

@@ -47,7 +47,7 @@ fn wait_embedded(env: &Env) {
 }
 
 fn setup_remote(env: &Env, mock: &MockLlm) {
-    let prof = env.profile(mock, 32000, false);
+    let prof = env.profile(mock, 32000);
     env.ok(
         "embedding.configure",
         json!({
@@ -621,7 +621,7 @@ fn b8_rebuild_keeps_using_old_model_until_complete() {
         },
         Some(concept_embedder()),
     );
-    let ep_a = env.profile(&emb_a, 32000, false)["id"]
+    let ep_a = env.profile(&emb_a, 32000)["id"]
         .as_str()
         .unwrap()
         .to_string();

@@ -481,7 +481,7 @@ fn d4_json_schema_uses_response_schema() {
 // ---------------------------------------------------------------- D5 parameter relaxation
 
 #[test]
-fn d5_unsupported_parameter_errors_relax_the_request() {
+fn d5_unsupported_wire_parameters_relax_the_request() {
     use lna_llm::relax_for_error;
     let mut p = profile(ProtocolKind::ChatCompletion);
     p.capabilities.stream_usage = true;
@@ -503,27 +503,6 @@ fn d5_unsupported_parameter_errors_relax_the_request() {
         Some("max_tokens")
     );
 
-    req.output = OutputMode::JsonSchema {
-        name: "s".into(),
-        schema: json!({}),
-    };
-    p.capabilities.json_schema = true;
-    assert!(relax_for_error(
-        "response_format json_schema is not supported",
-        &mut p,
-        &mut req
-    ));
-    assert!(matches!(req.output, OutputMode::JsonObject));
-    assert!(!p.capabilities.json_schema);
-
-    p.capabilities.tools = true;
-    assert!(relax_for_error(
-        "tools are not supported by this model",
-        &mut p,
-        &mut req
-    ));
-    assert!(req.tools.is_empty() && !p.capabilities.tools);
-
     // Unrelated 400s and unrelated parameters are left alone.
     assert!(!relax_for_error(
         "messages must not be empty",
@@ -535,6 +514,43 @@ fn d5_unsupported_parameter_errors_relax_the_request() {
         &mut p,
         &mut req
     ));
+}
+
+#[test]
+fn d5_rejected_tools_or_structured_output_are_errors_not_downgrades() {
+    use lna_llm::{capability_rejection, relax_for_error};
+    let mut p = profile(ProtocolKind::ChatCompletion);
+    p.capabilities.tools = true;
+    p.capabilities.json_schema = true;
+    let mut req = request(vec![user("q")]);
+    req.output = OutputMode::JsonSchema {
+        name: "s".into(),
+        schema: json!({}),
+    };
+    let body = "response_format json_schema is not supported";
+    assert!(!relax_for_error(body, &mut p, &mut req), "the output mode is never weakened");
+    assert!(matches!(req.output, OutputMode::JsonSchema { .. }));
+    assert!(p.capabilities.json_schema);
+    let err = capability_rejection(body, &req).expect("reported");
+    assert_eq!(err.code, ErrorCode::CapabilityMissing);
+    assert!(err.message.contains("结构化输出"), "{}", err.message);
+
+    req.output = OutputMode::Text;
+    req.tools = vec![ToolDef {
+        name: "search".into(),
+        description: "d".into(),
+        parameters: json!({"type": "object"}),
+    }];
+    let body = "tools are not supported by this model";
+    assert!(!relax_for_error(body, &mut p, &mut req));
+    assert!(!req.tools.is_empty() && p.capabilities.tools);
+    let err = capability_rejection(body, &req).expect("reported");
+    assert!(err.message.contains("工具调用"), "{}", err.message);
+
+    // a request without tools / structured output is not blamed on them
+    req.tools.clear();
+    assert!(capability_rejection(body, &req).is_none());
+    assert!(capability_rejection("messages must not be empty", &req).is_none());
 }
 
 #[test]

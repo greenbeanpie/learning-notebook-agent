@@ -503,7 +503,22 @@ pub fn list_profiles(db: &Database) -> LnaResult<Vec<ModelProfile>> {
     })
 }
 
+/// The active chat profile. A profile whose probe found no tool calling or no structured
+/// output is refused with `CAPABILITY_MISSING`.
 pub fn get_active_profile(db: &Database) -> LnaResult<Option<ModelProfile>> {
+    let prof = get_active_profile_unchecked(db)?;
+    if let Some(p) = prof.as_ref() {
+        if !p.capabilities.chat_usable() {
+            return Err(LnaError::new(
+                ErrorCode::CapabilityMissing,
+                p.capabilities.chat_missing().unwrap_or_default(),
+            ));
+        }
+    }
+    Ok(prof)
+}
+
+pub fn get_active_profile_unchecked(db: &Database) -> LnaResult<Option<ModelProfile>> {
     db.read(|conn| {
         conn.query_row(
             "SELECT id, display_name, protocol, base_url, model_id, keychain_ref,
@@ -691,6 +706,15 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
 }
 
 pub fn activate_profile(db: &Database, id: &str) -> LnaResult<()> {
+    let prof = get_profile(db, id)?;
+    if !prof.capabilities.chat_usable() || prof.capabilities.embedding_only {
+        return Err(LnaError::new(
+            ErrorCode::CapabilityMissing,
+            prof.capabilities
+                .chat_missing()
+                .unwrap_or_else(|| "该配置仅用于向量化，不能作为对话模型。".into()),
+        ));
+    }
     db.write(|conn| {
         let tx = conn.transaction().map_err(map_sql_err)?;
         tx.execute(
@@ -820,6 +844,37 @@ pub fn update_profile_capabilities(
     })
 }
 
+/// Stores the request-format details learned at run time (D5) without touching anything else
+/// in the profile's capabilities (tools / structured output only change through a probe).
+pub fn update_profile_wire_params(
+    db: &Database,
+    id: &str,
+    stream_usage: bool,
+    max_tokens_field: Option<&str>,
+) -> LnaResult<()> {
+    db.write(|conn| {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT capabilities_json FROM model_profiles WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(map_sql_err)?;
+        let Some(raw) = raw else { return Ok(()) };
+        let mut caps: ModelCapabilities = serde_json::from_str(&raw).unwrap_or_default();
+        caps.stream_usage = stream_usage;
+        caps.max_tokens_field = max_tokens_field.map(str::to_string);
+        let caps_json = serde_json::to_string(&caps).map_err(|e| LnaError::invalid(e.to_string()))?;
+        conn.execute(
+            "UPDATE model_profiles SET capabilities_json = ?1, updated_at = ?2 WHERE id = ?3",
+            params![caps_json, now_ms(), id],
+        )
+        .map_err(map_sql_err)?;
+        Ok(())
+    })
+}
+
 pub fn get_setting_json(db: &Database, key: &str) -> LnaResult<Option<serde_json::Value>> {
     let raw: Option<String> = db.read(|conn| {
         conn.query_row(
@@ -852,7 +907,11 @@ pub fn set_setting_json(db: &Database, key: &str, value: &serde_json::Value) -> 
 /// 2. Active profile (if it supports the modality).
 /// 3. Most recently updated profile that supports it.
 pub fn resolve_modality_profile(db: &Database, modality: &str) -> LnaResult<Option<ModelProfile>> {
-    let profiles = list_profiles(db)?;
+    // profiles without tool calling / structured output are never picked for any purpose
+    let profiles: Vec<ModelProfile> = list_profiles(db)?
+        .into_iter()
+        .filter(|p| !p.capabilities.embedding_only && p.capabilities.chat_usable())
+        .collect();
     let matches_modality = |p: &ModelProfile| -> bool {
         match modality {
             "vision" => p.capabilities.supports_vision,

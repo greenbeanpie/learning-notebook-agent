@@ -147,7 +147,7 @@ fn first_thought_step_latency() {
     let nid = env.notebook();
     env.add_text(&nid, "讲义.md", ZH_DOC);
     env.wait_sources_ready(&nid, 1);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let mut lat = Vec::new();
     for i in 0..20 {
         let mut rx = env.core.events.subscribe();

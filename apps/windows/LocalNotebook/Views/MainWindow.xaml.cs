@@ -24,6 +24,7 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         ApplyLocalization();
+        InitChatImages();
         App.Core.EventReceived += OnCoreEvent;
         Closed += (_, _) =>
         {
@@ -50,7 +51,9 @@ public sealed partial class MainWindow : Window
         if (err is { } e)
         {
             var advice = Advice(e.Code);
-            ShowStatus(InfoBarSeverity.Error, L10n.Fmt("common.failed", what), advice.Length > 0 ? advice : e.Message);
+            // a model refused for missing tool calling / structured output says exactly what is missing
+            var detail = e.Code == "CAPABILITY_MISSING" && e.Message.Length > 0 ? e.Message : (advice.Length > 0 ? advice : e.Message);
+            ShowStatus(InfoBarSeverity.Error, L10n.Fmt("common.failed", what), detail);
             return null;
         }
         return result;
@@ -243,6 +246,7 @@ public sealed partial class MainWindow : Window
 
     private void ApplyLocalization()
     {
+        _chatImages?.ApplyLocalization();
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(NotebookPicker, L10n.T("nb.switch"));
         NotebookPicker.PlaceholderText = L10n.T("nb.switch");
         NewNotebookBtn.Content = L10n.T("nb.new");
@@ -372,6 +376,7 @@ public sealed partial class MainWindow : Window
     {
         CloseSourcePreview();
         CloseArtifactInline();
+        SwapChatDraft(_activeNotebookId, id);
         _activeNotebookId = id;
         _streaming = null;
         var nb = await CoreAsync("notebook.get", Args(("notebook_id", id)), L10n.T("nb.op_load"));
@@ -469,6 +474,7 @@ public sealed partial class MainWindow : Window
 
     private void ShowNoNotebookState()
     {
+        SwapChatDraft(_activeNotebookId, null);
         _activeNotebookId = null;
         _activeNotebookTitle = "";
         _streaming = null;
@@ -576,6 +582,9 @@ public sealed partial class MainWindow : Window
         if (_activeNotebookId == null) return;
         if (!await ConfirmAsync(L10n.T("nb.delete"), L10n.Fmt("nb.delete_confirm", _activeNotebookTitle), L10n.T("common.delete"))) return;
         if (await CoreAsync("notebook.delete", Args(("notebook_id", _activeNotebookId)), L10n.T("nb.op_delete")) == null) return;
+        // the deleted notebook's unsent draft goes with it
+        ChatInputBox.Text = string.Empty;
+        _chatImages.Clear();
         var list = await CoreAsync("notebook.list", Args(), L10n.T("nb.op_load"));
         var next = list is { } l ? Arr(l, "notebooks").FirstOrDefault() : default;
         if (next.ValueKind == JsonValueKind.Object)

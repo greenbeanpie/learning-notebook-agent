@@ -40,6 +40,46 @@ public sealed partial class MainWindow
     private readonly Dictionary<string, MessageView> _views = new();
     private readonly Services.WebContentHost _math = new();
     private string? _lastUserText;
+    private ImageAttachments _chatImages = null!;
+
+    /// <summary>Picture attachments for the chat box: button, paste, drop, thumbnail strip.</summary>
+    private void InitChatImages()
+    {
+        _chatImages = new ImageAttachments(
+            () => WinRT.Interop.WindowNative.GetWindowHandle(this),
+            () => Content.XamlRoot,
+            msg => ShowStatus(InfoBarSeverity.Warning, L10n.T("img.title"), msg));
+        ChatAttachStripHost.Content = _chatImages.Strip;
+        ChatAttachBtnHost.Content = _chatImages.AttachButton;
+        _chatImages.Hook(ChatPaneBorder, ChatInputBox);
+    }
+
+    // Unsent chat input (text + attachments) per notebook, kept while the app runs.
+    private readonly Dictionary<string, (string Text, IReadOnlyList<PendingItem> Items)> _chatDrafts = new();
+
+    /// <summary>Stores the chat box of notebook <paramref name="from"/> and shows the draft of <paramref name="to"/>.</summary>
+    private void SwapChatDraft(string? from, string? to)
+    {
+        if (from == to || _chatImages == null) return;
+        if (from != null)
+        {
+            if (ChatInputBox.Text.Length > 0 || _chatImages.HasItems)
+                _chatDrafts[from] = (ChatInputBox.Text, _chatImages.Snapshot());
+            else
+                _chatDrafts.Remove(from);
+        }
+        if (to != null && _chatDrafts.Remove(to, out var d))
+        {
+            ChatInputBox.Text = d.Text;
+            _chatImages.Restore(d.Items);
+        }
+        else
+        {
+            ChatInputBox.Text = string.Empty;
+            _chatImages.Clear();
+        }
+    }
+
     private bool _hintShown;
     private ScrollViewer? _chatScrollViewer;
     private bool _chatStickToBottom = true;
@@ -212,6 +252,8 @@ public sealed partial class MainWindow
                 v.Citations[(int)Int(c, "no")] = (Str(c, "source_title"), (int)Int(c, "page_start"), Str(c, "quote"));
             }
             RenderFinal(v, Str(m, "content"));
+            if (v.Role == "user" && Arr(m, "attachments").ToList() is { Count: > 0 } atts)
+                v.Root.Children.Insert(1, ImageAttachments.Gallery(atts, () => Content.XamlRoot, PromoteAttachmentAsync));
             if (v.Role == "assistant")
             {
                 FillThoughts(v, Arr(m, "thoughts"));
@@ -592,6 +634,7 @@ public sealed partial class MainWindow
         SendBtn.Visibility = busy ? Visibility.Collapsed : Visibility.Visible;
         StopBtn.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         ChatInputBox.IsEnabled = !busy;
+        _chatImages?.SetEnabled(!busy);
     }
 
     private void OnChatKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
@@ -606,9 +649,24 @@ public sealed partial class MainWindow
     private async void OnSendChatClick(object sender, RoutedEventArgs e)
     {
         var text = ChatInputBox.Text.Trim();
-        if (text.Length == 0) return;
+        if (text.Length == 0 && !_chatImages.HasItems) return;
+        var images = _chatImages.ToArgs();
+        var shown = _chatImages.Snapshot();
         ChatInputBox.Text = string.Empty;
-        await SendChatAsync(text);
+        _chatImages.Clear();
+        await SendChatAsync(text, images, shown);
+    }
+
+    /// <summary>Adds a one-off attachment of a message to the notebook's sources.</summary>
+    private async Task PromoteAttachmentAsync(string attachmentId)
+    {
+        if (_activeNotebookId == null) return;
+        var res = await CoreAsync("attachment.promote", Args(("notebook_id", _activeNotebookId), ("attachment_id", attachmentId)), L10n.T("ctx.promote"));
+        if (res != null)
+        {
+            ShowStatus(InfoBarSeverity.Success, L10n.T("ctx.promote"), L10n.T("ctx.promoted"));
+            await RefreshNotebookDataAsync();
+        }
     }
 
     private async void OnStopChatClick(object sender, RoutedEventArgs e)
@@ -616,7 +674,7 @@ public sealed partial class MainWindow
         if (_activeNotebookId != null) await CoreAsync("chat.cancel", Args(("notebook_id", _activeNotebookId)), L10n.T("chat.stop"));
     }
 
-    private async Task SendChatAsync(string text)
+    private async Task SendChatAsync(string text, JsonElement? images = null, IReadOnlyList<PendingItem>? shown = null)
     {
         if (_activeNotebookId == null || _streaming != null) return;
         if (!await EnsurePrivacyAckAsync()) return;
@@ -628,6 +686,7 @@ public sealed partial class MainWindow
         }
         var user = NewView("pending-user", "user");
         RenderFinal(user, text);
+        if (shown is { Count: > 0 }) user.Root.Children.Insert(1, ImageAttachments.PendingGallery(shown, () => Content.XamlRoot));
         ChatList.Items.Add(user.Root);
         _flushedLength = 0;
         _chatStickToBottom = true;
@@ -635,7 +694,8 @@ public sealed partial class MainWindow
         SetBusy(true);
         try
         {
-            var (_, err) = await Api.CallAsync("chat.send", Args(("notebook_id", _activeNotebookId), ("text", text)));
+            var (_, err) = await Api.CallAsync("chat.send",
+                ImageAttachments.Merge(Args(("notebook_id", _activeNotebookId), ("text", text)), images));
             if (err is { } e) ShowChatError(e);
         }
         finally

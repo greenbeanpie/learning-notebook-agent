@@ -1,6 +1,7 @@
 pub mod citations;
 pub mod dialog;
 
+use lna_ingest::{attachments, context_files};
 use lna_llm::*;
 use lna_retrieval::{RetrievalEngine, RetrievedEvidence};
 use lna_secrets::SecretStore;
@@ -88,6 +89,9 @@ impl AgentService {
             Ok(out)
         })?;
         self.studio.delete_unimported_for_messages(&msg_ids)?;
+        for atts in self.attachments_of_notebook(notebook_id) {
+            attachments::delete_files(&atts);
+        }
         self.db.write(|conn| {
             let tx = conn.transaction().map_err(map_sql_err)?;
             tx.execute(
@@ -202,18 +206,25 @@ impl AgentService {
                 ));
             }
         }
-        let last_user: Option<(String, String)> = self.db.read(|conn| {
+        let last_user: Option<(String, String, Vec<Attachment>)> = self.db.read(|conn| {
             conn.query_row(
-                "SELECT id, content FROM chat_messages
+                "SELECT id, content, attachments_json FROM chat_messages
                  WHERE notebook_id = ?1 AND role = 'user'
                  ORDER BY created_at DESC, id DESC LIMIT 1",
                 [notebook_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| {
+                    let atts: Option<String> = r.get(2)?;
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        atts.map(|s| attachments::parse_stored_str(&s)).unwrap_or_default(),
+                    ))
+                },
             )
             .optional()
             .map_err(map_sql_err)
         })?;
-        let (uid, user_text) =
+        let (uid, user_text, user_atts) =
             last_user.ok_or_else(|| LnaError::not_found("No user message to regenerate"))?;
         let asst_ids: Vec<String> = self.db.read(|conn| {
             let mut stmt = conn
@@ -245,7 +256,8 @@ impl AgentService {
                 .map_err(map_sql_err)?;
             Ok(())
         })?;
-        self.send_message(notebook_id, &user_text).await
+        // the same picture files are re-attached to the resent message
+        self.send_message(notebook_id, &user_text, user_atts).await
     }
 
     /// Cancels every running answer (shutdown).
@@ -271,7 +283,7 @@ impl AgentService {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, notebook_id, role, status, content, thoughts_json, followups_json,
-                            profile_id, stop_reason, error_code, feedback, created_at
+                            profile_id, stop_reason, error_code, feedback, created_at, attachments_json
                      FROM chat_messages WHERE notebook_id = ?1 ORDER BY created_at ASC, id ASC",
                 )
                 .map_err(map_sql_err)?;
@@ -306,6 +318,10 @@ impl AgentService {
                         error_code: r.get(9)?,
                         feedback: r.get(10)?,
                         artifacts: Vec::new(),
+                        attachments: r
+                            .get::<_, Option<String>>(12)?
+                            .map(|s| attachments::parse_stored_str(&s))
+                            .unwrap_or_default(),
                         created_at: r.get(11)?,
                     })
                 })
@@ -327,7 +343,45 @@ impl AgentService {
         Ok(msgs)
     }
 
-    pub async fn send_message(&self, notebook_id: &str, user_text: &str) -> LnaResult<ChatMessage> {
+    /// Attachment lists of every user message in the notebook that has pictures.
+    pub fn attachments_of_notebook(&self, notebook_id: &str) -> Vec<Vec<Attachment>> {
+        self.db
+            .read(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT attachments_json FROM chat_messages WHERE notebook_id = ?1 AND attachments_json IS NOT NULL")
+                    .map_err(map_sql_err)?;
+                let rows = stmt
+                    .query_map([notebook_id], |r| r.get::<_, String>(0))
+                    .map_err(map_sql_err)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(attachments::parse_stored_str(&r.map_err(map_sql_err)?));
+                }
+                Ok(out)
+            })
+            .unwrap_or_default()
+    }
+
+    /// One-off files and links attached anywhere in this notebook's conversation (follow-up
+    /// questions can still read them), oldest first, without duplicates.
+    fn conversation_context_items(&self, notebook_id: &str) -> Vec<Attachment> {
+        let mut out: Vec<Attachment> = Vec::new();
+        for list in self.attachments_of_notebook(notebook_id) {
+            for a in context_files::context_items(&list) {
+                if !out.iter().any(|x| x.id == a.id) {
+                    out.push(a);
+                }
+            }
+        }
+        out
+    }
+
+    pub async fn send_message(
+        &self,
+        notebook_id: &str,
+        user_text: &str,
+        attachments: Vec<Attachment>,
+    ) -> LnaResult<ChatMessage> {
         // Only 1 active generation per notebook (Section 9.1)
         let cancel = CancellationToken::new();
         {
@@ -344,7 +398,9 @@ impl AgentService {
             g.insert(notebook_id.to_string(), cancel.clone());
         }
 
-        let res = self.run_chat_pipeline(notebook_id, user_text, cancel).await;
+        let res = self
+            .run_chat_pipeline(notebook_id, user_text, attachments, cancel)
+            .await;
 
         if let Ok(mut g) = self.active_runs.lock() {
             g.remove(notebook_id);
@@ -356,6 +412,7 @@ impl AgentService {
         &self,
         notebook_id: &str,
         user_text: &str,
+        user_atts: Vec<Attachment>,
         cancel: CancellationToken,
     ) -> LnaResult<ChatMessage> {
         let topic = format!("chat:{notebook_id}");
@@ -387,14 +444,19 @@ impl AgentService {
             selected_source_meta.iter().map(|(id, _, _)| id.clone()).collect();
         let selected_json =
             serde_json::to_string(&selected_sources).unwrap_or_else(|_| "[]".into());
+        let atts_json: Option<String> = if user_atts.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&user_atts).ok()
+        };
 
         // Write user message + assistant placeholder
         self.db.write(|conn| {
             let tx = conn.transaction().map_err(map_sql_err)?;
             tx.execute(
-                "INSERT INTO chat_messages (id, notebook_id, role, status, content, selected_source_ids_json, created_at)
-                 VALUES (?1,?2,'user','COMPLETE',?3,?4,?5)",
-                params![user_msg_id, notebook_id, user_text, selected_json, now],
+                "INSERT INTO chat_messages (id, notebook_id, role, status, content, selected_source_ids_json, created_at, attachments_json)
+                 VALUES (?1,?2,'user','COMPLETE',?3,?4,?5,?6)",
+                params![user_msg_id, notebook_id, user_text, selected_json, now, atts_json],
             )
             .map_err(map_sql_err)?;
             tx.execute(
@@ -413,8 +475,18 @@ impl AgentService {
             json!({ "message_id": asst_msg_id, "user_message_id": user_msg_id }),
         );
 
-        // PRECHECK: no sources selected
-        if selected_sources.is_empty() {
+        // A picture-only message is stored without text; the model still needs a question.
+        let user_text = if user_text.trim().is_empty() {
+            "（用户只发送了图片，没有附文字。请先说明图片内容，再给出讲解或回答图中的问题。）"
+        } else {
+            user_text
+        };
+
+        // PRECHECK: no sources selected. A question with pictures can still be answered from the
+        // pictures themselves, so only a text-only question is refused.
+        // files and links attached anywhere in the conversation (the current message included)
+        let ctx_items = self.conversation_context_items(notebook_id);
+        if selected_sources.is_empty() && user_atts.is_empty() && ctx_items.is_empty() {
             let msg = "当前未勾选任何已就绪的来源。请在左侧来源栏勾选至少一个来源后再提问。";
             self.finalize_message(&asst_msg_id, "COMPLETE", msg, &[], &[], None, None, None)?;
             self.emit(&topic, "chat.text_delta", json!({ "text": msg }));
@@ -427,9 +499,14 @@ impl AgentService {
         }
 
         // PRECHECK: active model profile + secret
-        let profile = match lna_storage::get_active_profile(&self.db)? {
-            Some(p) => p,
-            None => {
+        let profile = match lna_storage::get_active_profile(&self.db) {
+            Ok(Some(p)) => p,
+            Err(err) => {
+                let _ = self.finalize_message(&asst_msg_id, "FAILED", "", &[], &[], None, None, Some(err.code.as_str()));
+                self.emit(&topic, "chat.finished", json!({ "status": "FAILED", "error": err }));
+                return Err(err);
+            }
+            Ok(None) => {
                 let err = LnaError::new(
                     ErrorCode::ModelNotConfigured,
                     "No active model profile configured",
@@ -532,13 +609,18 @@ impl AgentService {
             };
             let rewrite_result = tokio::time::timeout(
                 Duration::from_secs(3),
-                self.llm
-                    .complete_text(&resolved, &rewrite_req, cancel.clone()),
+                self.llm.complete_structured(
+                    &resolved,
+                    &rewrite_req,
+                    "query_rewrite",
+                    &dialog::rewrite_schema(),
+                    cancel.clone(),
+                ),
             )
             .await;
             let (detail, state) = match rewrite_result {
-                Ok(Ok((raw, _))) => {
-                    queries = dialog::parse_rewrite(&raw, user_text);
+                Ok(Ok((value, _))) => {
+                    queries = dialog::parse_rewrite(&value, user_text);
                     (
                         format!("{reason}；生成 {} 条检索查询", queries.len()),
                         "done",
@@ -692,39 +774,47 @@ impl AgentService {
                 return Err(e);
             }
         };
-        let mut sources_xml = format_sources_xml(
-            &self.db,
-            &outcome.evidences,
-            outcome.grounded,
-            &selected_source_meta,
-        );
+        let mut sources_xml = if selected_source_meta.is_empty() {
+            "<sources selected_file_count=\"0\">(本笔记本没有选中的来源。请直接根据用户附带的图片、附件和通用知识作答，并在回答开头用一句话说明本次未参考笔记来源。)</sources>".to_string()
+        } else {
+            format_sources_xml(&self.db, &outcome.evidences, outcome.grounded, &selected_source_meta)
+        };
         let system_prompt = history_summary
             .as_deref()
             .filter(|summary| !summary.trim().is_empty())
             .map(|summary| format!("{CHAT_SYSTEM_PROMPT}\n\n[历史摘要]\n{summary}"))
             .unwrap_or_else(|| CHAT_SYSTEM_PROMPT.to_string());
 
-        let studio_hint_xml = if resolved.capabilities.tools {
+        let studio_hint_xml = {
             detect_studio_artifact_hint(user_text).map(|(art_type, zh_label)| {
                 format!(
                     "\n<system_hint>检测到用户本轮在请求生成「{zh_label} ({art_type})」。若确属生成学习成品需求，请直接调用 generate_studio_artifact(artifact_type=\"{art_type}\", ...) 异步后台生成（在 topic 中写明章节/主题与要求，无需先通读全文，数量保持适中如 quiz 5~8/flashcards 8~12，调用后立即返回再用 1~2 句告知用户即可），严禁在对话正文中手写完整题目或长篇内容代替。</system_hint>"
                 )
             })
-        } else {
-            None
         }
         .unwrap_or_default();
 
         let mut llm_messages = history_msgs;
+        let files_xml = context_files::manifest(&resolved, &ctx_items);
+        let question_xml = format!(
+            "{sources_xml}\n{files_xml}\n<question>{}</question>{studio_hint_xml}",
+            xml_text_escape(user_text)
+        );
         llm_messages.push(LlmMessage {
             role: Role::User,
-            parts: vec![Part::Text(format!(
-                "{sources_xml}\n<question>{}</question>{studio_hint_xml}",
-                xml_text_escape(user_text)
-            ))],
+            parts: attachments::user_parts(
+                &self.db,
+                &self.secrets,
+                &self.llm,
+                notebook_id,
+                &resolved,
+                question_xml,
+                &user_atts,
+            )
+            .await,
         });
 
-        let tools = if resolved.capabilities.tools {
+        let tools = {
             vec![
                 ToolDef {
                     name: "search_sources".into(),
@@ -893,9 +983,9 @@ impl AgentService {
                     }),
                 },
             ]
-        } else {
-            vec![]
         };
+        let mut tools = tools;
+        tools.extend(context_files::tool_defs(&ctx_items));
 
         let mut full_text = String::new();
         let mut _thought_buf = String::new();
@@ -1122,7 +1212,7 @@ impl AgentService {
                         );
                         if let Some(last_user) = llm_messages.last_mut() {
                             last_user.parts = vec![Part::Text(format!(
-                                "{sources_xml}\n<question>{}</question>",
+                                "{sources_xml}\n{files_xml}\n<question>{}</question>",
                                 xml_text_escape(user_text)
                             ))];
                         }
@@ -1170,7 +1260,28 @@ impl AgentService {
                         });
                         let mut is_error = false;
                         let mut custom_step_title: Option<String> = None;
+                        let ctx = context_files::ToolCtx {
+                            db: &self.db,
+                            secrets: &self.secrets,
+                            llm: &self.llm,
+                            notebook_id,
+                            profile: &resolved,
+                            atts: &ctx_items,
+                        };
+                        let attachment_outcome = context_files::run_tool(&ctx, &name, &args).await;
                         let result_content = match name.as_str() {
+                            _ if attachment_outcome.is_some() => {
+                                let o = attachment_outcome.unwrap();
+                                is_error = o.is_error;
+                                custom_step_title = Some(match name.as_str() {
+                                    "parse_attachment" => "已解析附件".into(),
+                                    "search_attachment" => "已检索附件".into(),
+                                    "extract_from_attachment" => "已从附件提取内容".into(),
+                                    "ask_media" => "已向音视频模型提问".into(),
+                                    _ => "已读取附件".into(),
+                                });
+                                o.text
+                            }
                             "search_sources" => {
                                 let q = args
                                     .get("query")
@@ -1741,7 +1852,9 @@ impl AgentService {
                         Some(&format!("{reason:?}")),
                         None,
                     )?;
+                    // with no selected source there is nothing to cite (answers from attachments)
                     if !suppressed_missing_citation
+                        && !selected_sources.is_empty()
                         && full_text.trim().chars().count() > 20
                         && emitted_cites.is_empty()
                     {
@@ -1928,9 +2041,19 @@ impl AgentService {
 
         let mut thought_buf = String::new();
         let mut last_emit = std::time::Instant::now();
+        let summary_schema = json!({
+            "type": "object",
+            "properties": {
+                "summary_md": { "type": "string" },
+                "title_suggestion": { "type": "string" },
+                "suggested_questions": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["summary_md", "title_suggestion", "suggested_questions"],
+            "additionalProperties": false
+        });
         let sum_res = self
             .llm
-            .complete_text_with_thinking(&resolved, &req, cancel, |delta| {
+            .complete_structured_with_thinking(&resolved, &req, "notebook_summary", &summary_schema, cancel, 2, |delta| {
                 if delta.is_empty() { return; }
                 thought_buf.push_str(delta);
                 if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
@@ -1950,7 +2073,7 @@ impl AgentService {
                     );
                     last_emit = std::time::Instant::now();
                 }
-            })
+            }, |_| {})
             .await;
         self.emit(
             &format!("notebook:{notebook_id}"),
@@ -1965,8 +2088,8 @@ impl AgentService {
                 "active": false,
             }),
         );
-        let (raw, _) = sum_res?;
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+        let (v, _) = sum_res?;
+        {
             let summary_md = v.get("summary_md").and_then(|x| x.as_str()).unwrap_or("");
             let title_sugg = v.get("title_suggestion").and_then(|x| x.as_str());
             let sq = v
@@ -2094,15 +2217,23 @@ impl AgentService {
                 max_output_tokens: 512,
                 reasoning: ReasoningOptions::default(),
             };
-            if let Ok((raw, _)) = self.llm.complete_text(profile, &req, cancel).await {
-                let new_summary = dialog::extract_json(&raw)
-                    .and_then(|v| {
-                        v.get("summary")
-                            .and_then(|x| x.as_str())
-                            .map(str::to_string)
-                    })
-                    .filter(|text| !text.trim().is_empty())
-                    .unwrap_or_else(|| raw.trim().to_string());
+            let schema = json!({
+                "type": "object",
+                "properties": { "summary": { "type": "string" } },
+                "required": ["summary"],
+                "additionalProperties": false
+            });
+            if let Ok((value, _)) = self
+                .llm
+                .complete_structured(profile, &req, "history_summary", &schema, cancel)
+                .await
+            {
+                let new_summary = value
+                    .get("summary")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if !new_summary.trim().is_empty() {
                     let through_id = overflow_to_summarize
                         .last()
@@ -2123,19 +2254,51 @@ impl AgentService {
                 }
             }
         }
+        // Earlier pictures: the most recent picture turn is sent again (so a follow-up such as
+        // "what about the second one?" still has them); older ones are only mentioned by name.
+        let latest_with_images = plan
+            .kept
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && !self.message_attachments(&m.id).is_empty())
+            .map(|m| m.id.clone());
         let history = plan
             .kept
             .into_iter()
-            .map(|m| LlmMessage {
-                role: if m.role == "user" {
-                    Role::User
-                } else {
-                    Role::Assistant
-                },
-                parts: vec![Part::Text(m.content)],
+            .map(|m| {
+                if m.role != "user" {
+                    return LlmMessage {
+                        role: Role::Assistant,
+                        parts: vec![Part::Text(m.content)],
+                    };
+                }
+                let atts = self.message_attachments(&m.id);
+                let with_media = latest_with_images.as_deref() == Some(m.id.as_str());
+                LlmMessage {
+                    role: Role::User,
+                    parts: attachments::history_parts(profile, m.content, &atts, with_media),
+                }
             })
             .collect();
         Ok((history, summary))
+    }
+
+    fn message_attachments(&self, message_id: &str) -> Vec<Attachment> {
+        self.db
+            .read(|conn| {
+                conn.query_row(
+                    "SELECT attachments_json FROM chat_messages WHERE id = ?1",
+                    [message_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map_err(map_sql_err)
+            })
+            .ok()
+            .flatten()
+            .flatten()
+            .map(|s| attachments::parse_stored_str(&s))
+            .unwrap_or_default()
     }
 
     fn spawn_followups(
@@ -2178,7 +2341,13 @@ impl AgentService {
             );
             let res_fu = service
                 .llm
-                .complete_text(&profile, &req, CancellationToken::new())
+                .complete_structured(
+                    &profile,
+                    &req,
+                    "followup_questions",
+                    &dialog::followups_schema(),
+                    CancellationToken::new(),
+                )
                 .await;
             service.emit(
                 &format!("notebook:{notebook_id}"),
@@ -2193,10 +2362,10 @@ impl AgentService {
                     "active": false,
                 }),
             );
-            let Ok((raw, _)) = res_fu else {
+            let Ok((value, _)) = res_fu else {
                 return;
             };
-            let questions = dialog::parse_followups(&raw);
+            let questions = dialog::parse_followups(&value);
             if questions.is_empty() {
                 return;
             }
@@ -2275,7 +2444,7 @@ impl AgentService {
             let mut msg = conn
                 .query_row(
                     "SELECT id, notebook_id, role, status, content, thoughts_json, followups_json,
-                            profile_id, stop_reason, error_code, feedback, created_at
+                            profile_id, stop_reason, error_code, feedback, created_at, attachments_json
                      FROM chat_messages WHERE id = ?1",
                     [msg_id],
                     |r| {
@@ -2308,6 +2477,10 @@ impl AgentService {
                             error_code: r.get(9)?,
                             feedback: r.get(10)?,
                             artifacts: Vec::new(),
+                            attachments: r
+                                .get::<_, Option<String>>(12)?
+                                .map(|s| attachments::parse_stored_str(&s))
+                                .unwrap_or_default(),
                             created_at: r.get(11)?,
                         })
                     },

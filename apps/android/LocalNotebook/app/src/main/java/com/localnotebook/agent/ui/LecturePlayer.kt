@@ -48,6 +48,7 @@ private data class LecSentence(
 
 private data class QaEntry(
     val question: String,
+    val images: List<String> = emptyList(),
     val answer: String = "",
     val speak: String = "",
     val pending: Boolean = true,
@@ -142,6 +143,7 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
     var checkpoint by remember { mutableStateOf<LecSentence?>(null) }
     var showAsk by remember { mutableStateOf(false) }
     var question by remember { mutableStateOf("") }
+    val askImages = rememberImageAttachState()
     val qa = remember { mutableStateListOf<QaEntry>() }
     var adapting by remember { mutableStateOf(false) }
     var adaptation by remember { mutableStateOf<JSONObject?>(null) }
@@ -354,7 +356,7 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
         }
     }
 
-    fun ask(q: String, allowAdapt: Boolean) {
+    fun ask(q: String, allowAdapt: Boolean, images: JSONArray? = null) {
         val c = core ?: return
         if (seq.isEmpty() || q.isBlank()) return
         if (playing) pause()
@@ -368,14 +370,15 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
         }
         scope.launch {
             runCatching {
-                c.call(
-                    "lecture.ask",
-                    JSONObject().put("artifact_id", artifact.id).put("slide_id", s.slideId).put("sentence_id", s.id).put("question", q).put("history", hist),
-                )
+                val params = JSONObject().put("artifact_id", artifact.id).put("slide_id", s.slideId).put("sentence_id", s.id).put("question", q).put("history", hist)
+                params.putAttachments(images)
+                c.call("lecture.ask", params)
             }.onSuccess { r ->
                 val ad = r.optJSONObject("adapt") ?: JSONObject()
                 val needed = ad.optBoolean("needed") && allowAdapt && policy != "never"
+                val stored = r.optJSONArray("attachments") ?: JSONArray()
                 qa[idx] = qa[idx].copy(
+                    images = (0 until stored.length()).mapNotNull { stored.optJSONObject(it)?.optString("path")?.takeIf { p -> p.isNotEmpty() } },
                     answer = r.optString("answer"), speak = r.optString("speak"), pending = false,
                     suggestKind = if (needed && policy == "ask") ad.optString("kind") else "",
                     suggestReason = ad.optString("reason"),
@@ -510,6 +513,7 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
                         items(qa.indices.toList()) { i ->
                             val e = qa[i]
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (e.images.isNotEmpty()) AttachmentGallery(e.images)
                                 Text(e.question, fontWeight = FontWeight.Medium)
                                 when {
                                     e.pending -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -540,7 +544,9 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
                             }
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    AttachStrip(askImages, en)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        AttachImageButton(askImages, en)
                         OutlinedTextField(
                             value = question,
                             onValueChange = { question = it },
@@ -549,10 +555,12 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
                             maxLines = 3,
                         )
                         Button(onClick = {
-                            val q = question.trim()
+                            val q = question.trim().ifEmpty { L10n.t("img.ask_default", en) }
+                            val imgs = askImages.toJson()
                             question = ""
-                            ask(q, true)
-                        }, enabled = question.isNotBlank()) { Text(L10n.t("lec.send", en)) }
+                            askImages.clear()
+                            ask(q, true, imgs)
+                        }, enabled = question.isNotBlank() || askImages.hasItems) { Text(L10n.t("lec.send", en)) }
                     }
                 }
             }

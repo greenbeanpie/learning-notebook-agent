@@ -28,8 +28,10 @@ fn contains(haystack: &[u8], needle: &str) -> bool {
 fn non_loopback_http_endpoint_needs_explicit_confirmation() {
     let env = Env::new("insecure");
     let base = |url: &str, extra: Value| {
+        // embedding endpoints skip the capability probe, so only the URL rule is exercised here
         let mut p = json!({
-            "display_name": "x", "protocol": "chat_completion", "base_url": url, "model_id": "m"
+            "display_name": "x", "protocol": "chat_completion", "base_url": url, "model_id": "m",
+            "purpose": "embedding"
         });
         if let Value::Object(m) = extra {
             for (k, v) in m {
@@ -94,7 +96,7 @@ fn random_api_key_is_only_ever_sent_to_the_model() {
     let nid = env.notebook();
     env.add_text(&nid, "讲义.md", ZH_DOC);
     env.wait_sources_ready(&nid, 1);
-    let prof = env.profile(&mock, 32000, false);
+    let prof = env.profile(&mock, 32000);
     let kref = prof["keychain_ref"].as_str().unwrap().to_string();
     transcript.push_str(&prof.to_string());
     let r = env.raw("secret.set", json!({ "keychain_ref": kref, "secret": key }));
@@ -156,7 +158,7 @@ fn cross_origin_redirect_is_not_followed_and_does_not_forward_credentials() {
     let nid = env.notebook();
     env.add_text(&nid, "讲义.md", ZH_DOC);
     env.wait_sources_ready(&nid, 1);
-    env.profile(&origin, 32000, false);
+    env.profile(&origin, 32000);
     let code = env.err(
         "chat.send",
         json!({ "notebook_id": nid, "text": "请详细说明基与维数之间的关系是什么" }),
@@ -192,31 +194,75 @@ fn probe_mock(tools_ok: bool, schema_ok: bool) -> MockLlm {
     })
 }
 
-/// D5: `profile.test` measures tools / JSON Schema / JSON mode / stream usage and stores them.
+fn upsert_params(mock: &MockLlm) -> Value {
+    json!({
+        "display_name": "probe", "protocol": "chat_completion",
+        "base_url": mock.base_url(), "model_id": "mock-model", "activate": true,
+        // tool / JSON flags sent by a client are ignored: only the probe decides
+        "capabilities": { "tools": true, "json_schema": true, "json_mode": true }
+    })
+}
+
+/// Saving a profile probes tools / JSON Schema / JSON mode / stream usage and stores the result;
+/// `profile.test` measures them again.
 #[test]
-fn profile_test_probes_capabilities_and_persists_them() {
+fn saving_a_profile_probes_capabilities_and_persists_them() {
     let env = Env::new("probe");
-    for (tools_ok, schema_ok, json_mode_ok) in [(true, true, true), (false, false, true)] {
-        let mock = probe_mock(tools_ok, schema_ok);
-        let prof = env.profile(&mock, 32000, !tools_ok);
+    for (schema_ok, json_mode_ok) in [(true, true), (false, true)] {
+        let mock = probe_mock(true, schema_ok);
+        mock.raw_probe.store(true, std::sync::atomic::Ordering::SeqCst);
+        let prof = env.ok("profile.upsert", upsert_params(&mock));
         let pid = prof["id"].as_str().unwrap().to_string();
-        let r = env.ok("profile.test", json!({ "profile_id": pid }));
-        let caps = &r["capabilities"];
-        assert_eq!(caps["tools"], json!(tools_ok), "{r}");
+        let caps = &prof["capabilities"];
+        assert_eq!(caps["tools"], json!(true), "{prof}");
         assert_eq!(caps["json_schema"], json!(schema_ok));
         assert_eq!(caps["json_mode"], json!(json_mode_ok));
-        if tools_ok {
-            assert_eq!(caps["stream_usage"], json!(true));
-        }
+        assert_eq!(caps["stream_usage"], json!(true));
+        assert!(caps["probed_at"].is_i64());
+
+        let r = env.ok("profile.test", json!({ "profile_id": pid }));
+        assert_eq!(r["capabilities"]["json_schema"], json!(schema_ok));
         let stored = env.ok("profile.list", json!({}));
-        let found = stored["profiles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["id"] == pid)
-            .unwrap();
-        assert_eq!(found["capabilities"]["tools"], json!(tools_ok));
+        let found = stored["profiles"].as_array().unwrap().iter().find(|p| p["id"] == pid).unwrap();
+        assert_eq!(found["eligible"], json!(true));
     }
+}
+
+/// A model without tool calling, or without any structured output, cannot be saved.
+#[test]
+fn models_without_tools_or_structured_output_are_refused() {
+    let env = Env::new("probe_refuse");
+    // no tool calling
+    let mock = probe_mock(false, true);
+    mock.raw_probe.store(true, std::sync::atomic::Ordering::SeqCst);
+    let r = env.raw("profile.upsert", upsert_params(&mock));
+    assert_eq!(r["error"]["code"], json!("CAPABILITY_MISSING"), "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("工具调用"), "{r}");
+    // no JSON schema and no JSON mode
+    let mock = MockLlm::start(|r| {
+        if r.has_tools() {
+            return Reply::Tool { id: "p1".into(), name: "lna_capability_probe".into(), args: json!({ "ok": true }) };
+        }
+        if r.body.get("response_format").is_some() {
+            return Reply::Status(400, r#"{"error":{"message":"response_format is not supported"}}"#.into());
+        }
+        Reply::Text("OK".into())
+    });
+    mock.raw_probe.store(true, std::sync::atomic::Ordering::SeqCst);
+    let r = env.raw("profile.upsert", upsert_params(&mock));
+    assert_eq!(r["error"]["code"], json!("CAPABILITY_MISSING"), "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("结构化输出"), "{r}");
+    // nothing was stored
+    let stored = env.ok("profile.list", json!({}));
+    assert!(stored["profiles"].as_array().unwrap().is_empty(), "{stored}");
+    // an embedding endpoint is not held to the chat rules
+    let emb = env.ok("profile.upsert", json!({
+        "display_name": "emb", "protocol": "chat_completion", "base_url": mock.base_url(),
+        "model_id": "text-emb", "purpose": "embedding"
+    }));
+    assert_eq!(emb["capabilities"]["embedding_only"], json!(true));
+    let r = env.raw("profile.activate", json!({ "profile_id": emb["id"] }));
+    assert_eq!(r["error"]["code"], json!("CAPABILITY_MISSING"), "{r}");
 }
 
 /// D5: a 400 naming an unsupported parameter drops it, retries once, and remembers the result.
@@ -238,7 +284,7 @@ fn unsupported_stream_options_is_dropped_retried_and_remembered() {
     let nid = env.notebook();
     env.add_text(&nid, "讲义.md", ZH_DOC);
     env.wait_sources_ready(&nid, 1);
-    env.profile(&mock, 32000, false); // helper enables stream_usage
+    env.profile(&mock, 32000); // helper enables stream_usage
     let msg = env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": "请详细说明基与维数之间的关系是什么" }),
@@ -261,6 +307,43 @@ fn unsupported_stream_options_is_dropped_retried_and_remembered() {
     );
     let chat = mock.of_kind(Kind::Chat);
     assert_eq!(chat.len(), 3);
+}
+
+#[test]
+fn a_model_rejecting_tools_at_run_time_is_reported_not_downgraded() {
+    let mock = MockLlm::start(|r| {
+        if r.kind == Kind::Chat && r.body.get("tools").is_some() {
+            return Reply::Status(
+                400,
+                r#"{"error":{"message":"tools are not supported by this model"}}"#.into(),
+            );
+        }
+        match r.kind {
+            Kind::Followups => Reply::Text(r#"{"questions":["a?","b?","c?"]}"#.into()),
+            _ => Reply::Text("向量空间的基与维数相关[1]。".into()),
+        }
+    });
+    let env = Env::new("no_downgrade");
+    let nid = env.notebook();
+    env.add_text(&nid, "讲义.md", ZH_DOC);
+    env.wait_sources_ready(&nid, 1);
+    env.profile(&mock, 32000);
+    let r = env.raw(
+        "chat.send",
+        json!({ "notebook_id": nid, "text": "请详细说明基与维数之间的关系是什么" }),
+    );
+    let text = r.to_string();
+    assert!(text.contains("CAPABILITY_MISSING"), "{text}");
+    assert!(text.contains("工具调用"), "{text}");
+    let chat = mock.of_kind(Kind::Chat);
+    assert!(
+        chat.iter().all(|c| c.body.get("tools").is_some()),
+        "never retried without tools"
+    );
+    // the stored profile still says what the probe found; the user re-checks it in the settings
+    let stored = env.ok("profile.list", json!({}));
+    assert_eq!(stored["profiles"][0]["capabilities"]["tools"], json!(true), "{stored}");
+    assert_eq!(stored["profiles"][0]["eligible"], json!(true), "{stored}");
 }
 
 #[test]
@@ -294,4 +377,42 @@ fn builtin_provider_presets_include_official_and_opencode_go_headers() {
         "local-notebook-agent"
     );
     assert_eq!(opencode["extra_headers"]["User-Agent"], "opencode/1.0");
+}
+
+/// Profiles saved before the rule: once probed and found lacking, they are refused for chat,
+/// cannot be activated, and are skipped for media routing. Never-probed ones are probed at start.
+#[test]
+fn existing_unqualified_profiles_are_refused_after_probing() {
+    let mock = MockLlm::start(|_| Reply::Text("答".into()));
+    let env = Env::new("legacy_profile");
+    let prof = env.profile(&mock, 32000);
+    let pid = prof["id"].as_str().unwrap().to_string();
+    let nid = env.notebook();
+    env.add_text(&nid, "讲义.md", ZH_DOC);
+    env.wait_sources_ready(&nid, 1);
+
+    // simulate a profile saved by an older version: no tools, never probed, vision on
+    let mut caps: lna_types::ModelCapabilities = serde_json::from_value(prof["capabilities"].clone()).unwrap();
+    caps.tools = false;
+    caps.supports_vision = true;
+    caps.probed_at = None;
+    lna_storage::update_profile_capabilities(&env.core.db, &pid, &caps).unwrap();
+    let list = env.ok("profile.list", json!({}));
+    assert_eq!(list["profiles"][0]["probe_pending"], json!(true), "{list}");
+
+    // probed and lacking tool calling
+    caps.probed_at = Some(1);
+    lna_storage::update_profile_capabilities(&env.core.db, &pid, &caps).unwrap();
+    let code = env.err("chat.send", json!({ "notebook_id": nid, "text": "基是什么" }));
+    assert_eq!(code, "CAPABILITY_MISSING");
+    assert_eq!(env.err("profile.activate", json!({ "profile_id": pid })), "CAPABILITY_MISSING");
+    assert!(lna_storage::resolve_modality_profile(&env.core.db, "vision").unwrap().is_none());
+    let list = env.ok("profile.list", json!({}));
+    assert_eq!(list["profiles"][0]["eligible"], json!(false));
+    assert!(list["profiles"][0]["unsupported_reason"].as_str().unwrap().contains("工具调用"));
+
+    // re-testing against a now-capable endpoint makes it usable again
+    env.ok("profile.test", json!({ "profile_id": pid }));
+    let list = env.ok("profile.list", json!({}));
+    assert_eq!(list["profiles"][0]["eligible"], json!(true), "{list}");
 }

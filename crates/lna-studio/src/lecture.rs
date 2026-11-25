@@ -1291,7 +1291,7 @@ impl StudioService {
 
     /// Answers an interruption question in the context of the current slide and judges whether
     /// the remaining lecture should be adapted.
-    pub async fn lecture_ask(&self, artifact_id: &str, slide_id: &str, sentence_id: Option<&str>, question: &str, history: &[Value]) -> LnaResult<Value> {
+    pub async fn lecture_ask(&self, artifact_id: &str, slide_id: &str, sentence_id: Option<&str>, question: &str, history: &[Value], images: &[Attachment]) -> LnaResult<Value> {
         let (art, payload) = self.lecture_payload(artifact_id)?;
         let slides = payload.get("slides").and_then(Value::as_array).cloned().unwrap_or_default();
         let idx = slides.iter().position(|s| sv(s, "id") == slide_id).unwrap_or(0);
@@ -1338,22 +1338,46 @@ impl StudioService {
                 }
             }
         });
+        let files = lna_ingest::context_files::context_items(images);
+        let evidence = if files.is_empty() {
+            evidence
+        } else {
+            let ctx = lna_ingest::context_files::ToolCtx {
+                db: &self.db,
+                secrets: &self.secrets,
+                llm: &self.llm,
+                notebook_id: &art.notebook_id,
+                profile: &resolved,
+                atts: &files,
+            };
+            let b = lna_ingest::context_files::brief(&ctx, &format!("回答学生在讲解中提出的问题：{question}"), 4, CancellationToken::new()).await?;
+            format!("{evidence}\n\nFrom the learner's attached files:\n{b}")
+        };
         let req = LlmRequest {
             system: "You are the Local Notebook Studio lecture teacher of a narrated lecture and the learner just paused you with a question. Answer it directly and accurately from the sources and the lecture context, at the learner's level, in the learner's language. \"answer\": Markdown (LaTeX $...$ allowed). \"speak\": the same answer as 1-4 plain spoken sentences for text-to-speech (no LaTeX/markdown/symbols). Then judge from the question whether the REST of the lecture should change: \"extend\" if something already explained was unclear or a prerequisite is missing (insert 1-2 supplementary slides now); \"slower\" or \"simpler\" if the pace/level is too high; \"more_examples\" if the learner needs worked examples; \"skip_known\" if the learner is clearly ahead; \"none\" for an isolated detail question (the usual case). Give a short reason in the learner's language. Respond with structured JSON for lecture answer.".into(),
             messages: vec![LlmMessage {
                 role: Role::User,
-                parts: vec![Part::Text(format!(
-                    "Lecture: {} (mode {})\nCovered slides: {}\nCurrent slide:\n{}\nSpoken so far on this slide: {}\nUpcoming slides: {}\nEarlier Q&A:\n{}\n\nQuestion: {}\n\nSources:\n{}",
-                    sv(&payload, "title"),
-                    sv(&payload, "mode"),
-                    covered.join(" | "),
-                    Self::slide_text(&slide),
-                    spoken,
-                    upcoming.join(" | "),
-                    if hist.is_empty() { "(none)".into() } else { hist },
-                    question,
-                    evidence
-                ))],
+                parts: attachments::user_parts(
+                    &self.db,
+                    &self.secrets,
+                    &self.llm,
+                    &art.notebook_id,
+                    &resolved,
+                    format!(
+                        "Lecture: {} (mode {})\nCovered slides: {}\nCurrent slide:\n{}\nSpoken so far on this slide: {}\nUpcoming slides: {}\nEarlier Q&A:\n{}\n\nQuestion: {}\n\nSources:\n{}",
+                        sv(&payload, "title"),
+                        sv(&payload, "mode"),
+                        covered.join(" | "),
+                        Self::slide_text(&slide),
+                        spoken,
+                        upcoming.join(" | "),
+                        if hist.is_empty() { "(none)".into() } else { hist },
+                        question,
+                        evidence
+                    ),
+                    images,
+                )
+                .await,
             }],
             tools: vec![],
             tool_mode: ToolMode::None,

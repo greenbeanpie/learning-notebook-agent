@@ -72,7 +72,7 @@ fn export_import_round_trip_keeps_content_and_retrieval_results() {
     let mock = mock_with_answer();
     let env = Env::new("roundtrip");
     let nid = seeded(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     env.ok(
         "note.save",
         json!({ "notebook_id": nid, "title": "我的笔记", "body_md": "要点：基" }),
@@ -147,7 +147,7 @@ fn artifacts_survive_import_and_unfinished_ones_are_not_left_running() {
     let mock = mock_with_answer();
     let env = Env::new("artifacts");
     let nid = seeded(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = env.ok(
         "studio.create",
         json!({ "notebook_id": nid, "artifact_type": "quiz", "config": {} }),
@@ -385,7 +385,7 @@ fn markdown_export_converts_citations_to_matching_footnotes() {
     let mock = mock_with_answer();
     let env = Env::new("mdexport");
     let nid = seeded(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     for q in [
         "请详细说明基与维数之间的关系是什么",
         "请再详细说明矩阵的秩与维数之间的关系",
@@ -447,7 +447,7 @@ fn diagnostics_bundle_contains_no_content_prompts_answers_urls_or_keys() {
     let mock = mock_with_answer();
     let env = Env::new("diag");
     let nid = seeded(&env);
-    let prof = env.profile(&mock, 32000, false);
+    let prof = env.profile(&mock, 32000);
     let kref = prof["keychain_ref"].as_str().unwrap().to_string();
     let key = format!("sk-diag-{:x}", std::process::id());
     env.ok("secret.set", json!({ "keychain_ref": kref, "secret": key }));
@@ -490,7 +490,7 @@ fn notes_keep_citation_snapshots_and_summary_notes_are_copies() {
     let mock = mock_with_answer();
     let env = Env::new("notes");
     let nid = seeded(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let msg = env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": "请详细说明基与维数之间的关系是什么" }),

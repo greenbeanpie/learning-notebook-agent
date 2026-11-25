@@ -17,6 +17,9 @@ struct ProviderPresetItem: Identifiable {
 }
 
 struct ModelProfileItem: Identifiable {
+    /// false: probed and lacking tool calling or structured output (cannot be used)
+    var eligible: Bool = true
+    var unsupportedReason: String? = nil
     let id: String
     let displayName: String
     let protocolName: String
@@ -614,7 +617,8 @@ struct UnifiedSettingsSheet: View {
         if p.supportsAudio { mods.append(state.isEnglish ? "Audio" : "音频") }
         if p.supportsVideo { mods.append(state.isEnglish ? "Video" : "视频") }
         let modTag = mods.isEmpty ? "" : " [\(mods.joined(separator: "/"))]"
-        let defTag = p.isActive ? (state.isEnglish ? " (Default)" : "（默认对话）") : ""
+        var defTag = p.isActive ? (state.isEnglish ? " (Default)" : "（默认对话）") : ""
+        if !p.eligible { defTag += state.isEnglish ? " (unsupported, disabled)" : "（不支持，已停用）" }
         return "\(p.displayName)\(defTag)\(modTag)"
     }
 
@@ -715,7 +719,9 @@ struct UnifiedSettingsSheet: View {
             supportsVision: caps["supports_vision"] as? Bool ?? false,
             supportsAudio: caps["supports_audio"] as? Bool ?? false,
             supportsVideo: caps["supports_video"] as? Bool ?? false,
-            extraHeaders: hdrs
+            extraHeaders: hdrs,
+            eligible: d["eligible"] as? Bool ?? true,
+            unsupportedReason: d["unsupported_reason"] as? String
         )
     }
 
@@ -868,6 +874,11 @@ struct UnifiedSettingsSheet: View {
         if let pi = Double(priceInText) { params["input_price_per_m"] = pi }
         if let po = Double(priceOutText) { params["output_price_per_m"] = po }
         if let pid = profileId { params["id"] = pid }
+        // the core probes tool calling and structured output with this key before saving
+        if !apiKey.isEmpty { params["api_key"] = apiKey }
+        statusMsg = state.isEnglish
+            ? "Checking that the model supports tool calling and structured output…"
+            : "正在检测模型是否支持工具调用和结构化输出…"
 
         do {
             let sv = try await state.core.call(method: "profile.upsert", params: params)
@@ -875,18 +886,17 @@ struct UnifiedSettingsSheet: View {
             let newKref = sv["keychain_ref"] as? String ?? keychainRef
             profileId = newId
             keychainRef = newKref
-            if !apiKey.isEmpty, !newKref.isEmpty {
-                _ = try await state.core.call(method: "secret.set", params: ["keychain_ref": newKref, "secret": apiKey])
-                apiKey = ""
-            }
+            apiKey = ""
             if activateChat, let nid = newId {
                 _ = try? await state.core.call(method: "profile.activate", params: ["profile_id": nid])
             }
             await saveMediaProcessingSettings()
             await loadModelsData(selectId: newId)
-            statusMsg = state.isEnglish ? "Model profile saved." : "模型配置已保存。"
+            statusMsg = state.isEnglish ? "Capabilities verified; profile saved." : "已通过能力检测并保存。"
         } catch {
-            statusMsg = error.localizedDescription
+            statusMsg = state.isEnglish
+                ? "Not saved: \(error.localizedDescription) This app only works with models that support tool calling and structured output."
+                : "未保存：\(error.localizedDescription) 本应用只支持具备工具调用和结构化输出的模型。"
         }
     }
 

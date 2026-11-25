@@ -2,7 +2,7 @@ use crate::adapters::adapter_for;
 use crate::sse::SseParser;
 use crate::types::*;
 use futures_util::StreamExt;
-use lna_types::{ErrorCode, LnaError, LnaResult, ModelCapabilities, ProtocolKind};
+use lna_types::{ErrorCode, LnaError, LnaResult, ProtocolKind};
 use rand::Rng;
 use secrecy::ExposeSecret;
 use std::path::Path;
@@ -11,12 +11,21 @@ use tokio_util::sync::CancellationToken;
 
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-type CapabilitySink = std::sync::Arc<dyn Fn(&str, &ModelCapabilities) + Send + Sync>;
+/// Request-format details learned at run time (D5): whether the endpoint accepts `stream_options`
+/// and which max-tokens field it wants. They never change what a model can do (tools, structured
+/// output), only how a request is written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireParams {
+    pub stream_usage: bool,
+    pub max_tokens_field: Option<String>,
+}
+
+type CapabilitySink = std::sync::Arc<dyn Fn(&str, &WireParams) + Send + Sync>;
 
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
-    /// Called when a request had to drop an unsupported parameter, so the profile can be updated (D5).
+    /// Called when a request had to be rewritten for the endpoint's wire format, so the profile remembers it (D5).
     sink: std::sync::Arc<std::sync::Mutex<Option<CapabilitySink>>>,
 }
 
@@ -39,10 +48,10 @@ impl LlmClient {
         }
     }
 
-    /// Registers a callback that persists capability changes learned from 400 responses.
+    /// Registers a callback that persists the request-format details learned from 400 responses.
     pub fn set_capability_sink(
         &self,
-        f: impl Fn(&str, &ModelCapabilities) + Send + Sync + 'static,
+        f: impl Fn(&str, &WireParams) + Send + Sync + 'static,
     ) {
         if let Ok(mut g) = self.sink.lock() {
             *g = Some(std::sync::Arc::new(f));
@@ -68,7 +77,7 @@ impl LlmClient {
         self.stream_with(profile, req, cancel, on_event, true).await
     }
 
-    /// Like `stream`, but a rejected parameter is reported instead of being silently dropped.
+    /// Like `stream`, but a rejected request-format parameter is reported instead of being rewritten.
     /// Used by capability probes, which must see the real answer.
     pub async fn stream_strict<F>(
         &self,
@@ -100,7 +109,9 @@ impl LlmClient {
         let mut profile = profile.clone();
         let mut req = req.clone();
         req.max_output_tokens = clamp_reasoning_and_output_tokens(req.max_output_tokens);
-        let mut relaxed = !allow_relax;
+        // at most two rewrites (stream_options and the max-tokens field can both be rejected)
+        let mut relaxes_left = if allow_relax { 2u32 } else { 0 };
+        let mut relaxed = false;
 
         loop {
             if cancel.is_cancelled() {
@@ -140,13 +151,18 @@ impl LlmClient {
                     .and_then(|s| s.parse::<u64>().ok());
                 let body = resp.text().await.unwrap_or_default();
                 let err = map_http_status(status, &body);
-                // D5: an "unsupported parameter" 400 -> drop that parameter and retry once.
-                if status.as_u16() == 400
-                    && !relaxed
-                    && relax_for_error(&body, &mut profile, &mut req)
-                {
-                    relaxed = true;
-                    continue;
+                if status.as_u16() == 400 {
+                    // A model that stops accepting tools or structured output is not quietly
+                    // downgraded: it is reported, and the profile is left for a re-check.
+                    if let Some(e) = capability_rejection(&body, &req) {
+                        return Err(e);
+                    }
+                    // D5: a wire-format parameter the endpoint does not take -> rewrite and retry.
+                    if relaxes_left > 0 && relax_for_error(&body, &mut profile, &mut req) {
+                        relaxes_left -= 1;
+                        relaxed = true;
+                        continue;
+                    }
                 }
                 if (status.as_u16() == 429 || status.is_server_error()) && attempt < 3 {
                     attempt += 1;
@@ -215,10 +231,16 @@ impl LlmClient {
                 }
             }
 
-            if relaxed && allow_relax {
+            if relaxed {
                 let sink = self.sink.lock().ok().and_then(|g| g.clone());
                 if let Some(f) = sink {
-                    f(&profile.id, &profile.capabilities);
+                    f(
+                        &profile.id,
+                        &WireParams {
+                            stream_usage: profile.capabilities.stream_usage,
+                            max_tokens_field: profile.capabilities.max_tokens_field.clone(),
+                        },
+                    );
                 }
             }
             return Ok(stop_reason.unwrap_or(StopReason::EndTurn));
@@ -274,7 +296,8 @@ impl LlmClient {
         Ok((text, usage))
     }
 
-    /// Section 10.7: Structured output fallback (JsonSchema -> JsonObject -> plain JSON + 2 repair turns).
+    /// Structured output: JSON schema when supported, else JSON mode with the schema in the prompt,
+    /// plus schema-repair turns. Models with neither are refused.
     pub async fn complete_structured(
         &self,
         profile: &ResolvedProfile,
@@ -328,11 +351,10 @@ impl LlmClient {
                 req.system, schema
             );
         } else {
-            req.output = OutputMode::Text;
-            req.system = format!(
-                "{}\n\n只输出合法 JSON，不要包含 Markdown 代码块或任何解释。Schema：\n{}",
-                req.system, schema
-            );
+            return Err(LnaError::new(
+                ErrorCode::CapabilityMissing,
+                "该模型不支持结构化输出（JSON Schema / JSON 模式），无法使用。",
+            ));
         }
 
         let mut total_usage = Usage::default();
@@ -379,7 +401,7 @@ impl LlmClient {
                 }],
                 tools: vec![],
                 tool_mode: ToolMode::None,
-                output: OutputMode::Text,
+                output: req.output.clone(),
                 max_output_tokens: base_req.max_output_tokens,
                 reasoning: ReasoningOptions::default(),
             };
@@ -583,9 +605,8 @@ fn gemini_upload_url(trimmed_base: &str) -> String {
 
 /// Looks at a 400 body for a rejected request parameter and removes it from the request/profile.
 /// Returns true when something was changed (so a retry makes sense).
-pub fn relax_for_error(body: &str, profile: &mut ResolvedProfile, req: &mut LlmRequest) -> bool {
-    let lower = body.to_lowercase();
-    let rejected = [
+fn says_unsupported(lower: &str) -> bool {
+    [
         "unsupported",
         "unknown parameter",
         "unrecognized",
@@ -595,8 +616,15 @@ pub fn relax_for_error(body: &str, profile: &mut ResolvedProfile, req: &mut LlmR
         "does not support",
     ]
     .iter()
-    .any(|k| lower.contains(k));
-    if !rejected {
+    .any(|k| lower.contains(k))
+}
+
+/// D5: rewrites the request for an endpoint that rejected a wire-format parameter
+/// (`stream_options`, `max_completion_tokens` / `max_tokens`). Returns false when the error is
+/// about anything else. Never touches tools or the output mode: see [`capability_rejection`].
+pub fn relax_for_error(body: &str, profile: &mut ResolvedProfile, _req: &mut LlmRequest) -> bool {
+    let lower = body.to_lowercase();
+    if !says_unsupported(&lower) {
         return false;
     }
     if lower.contains("stream_options") && profile.capabilities.stream_usage {
@@ -615,30 +643,36 @@ pub fn relax_for_error(body: &str, profile: &mut ResolvedProfile, req: &mut LlmR
         profile.capabilities.max_tokens_field = Some("max_completion_tokens".into());
         return true;
     }
-    if lower.contains("response_format") || lower.contains("json_schema") {
-        match req.output {
-            OutputMode::JsonSchema { .. } => {
-                profile.capabilities.json_schema = false;
-                req.output = OutputMode::JsonObject;
-                return true;
-            }
-            OutputMode::JsonObject => {
-                profile.capabilities.json_mode = false;
-                req.output = OutputMode::Text;
-                return true;
-            }
-            OutputMode::Text => {}
-        }
-    }
-    if (lower.contains("tools") || lower.contains("tool_choice") || lower.contains("function"))
-        && !req.tools.is_empty()
-    {
-        profile.capabilities.tools = false;
-        req.tools.clear();
-        req.tool_mode = ToolMode::None;
-        return true;
-    }
     false
+}
+
+/// A 400 saying the model does not take the tools or the structured-output format of this
+/// request. Such a model no longer meets the requirements, so this is an error (CAPABILITY_MISSING)
+/// instead of a retry without tools / with a weaker output mode; the stored profile is unchanged
+/// and the user is asked to re-check the model in the settings.
+pub fn capability_rejection(body: &str, req: &LlmRequest) -> Option<LnaError> {
+    let lower = body.to_lowercase();
+    if !says_unsupported(&lower) {
+        return None;
+    }
+    let output = !matches!(req.output, OutputMode::Text)
+        && (lower.contains("response_format")
+            || lower.contains("json_schema")
+            || lower.contains("json_object"));
+    let tools = !req.tools.is_empty()
+        && (lower.contains("tools") || lower.contains("tool_choice") || lower.contains("function"));
+    let what = match (tools, output) {
+        (true, _) => "工具调用（tool / function call）",
+        (false, true) => "结构化输出（JSON Schema / JSON 模式）",
+        _ => return None,
+    };
+    let detail: String = body.chars().take(300).collect();
+    Some(LnaError::new(
+        ErrorCode::CapabilityMissing,
+        format!(
+            "模型服务拒绝了{what}请求，可能已不再支持该能力。请在“设置 → AI 模型”中重新检测或更换模型。（服务返回：{detail}）"
+        ),
+    ))
 }
 
 fn add_usage(dst: &mut Usage, src: &Usage) {

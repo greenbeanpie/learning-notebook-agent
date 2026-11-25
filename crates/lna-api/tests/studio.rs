@@ -70,7 +70,7 @@ fn every_modality_generates_and_exports() {
     let mock = studio_mock();
     let env = Env::new("modalities");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let cases = [
         ("quiz", "json", "quiz.json"),
         ("quiz", "markdown", "quiz.md"),
@@ -138,7 +138,7 @@ fn quiz_with_out_of_range_citation_fails_validation() {
     });
     let env = Env::new("quizcite");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = create(&env, &nid, "quiz", json!({}));
     let art = studio_wait(&env, &id, "FAILED", 30);
     assert_eq!(art["error_code"], json!("OUTPUT_INVALID"), "{art}");
@@ -150,7 +150,7 @@ fn unparseable_output_is_repaired_twice_then_fails() {
     let mock = MockLlm::start(|_| Reply::Text("这不是 JSON".into()));
     let env = Env::new("repair");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = create(&env, &nid, "flashcards", json!({}));
     let art = studio_wait(&env, &id, "FAILED", 30);
     assert_eq!(art["error_code"], json!("OUTPUT_INVALID"), "{art}");
@@ -163,7 +163,12 @@ fn unparseable_output_is_repaired_twice_then_fails() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|r| r.kind == Kind::Studio || r.system.contains("JSON repairer") || r.system.contains("JSON 修复器"))
+        // repair turns of the flashcards schema only (the notebook summary is structured output too)
+        .filter(|r| {
+            r.kind == Kind::Studio
+                || ((r.system.contains("JSON repairer") || r.system.contains("JSON 修复器"))
+                    && r.user_text().contains("\"front\""))
+        })
         .count();
     assert_eq!(n, 6);
 }
@@ -226,7 +231,7 @@ fn oversized_sources_use_cached_digests_map_reduce_and_topic_retrieval() {
     let mock = studio_mock();
     let env = Env::new("mapreduce");
     let nid = big_notebook(&env);
-    env.profile(&mock, 4000, false);
+    env.profile(&mock, 4000);
 
     let id = create(&env, &nid, "quiz", json!({}));
     studio_wait(&env, &id, "READY", 60);
@@ -313,7 +318,7 @@ fn retry_resumes_from_the_collect_checkpoint() {
     });
     let env = Env::new("resume");
     let nid = big_notebook(&env);
-    env.profile(&mock, 4000, false);
+    env.profile(&mock, 4000);
     let id = create(&env, &nid, "quiz", json!({}));
     let art = studio_wait(&env, &id, "FAILED", 60);
     assert_eq!(art["error_code"], json!("MODEL_BAD_REQUEST"), "{art}");
@@ -344,7 +349,7 @@ fn outline_review_pauses_then_continues_after_approval() {
     let mock = studio_mock();
     let env = Env::new("draft");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = create(&env, &nid, "slides", json!({ "reviewOutline": true }));
     let art = studio_wait(&env, &id, "DRAFT_REVIEW", 30);
     assert!(
@@ -379,7 +384,7 @@ fn studio_calls_are_serialised_per_profile_and_ingest_is_not_blocked() {
     });
     let env = Env::new("serial");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let ids: Vec<String> = ["quiz", "flashcards", "mindmap"]
         .iter()
         .map(|t| create(&env, &nid, t, json!({})))
@@ -415,7 +420,7 @@ fn cancel_during_generation_stays_cancelled() {
     });
     let env = Env::new("studiocancel");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = create(&env, &nid, "report", json!({}));
     env.wait(20, || !mock.of_kind(Kind::Studio).is_empty());
     env.ok("studio.cancel", json!({ "artifact_id": id }));
@@ -431,7 +436,7 @@ fn artifacts_regenerate_on_demand_with_selected_sources_and_config() {
     let mock = studio_mock();
     let env = Env::new("regen");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = create(&env, &nid, "flashcards", json!({ "topic": "原主题" }));
     let art = studio_wait(&env, &id, "READY", 30);
     assert_eq!(art["sources_stale"], json!(false));
@@ -468,7 +473,7 @@ fn grade_answer_api_handles_choice_fill_and_unknown_questions() {
     });
     let env = Env::new("grade");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = create(&env, &nid, "quiz", json!({}));
     studio_wait(&env, &id, "READY", 30);
     let g = |q: &str, a: Value| {
@@ -498,7 +503,7 @@ fn studio_export_supports_all_formats_and_audio_end_to_end() {
     let mock = studio_mock();
     let env = Env::new("exports");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
 
     let mm_id = create(&env, &nid, "mindmap", json!({}));
     studio_wait(&env, &mm_id, "READY", 30);
@@ -561,7 +566,7 @@ fn lecture_generates_figures_and_adapts() {
     let mock = studio_mock();
     let env = Env::new("lecture");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = create(&env, &nid, "lecture", json!({ "mode": "general", "detail": "auto", "topic": "基与维数" }));
     let art = studio_wait(&env, &id, "READY", 60);
     let p = &art["payload"];
@@ -627,7 +632,7 @@ fn refine_node_route_runs_inside_dispatcher() {
     let mock = studio_mock();
     let env = Env::new("refine_route");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let id = create(&env, &nid, "mindmap", json!({ "detail": "concise" }));
     studio_wait(&env, &id, "READY", 30);
     let r = env.ok("studio.refine_node", json!({ "artifact_id": id, "node_id": "n2" }));

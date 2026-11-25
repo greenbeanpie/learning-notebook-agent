@@ -1841,7 +1841,9 @@ dependencies = [
 name = "lna-api"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "hex",
+ "image",
  "lna-agent",
  "lna-embedding",
  "lna-ingest",
@@ -2026,6 +2028,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "hex",
+ "lna-ingest",
  "lna-jobs",
  "lna-llm",
  "lna-retrieval",

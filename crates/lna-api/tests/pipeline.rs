@@ -56,7 +56,7 @@ fn tool_loop_stops_after_three_rounds_and_sums_usage() {
     });
     let env = Env::new("toolloop");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, true);
+    env.profile(&mock, 32000);
 
     let msg = env.ok(
         "chat.send",
@@ -117,7 +117,7 @@ fn read_only_tools_return_results_and_errors_without_failing_the_turn() {
     });
     let env = Env::new("tools");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, true);
+    env.profile(&mock, 32000);
     let msg = env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
@@ -148,7 +148,7 @@ fn context_exceeded_halves_evidence_and_retries_once() {
     });
     let env = Env::new("ctxretry");
     let nid = notebook_with_sources(&env, 6);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let msg = env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
@@ -171,7 +171,7 @@ fn context_exceeded_twice_fails_without_a_third_attempt() {
     });
     let env = Env::new("ctxtwice");
     let nid = notebook_with_sources(&env, 4);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let code = env.err(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
@@ -201,7 +201,7 @@ fn history_over_budget_is_summarised_and_injected() {
     let env = Env::new("histsum");
     let nid = notebook_with_sources(&env, 2);
     // context 4000: available = 4000 - (1000 + 800 + 200) = 2000 -> history budget 600 tokens.
-    env.profile(&mock, 4000, false);
+    env.profile(&mock, 4000);
     for i in 0..4 {
         env.ok(
             "chat.send",
@@ -251,7 +251,7 @@ fn history_summary_failure_drops_oldest_and_chat_still_completes() {
     };
     let env = Env::new("histfail");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 4000, false);
+    env.profile(&mock, 4000);
     for i in 0..4 {
         let m = env.ok(
             "chat.send",
@@ -283,7 +283,7 @@ fn rewrite_failure_falls_back_to_the_original_question() {
     });
     let env = Env::new("rewritefail");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let msg = env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": "它的定理呢" }),
@@ -310,7 +310,7 @@ fn rewrite_slower_than_three_seconds_is_abandoned() {
     });
     let env = Env::new("rewriteslow");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let t0 = std::time::Instant::now();
     let msg = env.ok(
         "chat.send",
@@ -343,7 +343,7 @@ fn self_contained_question_skips_rewrite() {
     });
     let env = Env::new("norewrite");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
@@ -360,7 +360,7 @@ fn followup_failure_keeps_message_complete() {
     });
     let env = Env::new("fufail");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let mut rx = env.core.events.subscribe();
     let msg = env.ok(
         "chat.send",
@@ -389,7 +389,7 @@ fn answer_without_citation_is_flagged_and_not_retried() {
     });
     let env = Env::new("nocite");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let msg = env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
@@ -414,7 +414,7 @@ fn streamed_content_is_checkpointed_before_the_stream_ends() {
     };
     let env = Env::new("checkpoint");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let core = Arc::clone(&env.core);
     let n2 = nid.clone();
     let worker = std::thread::spawn(move || {
@@ -496,7 +496,7 @@ fn interrupted_stream_after_content_is_incomplete_and_not_retried() {
     });
     let env = Env::new("interrupt");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let code = env.err(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
@@ -528,7 +528,7 @@ fn rate_limit_is_retried_but_auth_failure_is_not() {
     });
     let env = Env::new("retry429");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let t0 = std::time::Instant::now();
     let msg = env.ok(
         "chat.send",
@@ -543,7 +543,7 @@ fn rate_limit_is_retried_but_auth_failure_is_not() {
     );
 
     let mock2 = MockLlm::start(|_| Reply::Status(401, r#"{"error":{"message":"bad key"}}"#.into()));
-    env.profile(&mock2, 32000, false);
+    env.profile(&mock2, 32000);
     let code = env.err(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
@@ -567,7 +567,7 @@ fn clear_conflicts_while_streaming_then_removes_messages_and_summary() {
     });
     let env = Env::new("clear");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let core = Arc::clone(&env.core);
     let n2 = nid.clone();
     let worker = std::thread::spawn(move || {
@@ -634,7 +634,7 @@ fn citation_detail_survives_source_removal_with_a_snapshot() {
     let nid = env.notebook();
     let sid = env.add_text(&nid, "讲义.md", ZH_DOC);
     env.wait_sources_ready(&nid, 1);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let msg = env.ok(
         "chat.send",
         json!({ "notebook_id": nid, "text": LONG_QUESTION }),
@@ -675,7 +675,7 @@ fn cancel_keeps_partial_text_and_ends_cancelled() {
     });
     let env = Env::new("cancel");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     let core = Arc::clone(&env.core);
     let n2 = nid.clone();
     let worker = std::thread::spawn(move || {
@@ -715,7 +715,7 @@ fn notebook_summary_generated_after_model_configured_and_cached_by_fingerprint()
     });
     let env = Env::new("nbsummary");
     let nid = notebook_with_sources(&env, 2);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
     env.wait(15, || {
         let nb = env.ok("notebook.get", json!({ "notebook_id": nid }));
         nb["summary_md"].as_str().is_some_and(|s| !s.is_empty())
@@ -766,7 +766,7 @@ fn chat_tool_generates_studio_quiz_and_imports_to_studio() {
     });
     let env = Env::new("chatstudio");
     let nid = notebook_with_sources(&env, 1);
-    env.profile(&mock, 32000, true);
+    env.profile(&mock, 32000);
 
     let msg = env.ok(
         "chat.send",
@@ -833,7 +833,7 @@ fn studio_retries_three_times_and_records_error_log() {
     });
     let env = Env::new("studioretrylog");
     let nid = notebook_with_sources(&env, 1);
-    env.profile(&mock, 32000, false);
+    env.profile(&mock, 32000);
 
     let created = env.ok(
         "studio.create",

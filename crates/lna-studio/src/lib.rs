@@ -7,6 +7,7 @@ pub mod texfmt;
 pub mod tts;
 pub mod validate;
 
+use lna_ingest::{attachments, context_files};
 use lna_jobs::JobQueue;
 use lna_llm::*;
 use lna_retrieval::RetrievalEngine;
@@ -210,7 +211,7 @@ impl StudioService {
                 fp = format!("source:{}", sid);
             }
         }
-        if selected_ids.is_empty() {
+        if selected_ids.is_empty() && !has_user_material(&config) {
             return Err(LnaError::new(
                 ErrorCode::NoSourceSelected,
                 "Please select at least one ready source",
@@ -655,6 +656,7 @@ impl StudioService {
         id: &str,
         instruction: &str,
         current_draft: Option<&str>,
+        images: &[Attachment],
     ) -> LnaResult<StudioArtifact> {
         let art = self.get(id)?;
         if art.status != ArtifactStatus::DraftReview {
@@ -706,6 +708,22 @@ impl StudioService {
             "工具调用 · 按提示词迭代调整提纲",
             instr,
         );
+        let files = context_files::context_items(images);
+        let files_text = if files.is_empty() {
+            String::new()
+        } else {
+            let ctx = context_files::ToolCtx {
+                db: &self.db,
+                secrets: &self.secrets,
+                llm: &self.llm,
+                notebook_id: &art.notebook_id,
+                profile: &resolved,
+                atts: &files,
+            };
+            let task = format!("按以下修改指令调整「{}」的提纲：{instr}", art.artifact_type.as_str());
+            let b = context_files::brief(&ctx, &task, 4, CancellationToken::new()).await?;
+            format!("\n\nRelevant content from the user's attached files:\n{b}")
+        };
 
         let is_report = art.artifact_type == ArtifactType::Report;
         let sys = if is_report {
@@ -717,20 +735,30 @@ impl StudioService {
             system: sys.into(),
             messages: vec![LlmMessage {
                 role: Role::User,
-                parts: vec![Part::Text(format!(
-                    "Artifact type: {}
+                parts: attachments::user_parts(
+                    &self.db,
+                    &self.secrets,
+                    &self.llm,
+                    &art.notebook_id,
+                    &resolved,
+                    format!(
+                        "Artifact type: {}
 Config: {}
 
 Current Outline:
 {}
 
 User Revision Instruction:
-{}",
-                    art.artifact_type.as_str(),
-                    art.config,
-                    existing_md,
-                    instr
-                ))],
+{}{}",
+                        art.artifact_type.as_str(),
+                        art.config,
+                        existing_md,
+                        instr,
+                        files_text
+                    ),
+                    images,
+                )
+                .await,
             }],
             tools: vec![],
             tool_mode: ToolMode::None,
@@ -1326,6 +1354,19 @@ User Revision Instruction:
                 }),
             )?;
             text
+        };
+
+        let evidence_txt = match self.file_brief(art, resolved, artifact_id, cancel.clone()).await? {
+            Some(brief) => format!(
+                "<user_files>\n用户附带的一次性参考资料中与本次任务相关的内容（视为用户直接提供的材料，与来源同等重要；引用时注明附件名和页码，不要编造）：\n{brief}\n</user_files>\n\n{evidence_txt}"
+            ),
+            None => evidence_txt,
+        };
+        let evidence_txt = match self.image_brief(art, resolved, artifact_id, cancel.clone()).await? {
+            Some(brief) => format!(
+                "<user_images>\n用户附带的图片内容（视为用户直接提供的材料，与来源同等重要；可以引用，但不要编造图片中没有的内容）：\n{brief}\n</user_images>\n\n{evidence_txt}"
+            ),
+            None => evidence_txt,
         };
 
         let review_outline = art
@@ -2281,7 +2322,131 @@ Design rules:\n\
                 let _ = std::fs::remove_dir_all(p);
             }
         }
+        for key in ["images", "files"] {
+            if let Some(ids) = art.config.get(key) {
+                attachments::delete_files(&attachments::resolve(&self.db.paths().root, ids));
+            }
+        }
         Ok(())
+    }
+
+    /// Pictures attached to the Studio requests of a notebook (one list per artifact).
+    pub fn attachments_of_notebook(&self, notebook_id: &str) -> Vec<Vec<Attachment>> {
+        let root = self.db.paths().root.clone();
+        self.db
+            .read(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT json_extract(config_json, '$.images'), json_extract(config_json, '$.files') FROM studio_artifacts WHERE notebook_id = ?1")
+                    .map_err(map_sql_err)?;
+                let rows = stmt
+                    .query_map([notebook_id], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)))
+                    .map_err(map_sql_err)?;
+                let mut out = Vec::new();
+                for (imgs, files) in rows.flatten() {
+                    for raw in [imgs, files].into_iter().flatten() {
+                        if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+                            out.push(attachments::resolve(&root, &v));
+                        }
+                    }
+                }
+                Ok(out)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Text description of the pictures the user attached when creating the artifact, produced once
+    /// (by the active model if it can see images, else the vision model / local OCR) and kept in a
+    /// checkpoint so retries and later stages do not repeat it.
+    /// What the user's attached files say about this request, read on demand by the model with
+    /// the attachment tools once and kept in a checkpoint.
+    async fn file_brief(
+        &self,
+        art: &StudioArtifact,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        cancel: CancellationToken,
+    ) -> LnaResult<Option<String>> {
+        let atts = art.config.get("files").map(|v| attachments::resolve(&self.db.paths().root, v)).unwrap_or_default();
+        let atts = context_files::context_items(&atts);
+        if atts.is_empty() {
+            return Ok(None);
+        }
+        let ids: Vec<&str> = atts.iter().map(|a| a.id.as_str()).collect();
+        if let Some(saved) = self.get_checkpoint(artifact_id, "file_brief")? {
+            let same = saved
+                .get("ids")
+                .and_then(Value::as_array)
+                .map(|v| v.iter().filter_map(Value::as_str).eq(ids.iter().copied()))
+                .unwrap_or(false);
+            if same {
+                if let Some(t) = saved.get("text").and_then(Value::as_str) {
+                    return Ok(Some(t.to_string()));
+                }
+            }
+        }
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "tool",
+            "按需阅读附件",
+            &format!("正在按需读取用户附带的 {} 个参考文件/链接…", atts.len()),
+        );
+        let task = format!(
+            "为生成学习成品「{}」收集材料。用户要求（config）：{}",
+            art.artifact_type.as_str(),
+            art.config
+        );
+        let ctx = context_files::ToolCtx {
+            db: &self.db,
+            secrets: &self.secrets,
+            llm: &self.llm,
+            notebook_id: &art.notebook_id,
+            profile: resolved,
+            atts: &atts,
+        };
+        let text = context_files::brief(&ctx, &task, 6, cancel).await?;
+        self.save_checkpoint(artifact_id, "file_brief", json!({ "ids": ids, "text": text }))?;
+        Ok(Some(text).filter(|t| !t.trim().is_empty()))
+    }
+
+    async fn image_brief(
+        &self,
+        art: &StudioArtifact,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        cancel: CancellationToken,
+    ) -> LnaResult<Option<String>> {
+        let atts = art.config.get("images").map(|v| attachments::resolve(&self.db.paths().root, v)).unwrap_or_default();
+        if atts.is_empty() {
+            return Ok(None);
+        }
+        let ids: Vec<&str> = atts.iter().map(|a| a.id.as_str()).collect();
+        if let Some(saved) = self.get_checkpoint(artifact_id, "image_brief")? {
+            let same = saved
+                .get("ids")
+                .and_then(Value::as_array)
+                .map(|v| v.iter().filter_map(Value::as_str).eq(ids.iter().copied()))
+                .unwrap_or(false);
+            if same {
+                if let Some(t) = saved.get("text").and_then(Value::as_str) {
+                    return Ok(Some(t.to_string()));
+                }
+            }
+        }
+        if cancel.is_cancelled() {
+            return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+        }
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "tool",
+            "工具调用 · 识别附带图片",
+            &format!("正在读取 {} 张图片", atts.len()),
+        );
+        let topic = art.config.get("topic").and_then(Value::as_str).unwrap_or("");
+        let text = attachments::describe(&self.db, &self.secrets, &self.llm, &art.notebook_id, resolved, &atts, topic).await;
+        self.save_checkpoint(artifact_id, "image_brief", json!({ "ids": ids, "text": text }))?;
+        Ok(Some(text))
     }
 
     pub fn rename(&self, id: &str, title: &str) -> LnaResult<()> {
@@ -2318,11 +2483,15 @@ Design rules:\n\
         id: &str,
         config: Option<Value>,
         use_selected_sources: bool,
+        new_images: Vec<Attachment>,
     ) -> LnaResult<StudioArtifact> {
         let art = self.get(id)?;
+        let has_material = !new_images.is_empty()
+            || has_user_material(config.as_ref().unwrap_or(&art.config))
+            || has_user_material(&art.config);
         let (source_ids, fp) = if use_selected_sources {
             let (selected_ids, cur_fp) = self.current_sources_fingerprint(&art.notebook_id)?;
-            if selected_ids.is_empty() {
+            if selected_ids.is_empty() && !has_material {
                 return Err(LnaError::new(
                     ErrorCode::NoSourceSelected,
                     "Please select at least one ready source",
@@ -2332,7 +2501,28 @@ Design rules:\n\
         } else {
             (art.source_ids.clone(), art.sources_fingerprint.clone())
         };
-        let cfg_val = config.unwrap_or(art.config);
+        let mut cfg_val = config.unwrap_or_else(|| art.config.clone());
+        // Pictures and files: a new set replaces the old one of the same kind; without new ones
+        // the earlier attachments stay.
+        if let Some(obj) = cfg_val.as_object_mut() {
+            let new_pics = attachments::images(&new_images);
+            let new_files = context_files::context_items(&new_images);
+            for (key, fresh) in [("images", new_pics), ("files", new_files)] {
+                if !fresh.is_empty() {
+                    if let Some(old) = art.config.get(key) {
+                        let old = attachments::resolve(&self.db.paths().root, old);
+                        let stale: Vec<Attachment> =
+                            old.into_iter().filter(|o| !fresh.iter().any(|n| n.id == o.id)).collect();
+                        attachments::delete_files(&stale);
+                    }
+                    obj.insert(key.into(), attachments::ids_of(&fresh));
+                } else if !obj.contains_key(key) {
+                    if let Some(old) = art.config.get(key) {
+                        obj.insert(key.into(), old.clone());
+                    }
+                }
+            }
+        }
         let cfg_json = serde_json::to_string(&cfg_val).unwrap_or_else(|_| "{}".into());
         let sids_json = serde_json::to_string(&source_ids).unwrap_or_else(|_| "[]".into());
         let now = now_ms();
@@ -3969,6 +4159,10 @@ Design rules:\n\
         artifact_id: &str,
         cancel: CancellationToken,
     ) -> LnaResult<String> {
+        if art.source_ids.is_empty() {
+            // generated from the user's own pictures / files only
+            return Ok(String::new());
+        }
         let topic_query = art
             .config
             .get("topic")
@@ -5211,4 +5405,10 @@ mod mindmap_merge_tests {
         mm_outline(&nodes, "b1", 0, &mut outline);
         assert_eq!(outline, "- [b1x] 矩阵的逆\n");
     }
+}
+
+/// The request carries the user's own material (pictures or files), so it can be generated
+/// without any selected source.
+fn has_user_material(config: &Value) -> bool {
+    ["images", "files"].iter().any(|k| config.get(*k).and_then(Value::as_array).is_some_and(|a| !a.is_empty()))
 }

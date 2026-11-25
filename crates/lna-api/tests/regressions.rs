@@ -29,7 +29,9 @@ fn profile_has_secret_reflects_the_stored_secret() {
         "profile.upsert",
         json!({
             "display_name": "t", "protocol": "chat_completion",
-            "base_url": "http://127.0.0.1:1/v1", "model_id": "m", "activate": true
+            "base_url": "http://127.0.0.1:1/v1", "model_id": "m",
+            // nothing listens on port 1: an embedding endpoint is saved without the chat probe
+            "purpose": "embedding"
         }),
     );
     let prof = &saved["result"];
@@ -172,23 +174,37 @@ fn source_retry_resets_status_and_errors_and_emits_event() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Tool / JSON flags come only from the probe: what a client sends is ignored, and a chat
+/// profile whose endpoint cannot be probed is not saved at all.
 #[test]
-fn profile_upsert_preserves_capabilities_on_insert() {
+fn profile_upsert_ignores_client_capability_flags() {
     let dir = temp_dir("caps");
     let core = CoreRuntime::open(dir.clone(), true).unwrap();
+    let claimed = json!({ "streaming": true, "tools": true, "json_schema": true, "supports_vision": true });
+    let refused = call(
+        &core,
+        "profile.upsert",
+        json!({
+            "display_name": "caps", "protocol": "chat_completion",
+            "base_url": "http://127.0.0.1:1/v1", "model_id": "m", "capabilities": claimed
+        }),
+    );
+    assert!(!refused["error"].is_null(), "unreachable chat endpoint must not be saved: {refused}");
+    assert!(call(&core, "profile.list", json!({}))["result"]["profiles"].as_array().unwrap().is_empty());
+
     let saved = call(
         &core,
         "profile.upsert",
         json!({
-            "display_name": "caps",
-            "protocol": "chat_completion",
-            "base_url": "http://127.0.0.1:1/v1",
-            "model_id": "m",
-            "capabilities": { "streaming": true, "tools": true, "json_schema": true }
+            "display_name": "emb", "protocol": "chat_completion",
+            "base_url": "http://127.0.0.1:1/v1", "model_id": "m", "capabilities": claimed,
+            "purpose": "embedding"
         }),
     );
-    assert_eq!(saved["result"]["capabilities"]["tools"], json!(true));
-    assert_eq!(saved["result"]["capabilities"]["json_schema"], json!(true));
+    let caps = &saved["result"]["capabilities"];
+    assert_eq!(caps["tools"], json!(false), "{saved}");
+    assert_eq!(caps["json_schema"], json!(false));
+    assert_eq!(caps["supports_vision"], json!(true), "media flags are still the user's choice");
     drop(core);
     let _ = std::fs::remove_dir_all(&dir);
 }

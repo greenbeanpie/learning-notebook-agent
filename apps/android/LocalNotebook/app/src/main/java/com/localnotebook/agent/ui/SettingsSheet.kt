@@ -199,7 +199,8 @@ fun UnifiedSettingsSheet(
                                 )
                             }
                             items(profiles, key = { it.id }) { prof ->
-                                val tag = if (prof.isActive) (if (en) " (Default)" else "（默认）") else ""
+                                val tag = (if (prof.isActive) (if (en) " (Default)" else "（默认）") else "") +
+                                    (if (!prof.eligible) L10n.t("model.disabled_tag", en) else "")
                                 FilterChip(
                                     selected = selectedProfileId == prof.id,
                                     onClick = { selectProfile(prof) },
@@ -401,6 +402,19 @@ fun UnifiedSettingsSheet(
                             }
                         }
 
+                        profiles.firstOrNull { it.id == selectedProfileId }?.let { cur ->
+                            val line = cur.unsupportedReason?.let { "⚠ $it" } ?: cur.capsSummary
+                            if (line.isNotEmpty()) Text(
+                                line,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (cur.eligible) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        Text(
+                            L10n.t("model.requirement", en),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         Button(
                             onClick = {
                                 val hdrMap = extraHeaders

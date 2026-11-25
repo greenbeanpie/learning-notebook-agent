@@ -58,12 +58,15 @@ data class CitationDetail(
     val removed: Boolean,
 )
 
+data class ChatAttachment(val name: String, val path: String, val kind: String = "image", val url: String? = null, val bytes: Long = 0, val id: String = "")
+
 data class ChatMessageItem(
     val id: String,
     val role: String,
     val content: String,
     val thoughts: List<ThoughtStepItem>,
     val citations: List<CitationRef>,
+    val attachments: List<ChatAttachment> = emptyList(),
 )
 
 data class ArtifactSourceRef(
@@ -91,6 +94,8 @@ data class StudioArtifactItem(
     val errorLog: String,
     val outputDir: String = "",
     val progressState: org.json.JSONObject = org.json.JSONObject(),
+    /** Unix ms when the artifact was created (the Studio list shows its age). */
+    val createdAt: Long = 0L,
 )
 
 data class PdfPreviewTarget(
@@ -131,6 +136,11 @@ data class ModelProfileItem(
     val supportsAudio: Boolean,
     val supportsVideo: Boolean,
     val extraHeaders: Map<String, String>,
+    /** Supports tool calling and structured output (or is an embedding endpoint). */
+    val eligible: Boolean = true,
+    val unsupportedReason: String? = null,
+    val probePending: Boolean = false,
+    val capsSummary: String = "",
 )
 
 data class MediaRoutingConfig(

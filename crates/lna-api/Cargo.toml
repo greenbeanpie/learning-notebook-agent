@@ -25,3 +25,7 @@ tracing.workspace = true
 zip.workspace = true
 sha2.workspace = true
 hex.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+image.workspace = true

@@ -117,8 +117,27 @@ fn close_while_a_request_is_in_flight_returns_within_2_seconds() {
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { continue };
             std::thread::spawn(move || {
-                let mut buf = [0u8; 8192];
-                let _ = s.read(&mut buf);
+                let mut buf = vec![0u8; 65536];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let head = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+                // the capability probe run when the profile is saved: answer as a capable model
+                let probe: Option<&[u8]> = if req.contains("lna_capability_probe") && req.contains("\"tools\"") {
+                    Some(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"p\",\"function\":{\"name\":\"lna_capability_probe\",\"arguments\":\"{\\\"ok\\\":true}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
+                } else if req.contains("Return only a JSON object with ok set to true.") {
+                    Some(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{\\\"ok\\\":true}\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+                } else if req.contains("Reply with OK.") {
+                    Some(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+                } else {
+                    None
+                };
+                if let Some(body) = probe {
+                    let _ = s.write_all(head);
+                    let _ = s.write_all(body);
+                    let _ = s.flush();
+                    let _ = s.shutdown(std::net::Shutdown::Write);
+                    return;
+                }
                 let _ = s.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n");
                 let _ = s.write_all(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"start\"},\"finish_reason\":null}]}\n\n");
                 let _ = s.flush();

@@ -350,7 +350,7 @@ final class AppState: ObservableObject {
             }
 
             let artRes = try await core.call(method: "studio.list", params: ["notebook_id": activeNotebookId])
-            artifacts = (artRes["artifacts"] as? [[String: Any]] ?? []).reversed().map { a in
+            artifacts = (artRes["artifacts"] as? [[String: Any]] ?? []).map { a in
                 let cfg = a["config"] as? [String: Any] ?? [:]
                 let rawRefs = a["source_refs"] as? [[String: Any]] ?? []
                 let refs = rawRefs.map {

@@ -113,24 +113,33 @@
                     </StackPanel>
                 </Border>
                 <ListView x:Name="ChatList" Grid.Row="1" SelectionMode="None" ItemContainerStyle="{StaticResource StretchListViewItemStyle}" />
-                <Border Grid.Row="2" Background="{StaticResource ElevatedBgBrush}" BorderBrush="{StaticResource StrongBorderBrush}" BorderThickness="1" CornerRadius="26" MinHeight="52" Padding="16,6,8,6">
-                    <Grid ColumnSpacing="10">
+                <Border Grid.Row="2" Background="{StaticResource ElevatedBgBrush}" BorderBrush="{StaticResource StrongBorderBrush}" BorderThickness="1" CornerRadius="26" MinHeight="52" Padding="8,6,8,6">
+                    <Grid RowSpacing="6">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <ContentControl x:Name="ChatAttachStripHost" Grid.Row="0" HorizontalContentAlignment="Stretch" Margin="8,2,0,0" />
+                    <Grid Grid.Row="1" ColumnSpacing="6">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="ChatInputBox" Grid.Column="0" MinHeight="38" FontSize="14" AcceptsReturn="False" Background="Transparent" BorderThickness="0" VerticalAlignment="Center" KeyDown="OnChatKeyDown" />
-                        <Button x:Name="SendBtn" Grid.Column="1" MinWidth="40" Width="40" MinHeight="40" Height="40" Padding="0" CornerRadius="20" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Background="{StaticResource AccentBlueBrush}" Foreground="{StaticResource AccentBlueTextBrush}" BorderThickness="0" Click="OnSendChatClick">
+                        <ContentControl x:Name="ChatAttachBtnHost" Grid.Column="0" VerticalAlignment="Center" />
+                        <TextBox x:Name="ChatInputBox" Grid.Column="1" MinHeight="38" FontSize="14" AcceptsReturn="False" Background="Transparent" BorderThickness="0" VerticalAlignment="Center" KeyDown="OnChatKeyDown" />
+                        <Button x:Name="SendBtn" Grid.Column="2" MinWidth="40" Width="40" MinHeight="40" Height="40" Padding="0" CornerRadius="20" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Background="{StaticResource AccentBlueBrush}" Foreground="{StaticResource AccentBlueTextBrush}" BorderThickness="0" Click="OnSendChatClick">
                             <Viewbox Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center">
                                 <PathIcon Width="24" Height="24" Data="M13,20H11V8L5.5,13.5L4.08,12.08L12,4.16L19.92,12.08L18.5,13.5L13,8V20Z" />
                             </Viewbox>
                         </Button>
-                        <Button x:Name="StopBtn" Grid.Column="2" MinWidth="40" Width="40" MinHeight="40" Height="40" Padding="0" CornerRadius="20" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Background="{StaticResource HoverBgBrush}" Foreground="{StaticResource TextPrimaryBrush}" BorderBrush="{StaticResource StrongBorderBrush}" BorderThickness="1" Click="OnStopChatClick" Visibility="Collapsed">
+                        <Button x:Name="StopBtn" Grid.Column="3" MinWidth="40" Width="40" MinHeight="40" Height="40" Padding="0" CornerRadius="20" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Background="{StaticResource HoverBgBrush}" Foreground="{StaticResource TextPrimaryBrush}" BorderBrush="{StaticResource StrongBorderBrush}" BorderThickness="1" Click="OnStopChatClick" Visibility="Collapsed">
                             <Viewbox Width="16" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center">
                                 <PathIcon Width="24" Height="24" Data="M6,6H18V18H6Z" />
                             </Viewbox>
                         </Button>
+                    </Grid>
                     </Grid>
                 </Border>
             </Grid>

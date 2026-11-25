@@ -294,8 +294,8 @@ pub async fn run_ai_index_for_doc(
         reasoning: ReasoningOptions::default(),
     };
 
-    let (raw, usage) = llm
-        .complete_text(&resolved, &req, CancellationToken::new())
+    let (value, usage) = llm
+        .complete_structured(&resolved, &req, "source_index", &index_schema(), CancellationToken::new())
         .await?;
     let _ = lna_storage::record_usage(
         db,
@@ -309,7 +309,7 @@ pub async fn run_ai_index_for_doc(
         false,
     );
 
-    Ok(parse_ai_index_response(&src.id, &raw))
+    Ok(parse_ai_index_response(&src.id, value))
 }
 
 /// For pure-scanned PDFs (no text layer): inspect only front-matter/TOC pages (up to 8 pages)
@@ -386,8 +386,8 @@ pub async fn run_ai_vision_toc_index(
         reasoning: ReasoningOptions::default(),
     };
 
-    let (raw, usage) = llm
-        .complete_text(&resolved, &req, CancellationToken::new())
+    let (value, usage) = llm
+        .complete_structured(&resolved, &req, "source_index", &index_schema(), CancellationToken::new())
         .await?;
     let _ = lna_storage::record_usage(
         db,
@@ -401,67 +401,47 @@ pub async fn run_ai_vision_toc_index(
         false,
     );
 
-    if let Some(parsed) = parse_ai_index_response(&src.id, &raw) {
-        return Ok(Some(parsed));
-    }
-
-    // Graceful fallback if the vision model replied with plain text (e.g. `=== PAGE N ===`) instead of JSON
-    let trimmed = raw.trim();
-    if !trimmed.is_empty() {
-        let mut page_texts = Vec::new();
-        let mut cur_page: Option<u32> = None;
-        let mut buf = String::new();
-        for line in trimmed.lines() {
-            let l = line.trim();
-            if l.starts_with("=== PAGE ") && l.ends_with(" ===") {
-                if let Some(p) = cur_page.take() {
-                    if !buf.trim().is_empty() {
-                        page_texts.push((p, buf.trim().to_string()));
-                    }
-                    buf.clear();
-                }
-                let mid = l.trim_start_matches("=== PAGE ").trim_end_matches(" ===").trim();
-                cur_page = mid.parse::<u32>().ok();
-            } else {
-                if !buf.is_empty() {
-                    buf.push('\n');
-                }
-                buf.push_str(line);
-            }
-        }
-        if let Some(p) = cur_page {
-            if !buf.trim().is_empty() {
-                page_texts.push((p, buf.trim().to_string()));
-            }
-        }
-        if page_texts.is_empty() {
-            let first_page = probe_pages.first().copied().unwrap_or(1);
-            page_texts.push((first_page, trimmed.to_string()));
-        }
-        return Ok(Some(AiIndexOutput {
-            guide_summary_md: String::new(),
-            guide_topics: Vec::new(),
-            nodes: Vec::new(),
-            scanned_page_texts: page_texts,
-        }));
-    }
-
-    Ok(None)
+    Ok(parse_ai_index_response(&src.id, value))
 }
 
-pub fn parse_ai_index_response(source_id: &str, raw: &str) -> Option<AiIndexOutput> {
-    let trimmed = raw.trim();
-    let json_slice = if let Some(s) = trimmed.strip_prefix("```json") {
-        s.trim().strip_suffix("```").unwrap_or(s).trim()
-    } else if let Some(s) = trimmed.strip_prefix("```") {
-        s.trim().strip_suffix("```").unwrap_or(s).trim()
-    } else if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
-        &trimmed[start..=end]
-    } else {
-        trimmed
-    };
+/// JSON schema of the AI index answer (strict-mode compatible: every field required).
+pub fn index_schema() -> serde_json::Value {
+    let opt_int = serde_json::json!({ "type": ["integer", "null"] });
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "guide_summary_md": { "type": "string" },
+            "guide_topics": { "type": "array", "items": { "type": "string" } },
+            "nodes": { "type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "parent_id": { "type": ["string", "null"] },
+                    "level": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "keywords": { "type": "array", "items": { "type": "string" } },
+                    "page_start": opt_int, "page_end": opt_int,
+                    "char_start": opt_int, "char_end": opt_int
+                },
+                "required": ["id", "parent_id", "level", "title", "summary", "keywords",
+                             "page_start", "page_end", "char_start", "char_end"],
+                "additionalProperties": false
+            }},
+            "page_texts": { "type": "array", "items": {
+                "type": "object",
+                "properties": { "page": { "type": "integer" }, "text": { "type": "string" } },
+                "required": ["page", "text"],
+                "additionalProperties": false
+            }}
+        },
+        "required": ["guide_summary_md", "guide_topics", "nodes", "page_texts"],
+        "additionalProperties": false
+    })
+}
 
-    let parsed: RawAiIndexJson = serde_json::from_str(json_slice).ok()?;
+pub fn parse_ai_index_response(source_id: &str, value: serde_json::Value) -> Option<AiIndexOutput> {
+    let parsed: RawAiIndexJson = serde_json::from_value(value).ok()?;
     let summary = parsed.guide_summary_md.trim().to_string();
     let topics: Vec<String> = parsed
         .guide_topics
@@ -949,7 +929,7 @@ mod tests {
 
     #[test]
     fn parse_ai_index_response_extracts_guide_topics_and_nodes() {
-        let raw = r#"```json
+        let raw = r#"
         {
           "guide_summary_md": "本书系统讲解了**向量空间**与**矩阵分解**。",
           "guide_topics": ["向量空间", "特征值", "奇异值分解"],
@@ -958,8 +938,8 @@ mod tests {
             {"id": "c1_2", "parent_id": "c1", "level": 2, "title": "1.2 长度与点积", "summary": "余弦公式与施瓦茨不等式", "keywords": ["余弦", "不等式"], "page_start": 30, "page_end": 40}
           ]
         }
-        ```"#;
-        let out = parse_ai_index_response("src_1", raw).expect("parsed");
+        "#;
+        let out = parse_ai_index_response("src_1", serde_json::from_str(raw).unwrap()).expect("parsed");
         assert!(out.guide_summary_md.contains("**向量空间**"));
         assert_eq!(out.guide_topics.len(), 3);
         assert_eq!(out.nodes.len(), 2);

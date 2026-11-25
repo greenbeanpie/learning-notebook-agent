@@ -1294,25 +1294,31 @@ public sealed class ArtifactViewerPane : IDisposable
             MinHeight = 34,
             Padding = new Thickness(14, 4, 14, 4),
         };
+        var reviseImages = new ImageAttachments(
+            () => WinRT.Interop.WindowNative.GetWindowHandle(_hostWindow),
+            () => _hostWindow.Content?.XamlRoot,
+            msg => Say(InfoBarSeverity.Warning, L10n.T("img.title"), msg));
         async Task RunReviseAsync()
         {
             var instr = reviseBox.Text.Trim();
+            if (instr.Length == 0 && reviseImages.HasItems) instr = L10n.T("img.revise_default");
             if (instr.Length == 0) return;
             reviseBtn.IsEnabled = false;
             approveBtn.IsEnabled = false;
             reviseBtn.Content = L10n.T("art.outline_revising");
             try
             {
-                var res = await Core(
-                    "studio.revise_draft",
+                var reviseArgs = ImageAttachments.Merge(
                     Args(("artifact_id", _id), ("instruction", instr), ("draft", editorBox.Text.Trim())),
-                    L10n.T("art.outline_revise_btn"));
+                    reviseImages.ToArgs());
+                var res = await Core("studio.revise_draft", reviseArgs, L10n.T("art.outline_revise_btn"));
                 if (res is { } updated && updated.TryGetProperty("draft", out var newDraft))
                 {
                     var newMd = DraftToMarkdown(newDraft);
                     editorBox.Text = newMd;
                     previewScroll.Content = RenderPreviewContent(newMd);
                     reviseBox.Text = "";
+                    reviseImages.Clear();
                     Say(InfoBarSeverity.Success, L10n.T("art.outline_revised_title"), L10n.T("art.outline_revised_msg"));
                 }
             }
@@ -1332,13 +1338,20 @@ public sealed class ArtifactViewerPane : IDisposable
                 await RunReviseAsync();
             }
         };
-        var reviseBar = new Grid { ColumnSpacing = 8 };
-        reviseBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        reviseBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(reviseBox, 0);
-        Grid.SetColumn(reviseBtn, 1);
-        reviseBar.Children.Add(reviseBox);
-        reviseBar.Children.Add(reviseBtn);
+        var reviseRow = new Grid { ColumnSpacing = 8 };
+        reviseRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        reviseRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        reviseRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(reviseImages.AttachButton, 0);
+        Grid.SetColumn(reviseBox, 1);
+        Grid.SetColumn(reviseBtn, 2);
+        reviseRow.Children.Add(reviseImages.AttachButton);
+        reviseRow.Children.Add(reviseBox);
+        reviseRow.Children.Add(reviseBtn);
+        var reviseBar = new StackPanel { Spacing = 6 };
+        reviseBar.Children.Add(reviseImages.Strip);
+        reviseBar.Children.Add(reviseRow);
+        reviseImages.Hook(reviseBar, reviseBox);
 
         var rootGrid = new Grid { RowSpacing = 10 };
         rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -2425,7 +2438,7 @@ internal sealed class InteractiveArtifactView : IDisposable
 
     private FrameworkElement BuildLecture()
     {
-        _lecture = new LecturePlayer(_artifactId, _art, _notify);
+        _lecture = new LecturePlayer(_artifactId, _art, _notify, () => WinRT.Interop.WindowNative.GetWindowHandle(_hostWindow));
         return _lecture.Root;
     }
 

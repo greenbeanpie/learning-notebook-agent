@@ -28,16 +28,31 @@ import com.localnotebook.agent.core.L10n
 import com.localnotebook.agent.core.StudioArtifactItem
 import com.localnotebook.agent.core.ThoughtStepItem
 
+/** "3 分钟前" style age of a timestamp (unix ms). */
+internal fun timeAgo(createdMs: Long, nowMs: Long, en: Boolean): String {
+    if (createdMs <= 0) return ""
+    val secs = ((nowMs - createdMs) / 1000).coerceAtLeast(0)
+    if (secs < 60) return L10n.t("time.just_now", en)
+    val mins = secs / 60
+    if (mins < 60) return String.format(L10n.t("time.minutes", en), mins)
+    val hours = mins / 60
+    if (hours < 24) return String.format(L10n.t("time.hours", en), hours)
+    val days = hours / 24
+    if (days < 30) return String.format(L10n.t("time.days", en), days)
+    if (days < 365) return String.format(L10n.t("time.months", en), days / 30)
+    return String.format(L10n.t("time.years", en), days / 365)
+}
+
 @Composable
 fun StudioScreen(
     state: AppUiState,
-    onCreateStudio: (kind: String, topic: String, detail: String) -> Unit,
+    onCreateStudio: (kind: String, topic: String, detail: String, images: org.json.JSONArray?) -> Unit,
     onOpenArtifact: (StudioArtifactItem?) -> Unit,
     onToggleFullscreen: () -> Unit,
     onRetryArtifact: (String) -> Unit,
     onRegenerateArtifact: (StudioArtifactItem) -> Unit,
     onApproveDraft: (String, String) -> Unit,
-    onReviseDraft: (String, String, String, (String) -> Unit) -> Unit = { _, _, _, _ -> },
+    onReviseDraft: (String, String, String, org.json.JSONArray?, (String) -> Unit) -> Unit = { _, _, _, _, _ -> },
     onFeedback: (String, Int) -> Unit,
     onQuizConcept: (String) -> Unit,
     onExpandMindmap: (String) -> Unit,
@@ -47,6 +62,13 @@ fun StudioScreen(
     core: com.localnotebook.agent.core.CoreClient? = null,
 ) {
     val en = state.prefs.isEnglish
+    // re-evaluated every 30 s so the "x minutes ago" labels stay current
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000)
+            value = System.currentTimeMillis()
+        }
+    }
     val openArt = state.activeArtifact
     var pendingKind by remember { mutableStateOf<String?>(null) }
 
@@ -61,7 +83,7 @@ fun StudioScreen(
             onRetry = { onRetryArtifact(openArt.id) },
             onRegenerate = { onRegenerateArtifact(openArt) },
             onApproveDraft = { md -> onApproveDraft(openArt.id, md) },
-            onReviseDraft = { instr, cur, cb -> onReviseDraft(openArt.id, instr, cur, cb) },
+            onReviseDraft = { instr, cur, im, cb -> onReviseDraft(openArt.id, instr, cur, im, cb) },
             onFeedback = { v -> onFeedback(openArt.id, v) },
             onQuizConcept = onQuizConcept,
             onExpandMindmap = onExpandMindmap,
@@ -137,8 +159,9 @@ fun StudioScreen(
                 ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(art.title, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val age = timeAgo(art.createdAt, now, en)
                         Text(
-                            "${L10n.t("studio.${if (art.isKnowledgeGraph) "knowledge_graph" else art.artifactType}", en)} · ${art.status}",
+                            "${L10n.t("studio.${if (art.isKnowledgeGraph) "knowledge_graph" else art.artifactType}", en)} · ${art.status}${if (age.isNotEmpty()) " · $age" else ""}",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -156,6 +179,7 @@ fun StudioScreen(
         var detailLevel by remember(kind) { mutableStateOf(if (kind == "lecture") "auto" else "standard") }
         var lectureMode by remember(kind) { mutableStateOf("general") }
         var confirmScope by remember(kind) { mutableStateOf(true) }
+        val cfgImages = rememberImageAttachState()
         AlertDialog(
             onDismissRequest = { pendingKind = null },
             title = { Text(if (en) "Configure ${L10n.t("studio.$kind", en)}" else "生成配置 · ${L10n.t("studio.$kind", en)}") },
@@ -170,6 +194,11 @@ fun StudioScreen(
                         maxLines = 6,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AttachImageButton(cfgImages, en)
+                        Text(L10n.t("img.cfg_hint", en), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    AttachStrip(cfgImages, en)
                     if (kind == "mindmap" || kind == "knowledge_graph") {
                         Text(if (en) "Detail Level" else "详尽程度", style = MaterialTheme.typography.labelMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -224,7 +253,7 @@ fun StudioScreen(
             },
             confirmButton = {
                 Button(onClick = {
-                    onCreateStudio(kind, topicInput.trim(), if (kind == "lecture") "$lectureMode|$detailLevel|${if (confirmScope) 1 else 0}" else detailLevel)
+                    onCreateStudio(kind, topicInput.trim(), if (kind == "lecture") "$lectureMode|$detailLevel|${if (confirmScope) 1 else 0}" else detailLevel, cfgImages.toJson())
                     pendingKind = null
                 }) {
                     Text(if (en) "Generate" else "开始生成")
@@ -251,7 +280,7 @@ private fun ArtifactViewerScreen(
     onRetry: () -> Unit,
     onRegenerate: () -> Unit,
     onApproveDraft: (String) -> Unit,
-    onReviseDraft: (String, String, (String) -> Unit) -> Unit,
+    onReviseDraft: (String, String, org.json.JSONArray?, (String) -> Unit) -> Unit,
     onFeedback: (Int) -> Unit,
     onQuizConcept: (String) -> Unit,
     onExpandMindmap: (String) -> Unit,
@@ -375,9 +404,12 @@ private fun ArtifactViewerScreen(
                     var draft by remember(artifact.id) { mutableStateOf(artifact.draftMarkdown) }
                     var reviseInput by remember(artifact.id) { mutableStateOf("") }
                     var revising by remember(artifact.id) { mutableStateOf(false) }
+                    val reviseImages = rememberImageAttachState()
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
                         OutlinedTextField(value = draft, onValueChange = { draft = it }, modifier = Modifier.weight(1f).fillMaxWidth())
+                        AttachStrip(reviseImages, en)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            AttachImageButton(reviseImages, en, enabled = !revising)
                             OutlinedTextField(
                                 value = reviseInput,
                                 onValueChange = { reviseInput = it },
@@ -386,12 +418,14 @@ private fun ArtifactViewerScreen(
                                 modifier = Modifier.weight(1f),
                             )
                             OutlinedButton(
-                                enabled = !revising && reviseInput.isNotBlank(),
+                                enabled = !revising && (reviseInput.isNotBlank() || reviseImages.hasItems),
                                 onClick = {
                                     revising = true
-                                    onReviseDraft(reviseInput, draft) { updated ->
+                                    val instr = reviseInput.ifBlank { L10n.t("img.revise_default", en) }
+                                    onReviseDraft(instr, draft, reviseImages.toJson()) { updated ->
                                         draft = updated
                                         reviseInput = ""
+                                        reviseImages.clear()
                                         revising = false
                                     }
                                 },
