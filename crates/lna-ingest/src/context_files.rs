@@ -70,7 +70,11 @@ fn check_media_allowed(db: &Database, kind: SourceKind) -> LnaResult<()> {
             "已在设置中关闭音视频文件处理，如需导入请在“模型协议配置”中开启。",
         ));
     }
-    let (modality, label) = if kind == SourceKind::Video { ("video", "视频") } else { ("audio", "音频") };
+    let (modality, label) = if kind == SourceKind::Video {
+        ("video", "视频")
+    } else {
+        ("audio", "音频")
+    };
     if lna_storage::resolve_modality_profile(db, modality)?.is_none() {
         return Err(LnaError::new(
             ErrorCode::ModelNotConfigured,
@@ -88,7 +92,9 @@ pub fn save_files(db: &Database, items: &Value, already: usize) -> LnaResult<Vec
         return Ok(Vec::new());
     };
     if arr.len() + already > MAX_IMAGES_PER_MESSAGE {
-        return Err(LnaError::invalid(format!("一次最多附带 {MAX_IMAGES_PER_MESSAGE} 个图片、文件或链接")));
+        return Err(LnaError::invalid(format!(
+            "一次最多附带 {MAX_IMAGES_PER_MESSAGE} 个图片、文件或链接"
+        )));
     }
     let root = db.paths().root.clone();
     let dir = attachments_dir(&root);
@@ -126,13 +132,18 @@ pub fn save_files(db: &Database, items: &Value, already: usize) -> LnaResult<Vec
             ));
         }
         if kind == SourceKind::Image {
-            out.extend(crate::attachments::save_images(&root, &json!([{ "name": name, "data_base64": b64 }]))?);
+            out.extend(crate::attachments::save_images(
+                &root,
+                &json!([{ "name": name, "data_base64": b64 }]),
+            )?);
             continue;
         }
-        std::fs::create_dir_all(&dir).map_err(|e| LnaError::internal(format!("无法创建附件目录：{e}")))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| LnaError::internal(format!("无法创建附件目录：{e}")))?;
         let id = new_ulid();
         let path = dir.join(format!("{id}.{ext}"));
-        std::fs::write(&path, &raw).map_err(|e| LnaError::internal(format!("无法保存文件：{e}")))?;
+        std::fs::write(&path, &raw)
+            .map_err(|e| LnaError::internal(format!("无法保存文件：{e}")))?;
         let att = Attachment {
             id,
             name,
@@ -156,20 +167,30 @@ pub fn save_links(db: &Database, items: &Value, already: usize) -> LnaResult<Vec
         return Ok(Vec::new());
     };
     if arr.len() + already > MAX_IMAGES_PER_MESSAGE {
-        return Err(LnaError::invalid(format!("一次最多附带 {MAX_IMAGES_PER_MESSAGE} 个图片、文件或链接")));
+        return Err(LnaError::invalid(format!(
+            "一次最多附带 {MAX_IMAGES_PER_MESSAGE} 个图片、文件或链接"
+        )));
     }
     let dir = attachments_dir(&db.paths().root);
     let mut out = Vec::new();
     for raw in arr.iter().filter_map(Value::as_str) {
         let url = ssrf::validate_public_url(raw.trim())?;
-        std::fs::create_dir_all(&dir).map_err(|e| LnaError::internal(format!("无法创建附件目录：{e}")))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| LnaError::internal(format!("无法创建附件目录：{e}")))?;
         let id = new_ulid();
-        let name = format!("{}{}", url.host_str().unwrap_or(""), url.path().trim_end_matches('/'));
+        let name = format!(
+            "{}{}",
+            url.host_str().unwrap_or(""),
+            url.path().trim_end_matches('/')
+        );
         let att = Attachment {
             id: id.clone(),
             name,
             mime: "text/html".into(),
-            path: dir.join(format!("{id}.meta.json")).to_string_lossy().into_owned(),
+            path: dir
+                .join(format!("{id}.meta.json"))
+                .to_string_lossy()
+                .into_owned(),
             width: 0,
             height: 0,
             bytes: 0,
@@ -184,11 +205,17 @@ pub fn save_links(db: &Database, items: &Value, already: usize) -> LnaResult<Vec
 
 /// Files and links among `atts`.
 pub fn context_items(atts: &[Attachment]) -> Vec<Attachment> {
-    atts.iter().filter(|a| a.kind == "file" || a.kind == "link").cloned().collect()
+    atts.iter()
+        .filter(|a| a.kind == "file" || a.kind == "link")
+        .cloned()
+        .collect()
 }
 
 fn is_text_kind(k: SourceKind) -> bool {
-    matches!(k, SourceKind::Txt | SourceKind::Md | SourceKind::Note | SourceKind::Csv | SourceKind::Web)
+    matches!(
+        k,
+        SourceKind::Txt | SourceKind::Md | SourceKind::Note | SourceKind::Csv | SourceKind::Web
+    )
 }
 
 /// `<attached_files>`: what is attached and how each item can be read. No content is included.
@@ -202,12 +229,22 @@ pub fn manifest(_profile: &ResolvedProfile, atts: &[Attachment]) -> String {
     );
     for a in &items {
         let (how, kind) = if a.kind == "link" {
-            ("read_attachment 抓取网页正文".to_string(), "网页链接".to_string())
+            (
+                "read_attachment 抓取网页正文".to_string(),
+                "网页链接".to_string(),
+            )
         } else {
             match source_kind_of(&a.name) {
-                Some((k, _)) if formats::is_audio_or_video(k) => ("ask_media 向音视频模型提问".into(), kind_label(k).into()),
-                Some((k, _)) if is_text_kind(k) => ("read_attachment 直接读取文本".into(), "文本".into()),
-                Some((k, _)) => ("parse_attachment 解析后阅读，或 extract_from_attachment 精确提取".into(), kind_label(k).into()),
+                Some((k, _)) if formats::is_audio_or_video(k) => {
+                    ("ask_media 向音视频模型提问".into(), kind_label(k).into())
+                }
+                Some((k, _)) if is_text_kind(k) => {
+                    ("read_attachment 直接读取文本".into(), "文本".into())
+                }
+                Some((k, _)) => (
+                    "parse_attachment 解析后阅读，或 extract_from_attachment 精确提取".into(),
+                    kind_label(k).into(),
+                ),
                 None => ("不支持".into(), "未知".into()),
             }
         };
@@ -217,7 +254,10 @@ pub fn manifest(_profile: &ResolvedProfile, atts: &[Attachment]) -> String {
             xml_attr(&a.name),
             kind,
             human_size(a.bytes),
-            a.url.as_deref().map(|u| format!(" url=\"{}\"", xml_attr(u))).unwrap_or_default(),
+            a.url
+                .as_deref()
+                .map(|u| format!(" url=\"{}\"", xml_attr(u)))
+                .unwrap_or_default(),
             how
         ));
     }
@@ -236,7 +276,10 @@ fn human_size(b: u64) -> String {
 }
 
 fn xml_attr(s: &str) -> String {
-    s.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Tool definitions for the attachments in play (`ask_media` only when one is audio/video).
@@ -339,10 +382,16 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     fn ok(text: impl Into<String>) -> Self {
-        ToolOutcome { text: text.into(), is_error: false }
+        ToolOutcome {
+            text: text.into(),
+            is_error: false,
+        }
     }
     fn err(text: impl Into<String>) -> Self {
-        ToolOutcome { text: text.into(), is_error: true }
+        ToolOutcome {
+            text: text.into(),
+            is_error: true,
+        }
     }
 }
 
@@ -362,8 +411,14 @@ pub async fn run_tool(ctx: &ToolCtx<'_>, name: &str, args: &Value) -> Option<Too
         return None;
     }
     let id = args.get("id").and_then(Value::as_str).unwrap_or("").trim();
-    let Some(att) = ctx.atts.iter().find(|a| a.id == id && (a.kind == "file" || a.kind == "link")) else {
-        return Some(ToolOutcome::err(format!("没有 id 为「{id}」的附件，请使用 <attached_files> 中列出的 id。")));
+    let Some(att) = ctx
+        .atts
+        .iter()
+        .find(|a| a.id == id && (a.kind == "file" || a.kind == "link"))
+    else {
+        return Some(ToolOutcome::err(format!(
+            "没有 id 为「{id}」的附件，请使用 <attached_files> 中列出的 id。"
+        )));
     };
     let out = match name {
         "read_attachment" => read_raw(ctx, att, args).await,
@@ -377,12 +432,18 @@ pub async fn run_tool(ctx: &ToolCtx<'_>, name: &str, args: &Value) -> Option<Too
         "ask_media" => ask_media(ctx, att, args).await,
         _ => return None,
     };
-    Some(out.unwrap_or_else(|e| ToolOutcome::err(format!("处理附件「{}」失败：{}", att.name, e.message))))
+    Some(out.unwrap_or_else(|e| {
+        ToolOutcome::err(format!("处理附件「{}」失败：{}", att.name, e.message))
+    }))
 }
 
 async fn read_raw(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult<ToolOutcome> {
     let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let length = (args.get("length").and_then(Value::as_u64).unwrap_or(READ_CHUNK_CHARS as u64) as usize).clamp(500, 20_000);
+    let length = (args
+        .get("length")
+        .and_then(Value::as_u64)
+        .unwrap_or(READ_CHUNK_CHARS as u64) as usize)
+        .clamp(500, 20_000);
     let text = if att.kind == "link" {
         page_text(ctx, att).await?
     } else {
@@ -390,7 +451,9 @@ async fn read_raw(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResul
             return Ok(ToolOutcome::err("不支持的文件格式。"));
         };
         if formats::is_audio_or_video(kind) {
-            return Ok(ToolOutcome::err("这是音视频附件，请使用 ask_media 提出具体问题。"));
+            return Ok(ToolOutcome::err(
+                "这是音视频附件，请使用 ask_media 提出具体问题。",
+            ));
         }
         if !is_text_kind(kind) {
             return Ok(ToolOutcome::err(format!(
@@ -404,18 +467,31 @@ async fn read_raw(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResul
     };
     let total = text.chars().count();
     if offset >= total {
-        return Ok(ToolOutcome::ok(format!("（共 {total} 字符，偏移 {offset} 之后没有内容）")));
+        return Ok(ToolOutcome::ok(format!(
+            "（共 {total} 字符，偏移 {offset} 之后没有内容）"
+        )));
     }
     let piece: String = text.chars().skip(offset).take(length).collect();
     let end = offset + piece.chars().count();
-    let more = if end < total { format!("；后面还有内容，继续读取请用 offset={end}") } else { "；已读到末尾".into() };
-    Ok(ToolOutcome::ok(format!("「{}」字符 {offset}~{end}（共 {total}{more}）：\n{piece}", att.name)))
+    let more = if end < total {
+        format!("；后面还有内容，继续读取请用 offset={end}")
+    } else {
+        "；已读到末尾".into()
+    };
+    Ok(ToolOutcome::ok(format!(
+        "「{}」字符 {offset}~{end}（共 {total}{more}）：\n{piece}",
+        att.name
+    )))
 }
 
 /// Visible text of a link attachment (fetched once, cached in the parse cache's raw text).
 async fn page_text(ctx: &ToolCtx<'_>, att: &Attachment) -> LnaResult<String> {
     let p = parsed(ctx, att).await?;
-    Ok(p.chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n\n"))
+    Ok(p.chunks
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -459,10 +535,14 @@ impl ParsedCache {
             self.chunks.len()
         );
         if self.scanned {
-            s.push_str("这是扫描版 PDF：用 read_parsed 的 page_from/page_to 读取时会识别对应页面。");
+            s.push_str(
+                "这是扫描版 PDF：用 read_parsed 的 page_from/page_to 读取时会识别对应页面。",
+            );
         }
         if self.outline.is_empty() {
-            s.push_str("\n（没有可识别的目录结构，请按页码或分块读取，或用 search_attachment 检索）");
+            s.push_str(
+                "\n（没有可识别的目录结构，请按页码或分块读取，或用 search_attachment 检索）",
+            );
         } else {
             s.push_str("\n大纲：\n");
             for n in self.outline.iter().take(200) {
@@ -480,7 +560,10 @@ impl ParsedCache {
 }
 
 fn cache_path(att: &Attachment) -> PathBuf {
-    let dir = Path::new(&att.path).parent().map(Path::to_path_buf).unwrap_or_default();
+    let dir = Path::new(&att.path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
     dir.join(format!("{}.parsed.json", att.id))
 }
 
@@ -505,7 +588,10 @@ async fn parsed(ctx: &ToolCtx<'_>, att: &Attachment) -> LnaResult<ParsedCache> {
         let (kind, ext) = source_kind_of(&att.name)
             .ok_or_else(|| LnaError::new(ErrorCode::SourceUnsupported, "不支持的文件格式"))?;
         if formats::is_audio_or_video(kind) {
-            return Err(LnaError::new(ErrorCode::SourceUnsupported, "音视频附件不做解析，请用 ask_media 提问"));
+            return Err(LnaError::new(
+                ErrorCode::SourceUnsupported,
+                "音视频附件不做解析，请用 ask_media 提问",
+            ));
         }
         let path = PathBuf::from(&att.path);
         tokio::task::spawn_blocking(move || parse_local(kind, &ext, &path))
@@ -514,7 +600,10 @@ async fn parsed(ctx: &ToolCtx<'_>, att: &Attachment) -> LnaResult<ParsedCache> {
     };
     let scanned = doc.blocks.is_empty() && is_pdf_attachment(att);
     if doc.blocks.is_empty() && !scanned {
-        return Err(LnaError::new(ErrorCode::SourceUnsupported, "附件中没有可提取的文字"));
+        return Err(LnaError::new(
+            ErrorCode::SourceUnsupported,
+            "附件中没有可提取的文字",
+        ));
     }
     let mut page_texts: Vec<(u32, String)> = Vec::new();
     for b in &doc.blocks {
@@ -546,12 +635,19 @@ async fn parsed(ctx: &ToolCtx<'_>, att: &Attachment) -> LnaResult<ParsedCache> {
         }
     }
     let cache = ParsedCache {
-        pages: doc.page_count.map(|p| p.max(0) as u32).or_else(|| scanned.then(|| pdf_page_count(&att.path)).flatten()),
+        pages: doc
+            .page_count
+            .map(|p| p.max(0) as u32)
+            .or_else(|| scanned.then(|| pdf_page_count(&att.path)).flatten()),
         scanned,
         outline,
         chunks: chunks
             .into_iter()
-            .map(|c| CachedChunk { page: c.page_start, section: c.section_path, text: c.content })
+            .map(|c| CachedChunk {
+                page: c.page_start,
+                section: c.section_path,
+                text: c.content,
+            })
             .collect(),
         ocr_pages: Vec::new(),
         page_texts,
@@ -563,7 +659,9 @@ async fn parsed(ctx: &ToolCtx<'_>, att: &Attachment) -> LnaResult<ParsedCache> {
 
 fn pdf_page_count(path: &str) -> Option<u32> {
     // a 1-page render probe would load PDFium anyway; the parser reports the count for text PDFs
-    parser::parse_pdf_detailed(Path::new(path)).ok().map(|r| r.page_meta.len() as u32)
+    parser::parse_pdf_detailed(Path::new(path))
+        .ok()
+        .map(|r| r.page_meta.len() as u32)
 }
 
 /// Parses a local file with the same parsers the source import uses (no AI indexing, no OCR).
@@ -579,7 +677,9 @@ pub fn parse_local(kind: SourceKind, ext: &str, path: &Path) -> LnaResult<parser
         SourceKind::Hwp => office::parse_hwp(path),
         SourceKind::Csv => office::parse_csv(&read()?),
         SourceKind::Rtf => office::parse_rtf(&read()?),
-        SourceKind::Md | SourceKind::Note => Ok(parser::parse_markdown(&parser::decode_text_bytes(&read()?))),
+        SourceKind::Md | SourceKind::Note => {
+            Ok(parser::parse_markdown(&parser::decode_text_bytes(&read()?)))
+        }
         SourceKind::Web => Ok(parser::parse_html(&parser::decode_text_bytes(&read()?))),
         SourceKind::Txt => {
             let text = parser::decode_text_bytes(&read()?);
@@ -589,23 +689,36 @@ pub fn parse_local(kind: SourceKind, ext: &str, path: &Path) -> LnaResult<parser
                 _ => parser::parse_plain_text(&text),
             })
         }
-        SourceKind::Image | SourceKind::Audio | SourceKind::Video => {
-            Err(LnaError::new(ErrorCode::SourceUnsupported, "该类型附件不做文本解析"))
-        }
+        SourceKind::Image | SourceKind::Audio | SourceKind::Video => Err(LnaError::new(
+            ErrorCode::SourceUnsupported,
+            "该类型附件不做文本解析",
+        )),
     }
 }
 
 async fn read_parsed(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult<ToolOutcome> {
     if !cache_path(att).exists() {
-        return Ok(ToolOutcome::err(format!("「{}」尚未解析，请先调用 parse_attachment。", att.name)));
+        return Ok(ToolOutcome::err(format!(
+            "「{}」尚未解析，请先调用 parse_attachment。",
+            att.name
+        )));
     }
     let mut p = parsed(ctx, att).await?;
     let node = args.get("node_id").and_then(Value::as_str);
-    let page_from = args.get("page_from").and_then(Value::as_u64).map(|x| x as u32);
-    let page_to = args.get("page_to").and_then(Value::as_u64).map(|x| x as u32);
+    let page_from = args
+        .get("page_from")
+        .and_then(Value::as_u64)
+        .map(|x| x as u32);
+    let page_to = args
+        .get("page_to")
+        .and_then(Value::as_u64)
+        .map(|x| x as u32);
     if p.scanned {
         let from = page_from.unwrap_or(1).max(1);
-        let to = page_to.unwrap_or(from).max(from).min(from + OCR_PAGES_PER_READ as u32 - 1);
+        let to = page_to
+            .unwrap_or(from)
+            .max(from)
+            .min(from + OCR_PAGES_PER_READ as u32 - 1);
         let to = p.pages.map_or(to, |n| to.min(n.max(1)));
         let text = scanned_pages(ctx, att, &mut p, from, to).await?;
         return Ok(ToolOutcome::ok(text));
@@ -615,24 +728,45 @@ async fn read_parsed(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaRe
             return Ok(ToolOutcome::err(format!("大纲中没有节点 {nid}。")));
         };
         let start = p.outline[i].first_chunk;
-        let end = p.outline.get(i + 1).map_or(p.chunks.len(), |n| n.first_chunk).max(start + 1);
+        let end = p
+            .outline
+            .get(i + 1)
+            .map_or(p.chunks.len(), |n| n.first_chunk)
+            .max(start + 1);
         let count = (args.get("count").and_then(Value::as_u64).unwrap_or(6) as usize).clamp(1, 8);
-        p.chunks.iter().enumerate().skip(start).take((end - start).min(count)).collect()
+        p.chunks
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take((end - start).min(count))
+            .collect()
     } else if let Some(from) = page_from {
         let to = page_to.unwrap_or(from).max(from);
         p.chunks
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.page.is_some_and(|pg| pg as u32 >= from && pg as u32 <= to))
+            .filter(|(_, c)| {
+                c.page
+                    .is_some_and(|pg| pg as u32 >= from && pg as u32 <= to)
+            })
             .take(12)
             .collect()
     } else {
         let start = args.get("start_chunk").and_then(Value::as_u64).unwrap_or(0) as usize;
         let count = (args.get("count").and_then(Value::as_u64).unwrap_or(4) as usize).clamp(1, 8);
-        p.chunks.iter().enumerate().skip(start).take(count).collect()
+        p.chunks
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(count)
+            .collect()
     };
     if selected.is_empty() {
-        return Ok(ToolOutcome::ok(format!("「{}」在该范围内没有内容（共 {} 个分块）。", att.name, p.chunks.len())));
+        return Ok(ToolOutcome::ok(format!(
+            "「{}」在该范围内没有内容（共 {} 个分块）。",
+            att.name,
+            p.chunks.len()
+        )));
     }
     Ok(ToolOutcome::ok(format_chunks(&att.name, &selected)))
 }
@@ -643,7 +777,10 @@ fn format_chunks(name: &str, chunks: &[(usize, &CachedChunk)]) -> String {
         s.push_str(&format!(
             "[{name} · 分块 {i}{}{}]\n{}\n\n",
             c.page.map(|p| format!(" · p.{p}")).unwrap_or_default(),
-            c.section.as_deref().map(|x| format!(" · {x}")).unwrap_or_default(),
+            c.section
+                .as_deref()
+                .map(|x| format!(" · {x}"))
+                .unwrap_or_default(),
             c.text
         ));
     }
@@ -651,14 +788,24 @@ fn format_chunks(name: &str, chunks: &[(usize, &CachedChunk)]) -> String {
 }
 
 /// Recognises scanned PDF pages `from..=to` (cached per page) with the vision model or local OCR.
-async fn scanned_pages(ctx: &ToolCtx<'_>, att: &Attachment, p: &mut ParsedCache, from: u32, to: u32) -> LnaResult<String> {
-    let missing: Vec<u32> = (from..=to).filter(|pg| !p.ocr_pages.iter().any(|(n, _)| n == pg)).collect();
+async fn scanned_pages(
+    ctx: &ToolCtx<'_>,
+    att: &Attachment,
+    p: &mut ParsedCache,
+    from: u32,
+    to: u32,
+) -> LnaResult<String> {
+    let missing: Vec<u32> = (from..=to)
+        .filter(|pg| !p.ocr_pages.iter().any(|(n, _)| n == pg))
+        .collect();
     if !missing.is_empty() {
         let path = PathBuf::from(&att.path);
         let pages = missing.clone();
-        let rendered = tokio::task::spawn_blocking(move || parser::render_pdf_pages_to_jpeg(&path, &pages, 1400))
-            .await
-            .map_err(|e| LnaError::internal(e.to_string()))??;
+        let rendered = tokio::task::spawn_blocking(move || {
+            parser::render_pdf_pages_to_jpeg(&path, &pages, 1400)
+        })
+        .await
+        .map_err(|e| LnaError::internal(e.to_string()))??;
         for (pg, jpg) in rendered {
             let text = media::vision_inspect_images(
                 ctx.db,
@@ -684,17 +831,26 @@ async fn scanned_pages(ctx: &ToolCtx<'_>, att: &Attachment, p: &mut ParsedCache,
 }
 
 async fn search(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult<ToolOutcome> {
-    let query = args.get("query").and_then(Value::as_str).unwrap_or("").trim();
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if query.is_empty() {
         return Ok(ToolOutcome::err("query 不能为空。"));
     }
     let p = parsed(ctx, att).await?;
     if p.scanned {
-        return Ok(ToolOutcome::err("扫描版 PDF 无法按关键词检索，请用 read_parsed 按页码读取。"));
+        return Ok(ToolOutcome::err(
+            "扫描版 PDF 无法按关键词检索，请用 read_parsed 按页码读取。",
+        ));
     }
     let hits = rank(&p.chunks, query, 5);
     if hits.is_empty() {
-        return Ok(ToolOutcome::ok(format!("「{}」中没有找到与「{query}」相关的段落。", att.name)));
+        return Ok(ToolOutcome::ok(format!(
+            "「{}」中没有找到与「{query}」相关的段落。",
+            att.name
+        )));
     }
     let sel: Vec<(usize, &CachedChunk)> = hits.into_iter().map(|i| (i, &p.chunks[i])).collect();
     Ok(ToolOutcome::ok(format_chunks(&att.name, &sel)))
@@ -787,7 +943,11 @@ fn rank(chunks: &[CachedChunk], query: &str, k: usize) -> Vec<usize> {
                 .zip(&idf)
                 .map(|(t, w)| {
                     let tf = c.matches(t.as_str()).count() as f64;
-                    if tf > 0.0 { w * (1.0 + tf.ln()) } else { 0.0 }
+                    if tf > 0.0 {
+                        w * (1.0 + tf.ln())
+                    } else {
+                        0.0
+                    }
                 })
                 .sum();
             (i, s)
@@ -801,15 +961,25 @@ fn rank(chunks: &[CachedChunk], query: &str, k: usize) -> Vec<usize> {
 /// Hands the recording and the question to the audio/video model (the chat model itself when it
 /// reads that medium) and returns its answer. Nothing is transcribed or stored.
 async fn ask_media(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult<ToolOutcome> {
-    let Some((kind, ext)) = source_kind_of(&att.name).filter(|(k, _)| formats::is_audio_or_video(*k)) else {
+    let Some((kind, ext)) =
+        source_kind_of(&att.name).filter(|(k, _)| formats::is_audio_or_video(*k))
+    else {
         return Ok(ToolOutcome::err("ask_media 只用于音频或视频附件。"));
     };
-    let question = args.get("question").and_then(Value::as_str).unwrap_or("").trim();
+    let question = args
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if question.is_empty() {
         return Ok(ToolOutcome::err("question 不能为空。"));
     }
     check_media_allowed(ctx.db, kind)?;
-    let modality = if kind == SourceKind::Video { "video" } else { "audio" };
+    let modality = if kind == SourceKind::Video {
+        "video"
+    } else {
+        "audio"
+    };
     let own = match modality {
         "video" => ctx.profile.capabilities.supports_video,
         _ => ctx.profile.capabilities.supports_audio,
@@ -817,11 +987,19 @@ async fn ask_media(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResu
     let resolved = if own {
         ctx.profile.clone()
     } else {
-        media::resolve_modality_profile_with_secret(ctx.db, ctx.secrets, modality)?
-            .ok_or_else(|| LnaError::new(ErrorCode::ModelNotConfigured, "未配置可处理音视频的模型"))?
+        media::resolve_modality_profile_with_secret(ctx.db, ctx.secrets, modality)?.ok_or_else(
+            || LnaError::new(ErrorCode::ModelNotConfigured, "未配置可处理音视频的模型"),
+        )?
     };
-    let (part, uploaded) =
-        media::media_part_for_file(ctx.llm, &resolved, Path::new(&att.path), &ext, kind, &att.name).await?;
+    let (part, uploaded) = media::media_part_for_file(
+        ctx.llm,
+        &resolved,
+        Path::new(&att.path),
+        &ext,
+        kind,
+        &att.name,
+    )
+    .await?;
     let req = LlmRequest {
         system: "You answer questions about the attached audio or video strictly from what is actually said or shown in it. Give timestamps [MM:SS] for the parts you rely on. Do not invent content.".into(),
         messages: vec![LlmMessage {
@@ -834,7 +1012,10 @@ async fn ask_media(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResu
         max_output_tokens: resolved.max_output_tokens.clamp(1024, 4096),
         reasoning: ReasoningOptions::default(),
     };
-    let res = ctx.llm.complete_text(&resolved, &req, CancellationToken::new()).await;
+    let res = ctx
+        .llm
+        .complete_text(&resolved, &req, CancellationToken::new())
+        .await;
     if let Some(name) = uploaded {
         ctx.llm.delete_gemini_file(&resolved, &name).await;
     }
@@ -850,15 +1031,40 @@ async fn ask_media(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResu
         usage.cached_tokens as i64,
         false,
     );
-    Ok(ToolOutcome::ok(format!("（音视频模型对「{}」的回答）\n{answer}", att.name)))
+    Ok(ToolOutcome::ok(format!(
+        "（音视频模型对「{}」的回答）\n{answer}",
+        att.name
+    )))
 }
 
 /// Item labels in an instruction such as "第3题", "例2.5", "习题 1-3", "Problem 12", "(4)": the
 /// forms the item can take at the start of a line in the document, strongest first.
 fn item_labels(instruction: &str) -> Vec<(String, u32)> {
     const PREFIXES: &[&str] = &[
-        "例题", "习题", "练习", "思考题", "问题", "例", "题", "定理", "定义", "引理", "推论", "表", "图",
-        "problem", "exercise", "example", "question", "theorem", "definition", "lemma", "table", "figure", "fig.", "q",
+        "例题",
+        "习题",
+        "练习",
+        "思考题",
+        "问题",
+        "例",
+        "题",
+        "定理",
+        "定义",
+        "引理",
+        "推论",
+        "表",
+        "图",
+        "problem",
+        "exercise",
+        "example",
+        "question",
+        "theorem",
+        "definition",
+        "lemma",
+        "table",
+        "figure",
+        "fig.",
+        "q",
     ];
     let norm = cn_numerals_to_digits(&normalize(instruction));
     let chars: Vec<char> = norm.chars().collect();
@@ -872,7 +1078,8 @@ fn item_labels(instruction: &str) -> Vec<(String, u32)> {
         let start = i;
         while i < chars.len()
             && (chars[i].is_ascii_digit()
-                || (matches!(chars[i], '.' | '-' | '—' | '–') && chars.get(i + 1).is_some_and(|c| c.is_ascii_digit())))
+                || (matches!(chars[i], '.' | '-' | '—' | '–')
+                    && chars.get(i + 1).is_some_and(|c| c.is_ascii_digit())))
         {
             i += 1;
         }
@@ -907,7 +1114,11 @@ fn digits_to_cn(n: u32) -> Option<String> {
         1..=9 => Some(CN_DIGITS[n as usize].to_string()),
         10..=99 => {
             let (t, u) = (n / 10, n % 10);
-            let mut s = if t == 1 { String::new() } else { CN_DIGITS[t as usize].to_string() };
+            let mut s = if t == 1 {
+                String::new()
+            } else {
+                CN_DIGITS[t as usize].to_string()
+            };
             s.push('十');
             if u > 0 {
                 s.push(CN_DIGITS[u as usize]);
@@ -931,7 +1142,8 @@ fn cn_numerals_to_digits(text: &str) -> String {
             }
             if j > i + 1 && j - i <= 4 {
                 let cn: String = chars[i + 1..j].iter().collect();
-                if let Some(n) = (1..=99).find(|n| digits_to_cn(*n).as_deref() == Some(cn.as_str())) {
+                if let Some(n) = (1..=99).find(|n| digits_to_cn(*n).as_deref() == Some(cn.as_str()))
+                {
                     out.push('第');
                     out.push_str(&n.to_string());
                     i = j;
@@ -954,7 +1166,8 @@ fn label_score(unit: &str, labels: &[(String, u32)]) -> u32 {
             // a label must not run on into a longer number ("\n1." is not "\n12.")
             text.match_indices(l.as_str()).any(|(at, _)| {
                 let next = text[at + l.len()..].chars().next();
-                !(l.chars().last().is_some_and(|c| c.is_ascii_digit()) && next.is_some_and(|c| c.is_ascii_digit() || c == '.'))
+                !(l.chars().last().is_some_and(|c| c.is_ascii_digit())
+                    && next.is_some_and(|c| c.is_ascii_digit() || c == '.'))
             })
         })
         .map(|(_, w)| *w)
@@ -990,7 +1203,11 @@ fn extraction_units(p: &ParsedCache) -> Vec<(u32, String)> {
         }
         return out;
     }
-    p.chunks.iter().enumerate().map(|(i, c)| (i as u32, c.text.clone())).collect()
+    p.chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i as u32, c.text.clone()))
+        .collect()
 }
 
 /// Finds the best unit for `instruction`: numbered labels outrank keyword matches.
@@ -998,7 +1215,11 @@ fn locate(units: &[(u32, String)], instruction: &str) -> Option<usize> {
     let labels = item_labels(instruction);
     let as_chunks: Vec<CachedChunk> = units
         .iter()
-        .map(|(_, t)| CachedChunk { page: None, section: None, text: t.clone() })
+        .map(|(_, t)| CachedChunk {
+            page: None,
+            section: None,
+            text: t.clone(),
+        })
         .collect();
     let by_terms = rank(&as_chunks, instruction, units.len().max(1));
     let mut best: Option<(usize, u32, usize)> = None; // (unit, label score, term rank)
@@ -1030,20 +1251,35 @@ const EXTRACT_RULES: &str = "要求：原样照录（不改写、不总结、不
 /// a model copy it out verbatim — from the page images when a vision model is set up (exact
 /// formulas and layout), otherwise from the text layer / recognised text.
 async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult<ToolOutcome> {
-    let instruction = args.get("instruction").and_then(Value::as_str).unwrap_or("").trim();
+    let instruction = args
+        .get("instruction")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if instruction.is_empty() {
-        return Ok(ToolOutcome::err("instruction 不能为空：写明要提取的内容，例如“第 3 题（含所有小问）”。"));
+        return Ok(ToolOutcome::err(
+            "instruction 不能为空：写明要提取的内容，例如“第 3 题（含所有小问）”。",
+        ));
     }
     let mut p = parsed(ctx, att).await?;
-    let page_from = args.get("page_from").and_then(Value::as_u64).map(|x| x.max(1) as u32);
-    let page_to = args.get("page_to").and_then(Value::as_u64).map(|x| x as u32);
+    let page_from = args
+        .get("page_from")
+        .and_then(Value::as_u64)
+        .map(|x| x.max(1) as u32);
+    let page_to = args
+        .get("page_to")
+        .and_then(Value::as_u64)
+        .map(|x| x as u32);
     let is_pdf = is_pdf_attachment(att);
 
     // which pages (paged formats) or chunks (others) to look at
     let units = extraction_units(&p);
     let paged = !p.page_texts.is_empty() || p.scanned || p.chunks.iter().any(|c| c.page.is_some());
     let pages: Vec<u32> = if let Some(from) = page_from {
-        let to = page_to.unwrap_or(from).max(from).min(from + EXTRACT_MAX_PAGES - 1);
+        let to = page_to
+            .unwrap_or(from)
+            .max(from)
+            .min(from + EXTRACT_MAX_PAGES - 1);
         let to = p.pages.map_or(to, |n| to.min(n.max(1)));
         (from..=to).collect()
     } else if p.scanned {
@@ -1073,18 +1309,29 @@ async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult
         return Ok(ToolOutcome::err("没有可提取的范围。"));
     }
     let where_ = if paged {
-        format!("p.{}", if pages.len() == 1 { pages[0].to_string() } else { format!("{}–{}", pages[0], pages[pages.len() - 1]) })
+        format!(
+            "p.{}",
+            if pages.len() == 1 {
+                pages[0].to_string()
+            } else {
+                format!("{}–{}", pages[0], pages[pages.len() - 1])
+            }
+        )
     } else {
         format!("分块 {}–{}", pages[0], pages[pages.len() - 1])
     };
 
     // PDF with a vision model: read the rendered pages
-    if is_pdf && media::resolve_modality_profile_with_secret(ctx.db, ctx.secrets, "vision")?.is_some() {
+    if is_pdf
+        && media::resolve_modality_profile_with_secret(ctx.db, ctx.secrets, "vision")?.is_some()
+    {
         let path = PathBuf::from(&att.path);
         let want = pages.clone();
-        let rendered = tokio::task::spawn_blocking(move || parser::render_pdf_pages_to_jpeg(&path, &want, 1600))
-            .await
-            .map_err(|e| LnaError::internal(e.to_string()))??;
+        let rendered = tokio::task::spawn_blocking(move || {
+            parser::render_pdf_pages_to_jpeg(&path, &want, 1600)
+        })
+        .await
+        .map_err(|e| LnaError::internal(e.to_string()))??;
         if !rendered.is_empty() {
             let images = rendered
                 .into_iter()
@@ -1099,7 +1346,10 @@ async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult
                 &format!("从这些页面中提取：{instruction}\n{EXTRACT_RULES}"),
             )
             .await?;
-            return Ok(ToolOutcome::ok(format!("[{} · {where_} · 按页面图像提取]\n{text}", att.name)));
+            return Ok(ToolOutcome::ok(format!(
+                "[{} · {where_} · 按页面图像提取]\n{text}",
+                att.name
+            )));
         }
     }
 
@@ -1122,7 +1372,10 @@ async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult
             .join("\n\n")
     };
     if material.trim().is_empty() {
-        return Ok(ToolOutcome::ok(format!("「{}」{where_} 没有文字内容。", att.name)));
+        return Ok(ToolOutcome::ok(format!(
+            "「{}」{where_} 没有文字内容。",
+            att.name
+        )));
     }
     let req = LlmRequest {
         system: "You copy requested items out of document text exactly as written, without solving, paraphrasing or completing anything.".into(),
@@ -1139,7 +1392,10 @@ async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult
         max_output_tokens: ctx.profile.max_output_tokens.clamp(1024, 8192),
         reasoning: ReasoningOptions::default(),
     };
-    let (text, usage) = ctx.llm.complete_text(ctx.profile, &req, CancellationToken::new()).await?;
+    let (text, usage) = ctx
+        .llm
+        .complete_text(ctx.profile, &req, CancellationToken::new())
+        .await?;
     let _ = lna_storage::record_usage(
         ctx.db,
         Some(ctx.notebook_id),
@@ -1151,13 +1407,22 @@ async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult
         usage.cached_tokens as i64,
         false,
     );
-    Ok(ToolOutcome::ok(format!("[{} · {where_} · 按文字提取]\n{}", att.name, text.trim())))
+    Ok(ToolOutcome::ok(format!(
+        "[{} · {where_} · 按文字提取]\n{}",
+        att.name,
+        text.trim()
+    )))
 }
 
 /// Lets the model read the attachments with the tools (at most `max_rounds` rounds) and returns
 /// what it extracted for `task`: the relevant passages with file names and pages. Used where the
 /// main request is a single structured call (Studio generation, revisions, lecture questions).
-pub async fn brief(ctx: &ToolCtx<'_>, task: &str, max_rounds: usize, cancel: CancellationToken) -> LnaResult<String> {
+pub async fn brief(
+    ctx: &ToolCtx<'_>,
+    task: &str,
+    max_rounds: usize,
+    cancel: CancellationToken,
+) -> LnaResult<String> {
     let tools = tool_defs(ctx.atts);
     if tools.is_empty() {
         return Ok(String::new());
@@ -1184,7 +1449,8 @@ pub async fn brief(ctx: &ToolCtx<'_>, task: &str, max_rounds: usize, cancel: Can
         };
         let mut text = String::new();
         let mut opaque = Vec::new();
-        let mut calls: std::collections::BTreeMap<u32, (String, String, String)> = Default::default();
+        let mut calls: std::collections::BTreeMap<u32, (String, String, String)> =
+            Default::default();
         ctx.llm
             .stream(ctx.profile, &req, cancel.clone(), |ev| match ev {
                 lna_llm::LlmEvent::TextDelta(t) => text.push_str(&t),
@@ -1216,7 +1482,11 @@ pub async fn brief(ctx: &ToolCtx<'_>, task: &str, max_rounds: usize, cancel: Can
         let mut results = Vec::new();
         for (_, (id, name, raw)) in calls {
             let args: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
-            asst.push(Part::ToolCall { id: id.clone(), name: name.clone(), arguments: args.clone() });
+            asst.push(Part::ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                arguments: args.clone(),
+            });
             let o = run_tool(ctx, &name, &args)
                 .await
                 .unwrap_or_else(|| ToolOutcome::err(format!("不支持的工具：{name}")));
@@ -1226,8 +1496,14 @@ pub async fn brief(ctx: &ToolCtx<'_>, task: &str, max_rounds: usize, cancel: Can
                 is_error: o.is_error,
             });
         }
-        messages.push(LlmMessage { role: Role::Assistant, parts: asst });
-        messages.push(LlmMessage { role: Role::Tool, parts: results });
+        messages.push(LlmMessage {
+            role: Role::Assistant,
+            parts: asst,
+        });
+        messages.push(LlmMessage {
+            role: Role::Tool,
+            parts: results,
+        });
     }
     let _ = lna_storage::record_usage(
         ctx.db,
@@ -1249,8 +1525,16 @@ mod tests {
 
     #[test]
     fn rank_prefers_chunks_with_the_query_terms() {
-        let c = |t: &str| CachedChunk { page: Some(1), section: None, text: t.into() };
-        let chunks = vec![c("向量空间的基与维数"), c("特征值与特征向量的定义"), c("矩阵的秩 rank")];
+        let c = |t: &str| CachedChunk {
+            page: Some(1),
+            section: None,
+            text: t.into(),
+        };
+        let chunks = vec![
+            c("向量空间的基与维数"),
+            c("特征值与特征向量的定义"),
+            c("矩阵的秩 rank"),
+        ];
         assert_eq!(rank(&chunks, "特征值", 3), vec![1]);
         assert_eq!(rank(&chunks, "rank", 3), vec![2]);
         assert!(rank(&chunks, "傅里叶", 3).is_empty());
@@ -1269,8 +1553,14 @@ mod tests {
             kind: "file".into(),
             url: None,
         };
-        assert!(is_pdf_attachment(&att("application/octet-stream", "x/01ABC.pdf")));
-        assert!(is_pdf_attachment(&att("application/octet-stream", "x/01ABC.PDF")));
+        assert!(is_pdf_attachment(&att(
+            "application/octet-stream",
+            "x/01ABC.pdf"
+        )));
+        assert!(is_pdf_attachment(&att(
+            "application/octet-stream",
+            "x/01ABC.PDF"
+        )));
         assert!(is_pdf_attachment(&att("application/pdf", "x/01ABC")));
         assert!(!is_pdf_attachment(&att("text/markdown", "x/01ABC.md")));
     }
@@ -1278,33 +1568,69 @@ mod tests {
     #[test]
     fn numbered_items_are_located_by_their_label_not_by_shared_digits() {
         let pages = vec![
-            (1, "习题一\n1. 求极限 lim x→0 sin x / x。\n2. 证明数列 1/n 收敛。".to_string()),
-            (2, "3. 设 f(x)=x^2，求 f'(3)。\n（1）写出定义式\n（2）计算结果".to_string()),
-            (3, "13. 求 ∫ x dx，其中 3 < x < 5。\n例 2.5 已知数列满足 a_{n+1}=2a_n。".to_string()),
+            (
+                1,
+                "习题一\n1. 求极限 lim x→0 sin x / x。\n2. 证明数列 1/n 收敛。".to_string(),
+            ),
+            (
+                2,
+                "3. 设 f(x)=x^2，求 f'(3)。\n（1）写出定义式\n（2）计算结果".to_string(),
+            ),
+            (
+                3,
+                "13. 求 ∫ x dx，其中 3 < x < 5。\n例 2.5 已知数列满足 a_{n+1}=2a_n。".to_string(),
+            ),
             (4, "第 7 题 讨论函数 13x+3 的单调性。".to_string()),
         ];
         assert_eq!(locate(&pages, "第3题").map(|i| pages[i].0), Some(2));
-        assert_eq!(locate(&pages, "第 13 题的题干").map(|i| pages[i].0), Some(3));
+        assert_eq!(
+            locate(&pages, "第 13 题的题干").map(|i| pages[i].0),
+            Some(3)
+        );
         assert_eq!(locate(&pages, "例2.5").map(|i| pages[i].0), Some(3));
-        assert_eq!(locate(&pages, "第七题").map(|i| pages[i].0), Some(4), "Chinese numerals");
-        assert_eq!(locate(&pages, "第７题").map(|i| pages[i].0), Some(4), "full-width digits");
-        assert_eq!(locate(&pages, "数列收敛的证明").map(|i| pages[i].0), Some(1), "keywords when there is no number");
+        assert_eq!(
+            locate(&pages, "第七题").map(|i| pages[i].0),
+            Some(4),
+            "Chinese numerals"
+        );
+        assert_eq!(
+            locate(&pages, "第７题").map(|i| pages[i].0),
+            Some(4),
+            "full-width digits"
+        );
+        assert_eq!(
+            locate(&pages, "数列收敛的证明").map(|i| pages[i].0),
+            Some(1),
+            "keywords when there is no number"
+        );
     }
 
     #[test]
     fn query_terms_keep_digits_next_to_cjk() {
         let t = terms("第3题");
-        assert!(t.contains(&"第3".to_string()) && t.contains(&"3题".to_string()), "{t:?}");
+        assert!(
+            t.contains(&"第3".to_string()) && t.contains(&"3题".to_string()),
+            "{t:?}"
+        );
         assert!(!t.contains(&"第题".to_string()), "{t:?}");
         assert_eq!(normalize("第 ３ 题"), "第3题");
-        assert_eq!(cn_numerals_to_digits("第十三题和第二十问"), "第13题和第20问");
+        assert_eq!(
+            cn_numerals_to_digits("第十三题和第二十问"),
+            "第13题和第20问"
+        );
         assert_eq!(digits_to_cn(7).as_deref(), Some("七"));
     }
 
     #[test]
     fn unsupported_and_supported_extensions() {
         assert!(source_kind_of("a.xyz").is_none());
-        assert_eq!(source_kind_of("讲义.PDF").map(|x| x.0), Some(SourceKind::Pdf));
-        assert_eq!(source_kind_of("talk.mp3").map(|x| x.0), Some(SourceKind::Audio));
+        assert_eq!(
+            source_kind_of("讲义.PDF").map(|x| x.0),
+            Some(SourceKind::Pdf)
+        );
+        assert_eq!(
+            source_kind_of("talk.mp3").map(|x| x.0),
+            Some(SourceKind::Audio)
+        );
     }
 }

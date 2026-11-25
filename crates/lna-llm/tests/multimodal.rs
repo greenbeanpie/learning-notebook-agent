@@ -60,7 +60,11 @@ fn gemini_serializes_inline_data_and_file_uri() {
         Part::Text("describe".into()),
     ]);
     let built = adapter_for(ProtocolKind::Gemini)
-        .build(&client, &profile(ProtocolKind::Gemini, "https://example.com/v1beta"), &req)
+        .build(
+            &client,
+            &profile(ProtocolKind::Gemini, "https://example.com/v1beta"),
+            &req,
+        )
         .unwrap();
     let body: Value = serde_json::from_slice(built.body().unwrap().as_bytes().unwrap()).unwrap();
     assert_eq!(
@@ -100,7 +104,10 @@ fn chat_completion_serializes_image_and_input_audio_and_rejects_video() {
         .build(&client, &p, &req)
         .unwrap();
     let body: Value = serde_json::from_slice(built.body().unwrap().as_bytes().unwrap()).unwrap();
-    assert_eq!(body["messages"][1]["content"][0], json!({ "type": "text", "text": "check" }));
+    assert_eq!(
+        body["messages"][1]["content"][0],
+        json!({ "type": "text", "text": "check" })
+    );
     assert_eq!(
         body["messages"][1]["content"][1],
         json!({ "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,SU1H" } })
@@ -136,7 +143,11 @@ fn responses_and_anthropic_serialize_images_and_reject_audio() {
     ]);
 
     let resp_built = adapter_for(ProtocolKind::Responses)
-        .build(&client, &profile(ProtocolKind::Responses, "https://example.com/v1"), &img_req)
+        .build(
+            &client,
+            &profile(ProtocolKind::Responses, "https://example.com/v1"),
+            &img_req,
+        )
         .unwrap();
     let r_body: Value =
         serde_json::from_slice(resp_built.body().unwrap().as_bytes().unwrap()).unwrap();
@@ -146,7 +157,11 @@ fn responses_and_anthropic_serialize_images_and_reject_audio() {
     );
 
     let ant_built = adapter_for(ProtocolKind::Anthropic)
-        .build(&client, &profile(ProtocolKind::Anthropic, "https://example.com/v1"), &img_req)
+        .build(
+            &client,
+            &profile(ProtocolKind::Anthropic, "https://example.com/v1"),
+            &img_req,
+        )
         .unwrap();
     let a_body: Value =
         serde_json::from_slice(ant_built.body().unwrap().as_bytes().unwrap()).unwrap();
@@ -166,7 +181,11 @@ fn responses_and_anthropic_serialize_images_and_reject_audio() {
     }]);
     assert_eq!(
         adapter_for(ProtocolKind::Anthropic)
-            .build(&client, &profile(ProtocolKind::Anthropic, "https://example.com/v1"), &aud_req)
+            .build(
+                &client,
+                &profile(ProtocolKind::Anthropic, "https://example.com/v1"),
+                &aud_req
+            )
             .unwrap_err()
             .code,
         ErrorCode::CapabilityMissing

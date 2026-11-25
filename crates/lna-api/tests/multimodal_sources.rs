@@ -44,6 +44,52 @@ async fn read_http_request(sock: &mut TcpStream) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// `profile.upsert` runs the capability probe, which must be answered like a fully capable
+/// model: a plain ping, one tool call and a valid JSON object.
+fn probe_sse(req: &str, gemini: bool) -> Option<String> {
+    let frames = |vs: Vec<Value>| {
+        vs.iter()
+            .map(|v| format!("data: {v}\n\n"))
+            .collect::<String>()
+    };
+    let text = |t: &str| {
+        if gemini {
+            frames(vec![
+                json!({ "candidates": [{ "content": { "parts": [{ "text": t }] } }] }),
+                json!({ "candidates": [{ "finishReason": "STOP" }] }),
+            ])
+        } else {
+            frames(vec![
+                json!({ "choices": [{ "index": 0, "delta": { "content": t } }] }),
+                json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] }),
+            ])
+        }
+    };
+    if req.contains("Call the capability probe now.") {
+        return Some(if gemini {
+            frames(vec![
+                json!({ "candidates": [{ "content": { "parts": [{ "functionCall": {
+                    "name": "lna_capability_probe", "args": { "ok": true } } }] } }] }),
+                json!({ "candidates": [{ "finishReason": "STOP" }] }),
+            ])
+        } else {
+            frames(vec![
+                json!({ "choices": [{ "index": 0, "delta": { "tool_calls": [{
+                    "index": 0, "id": "probe_1",
+                    "function": { "name": "lna_capability_probe", "arguments": "{\"ok\":true}" } }] } }] }),
+                json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }] }),
+            ])
+        });
+    }
+    if req.contains("Return the probe object.") {
+        return Some(text("{\"ok\":true}"));
+    }
+    if req.contains("Reply with OK.") {
+        return Some(text("OK"));
+    }
+    None
+}
+
 #[test]
 fn agent_autonomously_inspects_hybrid_pdf_pages_and_images_across_models() {
     let pdfium_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug");
@@ -81,6 +127,15 @@ fn agent_autonomously_inspects_hybrid_pdf_pages_and_images_across_models() {
                 loop {
                     let (mut sock, _) = chat_listener.accept().await.unwrap();
                     let req_str = read_http_request(&mut sock).await;
+                    if let Some(sse) = probe_sse(&req_str, false) {
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                            sse.len(),
+                            sse
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        continue;
+                    }
                     let sid = expected_sid_srv.lock().unwrap().clone();
                     let is_chat_turn = req_str.contains("inspect_source_structure")
                         && req_str.contains("第2页的图表内容");
@@ -147,22 +202,34 @@ fn agent_autonomously_inspects_hybrid_pdf_pages_and_images_across_models() {
             });
 
             let vis_srv = tokio::spawn(async move {
-                let (mut sock, _) = vis_listener.accept().await.unwrap();
-                let req_str = read_http_request(&mut sock).await;
-                assert!(
-                    req_str.contains("inlineData") && req_str.contains("image/jpeg"),
-                    "vision req missing inlineData/jpeg: {}",
-                    &req_str[..req_str.len().min(600)]
-                );
-                vis_called_srv.store(true, Ordering::SeqCst);
-                let sse = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"图表显示准确率达到 99%\"}]}}]}\n\n\
-                           data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n";
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                    sse.len(),
-                    sse
-                );
-                let _ = sock.write_all(resp.as_bytes()).await;
+                loop {
+                    let (mut sock, _) = vis_listener.accept().await.unwrap();
+                    let req_str = read_http_request(&mut sock).await;
+                    if let Some(sse) = probe_sse(&req_str, true) {
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                            sse.len(),
+                            sse
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                        continue;
+                    }
+                    assert!(
+                        req_str.contains("inlineData") && req_str.contains("image/jpeg"),
+                        "vision req missing inlineData/jpeg: {}",
+                        &req_str[..req_str.len().min(600)]
+                    );
+                    vis_called_srv.store(true, Ordering::SeqCst);
+                    let sse = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"图表显示准确率达到 99%\"}]}}]}\n\n\
+                               data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n";
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        sse.len(),
+                        sse
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    break;
+                }
             });
 
             let _ = tokio::join!(chat_srv, vis_srv);

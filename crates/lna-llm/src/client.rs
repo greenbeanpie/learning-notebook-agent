@@ -49,10 +49,7 @@ impl LlmClient {
     }
 
     /// Registers a callback that persists the request-format details learned from 400 responses.
-    pub fn set_capability_sink(
-        &self,
-        f: impl Fn(&str, &WireParams) + Send + Sync + 'static,
-    ) {
+    pub fn set_capability_sink(&self, f: impl Fn(&str, &WireParams) + Send + Sync + 'static) {
         if let Ok(mut g) = self.sink.lock() {
             *g = Some(std::sync::Arc::new(f));
         }
@@ -464,7 +461,10 @@ impl LlmClient {
                 .post(&upload_url)
                 .header("X-Goog-Upload-Protocol", "resumable")
                 .header("X-Goog-Upload-Command", "start")
-                .header("X-Goog-Upload-Header-Content-Length", bytes.len().to_string())
+                .header(
+                    "X-Goog-Upload-Header-Content-Length",
+                    bytes.len().to_string(),
+                )
                 .header("X-Goog-Upload-Header-Content-Type", mime_type)
                 .json(&meta_body),
         )

@@ -197,7 +197,8 @@ fn lex(src: &str) -> Result<Vec<Tok>, ExprError> {
             i += 1;
             continue;
         }
-        if c.is_ascii_digit() || (c == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())) {
+        if c.is_ascii_digit() || (c == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()))
+        {
             let start = i;
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
                 i += 1;
@@ -205,7 +206,11 @@ fn lex(src: &str) -> Result<Vec<Tok>, ExprError> {
             // scientific notation: 1e-3 (only when followed by digit or sign+digit)
             if i < chars.len() && (chars[i] == 'E' || chars[i] == 'e') {
                 let j = i + 1;
-                let k = if j < chars.len() && (chars[j] == '-' || chars[j] == '+') { j + 1 } else { j };
+                let k = if j < chars.len() && (chars[j] == '-' || chars[j] == '+') {
+                    j + 1
+                } else {
+                    j
+                };
                 if k < chars.len() && chars[k].is_ascii_digit() && (chars[i] == 'E' || j != k) {
                     i = k;
                     while i < chars.len() && chars[i].is_ascii_digit() {
@@ -222,7 +227,10 @@ fn lex(src: &str) -> Result<Vec<Tok>, ExprError> {
         }
         if c.is_alphabetic() || c == '_' {
             let start = i;
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') && !chars[i].is_ascii_digit() {
+            while i < chars.len()
+                && (chars[i].is_alphanumeric() || chars[i] == '_')
+                && !chars[i].is_ascii_digit()
+            {
                 i += 1;
             }
             // allow trailing digits only for log2/log10/atan2
@@ -308,7 +316,8 @@ impl Parser {
                     lhs = Node::Bin(Op::Div, Box::new(lhs), Box::new(rhs));
                 }
                 // implicit multiplication: 2x, x(x+1), (a)(b), 2sin(x), x y
-                Some(Tok::Num(_)) | Some(Tok::Var(_)) | Some(Tok::Const(_)) | Some(Tok::Func(_)) | Some(Tok::LParen) => {
+                Some(Tok::Num(_)) | Some(Tok::Var(_)) | Some(Tok::Const(_))
+                | Some(Tok::Func(_)) | Some(Tok::LParen) => {
                     let rhs = self.power()?;
                     lhs = Node::Bin(Op::Mul, Box::new(lhs), Box::new(rhs));
                 }
@@ -388,7 +397,10 @@ impl Parser {
                     _ => (1, 1),
                 };
                 if args.len() < min || args.len() > max {
-                    return Err(ExprError(format!("wrong number of arguments for function ({})", args.len())));
+                    return Err(ExprError(format!(
+                        "wrong number of arguments for function ({})",
+                        args.len()
+                    )));
                 }
                 let call = Node::Call(f, args);
                 Ok(match fn_pow {
@@ -426,10 +438,17 @@ impl Expr {
             return Err(ExprError("expression too long".into()));
         }
         let toks = lex(src)?;
-        let mut p = Parser { toks, pos: 0, depth: 0 };
+        let mut p = Parser {
+            toks,
+            pos: 0,
+            depth: 0,
+        };
         let root = p.expr()?;
         if p.pos < p.toks.len() {
-            return Err(ExprError(format!("unexpected token after position {}", p.pos)));
+            return Err(ExprError(format!(
+                "unexpected token after position {}",
+                p.pos
+            )));
         }
         let mut vars_used = [false; 4];
         mark_vars(&root, &mut vars_used);
@@ -445,8 +464,8 @@ impl Expr {
                 let l = Expr::parse(parts[0])?;
                 let r = Expr::parse(parts[1])?;
                 let mut vars_used = l.vars_used;
-                for i in 0..4 {
-                    vars_used[i] |= r.vars_used[i];
+                for (u, r) in vars_used.iter_mut().zip(r.vars_used) {
+                    *u |= r;
                 }
                 Ok(Expr {
                     root: Node::Bin(Op::Sub, Box::new(l.root), Box::new(r.root)),
@@ -462,7 +481,10 @@ impl Expr {
         for (i, used) in self.vars_used.iter().enumerate() {
             if *used && !allowed.contains(&i) {
                 let n = ["x", "y", "z", "t"][i];
-                return Err(ExprError(format!("variable '{}' is not allowed here (use {})", n, names)));
+                return Err(ExprError(format!(
+                    "variable '{}' is not allowed here (use {})",
+                    n, names
+                )));
             }
         }
         Ok(())
@@ -609,7 +631,10 @@ mod tests {
         let c = Expr::parse_equation("x^2+y^2=1").unwrap();
         assert_eq!(c.eval_xy(1.0, 0.0), 0.0);
         assert!(c.check_vars(&[VAR_X, VAR_Y], "x, y").is_ok());
-        assert!(Expr::parse("x+z").unwrap().check_vars(&[VAR_X], "x").is_err());
+        assert!(Expr::parse("x+z")
+            .unwrap()
+            .check_vars(&[VAR_X], "x")
+            .is_err());
     }
 
     #[test]

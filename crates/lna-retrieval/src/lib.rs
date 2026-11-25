@@ -311,14 +311,18 @@ impl RetrievalEngine {
                         let mut score = 0usize;
                         for t in &query_terms {
                             if hay.contains(t.as_str()) {
-                                score += if title.to_lowercase().contains(t.as_str()) { 3 } else { 1 };
+                                score += if title.to_lowercase().contains(t.as_str()) {
+                                    3
+                                } else {
+                                    1
+                                };
                             }
                         }
                         if score > 0 {
                             scored.push((nid, score));
                         }
                     }
-                    scored.sort_by(|a, b| b.1.cmp(&a.1));
+                    scored.sort_by_key(|s| std::cmp::Reverse(s.1));
                     scored.truncate(6);
                     Ok(scored)
                 })
@@ -351,7 +355,8 @@ impl RetrievalEngine {
                         tree_hits += node_chunks.len();
                         let boost = 1.2 / (60.0 + (n_rank as f64) + 1.0);
                         for (c_rank, cid) in node_chunks.into_iter().enumerate() {
-                            *rrf_scores.entry(cid).or_insert(0.0) += boost * (1.0 / (1.0 + c_rank as f64 * 0.15));
+                            *rrf_scores.entry(cid).or_insert(0.0) +=
+                                boost * (1.0 / (1.0 + c_rank as f64 * 0.15));
                         }
                     }
                 }
@@ -643,7 +648,8 @@ impl RetrievalEngine {
         }
         let per_source = ((max_groups + selected_source_ids.len() - 1) / selected_source_ids.len())
             .clamp(1, 8) as i32;
-        let mut buckets: Vec<Vec<RetrievedEvidence>> = Vec::with_capacity(selected_source_ids.len());
+        let mut buckets: Vec<Vec<RetrievedEvidence>> =
+            Vec::with_capacity(selected_source_ids.len());
         for sid in selected_source_ids {
             buckets.push(self.read_source_chunks(sid, 0, per_source)?);
         }

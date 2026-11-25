@@ -295,7 +295,13 @@ pub async fn run_ai_index_for_doc(
     };
 
     let (value, usage) = llm
-        .complete_structured(&resolved, &req, "source_index", &index_schema(), CancellationToken::new())
+        .complete_structured(
+            &resolved,
+            &req,
+            "source_index",
+            &index_schema(),
+            CancellationToken::new(),
+        )
         .await?;
     let _ = lna_storage::record_usage(
         db,
@@ -351,7 +357,9 @@ pub async fn run_ai_vision_toc_index(
 
     let mut parts: Vec<Part> = Vec::with_capacity(rendered.len() * 2 + 1);
     for (pno, jpg) in &rendered {
-        parts.push(Part::Text(format!("[PDF 第 {pno} 页（共 {page_count} 页）]")));
+        parts.push(Part::Text(format!(
+            "[PDF 第 {pno} 页（共 {page_count} 页）]"
+        )));
         parts.push(Part::Media {
             mime_type: "image/jpeg".into(),
             data_base64: Some(base64::engine::general_purpose::STANDARD.encode(jpg)),
@@ -387,7 +395,13 @@ pub async fn run_ai_vision_toc_index(
     };
 
     let (value, usage) = llm
-        .complete_structured(&resolved, &req, "source_index", &index_schema(), CancellationToken::new())
+        .complete_structured(
+            &resolved,
+            &req,
+            "source_index",
+            &index_schema(),
+            CancellationToken::new(),
+        )
         .await?;
     let _ = lna_storage::record_usage(
         db,
@@ -528,7 +542,10 @@ pub fn parse_ai_index_response(source_id: &str, value: serde_json::Value) -> Opt
 
 /// Synthesize lazy page-stub blocks from AI TOC nodes for large scanned PDFs whose body pages
 /// have not yet been visually read. Zero OCR tokens spent at import time!
-pub fn build_scanned_stub_blocks(nodes: &[SourceIndexNode], page_meta: &[PdfPageMeta]) -> Vec<Block> {
+pub fn build_scanned_stub_blocks(
+    nodes: &[SourceIndexNode],
+    page_meta: &[PdfPageMeta],
+) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut cursor = 0usize;
     if !nodes.is_empty() {
@@ -619,12 +636,10 @@ pub fn align_chunks_to_nodes(chunks: &mut [ChunkDraft], nodes: &[SourceIndexNode
         if matched.is_none() {
             if let Some(sec) = chunk.section_path.as_deref() {
                 let sec_l = sec.to_lowercase();
-                matched = nodes
-                    .iter()
-                    .find(|n| {
-                        let nt = n.title.to_lowercase();
-                        !nt.is_empty() && (sec_l.contains(&nt) || nt.contains(&sec_l))
-                    });
+                matched = nodes.iter().find(|n| {
+                    let nt = n.title.to_lowercase();
+                    !nt.is_empty() && (sec_l.contains(&nt) || nt.contains(&sec_l))
+                });
             }
         }
 
@@ -748,7 +763,11 @@ pub fn ensure_preview_html(src: &Source, blob_path: &Path) -> LnaResult<Option<P
             }
             body.push_str("</table></div>");
         }
-        SourceKind::Docx | SourceKind::Pptx | SourceKind::Epub | SourceKind::Odt | SourceKind::Hwpx => {
+        SourceKind::Docx
+        | SourceKind::Pptx
+        | SourceKind::Epub
+        | SourceKind::Odt
+        | SourceKind::Hwpx => {
             let rich = match src.kind {
                 SourceKind::Docx => office::parse_docx(blob_path)?,
                 SourceKind::Pptx => office::parse_pptx(blob_path)?,
@@ -762,7 +781,8 @@ pub fn ensure_preview_html(src: &Source, blob_path: &Path) -> LnaResult<Option<P
             if !rich.embedded_images.is_empty() {
                 body.push_str("<h3>文档内嵌图片</h3><div class=\"img-grid\">");
                 for im in rich.embedded_images.iter().take(24) {
-                    if let Ok(bytes) = office::extract_zip_embedded_image(blob_path, &im.zip_entry) {
+                    if let Ok(bytes) = office::extract_zip_embedded_image(blob_path, &im.zip_entry)
+                    {
                         let ext = im.zip_entry.rsplit('.').next().unwrap_or("png");
                         let mime = crate::formats::mime_type_for_ext(ext);
                         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -777,7 +797,8 @@ pub fn ensure_preview_html(src: &Source, blob_path: &Path) -> LnaResult<Option<P
         }
         SourceKind::Rtf | SourceKind::Hwp => {
             let doc = if src.kind == SourceKind::Rtf {
-                let bytes = std::fs::read(blob_path).map_err(|e| LnaError::internal(e.to_string()))?;
+                let bytes =
+                    std::fs::read(blob_path).map_err(|e| LnaError::internal(e.to_string()))?;
                 office::parse_rtf(&bytes)?
             } else {
                 office::parse_hwp(blob_path)?
@@ -840,7 +861,9 @@ fn render_blocks_to_html(blocks: &[Block], out: &mut String) {
         if b.page.is_some() && b.page != last_page {
             last_page = b.page;
             if let Some(p) = b.page {
-                out.push_str(&format!("<div class=\"page-tag\" id=\"page-{p}\">第 {p} 页</div>\n"));
+                out.push_str(&format!(
+                    "<div class=\"page-tag\" id=\"page-{p}\">第 {p} 页</div>\n"
+                ));
             }
         }
         let esc = html_escape(&b.text);
@@ -939,7 +962,8 @@ mod tests {
           ]
         }
         "#;
-        let out = parse_ai_index_response("src_1", serde_json::from_str(raw).unwrap()).expect("parsed");
+        let out =
+            parse_ai_index_response("src_1", serde_json::from_str(raw).unwrap()).expect("parsed");
         assert!(out.guide_summary_md.contains("**向量空间**"));
         assert_eq!(out.guide_topics.len(), 3);
         assert_eq!(out.nodes.len(), 2);

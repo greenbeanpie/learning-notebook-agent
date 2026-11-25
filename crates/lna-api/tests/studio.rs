@@ -155,8 +155,14 @@ fn unparseable_output_is_repaired_twice_then_fails() {
     let art = studio_wait(&env, &id, "FAILED", 30);
     assert_eq!(art["error_code"], json!("OUTPUT_INVALID"), "{art}");
     let log = art["error_log"].as_str().unwrap_or("");
-    assert!(log.contains("OUTPUT_INVALID"), "missing OUTPUT_INVALID in log: {log}");
-    assert!(log.contains("Attempts (4 recorded)"), "expected 4 recorded attempts: {log}");
+    assert!(
+        log.contains("OUTPUT_INVALID"),
+        "missing OUTPUT_INVALID in log: {log}"
+    );
+    assert!(
+        log.contains("Attempts (4 recorded)"),
+        "expected 4 recorded attempts: {log}"
+    );
     // Attempt 1: 1 generation + 2 repair turns (3 calls); Retries 1..=3: 1 generation each (3 calls) => 6 calls total.
     let n = mock
         .requests
@@ -567,7 +573,12 @@ fn lecture_generates_figures_and_adapts() {
     let env = Env::new("lecture");
     let nid = small_notebook(&env);
     env.profile(&mock, 32000);
-    let id = create(&env, &nid, "lecture", json!({ "mode": "general", "detail": "auto", "topic": "基与维数" }));
+    let id = create(
+        &env,
+        &nid,
+        "lecture",
+        json!({ "mode": "general", "detail": "auto", "topic": "基与维数" }),
+    );
     let art = studio_wait(&env, &id, "READY", 60);
     let p = &art["payload"];
     assert_eq!(p["mode"], json!("general"));
@@ -576,9 +587,16 @@ fn lecture_generates_figures_and_adapts() {
     assert_eq!(slides[0]["id"], json!("s1-1"));
     assert_eq!(slides[1]["narration"][0]["id"], json!("s1-2.1"));
     assert!(slides[1].get("figure_request").is_none());
-    assert!(slides[1]["figure"]["meta"]["parts"].as_array().unwrap().iter().any(|x| x["id"] == json!("f")));
+    assert!(slides[1]["figure"]["meta"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|x| x["id"] == json!("f")));
     // the step and laser cues on the figure part survived validation
-    assert_eq!(slides[1]["narration"][0]["cues"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        slides[1]["narration"][0]["cues"].as_array().unwrap().len(),
+        2
+    );
     assert!(p["estimated_minutes"].as_f64().unwrap() > 0.0);
     let dir = std::path::PathBuf::from(art["output_dir"].as_str().unwrap());
     assert!(dir.join("figures/s1-2.svg").is_file());
@@ -600,10 +618,20 @@ fn lecture_generates_figures_and_adapts() {
     );
     let s2 = r["artifact"]["payload"]["slides"].as_array().unwrap();
     assert_eq!(s2.len(), 4);
-    assert!(s2[1]["id"].as_str().unwrap().starts_with("a1-"), "{}", s2[1]["id"]);
-    assert_eq!(r["adaptation"]["inserted_titles"].as_array().unwrap().len(), 2);
+    assert!(
+        s2[1]["id"].as_str().unwrap().starts_with("a1-"),
+        "{}",
+        s2[1]["id"]
+    );
+    assert_eq!(
+        r["adaptation"]["inserted_titles"].as_array().unwrap().len(),
+        2
+    );
     let u = env.ok("lecture.undo", json!({ "artifact_id": id }));
-    assert_eq!(u["artifact"]["payload"]["slides"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        u["artifact"]["payload"]["slides"].as_array().unwrap().len(),
+        2
+    );
 
     // regenerate everything after s1-1 more slowly, then restore the original
     let r = env.ok(
@@ -612,15 +640,24 @@ fn lecture_generates_figures_and_adapts() {
     );
     let s3 = r["artifact"]["payload"]["slides"].as_array().unwrap();
     assert_eq!(s3[0]["id"], json!("s1-1"));
-    assert!(s3.iter().all(|s| s["id"] != json!("s1-2")), "old slide replaced");
+    assert!(
+        s3.iter().all(|s| s["id"] != json!("s1-2")),
+        "old slide replaced"
+    );
     assert_eq!(r["adaptation"]["removed_titles"], json!(["一条曲线"]));
     let u = env.ok("lecture.undo", json!({ "artifact_id": id, "all": true }));
     let restored = u["artifact"]["payload"]["slides"].as_array().unwrap();
-    assert_eq!(restored.iter().map(|s| s["id"].clone()).collect::<Vec<_>>(), vec![json!("s1-1"), json!("s1-2")]);
+    assert_eq!(
+        restored.iter().map(|s| s["id"].clone()).collect::<Vec<_>>(),
+        vec![json!("s1-1"), json!("s1-2")]
+    );
 
     // exported deck embeds the figure layers
     let out = env.dir.join("lecture_export.pptx");
-    env.ok("studio.export", json!({ "artifact_id": id, "format": "pptx", "out_path": out.display().to_string() }));
+    env.ok(
+        "studio.export",
+        json!({ "artifact_id": id, "format": "pptx", "out_path": out.display().to_string() }),
+    );
     let bytes = std::fs::read(&out).unwrap();
     let hay = String::from_utf8_lossy(&bytes);
     assert!(hay.contains("ppt/media/fig2_0.png") && hay.contains("ppt/media/fig2_1.png"));
@@ -635,7 +672,10 @@ fn refine_node_route_runs_inside_dispatcher() {
     env.profile(&mock, 32000);
     let id = create(&env, &nid, "mindmap", json!({ "detail": "concise" }));
     studio_wait(&env, &id, "READY", 30);
-    let r = env.ok("studio.refine_node", json!({ "artifact_id": id, "node_id": "n2" }));
+    let r = env.ok(
+        "studio.refine_node",
+        json!({ "artifact_id": id, "node_id": "n2" }),
+    );
     assert!(r.get("refined").is_some(), "{r}");
     assert_eq!(r["artifact"]["id"], json!(id));
 }

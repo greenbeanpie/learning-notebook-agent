@@ -244,7 +244,9 @@ fn run_migrations(conn: &Connection, db_path: &Path) -> LnaResult<()> {
         conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(map_sql_err)?;
-        let mut stmt = conn.prepare("PRAGMA foreign_key_check").map_err(map_sql_err)?;
+        let mut stmt = conn
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(map_sql_err)?;
         if stmt.exists([]).map_err(map_sql_err)? {
             return Err(LnaError::internal(
                 "Foreign key check failed after migration 0002",
@@ -311,7 +313,8 @@ fn run_migrations(conn: &Connection, db_path: &Path) -> LnaResult<()> {
         }
         conn.pragma_update(None, "foreign_keys", "OFF")
             .map_err(map_sql_err)?;
-        conn.execute_batch("BEGIN IMMEDIATE;").map_err(map_sql_err)?;
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(map_sql_err)?;
         if let Err(e) = migrate_0006_lecture_artifacts(conn) {
             let _ = conn.execute_batch("ROLLBACK;");
             let _ = conn.pragma_update(None, "foreign_keys", "ON");
@@ -322,7 +325,9 @@ fn run_migrations(conn: &Connection, db_path: &Path) -> LnaResult<()> {
         conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(map_sql_err)?;
-        let mut stmt = conn.prepare("PRAGMA foreign_key_check").map_err(map_sql_err)?;
+        let mut stmt = conn
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(map_sql_err)?;
         if stmt.exists([]).map_err(map_sql_err)? {
             return Err(LnaError::internal(
                 "Foreign key check failed after migration 0006",

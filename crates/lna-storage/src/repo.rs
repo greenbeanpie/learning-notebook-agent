@@ -246,7 +246,9 @@ fn map_source_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Source> {
             || r.get::<_, i64>(8).unwrap_or(0) >= 1200
             || r.get::<_, Option<i64>>(7).unwrap_or(None).unwrap_or(0) >= 3
         {
-            Some("This material contains structured concepts suitable for a Knowledge Graph.".into())
+            Some(
+                "This material contains structured concepts suitable for a Knowledge Graph.".into(),
+            )
         } else {
             None
         },
@@ -865,7 +867,8 @@ pub fn update_profile_wire_params(
         let mut caps: ModelCapabilities = serde_json::from_str(&raw).unwrap_or_default();
         caps.stream_usage = stream_usage;
         caps.max_tokens_field = max_tokens_field.map(str::to_string);
-        let caps_json = serde_json::to_string(&caps).map_err(|e| LnaError::invalid(e.to_string()))?;
+        let caps_json =
+            serde_json::to_string(&caps).map_err(|e| LnaError::invalid(e.to_string()))?;
         conn.execute(
             "UPDATE model_profiles SET capabilities_json = ?1, updated_at = ?2 WHERE id = ?3",
             params![caps_json, now_ms(), id],

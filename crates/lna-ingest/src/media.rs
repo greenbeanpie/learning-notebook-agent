@@ -143,7 +143,9 @@ pub fn prepare_image_for_protocol(
             }
             Err(LnaError::new(
                 ErrorCode::CapabilityMissing,
-                format!("图片格式 .{e} 无法被当前模型直接解析，请改用 Gemini 模型或安装系统 HEIF 扩展"),
+                format!(
+                    "图片格式 .{e} 无法被当前模型直接解析，请改用 Gemini 模型或安装系统 HEIF 扩展"
+                ),
             ))
         }
         "avif" | "jp2" => {
@@ -216,7 +218,11 @@ pub async fn media_part_for_file(
     kind: SourceKind,
     title: &str,
 ) -> LnaResult<(Part, Option<String>)> {
-    let label = if kind == SourceKind::Video { "视频" } else { "音频" };
+    let label = if kind == SourceKind::Video {
+        "视频"
+    } else {
+        "音频"
+    };
     let mime = formats::mime_type_for_ext(ext).to_string();
     let meta = std::fs::metadata(path).map_err(|e| LnaError::internal(e.to_string()))?;
     match resolved.protocol {
@@ -704,7 +710,9 @@ pub async fn vision_inspect_images(
                     parts.push(Part::Text(format!("[{label}]")));
                     parts.push(Part::Media {
                         mime_type: mime,
-                        data_base64: Some(base64::engine::general_purpose::STANDARD.encode(prepared)),
+                        data_base64: Some(
+                            base64::engine::general_purpose::STANDARD.encode(prepared),
+                        ),
                         file_uri: None,
                         audio_format: None,
                     });
@@ -750,7 +758,8 @@ pub async fn vision_inspect_images(
     }
 
     // No vision model configured: run local WinRT OCR fallback
-    let mut out = String::from("（提示：当前未勾选任何支持“图文”的模型，仅执行本地文字 OCR 回退识别）\n\n");
+    let mut out =
+        String::from("（提示：当前未勾选任何支持“图文”的模型，仅执行本地文字 OCR 回退识别）\n\n");
     let mut any_text = false;
     for (label, ext, raw) in images {
         let ocr = win_ocr::windows_ocr_image_bytes(&raw, &ext);

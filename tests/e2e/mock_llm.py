@@ -46,9 +46,9 @@ def pick_reply(body):
         for kind, payload in STUDIO_EXTRA.items():
             if f"for {kind}," in system or f"生成 {kind} " in system:
                 return json.dumps(payload, ensure_ascii=False)
-    if "quiz" in system:
+    if "quiz" in system and not body.get("tools"):
         return json.dumps(QUIZ, ensure_ascii=False)
-    if "mindmap" in system:
+    if "mindmap" in system and not body.get("tools"):
         return json.dumps(MINDMAP_ROOT, ensure_ascii=False)
     if "summary_md" in system or "摘要" in system:
         return json.dumps(SUMMARY, ensure_ascii=False)
@@ -63,6 +63,20 @@ def pick_reply(body):
     return "根据所选来源，向量空间任意两组基包含相同数量的向量，这个数就是维数[1]。区间 [1,2] 只是示例。"
 
 
+def system_of(body):
+    return "".join(str(m.get("content")) for m in body.get("messages", []) if m.get("role") == "system")
+
+
+def is_tool_probe(body):
+    return any((t.get("function") or {}).get("name") == "lna_capability_probe" for t in body.get("tools") or [])
+
+
+def is_probe(body):
+    """profile.upsert probes the model: a ping, one tool call and a JSON object."""
+    sys_ = system_of(body)
+    return is_tool_probe(body) or sys_.startswith("Reply with OK.") or sys_.startswith("Return only a JSON object with ok set to true.")
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -72,10 +86,25 @@ class H(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(n) or b"{}")
         with open(LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps({"path": self.path, "body": body}, ensure_ascii=False) + "\n")
-        reply = pick_reply(body)
+        probe = is_probe(body)
+        # A "/flaky/" base URL passes the capability probe but fails every real request.
+        if "/flaky/" in self.path and not probe:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(b'{"error":{"message":"mock outage"}}')
+            return
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.end_headers()
+        if is_tool_probe(body):
+            call = {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "probe_1", "function": {
+                "name": "lna_capability_probe", "arguments": "{\"ok\":true}"}}]}, "finish_reason": None}]}
+            end = {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}
+            for frame in (call, end):
+                self.wfile.write(("data: " + json.dumps(frame) + chr(10) + chr(10)).encode())
+            self.wfile.write(("data: [DONE]" + chr(10) + chr(10)).encode())
+            return
+        reply = pick_reply(body)
         parts = [reply[i:i + 7] for i in range(0, len(reply), 7)]
         for p in parts:
             chunk = {"choices": [{"index": 0, "delta": {"content": p}, "finish_reason": None}]}

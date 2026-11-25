@@ -122,7 +122,9 @@ fn close_while_a_request_is_in_flight_returns_within_2_seconds() {
                 let req = String::from_utf8_lossy(&buf[..n]).to_string();
                 let head = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
                 // the capability probe run when the profile is saved: answer as a capable model
-                let probe: Option<&[u8]> = if req.contains("lna_capability_probe") && req.contains("\"tools\"") {
+                let probe: Option<&[u8]> = if req.contains("lna_capability_probe")
+                    && req.contains("\"tools\"")
+                {
                     Some(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"p\",\"function\":{\"name\":\"lna_capability_probe\",\"arguments\":\"{\\\"ok\\\":true}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
                 } else if req.contains("Return only a JSON object with ok set to true.") {
                     Some(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{\\\"ok\\\":true}\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")

@@ -131,7 +131,10 @@ pub fn extract_zip_embedded_image(archive_path: &Path, entry_name: &str) -> LnaR
     Ok(buf)
 }
 
-fn read_zip_entry_string(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
+fn read_zip_entry_string(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    name: &str,
+) -> Option<String> {
     let mut entry = archive.by_name(name).ok()?;
     let mut bytes = Vec::new();
     entry.read_to_end(&mut bytes).ok()?;
@@ -637,10 +640,7 @@ fn normalize_zip_rel(base_dir: &str, rel: &str) -> String {
     if let Some(stripped) = rel.strip_prefix('/') {
         return stripped.to_string();
     }
-    let mut parts: Vec<&str> = base_dir
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
+    let mut parts: Vec<&str> = base_dir.split('/').filter(|s| !s.is_empty()).collect();
     for seg in rel.split('/') {
         match seg {
             "" | "." => {}
@@ -653,12 +653,7 @@ fn normalize_zip_rel(base_dir: &str, rel: &str) -> String {
     parts.join("/")
 }
 
-fn parse_drawingml_slide(
-    xml: &str,
-    slide_no: u32,
-    blocks: &mut Vec<Block>,
-    cursor: &mut usize,
-) {
+fn parse_drawingml_slide(xml: &str, slide_no: u32, blocks: &mut Vec<Block>, cursor: &mut usize) {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let sec = vec![format!("Slide {slide_no}")];
@@ -802,9 +797,8 @@ pub fn parse_epub(path: &Path) -> LnaResult<RichParseOutput> {
         .rsplit_once('/')
         .map(|(d, _)| format!("{d}/"))
         .unwrap_or_default();
-    let opf_xml = read_zip_entry_string(&mut archive, &opf_path).ok_or_else(|| {
-        LnaError::new(ErrorCode::SourceUnsupported, "Failed to read EPUB OPF")
-    })?;
+    let opf_xml = read_zip_entry_string(&mut archive, &opf_path)
+        .ok_or_else(|| LnaError::new(ErrorCode::SourceUnsupported, "Failed to read EPUB OPF"))?;
 
     let title = extract_dc_title(&opf_xml);
     let mut manifest: HashMap<String, (String, String)> = HashMap::new();
@@ -964,9 +958,8 @@ pub fn parse_odt(path: &Path) -> LnaResult<RichParseOutput> {
 
     let title =
         read_zip_entry_string(&mut archive, "meta.xml").and_then(|xml| extract_dc_title(&xml));
-    let content_xml = read_zip_entry_string(&mut archive, "content.xml").ok_or_else(|| {
-        LnaError::new(ErrorCode::SourceUnsupported, "ODT missing content.xml")
-    })?;
+    let content_xml = read_zip_entry_string(&mut archive, "content.xml")
+        .ok_or_else(|| LnaError::new(ErrorCode::SourceUnsupported, "ODT missing content.xml"))?;
 
     let mut blocks = Vec::new();
     let mut section_stack: Vec<(u8, String)> = Vec::new();
@@ -1424,11 +1417,7 @@ pub fn parse_rtf(bytes: &[u8]) -> LnaResult<ParsedDoc> {
                                     out.push('”');
                                 }
                             }
-                            "bullet" => {
-                                if !cur.skip {
-                                    out.push_str("• ");
-                                }
-                            }
+                            "bullet" if !cur.skip => out.push_str("• "),
                             _ => {}
                         }
                     }
@@ -1541,12 +1530,7 @@ pub fn parse_hwpx(path: &Path) -> LnaResult<RichParseOutput> {
     })
 }
 
-fn parse_hwpx_section(
-    xml: &str,
-    section_no: u32,
-    blocks: &mut Vec<Block>,
-    cursor: &mut usize,
-) {
+fn parse_hwpx_section(xml: &str, section_no: u32, blocks: &mut Vec<Block>, cursor: &mut usize) {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let sec = vec![format!("Section {section_no}")];
@@ -1758,8 +1742,10 @@ fn extract_hwp_section_paragraphs(data: &[u8], out: &mut Vec<String>) {
 
         if tag_id == HWPTAG_PARA_TEXT {
             let units: Vec<u16> = payload
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             let mut text_units: Vec<u16> = Vec::with_capacity(units.len());
             let mut i = 0usize;
@@ -1798,10 +1784,7 @@ fn extract_hwp_section_paragraphs(data: &[u8], out: &mut Vec<String>) {
     }
 }
 
-fn read_cfb_stream(
-    comp: &mut cfb::CompoundFile<std::fs::File>,
-    names: &[&str],
-) -> Option<Vec<u8>> {
+fn read_cfb_stream(comp: &mut cfb::CompoundFile<std::fs::File>, names: &[&str]) -> Option<Vec<u8>> {
     for &name in names {
         if let Ok(mut s) = comp.open_stream(name) {
             let mut buf = Vec::new();
@@ -1815,8 +1798,10 @@ fn read_cfb_stream(
 
 fn decode_utf16le_lossy(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     String::from_utf16_lossy(&units)
 }

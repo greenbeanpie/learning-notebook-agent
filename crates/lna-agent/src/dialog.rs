@@ -282,7 +282,10 @@ mod tests {
         assert!(q.contains(&"Calvin cycle location".to_string()));
 
         // empty object → original question only
-        assert_eq!(parse_rewrite(&json!({}), " 原问题 "), vec!["原问题".to_string()]);
+        assert_eq!(
+            parse_rewrite(&json!({}), " 原问题 "),
+            vec!["原问题".to_string()]
+        );
         // original is appended when there is room
         let q = parse_rewrite(&json!({"standalone":"A","queries":[]}), "B");
         assert_eq!(q, vec!["A".to_string(), "B".to_string()]);

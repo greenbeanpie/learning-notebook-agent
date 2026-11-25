@@ -39,12 +39,17 @@ pub fn render_pptx(payload: &Value, out_path: &Path) -> LnaResult<()> {
 }
 
 fn deck_uses_builds_or_figures(payload: &Value) -> bool {
-    payload.get("slides").and_then(Value::as_array).is_some_and(|a| {
-        a.iter().any(|s| {
-            s.get("figure").is_some_and(|f| f.is_object())
-                || s.get("builds").and_then(Value::as_array).is_some_and(|b| !b.is_empty())
+    payload
+        .get("slides")
+        .and_then(Value::as_array)
+        .is_some_and(|a| {
+            a.iter().any(|s| {
+                s.get("figure").is_some_and(|f| f.is_object())
+                    || s.get("builds")
+                        .and_then(Value::as_array)
+                        .is_some_and(|b| !b.is_empty())
+            })
         })
-    })
 }
 
 /// Like `render_pptx`; `asset_dir` holds `figures/<slide id>_<step>.png` written by
@@ -160,20 +165,34 @@ pub fn render_pptx_in(payload: &Value, out_path: &Path, asset_dir: Option<&Path>
                 if k > 0 && !fig_steps.values().any(|v| *v == k) {
                     continue;
                 }
-                if let Ok(bytes) = std::fs::read(dir.join("figures").join(format!("{sid}_{k}.png"))) {
+                if let Ok(bytes) = std::fs::read(dir.join("figures").join(format!("{sid}_{k}.png")))
+                {
                     pics.push((k, bytes));
                 }
             }
         }
-        let body_cx: i64 = if pics.is_empty() { 10_972_800 } else { 5_200_000 };
+        let body_cx: i64 = if pics.is_empty() {
+            10_972_800
+        } else {
+            5_200_000
+        };
         let mut pic_xml = String::new();
         let mut pic_ids: Vec<(i64, usize)> = Vec::new();
         if !pics.is_empty() {
             let meta = s.pointer("/figure/meta");
-            let fw = meta.and_then(|m| m.get("width")).and_then(Value::as_f64).unwrap_or(800.0);
-            let fh = meta.and_then(|m| m.get("height")).and_then(Value::as_f64).unwrap_or(600.0);
-            let (bx, by, bw, bh): (i64, i64, i64, i64) =
-                if lines.is_empty() { (1_524_000, 1_500_000, 9_144_000, 5_000_000) } else { (6_000_000, 1_500_000, 5_600_000, 4_900_000) };
+            let fw = meta
+                .and_then(|m| m.get("width"))
+                .and_then(Value::as_f64)
+                .unwrap_or(800.0);
+            let fh = meta
+                .and_then(|m| m.get("height"))
+                .and_then(Value::as_f64)
+                .unwrap_or(600.0);
+            let (bx, by, bw, bh): (i64, i64, i64, i64) = if lines.is_empty() {
+                (1_524_000, 1_500_000, 9_144_000, 5_000_000)
+            } else {
+                (6_000_000, 1_500_000, 5_600_000, 4_900_000)
+            };
             let scale = (bw as f64 / fw).min(bh as f64 / fh);
             let (cx, cy) = ((fw * scale) as i64, (fh * scale) as i64);
             let (x, y) = (bx + (bw - cx) / 2, by + (bh - cy) / 2);
@@ -181,7 +200,8 @@ pub fn render_pptx_in(payload: &Value, out_path: &Path, asset_dir: Option<&Path>
                 "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n",
             );
             for (pi, (k, bytes)) in pics.iter().enumerate() {
-                zip.start_file(format!("ppt/media/fig{i}_{k}.png"), opts).map_err(zip_err)?;
+                zip.start_file(format!("ppt/media/fig{i}_{k}.png"), opts)
+                    .map_err(zip_err)?;
                 zip.write_all(bytes).map_err(io_err)?;
                 rels.push_str(&format!(
                     "  <Relationship Id=\"rIdFig{k}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/fig{i}_{k}.png\"/>\n"
@@ -193,7 +213,8 @@ pub fn render_pptx_in(payload: &Value, out_path: &Path, asset_dir: Option<&Path>
                 ));
             }
             rels.push_str("</Relationships>");
-            zip.start_file(format!("ppt/slides/_rels/slide{i}.xml.rels"), opts).map_err(zip_err)?;
+            zip.start_file(format!("ppt/slides/_rels/slide{i}.xml.rels"), opts)
+                .map_err(zip_err)?;
             zip.write_all(rels.as_bytes()).map_err(io_err)?;
         }
         let timing = build_timing_xml(s, &line_ids, &pic_ids);
@@ -233,57 +254,142 @@ pub fn render_pptx_in(payload: &Value, out_path: &Path, asset_dir: Option<&Path>
 fn body_lines(s: &Value) -> Vec<(String, Vec<String>)> {
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
     let text = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-    if let Some(sub) = s.get("subtitle").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+    if let Some(sub) = s
+        .get("subtitle")
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.trim().is_empty())
+    {
         out.push((sub.trim().to_string(), vec!["subtitle".into()]));
     }
-    if let Some(formula) = s.get("formula").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
-        out.push((format!("Formula: {}", formula.trim()), vec!["formula".into()]));
+    if let Some(formula) = s
+        .get("formula")
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.trim().is_empty())
+    {
+        out.push((
+            format!("Formula: {}", formula.trim()),
+            vec!["formula".into()],
+        ));
     }
-    for (ci, c) in s.get("cards").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+    for (ci, c) in s
+        .get("cards")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         let (ct, cb) = (text(c, "title"), text(c, "body"));
         if !ct.is_empty() || !cb.is_empty() {
             out.push((format!("■ {ct} — {cb}"), vec![format!("card{}", ci + 1)]));
         }
     }
-    for (ci, c) in s.get("columns").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+    for (ci, c) in s
+        .get("columns")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         let col = format!("col{}", ci + 1);
         let h = text(c, "heading");
         if !h.is_empty() {
             out.push((format!("【{h}】"), vec![col.clone()]));
         }
-        for (ii, it) in c.get("items").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str()).enumerate() {
-            out.push((format!("  • {it}"), vec![col.clone(), format!("{col}.i{}", ii + 1)]));
+        for (ii, it) in c
+            .get("items")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .enumerate()
+        {
+            out.push((
+                format!("  • {it}"),
+                vec![col.clone(), format!("{col}.i{}", ii + 1)],
+            ));
         }
     }
-    for (mi, m) in s.get("metrics").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
-        let line = format!("{} · {} {}", text(m, "value"), text(m, "label"), text(m, "detail")).trim().to_string();
+    for (mi, m) in s
+        .get("metrics")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let line = format!(
+            "{} · {} {}",
+            text(m, "value"),
+            text(m, "label"),
+            text(m, "detail")
+        )
+        .trim()
+        .to_string();
         out.push((line, vec![format!("metric{}", mi + 1)]));
     }
-    for (si, st) in s.get("steps").and_then(|v| v.as_array()).into_iter().flatten().enumerate() {
+    for (si, st) in s
+        .get("steps")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         let num = text(st, "step");
-        let prefix = if num.is_empty() { format!("{}.", si + 1) } else { num };
-        out.push((format!("{prefix} {}: {}", text(st, "title"), text(st, "detail")), vec![format!("step{}", si + 1)]));
+        let prefix = if num.is_empty() {
+            format!("{}.", si + 1)
+        } else {
+            num
+        };
+        out.push((
+            format!("{prefix} {}: {}", text(st, "title"), text(st, "detail")),
+            vec![format!("step{}", si + 1)],
+        ));
     }
     if let Some(tbl) = s.get("table").and_then(|v| v.as_object()) {
         if let Some(hdrs) = tbl.get("headers").and_then(|v| v.as_array()) {
-            let hline = hdrs.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | ");
+            let hline = hdrs
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
             if !hline.is_empty() {
                 out.push((hline, vec!["table".into()]));
             }
         }
-        for (ri, r) in tbl.get("rows").and_then(|v| v.as_array()).into_iter().flatten().take(12).enumerate() {
+        for (ri, r) in tbl
+            .get("rows")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .take(12)
+            .enumerate()
+        {
             if let Some(cells) = r.as_array() {
-                let line = cells.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | ");
+                let line = cells
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
                 out.push((line, vec!["table".into(), format!("table.r{}", ri + 1)]));
             }
         }
     }
-    for (bi, t) in s.get("bullets").and_then(|b| b.as_array()).into_iter().flatten().filter_map(|v| v.as_str()).enumerate() {
+    for (bi, t) in s
+        .get("bullets")
+        .and_then(|b| b.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .enumerate()
+    {
         if !t.trim().is_empty() {
             out.push((format!("• {}", t.trim()), vec![format!("b{}", bi + 1)]));
         }
     }
-    if let Some(callout) = s.get("callout").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()) {
+    if let Some(callout) = s
+        .get("callout")
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.trim().is_empty())
+    {
         out.push((format!("★ {}", callout.trim()), vec!["callout".into()]));
     }
     out
@@ -292,10 +398,17 @@ fn body_lines(s: &Value) -> Vec<(String, Vec<String>)> {
 /// Click-by-click entrance animations for a slide's builds: body paragraphs (shape id 3) and
 /// figure layers (picture shape ids). Returns the `<p:timing>` element or an empty string.
 fn build_timing_xml(s: &Value, line_ids: &[Vec<String>], pic_ids: &[(i64, usize)]) -> String {
-    let Some(builds) = s.get("builds").and_then(Value::as_array).filter(|b| !b.is_empty()) else {
+    let Some(builds) = s
+        .get("builds")
+        .and_then(Value::as_array)
+        .filter(|b| !b.is_empty())
+    else {
         return String::new();
     };
-    let mut steps: Vec<i64> = builds.iter().filter_map(|b| b.get("step").and_then(Value::as_i64)).collect();
+    let mut steps: Vec<i64> = builds
+        .iter()
+        .filter_map(|b| b.get("step").and_then(Value::as_i64))
+        .collect();
     steps.sort();
     steps.dedup();
     let mut clicks = String::new();
@@ -305,14 +418,21 @@ fn build_timing_xml(s: &Value, line_ids: &[Vec<String>], pic_ids: &[(i64, usize)
         let mut paras: Vec<usize> = Vec::new();
         let mut appear = false;
         let mut entrance = false;
-        for b in builds.iter().filter(|b| b.get("step").and_then(Value::as_i64) == Some(st)) {
+        for b in builds
+            .iter()
+            .filter(|b| b.get("step").and_then(Value::as_i64) == Some(st))
+        {
             let eff = b.get("effect").and_then(Value::as_str).unwrap_or("fade");
             if eff == "emphasis" || eff == "dim_others" {
                 continue;
             }
             entrance = true;
             appear |= eff == "appear";
-            let targets: Vec<&str> = b.get("targets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let targets: Vec<&str> = b
+                .get("targets")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
             for (li, ids) in line_ids.iter().enumerate() {
                 if ids.iter().any(|id| targets.contains(&id.as_str())) && !paras.contains(&li) {
                     paras.push(li);
@@ -326,7 +446,11 @@ fn build_timing_xml(s: &Value, line_ids: &[Vec<String>], pic_ids: &[(i64, usize)
         any_text |= !paras.is_empty();
         let mut targets: Vec<String> = paras
             .iter()
-            .map(|p| format!(r#"<p:spTgt spid="3"><p:txEl><p:pRg st="{p}" end="{p}"/></p:txEl></p:spTgt>"#))
+            .map(|p| {
+                format!(
+                    r#"<p:spTgt spid="3"><p:txEl><p:pRg st="{p}" end="{p}"/></p:txEl></p:spTgt>"#
+                )
+            })
             .collect();
         if let Some(id) = pic {
             targets.push(format!(r#"<p:spTgt spid="{id}"/>"#));
@@ -341,7 +465,12 @@ fn build_timing_xml(s: &Value, line_ids: &[Vec<String>], pic_ids: &[(i64, usize)
             let (preset, anim) = if appear {
                 (1, String::new())
             } else {
-                (10, format!(r#"<p:animEffect transition="in" filter="fade"><p:cBhvr><p:cTn id="{aid}" dur="500"/><p:tgtEl>{tgt}</p:tgtEl></p:cBhvr></p:animEffect>"#))
+                (
+                    10,
+                    format!(
+                        r#"<p:animEffect transition="in" filter="fade"><p:cBhvr><p:cTn id="{aid}" dur="500"/><p:tgtEl>{tgt}</p:tgtEl></p:cBhvr></p:animEffect>"#
+                    ),
+                )
             };
             effects.push_str(&format!(
                 r#"<p:par><p:cTn id="{eid}" presetID="{preset}" presetClass="entr" presetSubtype="0" fill="hold" grpId="0" nodeType="{node}"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:set><p:cBhvr><p:cTn id="{sid}" dur="1" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn><p:tgtEl>{tgt}</p:tgtEl><p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val="visible"/></p:to></p:set>{anim}</p:childTnLst></p:cTn></p:par>"#
@@ -354,7 +483,11 @@ fn build_timing_xml(s: &Value, line_ids: &[Vec<String>], pic_ids: &[(i64, usize)
     if clicks.is_empty() {
         return String::new();
     }
-    let bld = if any_text { r#"<p:bldLst><p:bldP spid="3" grpId="0" build="p"/></p:bldLst>"# } else { "" };
+    let bld = if any_text {
+        r#"<p:bldLst><p:bldP spid="3" grpId="0" build="p"/></p:bldLst>"#
+    } else {
+        ""
+    };
     format!(
         r#"
   <p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst><p:seq concurrent="1" nextAc="seek"><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst>{clicks}</p:childTnLst></p:cTn><p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst><p:nextCondLst><p:cond evt="onNext" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:nextCondLst></p:seq></p:childTnLst></p:cTn></p:par></p:tnLst>{bld}</p:timing>"#
@@ -384,10 +517,12 @@ pub fn render_infographic_svg(payload: &Value, out_path: &Path) -> LnaResult<()>
         .cloned()
         .unwrap_or_default();
     let cols = 2usize;
-    let rows = (blocks.len().max(1) + cols - 1) / cols;
+    let rows = blocks.len().max(1).div_ceil(cols);
     let table_h = 64 + blocks.len().min(6) * 34;
     let height = 190 + rows * 168 + table_h + 48;
-    let accents = ["#1a73e8", "#0f9d58", "#673ab7", "#e37400", "#00838f", "#c5221f"];
+    let accents = [
+        "#1a73e8", "#0f9d58", "#673ab7", "#e37400", "#00838f", "#c5221f",
+    ];
 
     let mut svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="{height}" viewBox="0 0 1200 {height}">
@@ -496,7 +631,7 @@ pub fn render_mindmap_svg(payload: &Value, out_path: &Path) -> LnaResult<()> {
             if n.get("parent_id").and_then(|x| x.as_str()) == parent_id {
                 let idx = out.len();
                 let label = crate::validate::strip_citation_markers(
-                    n.get("label").and_then(|x| x.as_str()).unwrap_or("")
+                    n.get("label").and_then(|x| x.as_str()).unwrap_or(""),
                 );
                 let x = 48 + depth * 220;
                 let y = 96 + *row * 56;

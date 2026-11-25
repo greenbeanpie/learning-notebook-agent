@@ -210,7 +210,8 @@ fn saving_a_profile_probes_capabilities_and_persists_them() {
     let env = Env::new("probe");
     for (schema_ok, json_mode_ok) in [(true, true), (false, true)] {
         let mock = probe_mock(true, schema_ok);
-        mock.raw_probe.store(true, std::sync::atomic::Ordering::SeqCst);
+        mock.raw_probe
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let prof = env.ok("profile.upsert", upsert_params(&mock));
         let pid = prof["id"].as_str().unwrap().to_string();
         let caps = &prof["capabilities"];
@@ -223,7 +224,12 @@ fn saving_a_profile_probes_capabilities_and_persists_them() {
         let r = env.ok("profile.test", json!({ "profile_id": pid }));
         assert_eq!(r["capabilities"]["json_schema"], json!(schema_ok));
         let stored = env.ok("profile.list", json!({}));
-        let found = stored["profiles"].as_array().unwrap().iter().find(|p| p["id"] == pid).unwrap();
+        let found = stored["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == pid)
+            .unwrap();
         assert_eq!(found["eligible"], json!(true));
     }
 }
@@ -234,32 +240,56 @@ fn models_without_tools_or_structured_output_are_refused() {
     let env = Env::new("probe_refuse");
     // no tool calling
     let mock = probe_mock(false, true);
-    mock.raw_probe.store(true, std::sync::atomic::Ordering::SeqCst);
+    mock.raw_probe
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let r = env.raw("profile.upsert", upsert_params(&mock));
     assert_eq!(r["error"]["code"], json!("CAPABILITY_MISSING"), "{r}");
-    assert!(r["error"]["message"].as_str().unwrap().contains("工具调用"), "{r}");
+    assert!(
+        r["error"]["message"].as_str().unwrap().contains("工具调用"),
+        "{r}"
+    );
     // no JSON schema and no JSON mode
     let mock = MockLlm::start(|r| {
         if r.has_tools() {
-            return Reply::Tool { id: "p1".into(), name: "lna_capability_probe".into(), args: json!({ "ok": true }) };
+            return Reply::Tool {
+                id: "p1".into(),
+                name: "lna_capability_probe".into(),
+                args: json!({ "ok": true }),
+            };
         }
         if r.body.get("response_format").is_some() {
-            return Reply::Status(400, r#"{"error":{"message":"response_format is not supported"}}"#.into());
+            return Reply::Status(
+                400,
+                r#"{"error":{"message":"response_format is not supported"}}"#.into(),
+            );
         }
         Reply::Text("OK".into())
     });
-    mock.raw_probe.store(true, std::sync::atomic::Ordering::SeqCst);
+    mock.raw_probe
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let r = env.raw("profile.upsert", upsert_params(&mock));
     assert_eq!(r["error"]["code"], json!("CAPABILITY_MISSING"), "{r}");
-    assert!(r["error"]["message"].as_str().unwrap().contains("结构化输出"), "{r}");
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("结构化输出"),
+        "{r}"
+    );
     // nothing was stored
     let stored = env.ok("profile.list", json!({}));
-    assert!(stored["profiles"].as_array().unwrap().is_empty(), "{stored}");
+    assert!(
+        stored["profiles"].as_array().unwrap().is_empty(),
+        "{stored}"
+    );
     // an embedding endpoint is not held to the chat rules
-    let emb = env.ok("profile.upsert", json!({
-        "display_name": "emb", "protocol": "chat_completion", "base_url": mock.base_url(),
-        "model_id": "text-emb", "purpose": "embedding"
-    }));
+    let emb = env.ok(
+        "profile.upsert",
+        json!({
+            "display_name": "emb", "protocol": "chat_completion", "base_url": mock.base_url(),
+            "model_id": "text-emb", "purpose": "embedding"
+        }),
+    );
     assert_eq!(emb["capabilities"]["embedding_only"], json!(true));
     let r = env.raw("profile.activate", json!({ "profile_id": emb["id"] }));
     assert_eq!(r["error"]["code"], json!("CAPABILITY_MISSING"), "{r}");
@@ -342,7 +372,11 @@ fn a_model_rejecting_tools_at_run_time_is_reported_not_downgraded() {
     );
     // the stored profile still says what the probe found; the user re-checks it in the settings
     let stored = env.ok("profile.list", json!({}));
-    assert_eq!(stored["profiles"][0]["capabilities"]["tools"], json!(true), "{stored}");
+    assert_eq!(
+        stored["profiles"][0]["capabilities"]["tools"],
+        json!(true),
+        "{stored}"
+    );
     assert_eq!(stored["profiles"][0]["eligible"], json!(true), "{stored}");
 }
 
@@ -351,10 +385,7 @@ fn builtin_provider_presets_include_official_and_opencode_go_headers() {
     let env = Env::new("presets");
     let res = env.ok("profile.presets", json!({}));
     let presets = res["presets"].as_array().expect("presets array");
-    let ids: Vec<&str> = presets
-        .iter()
-        .filter_map(|p| p["id"].as_str())
-        .collect();
+    let ids: Vec<&str> = presets.iter().filter_map(|p| p["id"].as_str()).collect();
     for expected in [
         "openai",
         "anthropic",
@@ -364,7 +395,10 @@ fn builtin_provider_presets_include_official_and_opencode_go_headers() {
         "mimo",
         "opencode_go",
     ] {
-        assert!(ids.contains(&expected), "missing preset {expected} in {ids:?}");
+        assert!(
+            ids.contains(&expected),
+            "missing preset {expected} in {ids:?}"
+        );
     }
     let opencode = presets
         .iter()
@@ -392,7 +426,8 @@ fn existing_unqualified_profiles_are_refused_after_probing() {
     env.wait_sources_ready(&nid, 1);
 
     // simulate a profile saved by an older version: no tools, never probed, vision on
-    let mut caps: lna_types::ModelCapabilities = serde_json::from_value(prof["capabilities"].clone()).unwrap();
+    let mut caps: lna_types::ModelCapabilities =
+        serde_json::from_value(prof["capabilities"].clone()).unwrap();
     caps.tools = false;
     caps.supports_vision = true;
     caps.probed_at = None;
@@ -403,13 +438,26 @@ fn existing_unqualified_profiles_are_refused_after_probing() {
     // probed and lacking tool calling
     caps.probed_at = Some(1);
     lna_storage::update_profile_capabilities(&env.core.db, &pid, &caps).unwrap();
-    let code = env.err("chat.send", json!({ "notebook_id": nid, "text": "基是什么" }));
+    let code = env.err(
+        "chat.send",
+        json!({ "notebook_id": nid, "text": "基是什么" }),
+    );
     assert_eq!(code, "CAPABILITY_MISSING");
-    assert_eq!(env.err("profile.activate", json!({ "profile_id": pid })), "CAPABILITY_MISSING");
-    assert!(lna_storage::resolve_modality_profile(&env.core.db, "vision").unwrap().is_none());
+    assert_eq!(
+        env.err("profile.activate", json!({ "profile_id": pid })),
+        "CAPABILITY_MISSING"
+    );
+    assert!(
+        lna_storage::resolve_modality_profile(&env.core.db, "vision")
+            .unwrap()
+            .is_none()
+    );
     let list = env.ok("profile.list", json!({}));
     assert_eq!(list["profiles"][0]["eligible"], json!(false));
-    assert!(list["profiles"][0]["unsupported_reason"].as_str().unwrap().contains("工具调用"));
+    assert!(list["profiles"][0]["unsupported_reason"]
+        .as_str()
+        .unwrap()
+        .contains("工具调用"));
 
     // re-testing against a now-capable endpoint makes it usable again
     env.ok("profile.test", json!({ "profile_id": pid }));

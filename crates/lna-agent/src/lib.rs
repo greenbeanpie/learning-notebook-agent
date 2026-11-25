@@ -217,7 +217,8 @@ impl AgentService {
                     Ok((
                         r.get(0)?,
                         r.get(1)?,
-                        atts.map(|s| attachments::parse_stored_str(&s)).unwrap_or_default(),
+                        atts.map(|s| attachments::parse_stored_str(&s))
+                            .unwrap_or_default(),
                     ))
                 },
             )
@@ -440,8 +441,10 @@ impl AgentService {
             }
             Ok(out)
         })?;
-        let selected_sources: Vec<String> =
-            selected_source_meta.iter().map(|(id, _, _)| id.clone()).collect();
+        let selected_sources: Vec<String> = selected_source_meta
+            .iter()
+            .map(|(id, _, _)| id.clone())
+            .collect();
         let selected_json =
             serde_json::to_string(&selected_sources).unwrap_or_else(|_| "[]".into());
         let atts_json: Option<String> = if user_atts.is_empty() {
@@ -502,8 +505,21 @@ impl AgentService {
         let profile = match lna_storage::get_active_profile(&self.db) {
             Ok(Some(p)) => p,
             Err(err) => {
-                let _ = self.finalize_message(&asst_msg_id, "FAILED", "", &[], &[], None, None, Some(err.code.as_str()));
-                self.emit(&topic, "chat.finished", json!({ "status": "FAILED", "error": err }));
+                let _ = self.finalize_message(
+                    &asst_msg_id,
+                    "FAILED",
+                    "",
+                    &[],
+                    &[],
+                    None,
+                    None,
+                    Some(err.code.as_str()),
+                );
+                self.emit(
+                    &topic,
+                    "chat.finished",
+                    json!({ "status": "FAILED", "error": err }),
+                );
                 return Err(err);
             }
             Ok(None) => {
@@ -777,7 +793,12 @@ impl AgentService {
         let mut sources_xml = if selected_source_meta.is_empty() {
             "<sources selected_file_count=\"0\">(本笔记本没有选中的来源。请直接根据用户附带的图片、附件和通用知识作答，并在回答开头用一句话说明本次未参考笔记来源。)</sources>".to_string()
         } else {
-            format_sources_xml(&self.db, &outcome.evidences, outcome.grounded, &selected_source_meta)
+            format_sources_xml(
+                &self.db,
+                &outcome.evidences,
+                outcome.grounded,
+                &selected_source_meta,
+            )
         };
         let system_prompt = history_summary
             .as_deref()
@@ -1021,7 +1042,11 @@ impl AgentService {
             let req = LlmRequest {
                 system: system_prompt.clone(),
                 messages: llm_messages.clone(),
-                tools: if round < MAX_TOOL_ROUNDS { tools.clone() } else { vec![] },
+                tools: if round < MAX_TOOL_ROUNDS {
+                    tools.clone()
+                } else {
+                    vec![]
+                },
                 tool_mode: if round < MAX_TOOL_ROUNDS && !tools.is_empty() {
                     ToolMode::Auto
                 } else {
@@ -1098,10 +1123,18 @@ impl AgentService {
                         step_id: new_ulid(),
                         kind: "thought_stage".into(),
                         title: st_title,
-                        detail: if st_summary.is_empty() { None } else { Some(st_summary) },
+                        detail: if st_summary.is_empty() {
+                            None
+                        } else {
+                            Some(st_summary)
+                        },
                         state: "done".into(),
                     };
-                    self.emit(&topic, "chat.thought_step", serde_json::to_value(&st).unwrap_or_default());
+                    self.emit(
+                        &topic,
+                        "chat.thought_step",
+                        serde_json::to_value(&st).unwrap_or_default(),
+                    );
                     thoughts.push(st);
                 }
             };
@@ -1410,11 +1443,11 @@ impl AgentService {
                                     .and_then(|x| x.as_str())
                                     .map(str::trim)
                                     .filter(|s| !s.is_empty());
-                                let start_chunk = args
-                                    .get("start_chunk")
-                                    .and_then(|x| x.as_i64())
-                                    .unwrap_or(0)
-                                    .max(0) as i32;
+                                let start_chunk =
+                                    args.get("start_chunk")
+                                        .and_then(|x| x.as_i64())
+                                        .unwrap_or(0)
+                                        .max(0) as i32;
                                 let count = args
                                     .get("count")
                                     .and_then(|x| x.as_i64())
@@ -1441,7 +1474,11 @@ impl AgentService {
                                         (count / target_ids.len() as i32).max(1)
                                     };
                                     for sid in &target_ids {
-                                        match self.retrieval.read_source_chunks(sid, start_chunk, per_src) {
+                                        match self.retrieval.read_source_chunks(
+                                            sid,
+                                            start_chunk,
+                                            per_src,
+                                        ) {
                                             Ok(chunks) => {
                                                 for mut ev in chunks {
                                                     if let Some(existing) = evidence_map
@@ -1661,7 +1698,8 @@ impl AgentService {
                                 match self.studio.compute_kg_progress_summary(notebook_id, sid) {
                                     Ok(v) => {
                                         custom_step_title = Some("已查询知识点图谱理解进度".into());
-                                        serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into())
+                                        serde_json::to_string_pretty(&v)
+                                            .unwrap_or_else(|_| "{}".into())
                                     }
                                     Err(err_msg) => {
                                         is_error = true;
@@ -1670,8 +1708,15 @@ impl AgentService {
                                 }
                             }
                             "build_source_knowledge_graph" => {
-                                let sid = args.get("source_id").and_then(|x| x.as_str()).unwrap_or("").trim();
-                                let detail = args.get("detail").and_then(|x| x.as_str()).unwrap_or("standard");
+                                let sid = args
+                                    .get("source_id")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .trim();
+                                let detail = args
+                                    .get("detail")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("standard");
                                 if sid.is_empty() {
                                     is_error = true;
                                     "缺少 source_id 参数。".to_string()
@@ -1681,9 +1726,15 @@ impl AgentService {
                                         "source_id": sid,
                                         "detail": detail,
                                     });
-                                    match self.studio.create(notebook_id, ArtifactType::Mindmap, None, cfg) {
+                                    match self.studio.create(
+                                        notebook_id,
+                                        ArtifactType::Mindmap,
+                                        None,
+                                        cfg,
+                                    ) {
                                         Ok(art) => {
-                                            custom_step_title = Some("已开始构建材料知识点图谱".into());
+                                            custom_step_title =
+                                                Some("已开始构建材料知识点图谱".into());
                                             json!({ "ok": true, "artifact_id": art.id, "source_id": sid, "status": "PENDING" }).to_string()
                                         }
                                         Err(e) => {
@@ -1693,9 +1744,7 @@ impl AgentService {
                                     }
                                 }
                             }
-                            "report_thought_stage" => {
-                                "已记录当前思考阶段概括。".to_string()
-                            }
+                            "report_thought_stage" => "已记录当前思考阶段概括。".to_string(),
                             _ => {
                                 is_error = true;
                                 format!("不支持的只读工具：{name}")
@@ -1718,7 +1767,11 @@ impl AgentService {
                                 step_id: new_ulid(),
                                 kind: "thought_stage".into(),
                                 title: stage_title,
-                                detail: if stage_summary.is_empty() { None } else { Some(stage_summary) },
+                                detail: if stage_summary.is_empty() {
+                                    None
+                                } else {
+                                    Some(stage_summary)
+                                },
                                 state: "done".into(),
                             }
                         } else {
@@ -1752,7 +1805,11 @@ impl AgentService {
                                     .or_else(|| args.get("topic"))
                                     .and_then(|x| x.as_str())
                                     .map(|q| q.to_string()),
-                                state: if is_error { "failed".into() } else { "done".into() },
+                                state: if is_error {
+                                    "failed".into()
+                                } else {
+                                    "done".into()
+                                },
                             }
                         };
                         self.emit(
@@ -1787,7 +1844,10 @@ impl AgentService {
                     continue;
                 }
                 Ok(reason) => {
-                    if full_text.trim().is_empty() && !leaked_calls.is_empty() && !final_empty_retried {
+                    if full_text.trim().is_empty()
+                        && !leaked_calls.is_empty()
+                        && !final_empty_retried
+                    {
                         final_empty_retried = true;
                         llm_messages.push(LlmMessage {
                             role: Role::User,
@@ -1835,10 +1895,18 @@ impl AgentService {
                             step_id: new_ulid(),
                             kind: "thought_stage".into(),
                             title: st_title,
-                            detail: if st_summary.is_empty() { None } else { Some(st_summary) },
+                            detail: if st_summary.is_empty() {
+                                None
+                            } else {
+                                Some(st_summary)
+                            },
                             state: "done".into(),
                         };
-                        self.emit(&topic, "chat.thought_step", serde_json::to_value(&st).unwrap_or_default());
+                        self.emit(
+                            &topic,
+                            "chat.thought_step",
+                            serde_json::to_value(&st).unwrap_or_default(),
+                        );
                         thoughts.push(st);
                     }
                     full_text = clean_text;
@@ -2053,27 +2121,45 @@ impl AgentService {
         });
         let sum_res = self
             .llm
-            .complete_structured_with_thinking(&resolved, &req, "notebook_summary", &summary_schema, cancel, 2, |delta| {
-                if delta.is_empty() { return; }
-                thought_buf.push_str(delta);
-                if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
-                    let preview: String = thought_buf.chars().rev().take(120).collect::<String>().chars().rev().collect();
-                    self.emit(
-                        &format!("notebook:{notebook_id}"),
-                        "ai.activity",
-                        json!({
-                            "task_id": sum_tid,
-                            "notebook_id": notebook_id,
-                            "scope": "notebook_summary",
-                            "kind": "reasoning",
-                            "title": "AI 思考 · 笔记本概览",
-                            "body": preview,
-                            "active": true,
-                        }),
-                    );
-                    last_emit = std::time::Instant::now();
-                }
-            }, |_| {})
+            .complete_structured_with_thinking(
+                &resolved,
+                &req,
+                "notebook_summary",
+                &summary_schema,
+                cancel,
+                2,
+                |delta| {
+                    if delta.is_empty() {
+                        return;
+                    }
+                    thought_buf.push_str(delta);
+                    if last_emit.elapsed() >= std::time::Duration::from_millis(250) {
+                        let preview: String = thought_buf
+                            .chars()
+                            .rev()
+                            .take(120)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect();
+                        self.emit(
+                            &format!("notebook:{notebook_id}"),
+                            "ai.activity",
+                            json!({
+                                "task_id": sum_tid,
+                                "notebook_id": notebook_id,
+                                "scope": "notebook_summary",
+                                "kind": "reasoning",
+                                "title": "AI 思考 · 笔记本概览",
+                                "body": preview,
+                                "active": true,
+                            }),
+                        );
+                        last_emit = std::time::Instant::now();
+                    }
+                },
+                |_| {},
+            )
             .await;
         self.emit(
             &format!("notebook:{notebook_id}"),
@@ -2725,7 +2811,10 @@ fn format_sources_xml(
     grounded: bool,
     selected_files: &[(String, String, String)],
 ) -> String {
-    let mut out = format!("<sources selected_file_count=\"{}\">\n", selected_files.len());
+    let mut out = format!(
+        "<sources selected_file_count=\"{}\">\n",
+        selected_files.len()
+    );
     if !selected_files.is_empty() {
         out.push_str("<selected_files>\n");
         for (id, title, kind) in selected_files {
@@ -2820,7 +2909,11 @@ fn collect_final_citations(
         .filter_map(|n| evidence_map.get(n))
         .map(|ev| CitationRef {
             no: ev.citation_no,
-            chunk_id: if ev.chunk_id > 0 { Some(ev.chunk_id) } else { None },
+            chunk_id: if ev.chunk_id > 0 {
+                Some(ev.chunk_id)
+            } else {
+                None
+            },
             source_id: Some(ev.source_id.clone()),
             source_title: ev.source_title.clone(),
             page_start: ev.page_start,
@@ -2846,9 +2939,10 @@ impl AgentService {
         let sid = src.id.clone();
         match kind {
             SourceKind::Pdf => {
-                if let Ok(Ok(ex)) =
-                    tokio::task::spawn_blocking(move || lna_ingest::parser::parse_pdf_detailed(&bp_clone))
-                        .await
+                if let Ok(Ok(ex)) = tokio::task::spawn_blocking(move || {
+                    lna_ingest::parser::parse_pdf_detailed(&bp_clone)
+                })
+                .await
                 {
                     let idx = lna_ingest::media::MediaIndex {
                         source_id: sid,
@@ -2944,12 +3038,8 @@ impl AgentService {
                 lines.push(format!("总页数/幻灯片数: {pc}"));
             }
             if !m.ocr_pages.is_empty() {
-                let sample_ocr: Vec<String> = m
-                    .ocr_pages
-                    .iter()
-                    .take(30)
-                    .map(|p| p.to_string())
-                    .collect();
+                let sample_ocr: Vec<String> =
+                    m.ocr_pages.iter().take(30).map(|p| p.to_string()).collect();
                 lines.push(format!(
                     "纯图片/需 OCR 页码 ({} 页): {}{}",
                     m.ocr_pages.len(),
@@ -3051,10 +3141,7 @@ impl AgentService {
             let ps = c.page_start.unwrap_or(0);
             let pe = c.page_end.unwrap_or(ps);
             if ps > 0 && (ps..=pe).any(|p| page_set.contains(&p)) {
-                text_sections.push(format!(
-                    "[已提取第{}-{}页文字]\n{}",
-                    ps, pe, c.content
-                ));
+                text_sections.push(format!("[已提取第{}-{}页文字]\n{}", ps, pe, c.content));
             }
         }
 
@@ -3121,12 +3208,8 @@ impl AgentService {
                         if let Ok(bytes) =
                             lna_ingest::office::extract_zip_embedded_image(&bp, &im.zip_entry)
                         {
-                            let im_ext = im
-                                .zip_entry
-                                .rsplit('.')
-                                .next()
-                                .unwrap_or("png")
-                                .to_string();
+                            let im_ext =
+                                im.zip_entry.rsplit('.').next().unwrap_or("png").to_string();
                             let label = format!(
                                 "{} {} ({})",
                                 src.title,
@@ -3208,7 +3291,10 @@ impl AgentService {
         norm.add_valid(cite_no);
         evidence_map.insert(cite_no, ev);
 
-        Ok(format!("{truncated_note}[{cite_no}] ({})\n{combined}", src.title))
+        Ok(format!(
+            "{truncated_note}[{cite_no}] ({})\n{combined}",
+            src.title
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3297,12 +3383,7 @@ impl AgentService {
                     if let Ok(bytes) =
                         lna_ingest::office::extract_zip_embedded_image(&bp, &im.zip_entry)
                     {
-                        let ext = im
-                            .zip_entry
-                            .rsplit('.')
-                            .next()
-                            .unwrap_or("png")
-                            .to_string();
+                        let ext = im.zip_entry.rsplit('.').next().unwrap_or("png").to_string();
                         if used_page.is_none() {
                             used_page = im.page;
                         }
@@ -3355,7 +3436,6 @@ impl AgentService {
         Ok(format!("[{cite_no}] ({})\n{visual_text}", src.title))
     }
 }
-
 
 /// Returns true when the user asks a broad overview/summary question about the selected sources
 /// rather than a narrow factual lookup.
@@ -3454,14 +3534,7 @@ pub fn detect_studio_artifact_hint(user_text: &str) -> Option<(&'static str, &'s
     ];
     let has_action = ACTION_CUES.iter().any(|cue| lower.contains(cue));
 
-    const DIRECT_QUIZ_CUES: &[&str] = &[
-        "考考我",
-        "自测",
-        "刷题",
-        "出几道题",
-        "出题",
-        "quiz me",
-    ];
+    const DIRECT_QUIZ_CUES: &[&str] = &["考考我", "自测", "刷题", "出几道题", "出题", "quiz me"];
     const QUIZ_NOUNS: &[&str] = &[
         "测验",
         "测试",
@@ -3538,9 +3611,16 @@ enum LeakedToolClose {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TagFilterState {
     Normal,
-    InHiddenBlock { close_tag: &'static str },
-    InStageBody { title: String },
-    InLeakedToolBlock { body: String, close_kind: LeakedToolClose },
+    InHiddenBlock {
+        close_tag: &'static str,
+    },
+    InStageBody {
+        title: String,
+    },
+    InLeakedToolBlock {
+        body: String,
+        close_kind: LeakedToolClose,
+    },
 }
 
 /// Streaming filter that strips `<think>`, `<thought>`, `<thinking>`, `<thought_stage>`,
@@ -3552,6 +3632,12 @@ pub struct ThoughtTagStreamFilter {
     buf: String,
     state: TagFilterState,
     leaked_tool_blocks: Vec<String>,
+}
+
+impl Default for ThoughtTagStreamFilter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ThoughtTagStreamFilter {
@@ -3618,12 +3704,8 @@ impl ThoughtTagStreamFilter {
                     }
 
                     // Stray closing tags (just in case)
-                    const STRAY_CLOSES: &[&str] = &[
-                        "</think>",
-                        "</thought>",
-                        "</thinking>",
-                        "</thought_stage>",
-                    ];
+                    const STRAY_CLOSES: &[&str] =
+                        &["</think>", "</thought>", "</thinking>", "</thought_stage>"];
                     let mut matched_stray = false;
                     for close in STRAY_CLOSES {
                         if lower.starts_with(close) {
@@ -3645,7 +3727,10 @@ impl ThoughtTagStreamFilter {
                             }
                             break;
                         }
-                        if matches!(next_char, Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')) {
+                        if matches!(
+                            next_char,
+                            Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
+                        ) {
                             if let Some(gt) = self.buf.find('>') {
                                 let header = &self.buf[..gt];
                                 let title = parse_thought_stage_title(header);
@@ -3766,9 +3851,9 @@ impl ThoughtTagStreamFilter {
                     let close_kind = *close_kind;
                     let lower = self.buf.to_ascii_lowercase();
                     let closed = match close_kind {
-                        LeakedToolClose::ToolCallTag => {
-                            lower.find("</tool_call>").map(|i| (i, i + "</tool_call>".len()))
-                        }
+                        LeakedToolClose::ToolCallTag => lower
+                            .find("</tool_call>")
+                            .map(|i| (i, i + "</tool_call>".len())),
                         LeakedToolClose::FunctionCallsTag => lower
                             .find("</function_calls>")
                             .map(|i| (i, i + "</function_calls>".len())),
@@ -3913,7 +3998,11 @@ fn match_dsml_calls_tag(s: &str, closing: bool) -> Option<usize> {
     } else {
         norm == "<dsmlcalls>" || norm == "<dsmlfunction_calls>"
     };
-    if ok { Some(gt + 1) } else { None }
+    if ok {
+        Some(gt + 1)
+    } else {
+        None
+    }
 }
 
 fn is_dsml_open_prefix(s: &str) -> bool {
@@ -3954,7 +4043,10 @@ fn extract_xml_attr<'a>(attrs: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn parse_leaked_tool_calls(block: &str, base_idx: usize) -> Vec<(String, String, serde_json::Value)> {
+fn parse_leaked_tool_calls(
+    block: &str,
+    base_idx: usize,
+) -> Vec<(String, String, serde_json::Value)> {
     let trimmed = block.trim();
     // 1. Try JSON `<tool_call>{"name": ..., "arguments": ...}</tool_call>`
     if trimmed.starts_with('{') {
@@ -4120,7 +4212,10 @@ mod thought_filter_tests {
         vis.push_str(&tail);
         stages.extend(tail_st);
 
-        assert_eq!(stages, vec![("分析问题".to_string(), "梳理了核心要点".to_string())]);
+        assert_eq!(
+            stages,
+            vec![("分析问题".to_string(), "梳理了核心要点".to_string())]
+        );
         assert!(!vis.contains("<thought"));
         assert!(!vis.contains("<thinking"));
         assert!(!vis.contains("internal cot"));
@@ -4191,9 +4286,15 @@ mod thought_filter_tests {
             Some(("report", "研究报告"))
         );
 
-        assert_eq!(detect_studio_artifact_hint("这本书的测验答案在哪一页？"), None);
+        assert_eq!(
+            detect_studio_artifact_hint("这本书的测验答案在哪一页？"),
+            None
+        );
         assert_eq!(detect_studio_artifact_hint("解释一下正交投影"), None);
-        assert_eq!(detect_studio_artifact_hint("测试：来源中的文件讲了什么？"), None);
+        assert_eq!(
+            detect_studio_artifact_hint("测试：来源中的文件讲了什么？"),
+            None
+        );
         assert_eq!(
             detect_studio_artifact_hint("只用文字给我出3道题，不要生成卡片"),
             None

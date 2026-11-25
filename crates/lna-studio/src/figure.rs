@@ -95,7 +95,11 @@ impl FigureOutput {
     /// Human/model-readable render report used in the review loop.
     pub fn report_text(&self) -> String {
         let mut s = String::new();
-        let _ = writeln!(s, "Canvas {}x{} px. Parts (normalized bbox x,y,w,h):", self.width, self.height);
+        let _ = writeln!(
+            s,
+            "Canvas {}x{} px. Parts (normalized bbox x,y,w,h):",
+            self.width, self.height
+        );
         for p in &self.parts {
             let _ = writeln!(
                 s,
@@ -105,7 +109,11 @@ impl FigureOutput {
                 p.bbox[1],
                 p.bbox[2],
                 p.bbox[3],
-                if p.angle_deg.abs() > 0.5 { format!(" angle {:.0}°", p.angle_deg) } else { String::new() }
+                if p.angle_deg.abs() > 0.5 {
+                    format!(" angle {:.0}°", p.angle_deg)
+                } else {
+                    String::new()
+                }
             );
         }
         if self.errors.is_empty() && self.warnings.is_empty() {
@@ -126,9 +134,28 @@ impl FigureOutput {
 
 #[derive(Debug, Clone)]
 enum Prim {
-    Path { d: String, stroke: String, width: f64, dashed: bool, fill: Option<(String, f64)> },
-    Circle { c: (f64, f64), r: f64, stroke: Option<String>, fill: Option<String>, width: f64 },
-    Text { at: (f64, f64), text: String, size: f64, color: String, anchor: &'static str, italic: bool },
+    Path {
+        d: String,
+        stroke: String,
+        width: f64,
+        dashed: bool,
+        fill: Option<(String, f64)>,
+    },
+    Circle {
+        c: (f64, f64),
+        r: f64,
+        stroke: Option<String>,
+        fill: Option<String>,
+        width: f64,
+    },
+    Text {
+        at: (f64, f64),
+        text: String,
+        size: f64,
+        color: String,
+        anchor: &'static str,
+        italic: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -173,18 +200,43 @@ impl Part {
         }
         let mut d = String::new();
         for (i, p) in pts.iter().enumerate() {
-            let _ = write!(d, "{}{:.2},{:.2}", if i == 0 { "M" } else { " L" }, p.0, p.1);
+            let _ = write!(
+                d,
+                "{}{:.2},{:.2}",
+                if i == 0 { "M" } else { " L" },
+                p.0,
+                p.1
+            );
             self.grow(*p);
         }
-        self.prims.push(Prim::Path { d, stroke: stroke.into(), width, dashed, fill: None });
+        self.prims.push(Prim::Path {
+            d,
+            stroke: stroke.into(),
+            width,
+            dashed,
+            fill: None,
+        });
     }
-    fn polygon(&mut self, pts: &[(f64, f64)], stroke: &str, width: f64, fill: Option<(&str, f64)>, dashed: bool) {
+    fn polygon(
+        &mut self,
+        pts: &[(f64, f64)],
+        stroke: &str,
+        width: f64,
+        fill: Option<(&str, f64)>,
+        dashed: bool,
+    ) {
         if pts.len() < 3 {
             return;
         }
         let mut d = String::new();
         for (i, p) in pts.iter().enumerate() {
-            let _ = write!(d, "{}{:.2},{:.2}", if i == 0 { "M" } else { " L" }, p.0, p.1);
+            let _ = write!(
+                d,
+                "{}{:.2},{:.2}",
+                if i == 0 { "M" } else { " L" },
+                p.0,
+                p.1
+            );
             self.grow(*p);
         }
         d.push_str(" Z");
@@ -203,7 +255,11 @@ impl Part {
             c,
             r,
             stroke: Some(color.into()),
-            fill: if hollow { Some("#ffffff".into()) } else { Some(color.into()) },
+            fill: if hollow {
+                Some("#ffffff".into())
+            } else {
+                Some(color.into())
+            },
             width: 1.6,
         });
     }
@@ -219,18 +275,39 @@ impl Part {
         let r = (back.0 + uy * size * 0.45, back.1 - ux * size * 0.45);
         self.polygon(&[tip, l, r], color, 1.0, Some((color, 1.0)), false);
     }
-    fn text(&mut self, at: (f64, f64), text: &str, size: f64, color: &str, anchor: &'static str) -> LabelBox {
+    fn text(
+        &mut self,
+        at: (f64, f64),
+        text: &str,
+        size: f64,
+        color: &str,
+        anchor: &'static str,
+    ) -> LabelBox {
         let w = text_width(text, size);
         let x0 = match anchor {
             "middle" => at.0 - w / 2.0,
             "end" => at.0 - w,
             _ => at.0,
         };
-        let bx = LabelBox { id: self.id.clone(), text: text.to_string(), x0, y0: at.1 - size * 0.8, x1: x0 + w, y1: at.1 + size * 0.25 };
+        let bx = LabelBox {
+            id: self.id.clone(),
+            text: text.to_string(),
+            x0,
+            y0: at.1 - size * 0.8,
+            x1: x0 + w,
+            y1: at.1 + size * 0.25,
+        };
         self.grow((bx.x0, bx.y0));
         self.grow((bx.x1, bx.y1));
         let italic = is_math_symbol(text);
-        self.prims.push(Prim::Text { at, text: text.to_string(), size, color: color.into(), anchor, italic });
+        self.prims.push(Prim::Text {
+            at,
+            text: text.to_string(),
+            size,
+            color: color.into(),
+            anchor,
+            italic,
+        });
         bx
     }
 }
@@ -247,13 +324,25 @@ struct LabelBox {
 
 fn text_width(s: &str, size: f64) -> f64 {
     s.chars()
-        .map(|c| if (c as u32) > 0x2E80 { size } else if c.is_ascii_uppercase() { size * 0.66 } else { size * 0.56 })
+        .map(|c| {
+            if (c as u32) > 0x2E80 {
+                size
+            } else if c.is_ascii_uppercase() {
+                size * 0.66
+            } else {
+                size * 0.56
+            }
+        })
         .sum()
 }
 
 fn is_math_symbol(s: &str) -> bool {
     let n = s.chars().count();
-    n > 0 && n <= 4 && s.chars().next().is_some_and(|c| c.is_alphabetic() && (c as u32) < 0x2E80)
+    n > 0
+        && n <= 4
+        && s.chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() && (c as u32) < 0x2E80)
 }
 
 fn palette(name: &str) -> &'static str {
@@ -270,20 +359,32 @@ fn palette(name: &str) -> &'static str {
     }
 }
 
-const AUTO_COLORS: [&str; 6] = ["#1a56db", "#d93025", "#188038", "#e8710a", "#8430ce", "#00897b"];
+const AUTO_COLORS: [&str; 6] = [
+    "#1a56db", "#d93025", "#188038", "#e8710a", "#8430ce", "#00897b",
+];
 
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn s_of(v: &Value, k: &str) -> String {
-    v.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn num(v: &Value) -> Option<f64> {
     match v {
         Value::Number(n) => n.as_f64(),
-        Value::String(s) => Expr::parse(s).ok().filter(|e| !e.uses(VAR_X) && !e.uses(VAR_Y)).map(|e| e.eval_x(0.0)),
+        Value::String(s) => Expr::parse(s)
+            .ok()
+            .filter(|e| !e.uses(VAR_X) && !e.uses(VAR_Y))
+            .map(|e| e.eval_x(0.0)),
         _ => None,
     }
     .filter(|x| x.is_finite())
@@ -300,7 +401,7 @@ fn range2(v: Option<&Value>) -> Option<(f64, f64)> {
 
 fn nice_ticks(lo: f64, hi: f64, target: usize) -> Vec<f64> {
     let span = hi - lo;
-    if !(span > 0.0) || !span.is_finite() {
+    if span.is_nan() || span <= 0.0 || !span.is_finite() {
         return vec![];
     }
     let raw = span / target.max(1) as f64;
@@ -322,7 +423,11 @@ fn nice_ticks(lo: f64, hi: f64, target: usize) -> Vec<f64> {
 fn fmt_tick(v: f64) -> String {
     let pi = std::f64::consts::PI;
     let k = v / (pi / 2.0);
-    if v != 0.0 && (k - k.round()).abs() < 1e-9 && k.round().abs() <= 8.0 && (v - v.round()).abs() > 1e-6 {
+    if v != 0.0
+        && (k - k.round()).abs() < 1e-9
+        && k.round().abs() <= 8.0
+        && (v - v.round()).abs() > 1e-6
+    {
         let k = k.round() as i64;
         return match k {
             1 => "π/2".into(),
@@ -335,7 +440,11 @@ fn fmt_tick(v: f64) -> String {
     }
     let s = format!("{:.3}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
-    if s == "-0" { "0".into() } else { s }
+    if s == "-0" {
+        "0".into()
+    } else {
+        s
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -384,22 +493,42 @@ fn canvas_size(spec: &Value) -> (f64, f64) {
 /// part geometry is always reported for every part.
 pub fn render_figure(spec: &Value, hidden: &HashSet<String>) -> FigureOutput {
     let (w, h) = canvas_size(spec);
-    let mut ctx = Ctx { w, h, parts: Vec::new(), labels: Vec::new(), errors: Vec::new(), warnings: Vec::new(), ids: HashSet::new(), plot_clip: None };
+    let mut ctx = Ctx {
+        w,
+        h,
+        parts: Vec::new(),
+        labels: Vec::new(),
+        errors: Vec::new(),
+        warnings: Vec::new(),
+        ids: HashSet::new(),
+        plot_clip: None,
+    };
     let title = s_of(spec, "title");
     let top_pad = if title.is_empty() { 18.0 } else { 46.0 };
-    let elements: Vec<Value> = spec.get("elements").and_then(Value::as_array).cloned().unwrap_or_default();
+    let elements: Vec<Value> = spec
+        .get("elements")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if elements.is_empty() {
         ctx.errors.push("figure has no elements".into());
     }
     if elements.len() > MAX_ELEMENTS {
-        ctx.errors.push(format!("too many elements ({}); keep it under {}", elements.len(), MAX_ELEMENTS));
+        ctx.errors.push(format!(
+            "too many elements ({}); keep it under {}",
+            elements.len(),
+            MAX_ELEMENTS
+        ));
     }
     let kind = s_of(spec, "kind");
     match kind.as_str() {
         "plot" | "implicit" | "function" | "" => render_plot(spec, &elements, &mut ctx, top_pad),
         "plot3d" | "3d" | "surface" => render_plot3d(spec, &elements, &mut ctx, top_pad),
         "diagram" | "geometry" | "physics" => render_diagram(&elements, &mut ctx, top_pad),
-        other => ctx.errors.push(format!("unknown figure kind '{}' (use plot, plot3d or diagram)", other)),
+        other => ctx.errors.push(format!(
+            "unknown figure kind '{}' (use plot, plot3d or diagram)",
+            other
+        )),
     }
     if !title.is_empty() {
         let mut p = Part::new("title", 0);
@@ -414,7 +543,8 @@ pub fn render_figure(spec: &Value, hidden: &HashSet<String>) -> FigureOutput {
 /// Rasterizes an SVG produced by `render_figure` (fonts from the system).
 pub fn svg_to_png(svg: &str, scale: f32) -> Result<Vec<u8>, String> {
     use resvg::{tiny_skia, usvg};
-    static FONTS: std::sync::OnceLock<std::sync::Arc<usvg::fontdb::Database>> = std::sync::OnceLock::new();
+    static FONTS: std::sync::OnceLock<std::sync::Arc<usvg::fontdb::Database>> =
+        std::sync::OnceLock::new();
     let db = FONTS
         .get_or_init(|| {
             let mut db = usvg::fontdb::Database::new();
@@ -422,11 +552,23 @@ pub fn svg_to_png(svg: &str, scale: f32) -> Result<Vec<u8>, String> {
             std::sync::Arc::new(db)
         })
         .clone();
-    let opt = usvg::Options { fontdb: db, ..usvg::Options::default() };
+    let opt = usvg::Options {
+        fontdb: db,
+        ..usvg::Options::default()
+    };
     let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| e.to_string())?;
-    let size = tree.size().to_int_size().scale_by(scale).ok_or("bad size")?;
-    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("pixmap alloc failed")?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let size = tree
+        .size()
+        .to_int_size()
+        .scale_by(scale)
+        .ok_or("bad size")?;
+    let mut pixmap =
+        tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("pixmap alloc failed")?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
     pixmap.encode_png().map_err(|e| e.to_string())
 }
 
@@ -450,7 +592,10 @@ impl Ctx {
         if id.is_empty() {
             id = format!("{}{}", ty, idx + 1);
         }
-        id = id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.').collect();
+        id = id
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
+            .collect();
         if id.is_empty() || id == "title" || id == "axes" || id == "grid" {
             id = format!("{}{}", ty, idx + 1);
         }
@@ -469,14 +614,24 @@ impl Ctx {
         let c = s_of(el, "color");
         if c.is_empty() {
             AUTO_COLORS[idx % AUTO_COLORS.len()].to_string()
-        } else if c.starts_with('#') && (c.len() == 7 || c.len() == 4) && c[1..].chars().all(|h| h.is_ascii_hexdigit()) {
+        } else if c.starts_with('#')
+            && (c.len() == 7 || c.len() == 4)
+            && c[1..].chars().all(|h| h.is_ascii_hexdigit())
+        {
             c
         } else {
             palette(&c).to_string()
         }
     }
 
-    fn label(&mut self, part: &mut Part, at: (f64, f64), el: &Value, color: &str, anchor: &'static str) {
+    fn label(
+        &mut self,
+        part: &mut Part,
+        at: (f64, f64),
+        el: &Value,
+        color: &str,
+        anchor: &'static str,
+    ) {
         let label = crate::texfmt::tex_to_unicode(&s_of(el, "label"));
         if !label.is_empty() {
             let lb = part.text(at, &label, 17.0, color, anchor);
@@ -488,7 +643,10 @@ impl Ctx {
         let (w, h) = (self.w, self.h);
         for l in &self.labels {
             if l.x0 < 0.0 || l.y0 < 0.0 || l.x1 > w || l.y1 > h {
-                self.warnings.push(format!("label '{}' of part '{}' is clipped by the canvas edge", l.text, l.id));
+                self.warnings.push(format!(
+                    "label '{}' of part '{}' is clipped by the canvas edge",
+                    l.text, l.id
+                ));
             }
         }
         for i in 0..self.labels.len() {
@@ -496,7 +654,9 @@ impl Ctx {
                 let (a, b) = (&self.labels[i], &self.labels[j]);
                 let ox = (a.x1.min(b.x1) - a.x0.max(b.x0)).max(0.0);
                 let oy = (a.y1.min(b.y1) - a.y0.max(b.y0)).max(0.0);
-                let area = ((a.x1 - a.x0) * (a.y1 - a.y0)).min((b.x1 - b.x0) * (b.y1 - b.y0)).max(1.0);
+                let area = ((a.x1 - a.x0) * (a.y1 - a.y0))
+                    .min((b.x1 - b.x0) * (b.y1 - b.y0))
+                    .max(1.0);
                 if ox * oy / area > 0.25 && !(a.id == b.id && (a.id == "axes" || a.id == "grid")) {
                     self.warnings.push(format!(
                         "labels '{}' ({}) and '{}' ({}) overlap",
@@ -554,7 +714,13 @@ impl Ctx {
             );
             for prim in &p.prims {
                 match prim {
-                    Prim::Path { d, stroke, width, dashed, fill } => {
+                    Prim::Path {
+                        d,
+                        stroke,
+                        width,
+                        dashed,
+                        fill,
+                    } => {
                         let (f, fo) = fill.clone().unwrap_or(("none".into(), 1.0));
                         let _ = write!(
                             svg,
@@ -564,10 +730,20 @@ impl Ctx {
                             width,
                             f,
                             fo,
-                            if *dashed { r#" stroke-dasharray="7 5""# } else { "" }
+                            if *dashed {
+                                r#" stroke-dasharray="7 5""#
+                            } else {
+                                ""
+                            }
                         );
                     }
-                    Prim::Circle { c, r, stroke, fill, width } => {
+                    Prim::Circle {
+                        c,
+                        r,
+                        stroke,
+                        fill,
+                        width,
+                    } => {
                         let _ = write!(
                             svg,
                             r#"<circle cx="{:.2}" cy="{:.2}" r="{:.2}" stroke="{}" stroke-width="{:.2}" fill="{}"/>"#,
@@ -579,7 +755,14 @@ impl Ctx {
                             fill.as_deref().unwrap_or("none")
                         );
                     }
-                    Prim::Text { at, text, size, color, anchor, italic } => {
+                    Prim::Text {
+                        at,
+                        text,
+                        size,
+                        color,
+                        anchor,
+                        italic,
+                    } => {
                         let _ = write!(
                             svg,
                             r#"<text x="{:.2}" y="{:.2}" font-size="{:.1}" fill="{}" text-anchor="{}"{}>{}</text>"#,
@@ -588,7 +771,11 @@ impl Ctx {
                             size,
                             color,
                             anchor,
-                            if *italic { r#" font-style="italic" font-family="Cambria Math, Times New Roman, Noto Serif, serif""# } else { "" },
+                            if *italic {
+                                r#" font-style="italic" font-family="Cambria Math, Times New Roman, Noto Serif, serif""#
+                            } else {
+                                ""
+                            },
                             esc(text)
                         );
                     }
@@ -606,20 +793,39 @@ impl Ctx {
                 let y0 = (p.min.1 / h).clamp(0.0, 1.0);
                 let x1 = (p.max.0 / w).clamp(0.0, 1.0);
                 let y1 = (p.max.1 / h).clamp(0.0, 1.0);
-                PartGeom { id: p.id.clone(), bbox: [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)], angle_deg: p.angle }
+                PartGeom {
+                    id: p.id.clone(),
+                    bbox: [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)],
+                    angle_deg: p.angle,
+                }
             })
             .collect();
-        FigureOutput { width: w, height: h, svg, parts, errors: self.errors, warnings: self.warnings }
+        FigureOutput {
+            width: w,
+            height: h,
+            svg,
+            parts,
+            errors: self.errors,
+            warnings: self.warnings,
+        }
     }
 }
 
 // ---------------------------------------------------------------------------------------------
 // 2-D plots
 
-fn parse_expr_field(ctx: &mut Ctx, id: &str, el: &Value, key: &str, allowed: &[usize], names: &str) -> Option<Expr> {
+fn parse_expr_field(
+    ctx: &mut Ctx,
+    id: &str,
+    el: &Value,
+    key: &str,
+    allowed: &[usize],
+    names: &str,
+) -> Option<Expr> {
     let mut src = s_of(el, key);
     if src.is_empty() {
-        ctx.errors.push(format!("element '{}' is missing \"{}\"", id, key));
+        ctx.errors
+            .push(format!("element '{}' is missing \"{}\"", id, key));
         return None;
     }
     // explicit functions written as "y = x^2" / "f(x) = ..." / "z = xy": keep the right side
@@ -628,11 +834,18 @@ fn parse_expr_field(ctx: &mut Ctx, id: &str, el: &Value, key: &str, allowed: &[u
             src = src[pos + 1..].to_string();
         }
     }
-    let parsed = if key == "expr" && allowed.contains(&VAR_Y) { Expr::parse_equation(&src) } else { Expr::parse(&src) };
+    let parsed = if key == "expr" && allowed.contains(&VAR_Y) {
+        Expr::parse_equation(&src)
+    } else {
+        Expr::parse(&src)
+    };
     match parsed.and_then(|e| e.check_vars(allowed, names).map(|_| e)) {
         Ok(e) => Some(e),
         Err(err) => {
-            ctx.errors.push(format!("element '{}': cannot parse {} \"{}\": {}", id, key, src, err));
+            ctx.errors.push(format!(
+                "element '{}': cannot parse {} \"{}\": {}",
+                id, key, src, err
+            ));
             None
         }
     }
@@ -645,7 +858,10 @@ fn coord(v: Option<&Value>, points: &HashMap<String, (f64, f64)>) -> Result<(f64
             (Some(x), Some(y)) => Ok((x, y)),
             _ => Err(format!("bad coordinate {}", Value::Array(a.clone()))),
         },
-        Some(Value::String(s)) => points.get(s.trim()).copied().ok_or_else(|| format!("unknown point '{}'", s)),
+        Some(Value::String(s)) => points
+            .get(s.trim())
+            .copied()
+            .ok_or_else(|| format!("unknown point '{}'", s)),
         Some(other) => Err(format!("bad coordinate {}", other)),
         None => Err("missing coordinate".into()),
     }
@@ -657,7 +873,8 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
         Some(r) => r,
         None => {
             if spec.get("x_range").is_some() {
-                ctx.errors.push("x_range must be [min, max] with min < max".into());
+                ctx.errors
+                    .push("x_range must be [min, max] with min < max".into());
             }
             (-5.0, 5.0)
         }
@@ -691,8 +908,11 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                         }
                     }
                     "param" => {
-                        if let (Ok(ex), Ok(ey)) = (Expr::parse(&s_of(el, "x")), Expr::parse(&s_of(el, "y"))) {
-                            let (a, b) = range2(el.get("t_range")).unwrap_or((0.0, std::f64::consts::TAU));
+                        if let (Ok(ex), Ok(ey)) =
+                            (Expr::parse(&s_of(el, "x")), Expr::parse(&s_of(el, "y")))
+                        {
+                            let (a, b) =
+                                range2(el.get("t_range")).unwrap_or((0.0, std::f64::consts::TAU));
                             for i in 0..=200 {
                                 let t = a + (b - a) * i as f64 / 200.0;
                                 let (x, y) = (ex.eval_t(t), ey.eval_t(t));
@@ -719,8 +939,21 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
         }
     };
     let (left, right, bottom) = (58.0, 26.0, 46.0);
-    let mut view = View { x0, x1, y0, y1, left, top: top_pad, w: w - left - right, h: h - top_pad - bottom };
-    if spec.get("equal_scale").and_then(Value::as_bool).unwrap_or(false) {
+    let mut view = View {
+        x0,
+        x1,
+        y0,
+        y1,
+        left,
+        top: top_pad,
+        w: w - left - right,
+        h: h - top_pad - bottom,
+    };
+    if spec
+        .get("equal_scale")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         // shrink the plot area so 1 unit is equally long on both axes
         let sx = view.w / (x1 - x0);
         let sy = view.h / (y1 - y0);
@@ -742,19 +975,30 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
         let dashed = el.get("dashed").and_then(Value::as_bool).unwrap_or(false);
         match ty.as_str() {
             "curve" | "function" => {
-                let Some(e) = parse_expr_field(ctx, &id, el, "expr", &[VAR_X], "x") else { continue };
+                let Some(e) = parse_expr_field(ctx, &id, el, "expr", &[VAR_X], "x") else {
+                    continue;
+                };
                 let (a, b) = range2(el.get("domain")).unwrap_or((x0, x1));
                 let n = 900;
-                let pts: Vec<(f64, f64)> = (0..=n).map(|i| {
-                    let x = a + (b - a) * i as f64 / n as f64;
-                    (x, e.eval_x(x))
-                }).collect();
+                let pts: Vec<(f64, f64)> = (0..=n)
+                    .map(|i| {
+                        let x = a + (b - a) * i as f64 / n as f64;
+                        (x, e.eval_x(x))
+                    })
+                    .collect();
                 let mut part = Part::new(&id, 2);
                 let visible = draw_sampled(&mut part, &pts, &view, &color, dashed);
                 if visible == 0 {
-                    ctx.warnings.push(format!("curve '{}' is entirely outside the visible range", id));
+                    ctx.warnings.push(format!(
+                        "curve '{}' is entirely outside the visible range",
+                        id
+                    ));
                 } else if visible * 10 < pts.len() {
-                    ctx.warnings.push(format!("only {}% of curve '{}' is visible; adjust x_range/y_range", visible * 100 / pts.len(), id));
+                    ctx.warnings.push(format!(
+                        "only {}% of curve '{}' is visible; adjust x_range/y_range",
+                        visible * 100 / pts.len(),
+                        id
+                    ));
                 }
                 if let Some(lp) = label_point(&pts, &view) {
                     // keep labels inside the plot: right half → text runs leftwards
@@ -769,17 +1013,24 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
             "param" => {
                 let ex = parse_expr_field(ctx, &id, el, "x", &[VAR_T], "t");
                 let ey = parse_expr_field(ctx, &id, el, "y", &[VAR_T], "t");
-                let (Some(ex), Some(ey)) = (ex, ey) else { continue };
+                let (Some(ex), Some(ey)) = (ex, ey) else {
+                    continue;
+                };
                 let (a, b) = range2(el.get("t_range")).unwrap_or((0.0, std::f64::consts::TAU));
                 let n = 900;
-                let pts: Vec<(f64, f64)> = (0..=n).map(|i| {
-                    let t = a + (b - a) * i as f64 / n as f64;
-                    (ex.eval_t(t), ey.eval_t(t))
-                }).collect();
+                let pts: Vec<(f64, f64)> = (0..=n)
+                    .map(|i| {
+                        let t = a + (b - a) * i as f64 / n as f64;
+                        (ex.eval_t(t), ey.eval_t(t))
+                    })
+                    .collect();
                 let mut part = Part::new(&id, 2);
                 let visible = draw_sampled(&mut part, &pts, &view, &color, dashed);
                 if visible == 0 {
-                    ctx.warnings.push(format!("parametric curve '{}' is entirely outside the visible range", id));
+                    ctx.warnings.push(format!(
+                        "parametric curve '{}' is entirely outside the visible range",
+                        id
+                    ));
                 }
                 if let Some(lp) = label_point(&pts, &view) {
                     // keep labels inside the plot: right half → text runs leftwards
@@ -792,11 +1043,17 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                 ctx.parts.push(part);
             }
             "implicit" => {
-                let Some(e) = parse_expr_field(ctx, &id, el, "expr", &[VAR_X, VAR_Y], "x, y") else { continue };
+                let Some(e) = parse_expr_field(ctx, &id, el, "expr", &[VAR_X, VAR_Y], "x, y")
+                else {
+                    continue;
+                };
                 let mut part = Part::new(&id, 2);
                 let segs = marching_squares(&e, &view, 180, 140);
                 if segs.is_empty() {
-                    ctx.warnings.push(format!("implicit curve '{}' has no visible points in the current range", id));
+                    ctx.warnings.push(format!(
+                        "implicit curve '{}' has no visible points in the current range",
+                        id
+                    ));
                 }
                 let mut d = String::new();
                 for (p, q) in &segs {
@@ -805,15 +1062,26 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                     part.grow(*q);
                 }
                 if !d.is_empty() {
-                    part.prims.push(Prim::Path { d, stroke: color.clone(), width: 2.6, dashed, fill: None });
+                    part.prims.push(Prim::Path {
+                        d,
+                        stroke: color.clone(),
+                        width: 2.6,
+                        dashed,
+                        fill: None,
+                    });
                 }
-                if let Some((p, _)) = segs.iter().max_by(|a, b| (a.0 .0 - a.0 .1).partial_cmp(&(b.0 .0 - b.0 .1)).unwrap()) {
+                if let Some((p, _)) = segs
+                    .iter()
+                    .max_by(|a, b| (a.0 .0 - a.0 .1).partial_cmp(&(b.0 .0 - b.0 .1)).unwrap())
+                {
                     ctx.label(&mut part, (p.0 + 6.0, p.1 - 8.0), el, &color, "start");
                 }
                 ctx.parts.push(part);
             }
             "area" => {
-                let Some(top) = parse_expr_field(ctx, &id, el, "top", &[VAR_X], "x") else { continue };
+                let Some(top) = parse_expr_field(ctx, &id, el, "top", &[VAR_X], "x") else {
+                    continue;
+                };
                 let bottom = if s_of(el, "bottom").is_empty() {
                     Expr::parse("0").ok()
                 } else {
@@ -823,7 +1091,8 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                 let (a, b) = match (el.get("from").and_then(num), el.get("to").and_then(num)) {
                     (Some(a), Some(b)) if b > a => (a, b),
                     _ => {
-                        ctx.errors.push(format!("area '{}' needs numeric \"from\" < \"to\"", id));
+                        ctx.errors
+                            .push(format!("area '{}' needs numeric \"from\" < \"to\"", id));
                         continue;
                     }
                 };
@@ -846,7 +1115,10 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                 let mut part = Part::new(&id, 1);
                 part.polygon(&poly, "none", 0.0, Some((&color, 0.22)), false);
                 clamp_part(&mut part, &view);
-                let mid = view.map((a + b) / 2.0, (top.eval_x((a + b) / 2.0) + bottom.eval_x((a + b) / 2.0)) / 2.0);
+                let mid = view.map(
+                    (a + b) / 2.0,
+                    (top.eval_x((a + b) / 2.0) + bottom.eval_x((a + b) / 2.0)) / 2.0,
+                );
                 ctx.label(&mut part, mid, el, &color, "middle");
                 ctx.parts.push(part);
             }
@@ -859,11 +1131,21 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                     }
                 };
                 if !view.contains(p.0, p.1) {
-                    ctx.warnings.push(format!("point '{}' ({}, {}) lies outside the visible range", id, fmt_tick(p.0), fmt_tick(p.1)));
+                    ctx.warnings.push(format!(
+                        "point '{}' ({}, {}) lies outside the visible range",
+                        id,
+                        fmt_tick(p.0),
+                        fmt_tick(p.1)
+                    ));
                 }
                 let mut part = Part::new(&id, 3);
                 let sp = view.map(p.0, p.1);
-                part.dot(sp, 5.0, &color, el.get("hollow").and_then(Value::as_bool).unwrap_or(false));
+                part.dot(
+                    sp,
+                    5.0,
+                    &color,
+                    el.get("hollow").and_then(Value::as_bool).unwrap_or(false),
+                );
                 ctx.label(&mut part, (sp.0 + 8.0, sp.1 - 9.0), el, &color, "start");
                 ctx.parts.push(part);
             }
@@ -873,11 +1155,30 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                     continue;
                 };
                 let mut part = Part::new(&id, 1);
-                let (a, b) = if ty == "vline" { (view.map(at, y0), view.map(at, y1)) } else { (view.map(x0, at), view.map(x1, at)) };
-                part.polyline(&[a, b], &color, 1.8, el.get("dashed").and_then(Value::as_bool).unwrap_or(true));
+                let (a, b) = if ty == "vline" {
+                    (view.map(at, y0), view.map(at, y1))
+                } else {
+                    (view.map(x0, at), view.map(x1, at))
+                };
+                part.polyline(
+                    &[a, b],
+                    &color,
+                    1.8,
+                    el.get("dashed").and_then(Value::as_bool).unwrap_or(true),
+                );
                 part.angle = if ty == "vline" { 90.0 } else { 0.0 };
-                let lp = if ty == "vline" { (b.0 + 6.0, b.1 + 18.0) } else { (b.0 - 6.0, b.1 - 8.0) };
-                ctx.label(&mut part, lp, el, &color, if ty == "vline" { "start" } else { "end" });
+                let lp = if ty == "vline" {
+                    (b.0 + 6.0, b.1 + 18.0)
+                } else {
+                    (b.0 - 6.0, b.1 - 8.0)
+                };
+                ctx.label(
+                    &mut part,
+                    lp,
+                    el,
+                    &color,
+                    if ty == "vline" { "start" } else { "end" },
+                );
                 ctx.parts.push(part);
             }
             "segment" | "vector" | "arrow" => {
@@ -895,7 +1196,13 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                     part.arrowhead(sb, sa, &color, 13.0);
                 }
                 part.angle = (sb.1 - sa.1).atan2(sb.0 - sa.0).to_degrees();
-                ctx.label(&mut part, ((sa.0 + sb.0) / 2.0 + 8.0, (sa.1 + sb.1) / 2.0 - 8.0), el, &color, "start");
+                ctx.label(
+                    &mut part,
+                    ((sa.0 + sb.0) / 2.0 + 8.0, (sa.1 + sb.1) / 2.0 - 8.0),
+                    el,
+                    &color,
+                    "start",
+                );
                 ctx.parts.push(part);
             }
             "text" => {
@@ -912,8 +1219,13 @@ fn render_plot(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                 ctx.labels.push(lb);
                 ctx.parts.push(part);
             }
-            "" => ctx.errors.push(format!("element #{} has no \"type\"", idx + 1)),
-            other => ctx.errors.push(format!("element '{}': unknown type '{}' for a plot", id, other)),
+            "" => ctx
+                .errors
+                .push(format!("element #{} has no \"type\"", idx + 1)),
+            other => ctx.errors.push(format!(
+                "element '{}': unknown type '{}' for a plot",
+                id, other
+            )),
         }
     }
     // curves, regions and guide lines are clipped to the plot viewport
@@ -946,8 +1258,16 @@ fn draw_axes_2d(ctx: &mut Ctx, spec: &Value, v: &View) {
         }
     }
     ctx.parts.push(gpart);
-    let ax_y = if v.y0 <= 0.0 && v.y1 >= 0.0 { 0.0 } else { v.y0 };
-    let ax_x = if v.x0 <= 0.0 && v.x1 >= 0.0 { 0.0 } else { v.x0 };
+    let ax_y = if v.y0 <= 0.0 && v.y1 >= 0.0 {
+        0.0
+    } else {
+        v.y0
+    };
+    let ax_x = if v.x0 <= 0.0 && v.x1 >= 0.0 {
+        0.0
+    } else {
+        v.x0
+    };
     let mut a = Part::new("axes", 0);
     let (xa, xb) = (v.map(v.x0, ax_y), v.map(v.x1, ax_y));
     let (ya, yb) = (v.map(ax_x, v.y0), v.map(ax_x, v.y1));
@@ -958,7 +1278,11 @@ fn draw_axes_2d(ctx: &mut Ctx, spec: &Value, v: &View) {
     let names: Vec<String> = spec
         .get("axis_labels")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| vec!["x".into(), "y".into()]);
     let mut labels = Vec::new();
     if let Some(n) = names.first() {
@@ -989,7 +1313,13 @@ fn draw_axes_2d(ctx: &mut Ctx, spec: &Value, v: &View) {
         if (v.y1 - *y).abs() < (v.y1 - v.y0) * 0.02 {
             continue;
         }
-        a.text((p.0 - 8.0, p.1 + 4.5), &fmt_tick(*y), 13.0, "#5f6368", "end");
+        a.text(
+            (p.0 - 8.0, p.1 + 4.5),
+            &fmt_tick(*y),
+            13.0,
+            "#5f6368",
+            "end",
+        );
     }
     if v.x0 <= 0.0 && v.x1 >= 0.0 && v.y0 <= 0.0 && v.y1 >= 0.0 {
         let o = v.map(0.0, 0.0);
@@ -1009,7 +1339,7 @@ fn draw_sampled(part: &mut Part, pts: &[(f64, f64)], v: &View, color: &str, dash
     let mut prev: Option<(f64, f64)> = None;
     let flush = |run: &mut Vec<(f64, f64)>, part: &mut Part| {
         if run.len() >= 2 {
-            let pts: Vec<(f64, f64)> = run.drain(..).collect();
+            let pts: Vec<(f64, f64)> = std::mem::take(run);
             part.polyline(&pts, color, 2.6, dashed);
         } else {
             run.clear();
@@ -1037,7 +1367,7 @@ fn draw_sampled(part: &mut Part, pts: &[(f64, f64)], v: &View, color: &str, dash
         if y >= v.y0 - span_y * 0.5 && y <= v.y1 + span_y * 0.5 {
             run.push(v.map(x, lim(y)));
         } else {
-            if run.len() >= 1 {
+            if !run.is_empty() {
                 run.push(v.map(x, lim(y)));
             }
             flush(&mut run, part);
@@ -1064,12 +1394,21 @@ fn label_point(pts: &[(f64, f64)], v: &View) -> Option<(f64, f64)> {
     // label stays readable; fall back to any visible sample
     let span = v.y1 - v.y0;
     let inner = |x: f64, y: f64| {
-        x.is_finite() && y.is_finite() && v.contains(x, y) && x < v.x1 - (v.x1 - v.x0) * 0.08 && y > v.y0 + span * 0.12 && y < v.y1 - span * 0.15
+        x.is_finite()
+            && y.is_finite()
+            && v.contains(x, y)
+            && x < v.x1 - (v.x1 - v.x0) * 0.08
+            && y > v.y0 + span * 0.12
+            && y < v.y1 - span * 0.15
     };
     pts.iter()
         .rev()
         .find(|(x, y)| inner(*x, *y))
-        .or_else(|| pts.iter().rev().find(|(x, y)| x.is_finite() && y.is_finite() && v.contains(*x, *y)))
+        .or_else(|| {
+            pts.iter()
+                .rev()
+                .find(|(x, y)| x.is_finite() && y.is_finite() && v.contains(*x, *y))
+        })
         .map(|(x, y)| v.map(*x, *y))
 }
 
@@ -1135,7 +1474,9 @@ struct Proj {
 impl Proj {
     /// Normalizes to the unit cube [-1,1]^3 and projects; returns (screen_x, screen_up, depth).
     fn project(&self, p: [f64; 3]) -> (f64, f64, f64) {
-        let n: Vec<f64> = (0..3).map(|i| (p[i] - self.lo[i]) / (self.hi[i] - self.lo[i]) * 2.0 - 1.0).collect();
+        let n: Vec<f64> = (0..3)
+            .map(|i| (p[i] - self.lo[i]) / (self.hi[i] - self.lo[i]) * 2.0 - 1.0)
+            .collect();
         let xr = n[0] * self.ca - n[1] * self.sa;
         let yr = n[0] * self.sa + n[1] * self.ca;
         let up = n[2] * self.ce + yr * self.se;
@@ -1146,7 +1487,13 @@ impl Proj {
 
 fn colormap(t: f64) -> String {
     // viridis-like 5 stops
-    let stops = [(68.0, 1.0, 84.0), (59.0, 82.0, 139.0), (33.0, 145.0, 140.0), (94.0, 201.0, 98.0), (253.0, 231.0, 37.0)];
+    let stops = [
+        (68.0, 1.0, 84.0),
+        (59.0, 82.0, 139.0),
+        (33.0, 145.0, 140.0),
+        (94.0, 201.0, 98.0),
+        (253.0, 231.0, 37.0),
+    ];
     let t = t.clamp(0.0, 1.0) * 4.0;
     let i = (t.floor() as usize).min(3);
     let f = t - i as f64;
@@ -1163,8 +1510,17 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
     let (w, h) = (ctx.w, ctx.h);
     let xr = range2(spec.get("x_range")).unwrap_or((-2.0, 2.0));
     let yr = range2(spec.get("y_range")).unwrap_or(xr);
-    let az = spec.get("azimuth").and_then(num).unwrap_or(-60.0).to_radians();
-    let el_ = spec.get("elevation").and_then(num).unwrap_or(25.0).clamp(-89.0, 89.0).to_radians();
+    let az = spec
+        .get("azimuth")
+        .and_then(num)
+        .unwrap_or(-60.0)
+        .to_radians();
+    let el_ = spec
+        .get("elevation")
+        .and_then(num)
+        .unwrap_or(25.0)
+        .clamp(-89.0, 89.0)
+        .to_radians();
     // z range: explicit or from samples
     let mut zs = Vec::new();
     for el in elements {
@@ -1208,7 +1564,14 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
             }
         }
     });
-    let pr = Proj { ca: az.cos(), sa: az.sin(), ce: el_.cos(), se: el_.sin(), lo: [xr.0, yr.0, zr.0], hi: [xr.1, yr.1, zr.1] };
+    let pr = Proj {
+        ca: az.cos(),
+        sa: az.sin(),
+        ce: el_.cos(),
+        se: el_.sin(),
+        lo: [xr.0, yr.0, zr.0],
+        hi: [xr.1, yr.1, zr.1],
+    };
     // fit the unit cube's projection into the canvas
     let mut bmin = (f64::INFINITY, f64::INFINITY);
     let mut bmax = (f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -1244,7 +1607,11 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
     let names: Vec<String> = spec
         .get("axis_labels")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| vec!["x".into(), "y".into(), "z".into()]);
     let (so, _) = to_screen(o);
     for (k, e) in ends.iter().enumerate() {
@@ -1254,16 +1621,42 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
         let dir = (se.0 - so.0, se.1 - so.1);
         let len = (dir.0 * dir.0 + dir.1 * dir.1).sqrt().max(1.0);
         if let Some(n) = names.get(k) {
-            let lb = axes.text((se.0 + dir.0 / len * 16.0, se.1 + dir.1 / len * 16.0 + 6.0), n, 17.0, "#3c4043", "middle");
+            let lb = axes.text(
+                (se.0 + dir.0 / len * 16.0, se.1 + dir.1 / len * 16.0 + 6.0),
+                n,
+                17.0,
+                "#3c4043",
+                "middle",
+            );
             ctx.labels.push(lb);
         }
         // min/max tick values
         let (lo, hi) = [(xr.0, xr.1), (yr.0, yr.1), (zr.0, zr.1)][k];
         let mid_p = (so.0 + dir.0 * 0.92, so.1 + dir.1 * 0.92);
-        axes.text((mid_p.0 - dir.1 / len * 14.0, mid_p.1 + dir.0 / len * 14.0 + 4.0), &fmt_tick(hi), 12.0, "#5f6368", "middle");
+        axes.text(
+            (
+                mid_p.0 - dir.1 / len * 14.0,
+                mid_p.1 + dir.0 / len * 14.0 + 4.0,
+            ),
+            &fmt_tick(hi),
+            12.0,
+            "#5f6368",
+            "middle",
+        );
         let _ = lo;
     }
-    axes.text((so.0 - 10.0, so.1 + 16.0), &format!("({}, {}, {})", fmt_tick(xr.0), fmt_tick(yr.0), fmt_tick(zr.0)), 11.0, "#80868b", "end");
+    axes.text(
+        (so.0 - 10.0, so.1 + 16.0),
+        &format!(
+            "({}, {}, {})",
+            fmt_tick(xr.0),
+            fmt_tick(yr.0),
+            fmt_tick(zr.0)
+        ),
+        11.0,
+        "#80868b",
+        "end",
+    );
     ctx.parts.push(axes);
 
     for (idx, el) in elements.iter().enumerate() {
@@ -1272,8 +1665,12 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
         let color = ctx.color(el, idx);
         match ty.as_str() {
             "surface" => {
-                let Some(e) = parse_expr_field(ctx, &id, el, "expr", &[VAR_X, VAR_Y], "x, y") else { continue };
+                let Some(e) = parse_expr_field(ctx, &id, el, "expr", &[VAR_X, VAR_Y], "x, y")
+                else {
+                    continue;
+                };
                 let n = 26usize;
+                #[allow(clippy::type_complexity)]
                 let mut quads: Vec<(f64, Vec<(f64, f64)>, f64)> = Vec::new();
                 let zat = |i: usize, j: usize| {
                     let x = xr.0 + (xr.1 - xr.0) * i as f64 / n as f64;
@@ -1288,7 +1685,9 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
                         if ps.iter().any(|p| !p[2].is_finite()) {
                             continue;
                         }
-                        if ps.iter().any(|p| p[2] < zr.0 - (zr.1 - zr.0) * 0.05 || p[2] > zr.1 + (zr.1 - zr.0) * 0.05) {
+                        if ps.iter().any(|p| {
+                            p[2] < zr.0 - (zr.1 - zr.0) * 0.05 || p[2] > zr.1 + (zr.1 - zr.0) * 0.05
+                        }) {
                             clipped += 1;
                             continue;
                         }
@@ -1305,9 +1704,16 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
                     }
                 }
                 if quads.is_empty() {
-                    ctx.warnings.push(format!("surface '{}' has no visible patches; check z_range", id));
+                    ctx.warnings.push(format!(
+                        "surface '{}' has no visible patches; check z_range",
+                        id
+                    ));
                 } else if clipped * 4 > n * n {
-                    ctx.warnings.push(format!("{}% of surface '{}' lies outside z_range", clipped * 100 / (n * n), id));
+                    ctx.warnings.push(format!(
+                        "{}% of surface '{}' lies outside z_range",
+                        clipped * 100 / (n * n),
+                        id
+                    ));
                 }
                 quads.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 let mut part = Part::new(&id, 1);
@@ -1315,9 +1721,18 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
                     let c = colormap(*t);
                     part.polygon(pts, "#1f1f1f", 0.35, Some((&c, 0.92)), false);
                 }
-                let top = quads.iter().flat_map(|q| q.1.iter()).fold((0.0, f64::INFINITY), |m, p| if p.1 < m.1 { *p } else { m });
+                let top = quads
+                    .iter()
+                    .flat_map(|q| q.1.iter())
+                    .fold((0.0, f64::INFINITY), |m, p| if p.1 < m.1 { *p } else { m });
                 if top.1.is_finite() {
-                    ctx.label(&mut part, (top.0 + 10.0, top.1 - 8.0), el, "#202124", "start");
+                    ctx.label(
+                        &mut part,
+                        (top.0 + 10.0, top.1 - 8.0),
+                        el,
+                        "#202124",
+                        "start",
+                    );
                 }
                 ctx.parts.push(part);
             }
@@ -1325,7 +1740,9 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
                 let ex = parse_expr_field(ctx, &id, el, "x", &[VAR_T], "t");
                 let ey = parse_expr_field(ctx, &id, el, "y", &[VAR_T], "t");
                 let ez = parse_expr_field(ctx, &id, el, "z", &[VAR_T], "t");
-                let (Some(ex), Some(ey), Some(ez)) = (ex, ey, ez) else { continue };
+                let (Some(ex), Some(ey), Some(ez)) = (ex, ey, ez) else {
+                    continue;
+                };
                 let (a, b) = range2(el.get("t_range")).unwrap_or((0.0, std::f64::consts::TAU));
                 let pts: Vec<(f64, f64)> = (0..=600)
                     .map(|i| {
@@ -1335,16 +1752,26 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
                     .filter(|p| p.0.is_finite() && p.1.is_finite())
                     .collect();
                 let mut part = Part::new(&id, 2);
-                part.polyline(&pts, &color, 2.6, el.get("dashed").and_then(Value::as_bool).unwrap_or(false));
+                part.polyline(
+                    &pts,
+                    &color,
+                    2.6,
+                    el.get("dashed").and_then(Value::as_bool).unwrap_or(false),
+                );
                 if let Some(lp) = pts.last() {
                     ctx.label(&mut part, (lp.0 + 8.0, lp.1 - 6.0), el, &color, "start");
                 }
                 ctx.parts.push(part);
             }
             "point3d" => {
-                let p = el.get("at").and_then(Value::as_array).filter(|a| a.len() == 3).and_then(|a| Some([num(&a[0])?, num(&a[1])?, num(&a[2])?]));
+                let p = el
+                    .get("at")
+                    .and_then(Value::as_array)
+                    .filter(|a| a.len() == 3)
+                    .and_then(|a| Some([num(&a[0])?, num(&a[1])?, num(&a[2])?]));
                 let Some(p) = p else {
-                    ctx.errors.push(format!("point3d '{}' needs \"at\": [x, y, z]", id));
+                    ctx.errors
+                        .push(format!("point3d '{}' needs \"at\": [x, y, z]", id));
                     continue;
                 };
                 let mut part = Part::new(&id, 3);
@@ -1354,9 +1781,15 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
                 ctx.parts.push(part);
             }
             "vector3d" | "segment3d" => {
-                let get = |k: &str| el.get(k).and_then(Value::as_array).filter(|a| a.len() == 3).and_then(|a| Some([num(&a[0])?, num(&a[1])?, num(&a[2])?]));
+                let get = |k: &str| {
+                    el.get(k)
+                        .and_then(Value::as_array)
+                        .filter(|a| a.len() == 3)
+                        .and_then(|a| Some([num(&a[0])?, num(&a[1])?, num(&a[2])?]))
+                };
                 let (Some(a), Some(b)) = (get("from"), get("to")) else {
-                    ctx.errors.push(format!("'{}' needs \"from\" and \"to\" as [x, y, z]", id));
+                    ctx.errors
+                        .push(format!("'{}' needs \"from\" and \"to\" as [x, y, z]", id));
                     continue;
                 };
                 let (sa, sb) = (to_screen(a).0, to_screen(b).0);
@@ -1369,8 +1802,13 @@ fn render_plot3d(spec: &Value, elements: &[Value], ctx: &mut Ctx, top_pad: f64) 
                 ctx.label(&mut part, (sb.0 + 8.0, sb.1 - 6.0), el, &color, "start");
                 ctx.parts.push(part);
             }
-            "" => ctx.errors.push(format!("element #{} has no \"type\"", idx + 1)),
-            other => ctx.errors.push(format!("element '{}': unknown type '{}' for plot3d", id, other)),
+            "" => ctx
+                .errors
+                .push(format!("element #{} has no \"type\"", idx + 1)),
+            other => ctx.errors.push(format!(
+                "element '{}': unknown type '{}' for plot3d",
+                id, other
+            )),
         }
     }
 }
@@ -1391,10 +1829,20 @@ struct Xf {
 
 impl Xf {
     fn id() -> Xf {
-        Xf { a: 1.0, b: 0.0, c: 0.0, d: 0.0, e: 1.0, f: 0.0 }
+        Xf {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 0.0,
+            e: 1.0,
+            f: 0.0,
+        }
     }
     fn apply(&self, p: (f64, f64)) -> (f64, f64) {
-        (self.a * p.0 + self.b * p.1 + self.c, self.d * p.0 + self.e * p.1 + self.f)
+        (
+            self.a * p.0 + self.b * p.1 + self.c,
+            self.d * p.0 + self.e * p.1 + self.f,
+        )
     }
     /// self ∘ other (apply other first)
     fn then(&self, other: &Xf) -> Xf {
@@ -1410,10 +1858,24 @@ impl Xf {
     }
     fn rotation(deg: f64, about: (f64, f64)) -> Xf {
         let (s, c) = deg.to_radians().sin_cos();
-        Xf { a: c, b: -s, c: about.0 - c * about.0 + s * about.1, d: s, e: c, f: about.1 - s * about.0 - c * about.1 }
+        Xf {
+            a: c,
+            b: -s,
+            c: about.0 - c * about.0 + s * about.1,
+            d: s,
+            e: c,
+            f: about.1 - s * about.0 - c * about.1,
+        }
     }
     fn translation(dx: f64, dy: f64) -> Xf {
-        Xf { a: 1.0, b: 0.0, c: dx, d: 0.0, e: 1.0, f: dy }
+        Xf {
+            a: 1.0,
+            b: 0.0,
+            c: dx,
+            d: 0.0,
+            e: 1.0,
+            f: dy,
+        }
     }
     fn angle_deg(&self) -> f64 {
         self.d.atan2(self.a).to_degrees()
@@ -1423,15 +1885,52 @@ impl Xf {
 /// A diagram element after transforms, in logical coordinates.
 #[derive(Debug, Clone)]
 enum Shape {
-    Point { p: (f64, f64), hollow: bool },
-    Poly { pts: Vec<(f64, f64)>, closed: bool, arrow: bool, fill: bool },
-    Circle { c: (f64, f64), r: f64, fill: bool },
-    Arc { c: (f64, f64), r: f64, a0: f64, a1: f64, arrow: bool },
-    Angle { v: (f64, f64), a: (f64, f64), b: (f64, f64) },
-    Ray { from: (f64, f64), dir: (f64, f64), both: bool },
-    Ground { a: (f64, f64), b: (f64, f64) },
-    Text { at: (f64, f64), text: String },
-    Axes { o: (f64, f64), xl: f64, yl: f64, names: Vec<String> },
+    Point {
+        p: (f64, f64),
+        hollow: bool,
+    },
+    Poly {
+        pts: Vec<(f64, f64)>,
+        closed: bool,
+        arrow: bool,
+        fill: bool,
+    },
+    Circle {
+        c: (f64, f64),
+        r: f64,
+        fill: bool,
+    },
+    Arc {
+        c: (f64, f64),
+        r: f64,
+        a0: f64,
+        a1: f64,
+        arrow: bool,
+    },
+    Angle {
+        v: (f64, f64),
+        a: (f64, f64),
+        b: (f64, f64),
+    },
+    Ray {
+        from: (f64, f64),
+        dir: (f64, f64),
+        both: bool,
+    },
+    Ground {
+        a: (f64, f64),
+        b: (f64, f64),
+    },
+    Text {
+        at: (f64, f64),
+        text: String,
+    },
+    Axes {
+        o: (f64, f64),
+        xl: f64,
+        yl: f64,
+        names: Vec<String>,
+    },
 }
 
 struct DItem {
@@ -1445,7 +1944,13 @@ struct DItem {
 fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
     // pass 1: flatten groups, compute transforms, collect points
     let mut flat: Vec<(Value, Xf)> = Vec::new();
-    fn flatten(els: &[Value], xf: Xf, out: &mut Vec<(Value, Xf)>, depth: usize, errors: &mut Vec<String>) {
+    fn flatten(
+        els: &[Value],
+        xf: Xf,
+        out: &mut Vec<(Value, Xf)>,
+        depth: usize,
+        errors: &mut Vec<String>,
+    ) {
         for el in els {
             if s_of(el, "type") == "group" {
                 if depth > 6 {
@@ -1453,7 +1958,11 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                     continue;
                 }
                 let mut g = xf;
-                if let Some(t) = el.get("translate").and_then(Value::as_array).filter(|a| a.len() == 2) {
+                if let Some(t) = el
+                    .get("translate")
+                    .and_then(Value::as_array)
+                    .filter(|a| a.len() == 2)
+                {
                     if let (Some(dx), Some(dy)) = (num(&t[0]), num(&t[1])) {
                         g = g.then(&Xf::translation(dx, dy));
                     }
@@ -1467,7 +1976,11 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                         .unwrap_or((0.0, 0.0));
                     g = g.then(&Xf::rotation(deg, about));
                 }
-                let children = el.get("children").and_then(Value::as_array).cloned().unwrap_or_default();
+                let children = el
+                    .get("children")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 // the group itself is an addressable part when it has an id
                 if !s_of(el, "id").is_empty() {
                     out.push((json!({"type": "__group", "id": s_of(el, "id"), "members": children.iter().map(|c| s_of(c, "id")).collect::<Vec<_>>()}), g));
@@ -1503,7 +2016,15 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
     for (idx, (el, xf)) in flat.iter().enumerate() {
         let ty = s_of(el, "type");
         if ty == "__group" {
-            let members = el.get("members").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            let members = el
+                .get("members")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
             let gid = ctx.part_id(el, idx, "group");
             groups.push((gid, members, xf.angle_deg()));
             continue;
@@ -1514,7 +2035,24 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
         } else {
             ctx.part_id(el, idx, if ty.is_empty() { "el" } else { &ty })
         };
-        let color = if s_of(el, "color").is_empty() && matches!(ty.as_str(), "segment" | "polygon" | "circle" | "arc" | "angle" | "rect" | "block" | "ground" | "spring" | "line" | "ray" | "axes" | "text" | "point") {
+        let color = if s_of(el, "color").is_empty()
+            && matches!(
+                ty.as_str(),
+                "segment"
+                    | "polygon"
+                    | "circle"
+                    | "arc"
+                    | "angle"
+                    | "rect"
+                    | "block"
+                    | "ground"
+                    | "spring"
+                    | "line"
+                    | "ray"
+                    | "axes"
+                    | "text"
+                    | "point"
+            ) {
             "#202124".to_string()
         } else {
             ctx.color(el, idx)
@@ -1524,39 +2062,91 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
             let own = |pts: Vec<((f64, f64), bool)>| apply_own_rotation(el, xf, &pts);
             Ok(match ty.as_str() {
                 "point" => {
-                    let p = *points.get(&s_of(el, "id")).ok_or_else(|| format!("point '{}' has a bad \"at\"", id))?;
-                    (Shape::Point { p, hollow: el.get("hollow").and_then(Value::as_bool).unwrap_or(false) }, 0.0)
+                    let p = *points
+                        .get(&s_of(el, "id"))
+                        .ok_or_else(|| format!("point '{}' has a bad \"at\"", id))?;
+                    (
+                        Shape::Point {
+                            p,
+                            hollow: el.get("hollow").and_then(Value::as_bool).unwrap_or(false),
+                        },
+                        0.0,
+                    )
                 }
                 "segment" | "vector" | "arrow" | "force" => {
                     let (p, a) = own(vec![c("from")?, c("to")?]);
                     let ang = seg_angle(p[0], p[1]);
                     let _ = a;
-                    (Shape::Poly { pts: p, closed: false, arrow: ty != "segment", fill: false }, ang)
+                    (
+                        Shape::Poly {
+                            pts: p,
+                            closed: false,
+                            arrow: ty != "segment",
+                            fill: false,
+                        },
+                        ang,
+                    )
                 }
                 "ray" => {
                     let (p, _) = own(vec![c("from")?, c("through")?]);
                     let ang = seg_angle(p[0], p[1]);
-                    (Shape::Ray { from: p[0], dir: (p[1].0 - p[0].0, p[1].1 - p[0].1), both: false }, ang)
+                    (
+                        Shape::Ray {
+                            from: p[0],
+                            dir: (p[1].0 - p[0].0, p[1].1 - p[0].1),
+                            both: false,
+                        },
+                        ang,
+                    )
                 }
                 "line" => {
-                    let thr = el.get("through").and_then(Value::as_array).filter(|a| a.len() == 2).ok_or("line needs \"through\": [P, Q]")?;
-                    let (p, _) = own(vec![coord_ref(Some(&thr[0]), &points)?, coord_ref(Some(&thr[1]), &points)?]);
+                    let thr = el
+                        .get("through")
+                        .and_then(Value::as_array)
+                        .filter(|a| a.len() == 2)
+                        .ok_or("line needs \"through\": [P, Q]")?;
+                    let (p, _) = own(vec![
+                        coord_ref(Some(&thr[0]), &points)?,
+                        coord_ref(Some(&thr[1]), &points)?,
+                    ]);
                     let ang = seg_angle(p[0], p[1]);
-                    (Shape::Ray { from: p[0], dir: (p[1].0 - p[0].0, p[1].1 - p[0].1), both: true }, ang)
+                    (
+                        Shape::Ray {
+                            from: p[0],
+                            dir: (p[1].0 - p[0].0, p[1].1 - p[0].1),
+                            both: true,
+                        },
+                        ang,
+                    )
                 }
                 "polygon" | "triangle" => {
-                    let arr = el.get("points").and_then(Value::as_array).ok_or("polygon needs \"points\"")?;
-                    let raw: Result<Vec<_>, _> = arr.iter().map(|v| coord_ref(Some(v), &points)).collect();
+                    let arr = el
+                        .get("points")
+                        .and_then(Value::as_array)
+                        .ok_or("polygon needs \"points\"")?;
+                    let raw: Result<Vec<_>, _> =
+                        arr.iter().map(|v| coord_ref(Some(v), &points)).collect();
                     let raw = raw?;
                     if raw.len() < 3 {
                         return Err("polygon needs at least 3 points".into());
                     }
                     let (p, _) = own(raw);
-                    (Shape::Poly { pts: p, closed: true, arrow: false, fill: el.get("fill").and_then(Value::as_bool).unwrap_or(false) }, 0.0)
+                    (
+                        Shape::Poly {
+                            pts: p,
+                            closed: true,
+                            arrow: false,
+                            fill: el.get("fill").and_then(Value::as_bool).unwrap_or(false),
+                        },
+                        0.0,
+                    )
                 }
                 "rect" | "block" | "box" => {
                     let (ctr, _) = c("center").or_else(|_| c("at"))?;
-                    let (w, h) = (el.get("w").and_then(num).ok_or("rect needs \"w\"")?, el.get("h").and_then(num).ok_or("rect needs \"h\"")?);
+                    let (w, h) = (
+                        el.get("w").and_then(num).ok_or("rect needs \"w\"")?,
+                        el.get("h").and_then(num).ok_or("rect needs \"h\"")?,
+                    );
                     if w <= 0.0 || h <= 0.0 {
                         return Err("rect w/h must be positive".into());
                     }
@@ -1568,29 +2158,83 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                         ((ctr.0 - w / 2.0, ctr.1 + h / 2.0), false),
                     ];
                     let (p, ang) = own(raw);
-                    (Shape::Poly { pts: p, closed: true, arrow: false, fill: el.get("fill").and_then(Value::as_bool).unwrap_or(ty == "block") }, -ang)
+                    (
+                        Shape::Poly {
+                            pts: p,
+                            closed: true,
+                            arrow: false,
+                            fill: el
+                                .get("fill")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(ty == "block"),
+                        },
+                        -ang,
+                    )
                 }
                 "circle" => {
-                    let r = el.get("r").and_then(num).filter(|r| *r > 0.0).ok_or("circle needs positive \"r\"")?;
+                    let r = el
+                        .get("r")
+                        .and_then(num)
+                        .filter(|r| *r > 0.0)
+                        .ok_or("circle needs positive \"r\"")?;
                     let (p, _) = own(vec![c("center")?]);
-                    (Shape::Circle { c: p[0], r, fill: el.get("fill").and_then(Value::as_bool).unwrap_or(false) }, 0.0)
+                    (
+                        Shape::Circle {
+                            c: p[0],
+                            r,
+                            fill: el.get("fill").and_then(Value::as_bool).unwrap_or(false),
+                        },
+                        0.0,
+                    )
                 }
                 "arc" => {
-                    let r = el.get("r").and_then(num).filter(|r| *r > 0.0).ok_or("arc needs positive \"r\"")?;
+                    let r = el
+                        .get("r")
+                        .and_then(num)
+                        .filter(|r| *r > 0.0)
+                        .ok_or("arc needs positive \"r\"")?;
                     let (p, ang) = own(vec![c("center")?]);
                     let a0 = el.get("start_deg").and_then(num).unwrap_or(0.0) + ang;
                     let a1 = el.get("end_deg").and_then(num).unwrap_or(90.0) + ang;
-                    (Shape::Arc { c: p[0], r, a0, a1, arrow: el.get("arrow").and_then(Value::as_bool).unwrap_or(false) }, 0.0)
+                    (
+                        Shape::Arc {
+                            c: p[0],
+                            r,
+                            a0,
+                            a1,
+                            arrow: el.get("arrow").and_then(Value::as_bool).unwrap_or(false),
+                        },
+                        0.0,
+                    )
                 }
                 "angle" => {
                     let (p, _) = own(vec![c("vertex")?, c("from")?, c("to")?]);
-                    (Shape::Angle { v: p[0], a: p[1], b: p[2] }, 0.0)
+                    (
+                        Shape::Angle {
+                            v: p[0],
+                            a: p[1],
+                            b: p[2],
+                        },
+                        0.0,
+                    )
                 }
                 "spring" => {
                     let (p, _) = own(vec![c("from")?, c("to")?]);
-                    let coils = el.get("coils").and_then(num).unwrap_or(8.0).clamp(2.0, 30.0) as usize;
+                    let coils = el
+                        .get("coils")
+                        .and_then(num)
+                        .unwrap_or(8.0)
+                        .clamp(2.0, 30.0) as usize;
                     let ang = seg_angle(p[0], p[1]);
-                    (Shape::Poly { pts: spring_points(p[0], p[1], coils), closed: false, arrow: false, fill: false }, ang)
+                    (
+                        Shape::Poly {
+                            pts: spring_points(p[0], p[1], coils),
+                            closed: false,
+                            arrow: false,
+                            fill: false,
+                        },
+                        ang,
+                    )
                 }
                 "ground" | "wall" | "surface" | "incline" => {
                     let (p, _) = own(vec![c("from")?, c("to")?]);
@@ -1604,20 +2248,36 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                     let names = el
                         .get("labels")
                         .and_then(Value::as_array)
-                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_else(|| vec!["x".into(), "y".into()]);
                     (Shape::Axes { o, xl, yl, names }, 0.0)
                 }
                 "text" | "label" => {
                     let (p, _) = own(vec![c("at")?]);
-                    (Shape::Text { at: p[0], text: crate::texfmt::tex_to_unicode(&s_of(el, "text")) }, 0.0)
+                    (
+                        Shape::Text {
+                            at: p[0],
+                            text: crate::texfmt::tex_to_unicode(&s_of(el, "text")),
+                        },
+                        0.0,
+                    )
                 }
                 "" => return Err("element has no \"type\"".into()),
                 other => return Err(format!("unknown type '{}' for a diagram", other)),
             })
         })();
         match res {
-            Ok((shape, angle)) => items.push(DItem { id, el: el.clone(), color, shape, angle }),
+            Ok((shape, angle)) => items.push(DItem {
+                id,
+                el: el.clone(),
+                color,
+                shape,
+                angle,
+            }),
             Err(e) => ctx.errors.push(format!("element '{}': {}", id, e)),
         }
     }
@@ -1672,24 +2332,44 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
     let s = (aw / (x1 - x0)).min(ah / (y1 - y0));
     let (cw, ch) = (aw / s, ah / s);
     let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-    let view = View { x0: mx - cw / 2.0, x1: mx + cw / 2.0, y0: my - ch / 2.0, y1: my + ch / 2.0, left: 20.0, top: top_pad, w: aw, h: ah };
+    let view = View {
+        x0: mx - cw / 2.0,
+        x1: mx + cw / 2.0,
+        y0: my - ch / 2.0,
+        y1: my + ch / 2.0,
+        left: 20.0,
+        top: top_pad,
+        w: aw,
+        h: ah,
+    };
     let px = view.scale();
     let far = span * 4.0;
 
     for it in &items {
-        let mut part = Part::new(&it.id, match it.shape {
-            Shape::Ground { .. } | Shape::Axes { .. } => 1,
-            Shape::Point { .. } | Shape::Text { .. } => 4,
-            _ => 2,
-        });
+        let mut part = Part::new(
+            &it.id,
+            match it.shape {
+                Shape::Ground { .. } | Shape::Axes { .. } => 1,
+                Shape::Point { .. } | Shape::Text { .. } => 4,
+                _ => 2,
+            },
+        );
         part.angle = it.angle;
-        let dashed = it.el.get("dashed").and_then(Value::as_bool).unwrap_or(false);
+        let dashed = it
+            .el
+            .get("dashed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let col = it.color.as_str();
         match &it.shape {
             Shape::Point { p, hollow } => {
                 let sp = view.map(p.0, p.1);
                 part.dot(sp, 4.5, col, *hollow);
-                let off = it.el.get("label_pos").and_then(Value::as_str).unwrap_or("ne");
+                let off = it
+                    .el
+                    .get("label_pos")
+                    .and_then(Value::as_str)
+                    .unwrap_or("ne");
                 let (dx, dy, anchor) = match off {
                     "n" => (0.0, -10.0, "middle"),
                     "s" => (0.0, 22.0, "middle"),
@@ -1707,17 +2387,29 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                 }
                 ctx.label(&mut part, (sp.0 + dx, sp.1 + dy), &el, "#202124", anchor);
             }
-            Shape::Poly { pts, closed, arrow, fill } => {
+            Shape::Poly {
+                pts,
+                closed,
+                arrow,
+                fill,
+            } => {
                 let sp: Vec<(f64, f64)> = pts.iter().map(|p| view.map(p.0, p.1)).collect();
                 if *closed {
-                    part.polygon(&sp, col, 2.2, if *fill { Some((col, 0.18)) } else { None }, dashed);
+                    part.polygon(
+                        &sp,
+                        col,
+                        2.2,
+                        if *fill { Some((col, 0.18)) } else { None },
+                        dashed,
+                    );
                 } else {
                     let thick = if *arrow { 2.8 } else { 2.2 };
                     if *arrow && sp.len() == 2 {
                         // stop the shaft short of the tip so the head stays crisp
                         let (a, b) = (sp[0], sp[1]);
                         let len = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt().max(1e-6);
-                        let shaft_end = (b.0 - (b.0 - a.0) / len * 8.0, b.1 - (b.1 - a.1) / len * 8.0);
+                        let shaft_end =
+                            (b.0 - (b.0 - a.0) / len * 8.0, b.1 - (b.1 - a.1) / len * 8.0);
                         part.polyline(&[a, shaft_end], col, thick, dashed);
                         part.arrowhead(b, a, col, 15.0);
                     } else {
@@ -1728,7 +2420,9 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                     (sp[1].0 + 8.0, sp[1].1 - 8.0)
                 } else {
                     let n = sp.len() as f64;
-                    let c = sp.iter().fold((0.0, 0.0), |m, p| (m.0 + p.0 / n, m.1 + p.1 / n));
+                    let c = sp
+                        .iter()
+                        .fold((0.0, 0.0), |m, p| (m.0 + p.0 / n, m.1 + p.1 / n));
                     (c.0 + 8.0, c.1 - 8.0)
                 };
                 ctx.label(&mut part, (lx, ly), &it.el, col, "start");
@@ -1738,10 +2432,28 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                 let rr = r * px;
                 part.grow((sc.0 - rr, sc.1 - rr));
                 part.grow((sc.0 + rr, sc.1 + rr));
-                part.prims.push(Prim::Circle { c: sc, r: rr, stroke: Some(col.into()), fill: if *fill { Some("#e8f0fe".into()) } else { None }, width: 2.2 });
-                ctx.label(&mut part, (sc.0 + rr * 0.72 + 6.0, sc.1 - rr * 0.72 - 6.0), &it.el, col, "start");
+                part.prims.push(Prim::Circle {
+                    c: sc,
+                    r: rr,
+                    stroke: Some(col.into()),
+                    fill: if *fill { Some("#e8f0fe".into()) } else { None },
+                    width: 2.2,
+                });
+                ctx.label(
+                    &mut part,
+                    (sc.0 + rr * 0.72 + 6.0, sc.1 - rr * 0.72 - 6.0),
+                    &it.el,
+                    col,
+                    "start",
+                );
             }
-            Shape::Arc { c, r, a0, a1, arrow } => {
+            Shape::Arc {
+                c,
+                r,
+                a0,
+                a1,
+                arrow,
+            } => {
                 let n = 64;
                 let pts: Vec<(f64, f64)> = (0..=n)
                     .map(|i| {
@@ -1772,22 +2484,40 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                 if (d.abs() - std::f64::consts::FRAC_PI_2).abs() < 0.02 {
                     let u = (ang_a.cos() * rr * 0.6, ang_a.sin() * rr * 0.6);
                     let w = (ang_b.cos() * rr * 0.6, ang_b.sin() * rr * 0.6);
-                    part.polyline(&[(sv.0 + u.0, sv.1 + u.1), (sv.0 + u.0 + w.0, sv.1 + u.1 + w.1), (sv.0 + w.0, sv.1 + w.1)], col, 1.6, false);
+                    part.polyline(
+                        &[
+                            (sv.0 + u.0, sv.1 + u.1),
+                            (sv.0 + u.0 + w.0, sv.1 + u.1 + w.1),
+                            (sv.0 + w.0, sv.1 + w.1),
+                        ],
+                        col,
+                        1.6,
+                        false,
+                    );
                 } else {
-                    let pts: Vec<(f64, f64)> = (0..=32).map(|i| {
-                        let t = ang_a + d * i as f64 / 32.0;
-                        (sv.0 + rr * t.cos(), sv.1 + rr * t.sin())
-                    }).collect();
+                    let pts: Vec<(f64, f64)> = (0..=32)
+                        .map(|i| {
+                            let t = ang_a + d * i as f64 / 32.0;
+                            (sv.0 + rr * t.cos(), sv.1 + rr * t.sin())
+                        })
+                        .collect();
                     part.polyline(&pts, col, 1.6, false);
                 }
                 let mid = ang_a + d / 2.0;
-                let lp = (sv.0 + (rr + 16.0) * mid.cos(), sv.1 + (rr + 16.0) * mid.sin() + 6.0);
+                let lp = (
+                    sv.0 + (rr + 16.0) * mid.cos(),
+                    sv.1 + (rr + 16.0) * mid.sin() + 6.0,
+                );
                 ctx.label(&mut part, lp, &it.el, col, "middle");
             }
             Shape::Ray { from, dir, both } => {
                 let len = (dir.0 * dir.0 + dir.1 * dir.1).sqrt().max(1e-9);
                 let u = (dir.0 / len, dir.1 / len);
-                let a = if *both { (from.0 - u.0 * far, from.1 - u.1 * far) } else { *from };
+                let a = if *both {
+                    (from.0 - u.0 * far, from.1 - u.1 * far)
+                } else {
+                    *from
+                };
                 let b = (from.0 + u.0 * far, from.1 + u.1 * far);
                 part.polyline(&[view.map(a.0, a.1), view.map(b.0, b.1)], col, 2.0, dashed);
                 clamp_part(&mut part, &view);
@@ -1797,7 +2527,9 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
             Shape::Ground { a, b } => {
                 let (sa, sb) = (view.map(a.0, a.1), view.map(b.0, b.1));
                 part.polyline(&[sa, sb], col, 2.4, false);
-                let len = ((sb.0 - sa.0).powi(2) + (sb.1 - sa.1).powi(2)).sqrt().max(1e-6);
+                let len = ((sb.0 - sa.0).powi(2) + (sb.1 - sa.1).powi(2))
+                    .sqrt()
+                    .max(1e-6);
                 let (ux, uy) = ((sb.0 - sa.0) / len, (sb.1 - sa.1) / len);
                 // hatch on the right-hand side of a→b (below a left-to-right floor)
                 let (nx, ny) = (-uy, ux);
@@ -1809,8 +2541,20 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
                     let _ = write!(d, "M{:.2},{:.2} L{:.2},{:.2} ", p.0, p.1, q.0, q.1);
                     part.grow(q);
                 }
-                part.prims.push(Prim::Path { d, stroke: col.into(), width: 1.2, dashed: false, fill: None });
-                ctx.label(&mut part, ((sa.0 + sb.0) / 2.0, (sa.1 + sb.1) / 2.0 - 10.0), &it.el, col, "middle");
+                part.prims.push(Prim::Path {
+                    d,
+                    stroke: col.into(),
+                    width: 1.2,
+                    dashed: false,
+                    fill: None,
+                });
+                ctx.label(
+                    &mut part,
+                    ((sa.0 + sb.0) / 2.0, (sa.1 + sb.1) / 2.0 - 10.0),
+                    &it.el,
+                    col,
+                    "middle",
+                );
             }
             Shape::Text { at, text } => {
                 let lb = part.text(view.map(at.0, at.1), text, 17.0, col, "middle");
@@ -1841,7 +2585,11 @@ fn render_diagram(elements: &[Value], ctx: &mut Ctx, top_pad: f64) {
     for (gid, members, ang) in groups {
         let mut g = Part::new(&gid, 2);
         g.angle = -ang;
-        for p in ctx.parts.iter().filter(|p| members.contains(&p.id) && p.has_extent()) {
+        for p in ctx
+            .parts
+            .iter()
+            .filter(|p| members.contains(&p.id) && p.has_extent())
+        {
             let (a, b) = (p.min, p.max);
             g.grow(a);
             g.grow(b);
@@ -1871,15 +2619,24 @@ fn apply_own_rotation(el: &Value, xf: &Xf, pts: &[((f64, f64), bool)]) -> (Vec<(
             .and_then(|a| Some((num(&a[0])?, num(&a[1])?)))
             .unwrap_or_else(|| {
                 let n = pts.len().max(1) as f64;
-                pts.iter().fold((0.0, 0.0), |m, (p, _)| (m.0 + p.0 / n, m.1 + p.1 / n))
+                pts.iter()
+                    .fold((0.0, 0.0), |m, (p, _)| (m.0 + p.0 / n, m.1 + p.1 / n))
             });
         t = t.then(&Xf::rotation(deg, about));
     }
-    (pts.iter().map(|(p, is_ref)| if *is_ref { *p } else { t.apply(*p) }).collect(), t.angle_deg())
+    (
+        pts.iter()
+            .map(|(p, is_ref)| if *is_ref { *p } else { t.apply(*p) })
+            .collect(),
+        t.angle_deg(),
+    )
 }
 
 /// Like `coord`, but also reports whether the value referenced a named point.
-fn coord_ref(v: Option<&Value>, points: &HashMap<String, (f64, f64)>) -> Result<((f64, f64), bool), String> {
+fn coord_ref(
+    v: Option<&Value>,
+    points: &HashMap<String, (f64, f64)>,
+) -> Result<((f64, f64), bool), String> {
     let is_ref = matches!(v, Some(Value::String(_)));
     coord(v, points).map(|p| (p, is_ref))
 }
@@ -1923,7 +2680,11 @@ mod tests {
         let out = render_figure(&spec, &none());
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         let ids = out.part_ids();
-        assert!(ids.contains(&"f".to_string()) && ids.contains(&"V".to_string()) && ids.contains(&"axes".to_string()));
+        assert!(
+            ids.contains(&"f".to_string())
+                && ids.contains(&"V".to_string())
+                && ids.contains(&"axes".to_string())
+        );
         assert!(out.svg.starts_with("<svg") && out.svg.contains("data-part=\"f\""));
         let v = out.parts.iter().find(|p| p.id == "V").unwrap();
         assert!(v.bbox[0] > 0.3 && v.bbox[0] < 0.8);
@@ -1938,9 +2699,23 @@ mod tests {
         let out = render_figure(&spec, &none());
         assert!(out.errors.is_empty());
         // 1/x must be drawn as at least two separate polylines (no vertical connector)
-        let h_group = out.svg.split("data-part=\"h\"").nth(1).unwrap().split("</g>").next().unwrap();
+        let h_group = out
+            .svg
+            .split("data-part=\"h\"")
+            .nth(1)
+            .unwrap()
+            .split("</g>")
+            .next()
+            .unwrap();
         assert!(h_group.matches("<path").count() >= 2, "{}", h_group);
-        let t_group = out.svg.split("data-part=\"t\"").nth(1).unwrap().split("</g>").next().unwrap();
+        let t_group = out
+            .svg
+            .split("data-part=\"t\"")
+            .nth(1)
+            .unwrap()
+            .split("</g>")
+            .next()
+            .unwrap();
         assert!(t_group.matches("<path").count() >= 3);
     }
 
@@ -1953,23 +2728,36 @@ mod tests {
         ]});
         let out = render_figure(&spec, &none());
         assert!(out.errors.iter().any(|e| e.contains("bad")));
-        assert!(out.warnings.iter().any(|w| w.contains("far") && w.contains("outside")));
+        assert!(out
+            .warnings
+            .iter()
+            .any(|w| w.contains("far") && w.contains("outside")));
         assert!(out.warnings.iter().any(|w| w.contains("'P'")));
     }
 
     #[test]
     fn implicit_circle_and_surface_render() {
-        let c = render_figure(&json!({"kind": "plot", "x_range": [-2, 2], "y_range": [-1.5, 1.5], "equal_scale": true, "elements": [
-            {"id": "c", "type": "implicit", "expr": "x^2+y^2=1"}
-        ]}), &none());
+        let c = render_figure(
+            &json!({"kind": "plot", "x_range": [-2, 2], "y_range": [-1.5, 1.5], "equal_scale": true, "elements": [
+                {"id": "c", "type": "implicit", "expr": "x^2+y^2=1"}
+            ]}),
+            &none(),
+        );
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         let cp = c.parts.iter().find(|p| p.id == "c").unwrap();
-        assert!((cp.bbox[2] * c.width - cp.bbox[3] * c.height).abs() < 12.0, "circle should be round: {:?}", cp.bbox);
+        assert!(
+            (cp.bbox[2] * c.width - cp.bbox[3] * c.height).abs() < 12.0,
+            "circle should be round: {:?}",
+            cp.bbox
+        );
 
-        let s = render_figure(&json!({"kind": "plot3d", "x_range": [-2, 2], "y_range": [-2, 2], "elements": [
-            {"id": "s", "type": "surface", "expr": "x*y", "label": "z=xy"},
-            {"id": "o", "type": "point3d", "at": [0, 0, 0]}
-        ]}), &none());
+        let s = render_figure(
+            &json!({"kind": "plot3d", "x_range": [-2, 2], "y_range": [-2, 2], "elements": [
+                {"id": "s", "type": "surface", "expr": "x*y", "label": "z=xy"},
+                {"id": "o", "type": "point3d", "at": [0, 0, 0]}
+            ]}),
+            &none(),
+        );
         assert!(s.errors.is_empty(), "{:?}", s.errors);
         assert!(s.svg.matches("<path").count() > 500);
         assert!(s.part_ids().contains(&"s".to_string()));
@@ -1996,7 +2784,11 @@ mod tests {
         assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
         assert!(out.errors[0].contains("unknown point 'Z'"));
         let m = out.parts.iter().find(|p| p.id == "m").unwrap();
-        assert!((m.angle_deg + 36.87).abs() < 0.5, "rect angle {}", m.angle_deg);
+        assert!(
+            (m.angle_deg + 36.87).abs() < 0.5,
+            "rect angle {}",
+            m.angle_deg
+        );
         let slope = out.parts.iter().find(|p| p.id == "slope").unwrap();
         assert!((slope.angle_deg + 36.87).abs() < 0.5);
         assert!(out.part_ids().contains(&"blk".to_string()));
@@ -2020,12 +2812,19 @@ mod tests {
             {"id": "far", "type": "point", "at": [10, 10]}
         ]});
         let out = render_figure(&spec, &none());
-        assert!(out.warnings.iter().any(|w| w.contains("overlap")), "{:?}", out.warnings);
+        assert!(
+            out.warnings.iter().any(|w| w.contains("overlap")),
+            "{:?}",
+            out.warnings
+        );
     }
 
     #[test]
     fn png_rasterizes() {
-        let out = render_figure(&json!({"kind": "plot", "x_range": [-1, 1], "elements": [{"id": "f", "type": "curve", "expr": "x^2", "label": "f"}]}), &none());
+        let out = render_figure(
+            &json!({"kind": "plot", "x_range": [-1, 1], "elements": [{"id": "f", "type": "curve", "expr": "x^2", "label": "f"}]}),
+            &none(),
+        );
         let png = svg_to_png(&out.svg, 1.0).unwrap();
         assert_eq!(&png[1..4], b"PNG");
     }

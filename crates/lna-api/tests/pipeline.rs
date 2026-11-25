@@ -781,7 +781,10 @@ fn chat_tool_generates_studio_quiz_and_imports_to_studio() {
     assert_eq!(art["title"], json!("对话测试测验"));
     // Non-blocking: chat.send returns immediately while Studio generation may still be PENDING or RUNNING.
     assert!(
-        matches!(art["status"].as_str(), Some("PENDING" | "RUNNING" | "READY")),
+        matches!(
+            art["status"].as_str(),
+            Some("PENDING" | "RUNNING" | "READY")
+        ),
         "{art}"
     );
     assert_eq!(art["in_studio"], json!(false));
@@ -828,7 +831,10 @@ fn chat_tool_generates_studio_quiz_and_imports_to_studio() {
 #[test]
 fn studio_retries_three_times_and_records_error_log() {
     let mock = MockLlm::start(|r| match r.kind {
-        Kind::Studio => Reply::Status(400, r#"{"error":{"message":"synthetic studio failure"}}"#.into()),
+        Kind::Studio => Reply::Status(
+            400,
+            r#"{"error":{"message":"synthetic studio failure"}}"#.into(),
+        ),
         _ => Reply::Text("OK".into()),
     });
     let env = Env::new("studioretrylog");
@@ -846,14 +852,21 @@ fn studio_retries_three_times_and_records_error_log() {
     });
     let failed = env.ok("studio.get", json!({ "artifact_id": aid }));
     assert_eq!(failed["status"], json!("FAILED"), "{failed}");
-    assert_eq!(mock.of_kind(Kind::Studio).len(), 4, "1 initial + 3 rollback retries");
+    assert_eq!(
+        mock.of_kind(Kind::Studio).len(),
+        4,
+        "1 initial + 3 rollback retries"
+    );
 
     let thoughts = failed["thoughts"].as_array().expect("thoughts array");
     let retry_count = thoughts
         .iter()
         .filter(|t| t["kind"] == json!("retry"))
         .count();
-    assert_eq!(retry_count, 3, "expected 3 retry thought entries: {thoughts:?}");
+    assert_eq!(
+        retry_count, 3,
+        "expected 3 retry thought entries: {thoughts:?}"
+    );
     assert!(
         thoughts.iter().any(|t| t["kind"] == json!("error")),
         "expected terminal error thought: {thoughts:?}"

@@ -116,9 +116,9 @@ ws.onopen = async () => {
   check("ingest not blocked by Studio (B-14)", fastReady?.status === "READY", fastReady?.status || "timeout");
   if (bgArt.result?.id) await call("studio.cancel", { artifact_id: bgArt.result.id });
 
-  // Failing model: point profile at a dead port, studio job should end FAILED (not stuck)
+  // Failing model: point profile at an endpoint that passes the probe but fails real requests, studio job should end FAILED (not stuck)
   await call('profile.upsert', { id: prof.result.id, display_name: 'dead', protocol: 'chat_completion',
-    base_url: 'http://127.0.0.1:9/v1', model_id: 'x', activate: true });
+    base_url: `http://127.0.0.1:${mockPort}/flaky/v1`, model_id: 'x', activate: true });
   const bad = await call('studio.create', { notebook_id: nid, artifact_type: 'flashcards', config: {} });
   const badEnd = await waitFor(async () => {
     const a = (await call('studio.get', { artifact_id: bad.result.id })).result;

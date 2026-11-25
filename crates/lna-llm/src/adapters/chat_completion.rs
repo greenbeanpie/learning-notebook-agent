@@ -110,9 +110,7 @@ impl ProtocolAdapter for ChatCompletionAdapter {
                                     }
                                 }));
                             }
-                            Part::Opaque(_)
-                            | Part::ToolResult { .. }
-                            | Part::Media { .. } => {}
+                            Part::Opaque(_) | Part::ToolResult { .. } | Part::Media { .. } => {}
                         }
                     }
                     let mut msg = json!({ "role": "assistant" });

@@ -15,20 +15,33 @@ impl StudioService {
     /// `{engine: "system"|"cloud", rate, system_voice, cloud: {provider, base_url, model, voice},
     ///   has_api_key, voices: [...]}`
     pub fn tts_settings(&self) -> LnaResult<Value> {
-        let mut s = lna_storage::get_setting_json(&self.db, SETTINGS_KEY)?.unwrap_or_else(|| json!({}));
+        let mut s =
+            lna_storage::get_setting_json(&self.db, SETTINGS_KEY)?.unwrap_or_else(|| json!({}));
         if !s.is_object() {
             s = json!({});
         }
-        let provider = s.pointer("/cloud/provider").and_then(Value::as_str).unwrap_or("qwen").to_string();
+        let provider = s
+            .pointer("/cloud/provider")
+            .and_then(Value::as_str)
+            .unwrap_or("qwen")
+            .to_string();
         let o = s.as_object_mut().expect("object");
         o.entry("engine").or_insert_with(|| json!("system"));
         o.entry("rate").or_insert_with(|| json!(1.0));
         o.entry("system_voice").or_insert_with(|| json!(""));
-        o.entry("cloud").or_insert_with(|| json!({ "provider": "qwen", "base_url": "", "model": "", "voice": "Cherry" }));
-        o.insert("has_api_key".into(), json!(self.secrets.exists(SECRET_REF).unwrap_or(false)));
+        o.entry("cloud").or_insert_with(
+            || json!({ "provider": "qwen", "base_url": "", "model": "", "voice": "Cherry" }),
+        );
+        o.insert(
+            "has_api_key".into(),
+            json!(self.secrets.exists(SECRET_REF).unwrap_or(false)),
+        );
         o.insert(
             "voices".into(),
-            json!(known_voices(&provider).iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>()),
+            json!(known_voices(&provider)
+                .iter()
+                .map(|(id, name)| json!({ "id": id, "name": name }))
+                .collect::<Vec<_>>()),
         );
         Ok(s)
     }
@@ -63,7 +76,8 @@ impl StudioService {
             if key.trim().is_empty() {
                 self.secrets.clear(SECRET_REF)?;
             } else {
-                self.secrets.set(SECRET_REF, SecretString::from(key.trim().to_string()))?;
+                self.secrets
+                    .set(SECRET_REF, SecretString::from(key.trim().to_string()))?;
             }
         }
         self.tts_settings()
@@ -72,10 +86,19 @@ impl StudioService {
     fn cloud_tts(&self) -> LnaResult<(CloudTts, String)> {
         let s = self.tts_settings()?;
         let c = s.get("cloud").cloned().unwrap_or_else(|| json!({}));
-        let api_key = self.secrets.get(SECRET_REF)?.map(|k| k.expose_secret().to_string()).unwrap_or_default();
+        let api_key = self
+            .secrets
+            .get(SECRET_REF)?
+            .map(|k| k.expose_secret().to_string())
+            .unwrap_or_default();
         let str_of = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         Ok((
-            CloudTts { provider: str_of("provider"), base_url: str_of("base_url"), model: str_of("model"), api_key },
+            CloudTts {
+                provider: str_of("provider"),
+                base_url: str_of("base_url"),
+                model: str_of("model"),
+                api_key,
+            },
             str_of("voice"),
         ))
     }
@@ -83,18 +106,40 @@ impl StudioService {
     /// Synthesizes one sentence with the cloud engine (cached). Returns `{path, duration_ms, cached}`.
     pub async fn tts_synthesize(&self, text: &str, voice: Option<&str>) -> LnaResult<Value> {
         let (tts, default_voice) = self.cloud_tts()?;
-        let voice = voice.filter(|v| !v.trim().is_empty()).map(String::from).unwrap_or(default_voice);
-        let key = hex::encode(Sha256::digest(format!("{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}", tts.provider, tts.base_url, tts.model, voice, text.trim()).as_bytes()));
+        let voice = voice
+            .filter(|v| !v.trim().is_empty())
+            .map(String::from)
+            .unwrap_or(default_voice);
+        let key = hex::encode(Sha256::digest(
+            format!(
+                "{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+                tts.provider,
+                tts.base_url,
+                tts.model,
+                voice,
+                text.trim()
+            )
+            .as_bytes(),
+        ));
         let dir = self.db.paths().root.join("tts_cache");
         let path = dir.join(format!("{}.wav", &key[..32]));
         if path.is_file() {
             let dur = lna_tts::parse_wav_pcm16(&path)
-                .map(|w| (w.samples.len() as u64 / w.channels.max(1) as u64) * 1000 / w.sample_rate.max(1) as u64)
+                .map(|w| {
+                    (w.samples.len() as u64 / w.channels.max(1) as u64) * 1000
+                        / w.sample_rate.max(1) as u64
+                })
                 .unwrap_or(0);
-            return Ok(json!({ "path": path.to_string_lossy(), "duration_ms": dur, "cached": true }));
+            return Ok(
+                json!({ "path": path.to_string_lossy(), "duration_ms": dur, "cached": true }),
+            );
         }
-        let info = tts.synthesize(text, &voice, &path, CancellationToken::new()).await?;
-        Ok(json!({ "path": path.to_string_lossy(), "duration_ms": info.duration_ms, "cached": false }))
+        let info = tts
+            .synthesize(text, &voice, &path, CancellationToken::new())
+            .await?;
+        Ok(
+            json!({ "path": path.to_string_lossy(), "duration_ms": info.duration_ms, "cached": false }),
+        )
     }
 
     /// Deletes cached cloud audio; returns the number of files removed.

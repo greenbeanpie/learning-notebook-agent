@@ -528,7 +528,10 @@ fn d5_rejected_tools_or_structured_output_are_errors_not_downgrades() {
         schema: json!({}),
     };
     let body = "response_format json_schema is not supported";
-    assert!(!relax_for_error(body, &mut p, &mut req), "the output mode is never weakened");
+    assert!(
+        !relax_for_error(body, &mut p, &mut req),
+        "the output mode is never weakened"
+    );
     assert!(matches!(req.output, OutputMode::JsonSchema { .. }));
     assert!(p.capabilities.json_schema);
     let err = capability_rejection(body, &req).expect("reported");

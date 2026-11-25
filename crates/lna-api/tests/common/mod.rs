@@ -83,7 +83,9 @@ pub enum Reply {
 pub fn classify(system: &str, body: &Value) -> Kind {
     if system.contains("\"standalone\"") {
         Kind::Rewrite
-    } else if system.contains("\"questions\"") && (system.contains("follow-up") || system.contains("追问")) {
+    } else if system.contains("\"questions\"")
+        && (system.contains("follow-up") || system.contains("追问"))
+    {
         Kind::Followups
     } else if system.contains("under 300 characters") || system.contains("不超过 300 字") {
         Kind::HistorySummary
@@ -91,11 +93,15 @@ pub fn classify(system: &str, body: &Value) -> Kind {
         Kind::SourceIndex
     } else if system.contains("title_suggestion") || system.contains("summary_md") {
         Kind::NotebookSummary
-    } else if system.contains("section summarization assistant") || system.contains("章节摘要助手") {
+    } else if system.contains("section summarization assistant") || system.contains("章节摘要助手")
+    {
         Kind::Digest
-    } else if system.contains("document structure synthesis assistant") || system.contains("资料结构整理助手") {
+    } else if system.contains("document structure synthesis assistant")
+        || system.contains("资料结构整理助手")
+    {
         Kind::Reduce
-    } else if system.contains("content outline planner") || system.contains("内容大纲规划助手") {
+    } else if system.contains("content outline planner") || system.contains("内容大纲规划助手")
+    {
         Kind::Plan
     } else if system.contains("Local Notebook Studio")
         || system.contains("Studio 生成器")
@@ -425,8 +431,15 @@ fn serve(
 /// model (a tool call and valid JSON) and is not recorded, so tests only see their own traffic.
 fn probe_reply(system: &str, body: &Value) -> Option<Reply> {
     let tools = body["tools"].as_array();
-    if tools.is_some_and(|a| a.iter().any(|t| t["function"]["name"] == json!("lna_capability_probe"))) {
-        return Some(Reply::Tool { id: "probe_1".into(), name: "lna_capability_probe".into(), args: json!({ "ok": true }) });
+    if tools.is_some_and(|a| {
+        a.iter()
+            .any(|t| t["function"]["name"] == json!("lna_capability_probe"))
+    }) {
+        return Some(Reply::Tool {
+            id: "probe_1".into(),
+            name: "lna_capability_probe".into(),
+            args: json!({ "ok": true }),
+        });
     }
     if system.starts_with("Return only a JSON object with ok set to true.") {
         return Some(Reply::Text(json!({ "ok": true }).to_string()));
@@ -689,7 +702,8 @@ pub fn studio_reply(r: &Req) -> Reply {
         json!({"title":"导图","nodes":[{"id":"n1","parent_id":null,"label":"根","citations":[1]},{"id":"n2","parent_id":"n1","label":"枝","citations":[1]}]})
     } else if s.contains("for report,") || s.contains("生成 report") {
         json!({"title":"报告","format":"document","sections":[{"heading":"概述","body_md":"基与维数[1]","key_takeaways":["要点"]}],"citations":[1]})
-    } else if s.contains("for slides,") || s.contains("生成 slides") || s.contains("SlidesPayload") {
+    } else if s.contains("for slides,") || s.contains("生成 slides") || s.contains("SlidesPayload")
+    {
         json!({"title":"幻灯片","theme":"executive_navy","slides":[{"layout":"title","title":"封面","bullets":[],"speaker_notes":"","citations":[]},{"layout":"cards","title":"基","bullets":["线性无关"],"cards":[{"tag":"定义","title":"基","body":"线性无关且张成空间"}],"speaker_notes":"讲稿","citations":[1]}]})
     } else if s.contains("presentation architect") {
         return Reply::Text("Slide 1: title - 封面\nSlide 2: cards - 基".into());

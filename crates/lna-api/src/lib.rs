@@ -191,7 +191,7 @@ impl CoreRuntime {
         let mut tool_called = false;
         if self
             .llm
-            .stream_strict(&resolved, &tool_req, CancellationToken::new(), |event| {
+            .stream_strict(resolved, &tool_req, CancellationToken::new(), |event| {
                 if matches!(event, LlmEvent::ToolCallStart { .. }) {
                     tool_called = true;
                 }
@@ -227,7 +227,7 @@ impl CoreRuntime {
         };
         caps.json_schema = self
             .llm
-            .complete_text_strict(&resolved, &schema_req, CancellationToken::new())
+            .complete_text_strict(resolved, &schema_req, CancellationToken::new())
             .await
             .ok()
             .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
@@ -248,7 +248,7 @@ impl CoreRuntime {
         };
         caps.json_mode = self
             .llm
-            .complete_text_strict(&resolved, &json_mode_req, CancellationToken::new())
+            .complete_text_strict(resolved, &json_mode_req, CancellationToken::new())
             .await
             .ok()
             .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
@@ -259,17 +259,25 @@ impl CoreRuntime {
         Ok((caps, txt))
     }
 
-    async fn ping(&self, resolved: &lna_llm::ResolvedProfile) -> LnaResult<(String, lna_llm::Usage)> {
+    async fn ping(
+        &self,
+        resolved: &lna_llm::ResolvedProfile,
+    ) -> LnaResult<(String, lna_llm::Usage)> {
         let req = LlmRequest {
             system: "Reply with OK.".into(),
-            messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text("ping".into())] }],
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text("ping".into())],
+            }],
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
             max_output_tokens: 16,
             reasoning: ReasoningOptions::default(),
         };
-        self.llm.complete_text_strict(resolved, &req, CancellationToken::new()).await
+        self.llm
+            .complete_text_strict(resolved, &req, CancellationToken::new())
+            .await
     }
 
     fn spawn_background_loops(self: &Arc<Self>) {
@@ -280,7 +288,10 @@ impl CoreRuntime {
             if let Some(core) = weak_clean.upgrade() {
                 let _ = lna_ingest::IngestService::cleanup_orphan_files(&core.db);
                 // pictures from lecture questions and failed sends, once a day old
-                lna_ingest::attachments::sweep_orphans(&core.db, std::time::Duration::from_secs(24 * 3600));
+                lna_ingest::attachments::sweep_orphans(
+                    &core.db,
+                    std::time::Duration::from_secs(24 * 3600),
+                );
             }
         });
 
@@ -289,7 +300,9 @@ impl CoreRuntime {
         let weak_probe = Arc::downgrade(self);
         self.rt.spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let Some(core) = weak_probe.upgrade() else { return };
+            let Some(core) = weak_probe.upgrade() else {
+                return;
+            };
             let pending: Vec<ModelProfile> = lna_storage::list_profiles(&core.db)
                 .unwrap_or_default()
                 .into_iter()
@@ -299,9 +312,14 @@ impl CoreRuntime {
                 })
                 .collect();
             for prof in pending {
-                let Ok(resolved) = core.agent.resolve_profile(&prof) else { continue };
+                let Ok(resolved) = core.agent.resolve_profile(&prof) else {
+                    continue;
+                };
                 // unreachable endpoints stay pending and are probed again on the next start
-                if let Ok((caps, _)) = core.probe_capabilities(&resolved, prof.capabilities.clone()).await {
+                if let Ok((caps, _)) = core
+                    .probe_capabilities(&resolved, prof.capabilities.clone())
+                    .await
+                {
                     let _ = lna_storage::update_profile_capabilities(&core.db, &prof.id, &caps);
                 }
             }
@@ -334,89 +352,91 @@ impl CoreRuntime {
                     core.emit_source_status(&job);
                     let core = core.clone();
                     tokio::spawn(async move {
-                    let _bg_permit = bg_permit;
-                    let res = match job.kind.as_str() {
-                        "ingest_source" => core.ingest.process_ingest_job(&job.subject_id).await,
-                        "refresh_summary" => {
-                            core.agent
-                                .refresh_notebook_summary(&job.subject_id, _tok.clone())
-                                .await
-                        }
-                        "embed_source" => {
-                            let (sid, target_mid) = match job.subject_id.split_once('@') {
-                                Some((s, m)) => (s, Some(m)),
-                                None => (job.subject_id.as_str(), None),
-                            };
-                            match lna_storage::get_source(&core.db, sid) {
-                                Ok(src) => {
-                                    if let Some(mid) = target_mid {
-                                        match core.embedding.get_model(mid) {
-                                            Ok(Some(model)) => {
-                                                core.ingest
-                                                    .embed_source_chunks_for_model(
-                                                        &src.id,
-                                                        &src.notebook_id,
-                                                        &src.title,
-                                                        &model,
-                                                    )
-                                                    .await
-                                            }
-                                            Ok(None) => Err(LnaError::not_found(
-                                                "Target embedding model not found",
-                                            )),
-                                            Err(e) => Err(e),
-                                        }
-                                    } else {
-                                        core.ingest
-                                            .embed_source_chunks(
-                                                &src.id,
-                                                &src.notebook_id,
-                                                &src.title,
-                                            )
-                                            .await
-                                    }
-                                }
-                                Err(e) => Err(e),
+                        let _bg_permit = bg_permit;
+                        let res = match job.kind.as_str() {
+                            "ingest_source" => {
+                                core.ingest.process_ingest_job(&job.subject_id).await
                             }
-                        }
-                        _ => Ok(()),
-                    };
-                    match res {
-                        Ok(()) => {
-                            let _ = core.jobs.mark_done(&job.id);
-                            if job.kind == "embed_source" {
-                                if let Some((_, mid)) = job.subject_id.split_once('@') {
-                                    let suffix = format!("%@{mid}");
-                                    let remaining: i64 = core
-                                        .db
-                                        .read(|conn| {
-                                            conn.query_row(
-                                                "SELECT COUNT(*) FROM jobs
+                            "refresh_summary" => {
+                                core.agent
+                                    .refresh_notebook_summary(&job.subject_id, _tok.clone())
+                                    .await
+                            }
+                            "embed_source" => {
+                                let (sid, target_mid) = match job.subject_id.split_once('@') {
+                                    Some((s, m)) => (s, Some(m)),
+                                    None => (job.subject_id.as_str(), None),
+                                };
+                                match lna_storage::get_source(&core.db, sid) {
+                                    Ok(src) => {
+                                        if let Some(mid) = target_mid {
+                                            match core.embedding.get_model(mid) {
+                                                Ok(Some(model)) => {
+                                                    core.ingest
+                                                        .embed_source_chunks_for_model(
+                                                            &src.id,
+                                                            &src.notebook_id,
+                                                            &src.title,
+                                                            &model,
+                                                        )
+                                                        .await
+                                                }
+                                                Ok(None) => Err(LnaError::not_found(
+                                                    "Target embedding model not found",
+                                                )),
+                                                Err(e) => Err(e),
+                                            }
+                                        } else {
+                                            core.ingest
+                                                .embed_source_chunks(
+                                                    &src.id,
+                                                    &src.notebook_id,
+                                                    &src.title,
+                                                )
+                                                .await
+                                        }
+                                    }
+                                    Err(e) => Err(e),
+                                }
+                            }
+                            _ => Ok(()),
+                        };
+                        match res {
+                            Ok(()) => {
+                                let _ = core.jobs.mark_done(&job.id);
+                                if job.kind == "embed_source" {
+                                    if let Some((_, mid)) = job.subject_id.split_once('@') {
+                                        let suffix = format!("%@{mid}");
+                                        let remaining: i64 = core
+                                            .db
+                                            .read(|conn| {
+                                                conn.query_row(
+                                                    "SELECT COUNT(*) FROM jobs
                                                  WHERE kind = 'embed_source'
                                                    AND subject_id LIKE ?1
                                                    AND status IN ('QUEUED','RUNNING')",
-                                                [suffix],
-                                                |r| r.get(0),
-                                            )
-                                            .map_err(map_sql_err)
-                                        })
-                                        .unwrap_or(1);
-                                    if remaining == 0 {
-                                        let _ = core.embedding.activate_model(mid);
+                                                    [suffix],
+                                                    |r| r.get(0),
+                                                )
+                                                .map_err(map_sql_err)
+                                            })
+                                            .unwrap_or(1);
+                                        if remaining == 0 {
+                                            let _ = core.embedding.activate_model(mid);
+                                        }
                                     }
                                 }
                             }
+                            Err(e) => {
+                                let _ = core.jobs.mark_failed_or_retry(
+                                    &job.id,
+                                    &e.message,
+                                    5000,
+                                    e.retryable,
+                                );
+                            }
                         }
-                        Err(e) => {
-                            let _ = core.jobs.mark_failed_or_retry(
-                                &job.id,
-                                &e.message,
-                                5000,
-                                e.retryable,
-                            );
-                        }
-                    }
-                    core.emit_source_status(&job);
+                        core.emit_source_status(&job);
                     });
                 } else {
                     drop(bg_permit);
@@ -513,11 +533,17 @@ impl CoreRuntime {
     /// Pictures (`images`), one-off reference files (`files`) and web links (`links`) of a
     /// request, stored. Nothing is kept when one of them is rejected.
     fn save_request_images(&self, p: &Value) -> LnaResult<Vec<Attachment>> {
-        let non_empty = |k: &str| p.get(k).filter(|v| v.as_array().is_some_and(|a| !a.is_empty()));
+        let non_empty = |k: &str| {
+            p.get(k)
+                .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+        };
         let mut out = Vec::new();
         let res = (|| -> LnaResult<()> {
             if let Some(items) = non_empty("images") {
-                out.extend(lna_ingest::attachments::save_images(&self.db.paths().root, items)?);
+                out.extend(lna_ingest::attachments::save_images(
+                    &self.db.paths().root,
+                    items,
+                )?);
             }
             if let Some(items) = non_empty("files") {
                 let saved = lna_ingest::context_files::save_files(&self.db, items, out.len())?;
@@ -723,15 +749,21 @@ impl CoreRuntime {
                 let nid = req_str(p, "notebook_id")?;
                 let id = req_str(p, "attachment_id")?;
                 let found = lna_ingest::attachments::resolve(&self.db.paths().root, &json!([id]));
-                let att = found.into_iter().next().ok_or_else(|| LnaError::not_found("附件不存在"))?;
+                let att = found
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| LnaError::not_found("附件不存在"))?;
                 let (src, dup) = if att.kind == "link" {
-                    self.ingest.add_url(nid, att.url.as_deref().unwrap_or_default()).await?
+                    self.ingest
+                        .add_url(nid, att.url.as_deref().unwrap_or_default())
+                        .await?
                 } else {
                     // imported under its original name; the attachment itself stays with the message
                     let tmp = std::env::temp_dir().join(format!("lna_promote_{}", att.id));
                     std::fs::create_dir_all(&tmp).map_err(|e| LnaError::internal(e.to_string()))?;
                     let named = tmp.join(&att.name);
-                    std::fs::copy(&att.path, &named).map_err(|e| LnaError::internal(e.to_string()))?;
+                    std::fs::copy(&att.path, &named)
+                        .map_err(|e| LnaError::internal(e.to_string()))?;
                     let r = self.ingest.add_file(nid, &named);
                     let _ = std::fs::remove_dir_all(&tmp);
                     r?
@@ -756,10 +788,22 @@ impl CoreRuntime {
                     .map(|prof| {
                         let mut v = serde_json::to_value(prof).unwrap_or_default();
                         let caps = &prof.capabilities;
-                        v["purpose"] = json!(if caps.embedding_only { "embedding" } else { "chat" });
+                        v["purpose"] = json!(if caps.embedding_only {
+                            "embedding"
+                        } else {
+                            "chat"
+                        });
                         v["eligible"] = json!(caps.embedding_only || caps.chat_missing().is_none());
-                        v["probe_pending"] = json!(!caps.embedding_only && caps.probed_at.is_none() && caps.chat_missing().is_some());
-                        v["unsupported_reason"] = json!(if caps.probed_at.is_some() { caps.chat_missing() } else { None });
+                        v["probe_pending"] = json!(
+                            !caps.embedding_only
+                                && caps.probed_at.is_none()
+                                && caps.chat_missing().is_some()
+                        );
+                        v["unsupported_reason"] = json!(if caps.probed_at.is_some() {
+                            caps.chat_missing()
+                        } else {
+                            None
+                        });
                         v
                     })
                     .collect();
@@ -791,18 +835,36 @@ impl CoreRuntime {
                 };
                 let embedding_only = p.get("purpose").and_then(Value::as_str) == Some("embedding")
                     || (p.get("purpose").is_none()
-                        && existing.as_ref().is_some_and(|e| e.capabilities.embedding_only));
+                        && existing
+                            .as_ref()
+                            .is_some_and(|e| e.capabilities.embedding_only));
                 // Tool / JSON flags are never taken from the client: they come from the probe.
-                let mut base = existing.as_ref().map(|e| e.capabilities.clone()).unwrap_or_default();
-                if let Some(v) = params_in.supports_vision { base.supports_vision = v; }
-                if let Some(v) = params_in.supports_audio { base.supports_audio = v; }
-                if let Some(v) = params_in.supports_video { base.supports_video = v; }
+                let mut base = existing
+                    .as_ref()
+                    .map(|e| e.capabilities.clone())
+                    .unwrap_or_default();
+                if let Some(v) = params_in.supports_vision {
+                    base.supports_vision = v;
+                }
+                if let Some(v) = params_in.supports_audio {
+                    base.supports_audio = v;
+                }
+                if let Some(v) = params_in.supports_video {
+                    base.supports_video = v;
+                }
                 if let Some(c) = params_in.capabilities.as_ref() {
-                    if params_in.supports_vision.is_none() { base.supports_vision = c.supports_vision; }
-                    if params_in.supports_audio.is_none() { base.supports_audio = c.supports_audio; }
-                    if params_in.supports_video.is_none() { base.supports_video = c.supports_video; }
+                    if params_in.supports_vision.is_none() {
+                        base.supports_vision = c.supports_vision;
+                    }
+                    if params_in.supports_audio.is_none() {
+                        base.supports_audio = c.supports_audio;
+                    }
+                    if params_in.supports_video.is_none() {
+                        base.supports_video = c.supports_video;
+                    }
                     base.max_tokens_field = c.max_tokens_field.clone().or(base.max_tokens_field);
-                    base.anthropic_thinking = c.anthropic_thinking.clone().or(base.anthropic_thinking);
+                    base.anthropic_thinking =
+                        c.anthropic_thinking.clone().or(base.anthropic_thinking);
                 }
                 base.embedding_only = embedding_only;
                 if embedding_only && params_in.activate {
@@ -867,9 +929,13 @@ impl CoreRuntime {
                 let resolved = self.agent.resolve_profile(&prof)?;
                 if prof.capabilities.embedding_only {
                     let (txt, _) = self.ping(&resolved).await?;
-                    return Ok(json!({ "ok": true, "reply": txt, "capabilities": prof.capabilities }));
+                    return Ok(
+                        json!({ "ok": true, "reply": txt, "capabilities": prof.capabilities }),
+                    );
                 }
-                let (caps, txt) = self.probe_capabilities(&resolved, prof.capabilities.clone()).await?;
+                let (caps, txt) = self
+                    .probe_capabilities(&resolved, prof.capabilities.clone())
+                    .await?;
                 lna_storage::update_profile_capabilities(&self.db, id, &caps)?;
                 if let Some(reason) = caps.chat_missing() {
                     return Err(LnaError::new(ErrorCode::CapabilityMissing, reason));
@@ -1068,17 +1134,34 @@ impl CoreRuntime {
                 let id = req_str(p, "artifact_id")?.to_string();
                 let slide_id = req_str(p, "slide_id")?.to_string();
                 let question = req_str(p, "question")?.to_string();
-                let sentence_id = p.get("sentence_id").and_then(Value::as_str).map(String::from);
-                let history: Vec<Value> = p.get("history").and_then(Value::as_array).cloned().unwrap_or_default();
+                let sentence_id = p
+                    .get("sentence_id")
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                let history: Vec<Value> = p
+                    .get("history")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 let atts = self.save_request_images(p)?;
                 let studio = self.studio.clone();
                 // the pictures stay on disk so the question panel can keep showing them; the
                 // periodic attachment sweep removes them later
                 let mut out = studio
-                    .lecture_ask(&id, &slide_id, sentence_id.as_deref(), &question, &history, &atts)
+                    .lecture_ask(
+                        &id,
+                        &slide_id,
+                        sentence_id.as_deref(),
+                        &question,
+                        &history,
+                        &atts,
+                    )
                     .await?;
                 if let Some(obj) = out.as_object_mut() {
-                    obj.insert("attachments".into(), serde_json::to_value(&atts).unwrap_or_default());
+                    obj.insert(
+                        "attachments".into(),
+                        serde_json::to_value(&atts).unwrap_or_default(),
+                    );
                 }
                 Ok(out)
             }
@@ -1086,13 +1169,28 @@ impl CoreRuntime {
                 let id = req_str(p, "artifact_id")?.to_string();
                 let slide_id = req_str(p, "slide_id")?.to_string();
                 let kind = req_str(p, "kind")?.to_string();
-                if !matches!(kind.as_str(), "extend" | "slower" | "simpler" | "skip_known" | "more_examples") {
-                    return Err(LnaError::invalid("kind must be extend, slower, simpler, skip_known or more_examples"));
+                if !matches!(
+                    kind.as_str(),
+                    "extend" | "slower" | "simpler" | "skip_known" | "more_examples"
+                ) {
+                    return Err(LnaError::invalid(
+                        "kind must be extend, slower, simpler, skip_known or more_examples",
+                    ));
                 }
-                let reason = p.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
-                let question = p.get("question").and_then(Value::as_str).unwrap_or("").to_string();
+                let reason = p
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let question = p
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let studio = self.studio.clone();
-                studio.lecture_adapt(&id, &slide_id, &kind, &reason, &question).await
+                studio
+                    .lecture_adapt(&id, &slide_id, &kind, &reason, &question)
+                    .await
             }
             "lecture.undo" => {
                 let id = req_str(p, "artifact_id")?;
@@ -1145,7 +1243,10 @@ impl CoreRuntime {
                     .and_then(|x| x.as_bool())
                     .unwrap_or(true);
                 let atts = self.save_request_images(p)?;
-                Ok(serde_json::to_value(self.studio.regenerate(id, config, use_selected, atts)?).unwrap())
+                Ok(
+                    serde_json::to_value(self.studio.regenerate(id, config, use_selected, atts)?)
+                        .unwrap(),
+                )
             }
             "studio.import_to_studio" => {
                 let id = req_str(p, "artifact_id")?;
@@ -1269,7 +1370,8 @@ impl CoreRuntime {
                 let page = p.get("page").and_then(|x| x.as_i64()).map(|n| n as i32);
                 let src = lna_storage::get_source(&self.db, sid)?;
                 let chunks = self.ingest.source_preview(sid, page)?;
-                let index_nodes = lna_storage::list_source_index_nodes(&self.db, sid).unwrap_or_default();
+                let index_nodes =
+                    lna_storage::list_source_index_nodes(&self.db, sid).unwrap_or_default();
                 let preview_html_path = self
                     .ingest
                     .ensure_preview_html(sid)
@@ -1294,7 +1396,8 @@ impl CoreRuntime {
             "source.generate_guide" => {
                 let sid = req_str(p, "source_id")?;
                 let src = self.ingest.regenerate_source_guide(sid).await?;
-                let index_nodes = lna_storage::list_source_index_nodes(&self.db, sid).unwrap_or_default();
+                let index_nodes =
+                    lna_storage::list_source_index_nodes(&self.db, sid).unwrap_or_default();
                 Ok(json!({
                     "source": src,
                     "index_nodes": index_nodes
@@ -1341,7 +1444,8 @@ impl CoreRuntime {
                 let nid = req_str(p, "notebook_id")?;
                 let aid = req_str(p, "artifact_id")?;
                 let results = p.get("results").cloned().unwrap_or_else(|| json!([]));
-                self.studio.apply_quiz_to_knowledge_graphs(nid, aid, results)
+                self.studio
+                    .apply_quiz_to_knowledge_graphs(nid, aid, results)
             }
             "studio.export" => {
                 let aid = req_str(p, "artifact_id")?;
@@ -1538,12 +1642,25 @@ impl CoreRuntime {
 
     /// Translates the notebook's overview (`summary_md` and `suggested_questions`) into `target_lang`
     /// (`zh-CN` or `en-US`), leaving source book guides, Studio artifacts, and chat history untouched.
-    fn translate_notebook_ui_content(&self, notebook_id: &str, target_lang: &str) -> LnaResult<Value> {
+    fn translate_notebook_ui_content(
+        &self,
+        notebook_id: &str,
+        target_lang: &str,
+    ) -> LnaResult<Value> {
         let to_en = target_lang.to_lowercase().starts_with("en");
-        let lang_name = if to_en { "English" } else { "Simplified Chinese (简体中文)" };
+        let lang_name = if to_en {
+            "English"
+        } else {
+            "Simplified Chinese (简体中文)"
+        };
 
         let Some(prof) = lna_storage::get_active_profile(&self.db)? else {
-            let _ = self.events.send(ApiEvent { event: "notebook.summary_updated".into(), topic: format!("notebook:{notebook_id}"), seq: 0, data: json!({ "notebook_id": notebook_id }) });
+            let _ = self.events.send(ApiEvent {
+                event: "notebook.summary_updated".into(),
+                topic: format!("notebook:{notebook_id}"),
+                seq: 0,
+                data: json!({ "notebook_id": notebook_id }),
+            });
             return Ok(json!({ "ok": true, "translated_with_llm": false }));
         };
         let api_key = match prof.keychain_ref.as_deref() {
@@ -1567,13 +1684,14 @@ impl CoreRuntime {
         };
 
         let (summary_md, sq_json): (Option<String>, Option<String>) = self.db.read(|conn| {
-            Ok(conn.query_row(
-                "SELECT summary_md, suggested_questions_json FROM notebooks WHERE id = ?1",
-                [notebook_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .ok()
-            .unwrap_or((None, None)))
+            Ok(conn
+                .query_row(
+                    "SELECT summary_md, suggested_questions_json FROM notebooks WHERE id = ?1",
+                    [notebook_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok()
+                .unwrap_or((None, None)))
         })?;
         let suggested_questions: Vec<String> = sq_json
             .as_deref()
@@ -1581,7 +1699,12 @@ impl CoreRuntime {
             .unwrap_or_default();
 
         if summary_md.as_deref().unwrap_or("").trim().is_empty() && suggested_questions.is_empty() {
-            let _ = self.events.send(ApiEvent { event: "notebook.summary_updated".into(), topic: format!("notebook:{notebook_id}"), seq: 0, data: json!({ "notebook_id": notebook_id }) });
+            let _ = self.events.send(ApiEvent {
+                event: "notebook.summary_updated".into(),
+                topic: format!("notebook:{notebook_id}"),
+                seq: 0,
+                data: json!({ "notebook_id": notebook_id }),
+            });
             return Ok(json!({ "ok": true, "translated_with_llm": false }));
         }
 
@@ -1633,7 +1756,14 @@ impl CoreRuntime {
                     "required": ["summary_md", "suggested_questions"],
                     "additionalProperties": false
                 });
-                llm.complete_structured(&resolved, &req, "ui_translation", &schema, tokio_util::sync::CancellationToken::new()).await
+                llm.complete_structured(
+                    &resolved,
+                    &req,
+                    "ui_translation",
+                    &schema,
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
             })
         });
         self.emit(
@@ -1652,7 +1782,10 @@ impl CoreRuntime {
 
         if let Ok((parsed, _)) = translated_res {
             {
-                let new_sum = parsed.get("summary_md").and_then(Value::as_str).map(String::from);
+                let new_sum = parsed
+                    .get("summary_md")
+                    .and_then(Value::as_str)
+                    .map(String::from);
                 let new_sq: Option<String> = parsed
                     .get("suggested_questions")
                     .and_then(Value::as_array)
@@ -1678,7 +1811,12 @@ impl CoreRuntime {
             }
         }
 
-        let _ = self.events.send(ApiEvent { event: "notebook.summary_updated".into(), topic: format!("notebook:{notebook_id}"), seq: 0, data: json!({ "notebook_id": notebook_id }) });
+        let _ = self.events.send(ApiEvent {
+            event: "notebook.summary_updated".into(),
+            topic: format!("notebook:{notebook_id}"),
+            seq: 0,
+            data: json!({ "notebook_id": notebook_id }),
+        });
         Ok(json!({ "ok": true, "translated_with_llm": true }))
     }
 

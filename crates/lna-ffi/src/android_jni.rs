@@ -33,7 +33,9 @@ pub extern "system" fn Java_com_localnotebook_agent_core_NativeBridge_nativeOpen
 
     let event_thread = if !listener.is_null() {
         match (env.get_java_vm(), env.new_global_ref(listener)) {
-            (Ok(vm), Ok(global_listener)) => Some(spawn_event_forwarder(vm, global_listener, runtime.clone())),
+            (Ok(vm), Ok(global_listener)) => {
+                Some(spawn_event_forwarder(vm, global_listener, runtime.clone()))
+            }
             _ => None,
         }
     } else {
@@ -97,7 +99,8 @@ pub extern "system" fn Java_com_localnotebook_agent_core_NativeBridge_nativeCall
     };
     let core_ref = unsafe { &*(handle as *const AndroidCore) };
     let reply = core_ref.runtime.handle_json(&req_str);
-    env.new_string(reply).unwrap_or_else(|_| empty_jstring(&env))
+    env.new_string(reply)
+        .unwrap_or_else(|_| empty_jstring(&env))
 }
 
 #[no_mangle]

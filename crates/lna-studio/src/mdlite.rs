@@ -7,22 +7,41 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
-    Heading { level: usize, text: String },
+    Heading {
+        level: usize,
+        text: String,
+    },
     Paragraph(String),
-    ListItem { ordered: bool, marker: String, depth: usize, text: String },
+    ListItem {
+        ordered: bool,
+        marker: String,
+        depth: usize,
+        text: String,
+    },
     Quote(String),
     Code(String),
     Math(String),
     Rule,
-    Table { header: Vec<String>, rows: Vec<Vec<String>> },
+    Table {
+        header: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Span {
-    Text { text: String, bold: bool, italic: bool, strike: bool },
+    Text {
+        text: String,
+        bold: bool,
+        italic: bool,
+        strike: bool,
+    },
     Code(String),
     Math(String),
-    Link { text: String, url: String },
+    Link {
+        text: String,
+        url: String,
+    },
     Cite(u32),
 }
 
@@ -50,7 +69,10 @@ fn is_rule(line: &str) -> bool {
 
 /// `(indent, marker, text)` of a list item line.
 fn list_item(line: &str) -> Option<(usize, String, String)> {
-    let indent_str: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let indent_str: String = line
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
     let rest = &line[indent_str.len()..];
     let indent = indent_str.replace('\t', "    ").len();
     let mut chars = rest.char_indices();
@@ -194,7 +216,12 @@ pub fn parse(src: &str) -> Vec<Block> {
             } else {
                 "•".to_string()
             };
-            out.push(Block::ListItem { ordered, marker: shown, depth: (indent / 2).min(4), text });
+            out.push(Block::ListItem {
+                ordered,
+                marker: shown,
+                depth: (indent / 2).min(4),
+                text,
+            });
         } else if t.starts_with('>') {
             flush(&mut para, &mut out);
             let mut body: Vec<String> = Vec::new();
@@ -243,7 +270,12 @@ fn parse_inline_into(c: &[char], bold: bool, italic: bool, strike: bool, out: &m
     let mut buf = String::new();
     let flush = |buf: &mut String, out: &mut Vec<Span>| {
         if !buf.is_empty() {
-            out.push(Span::Text { text: std::mem::take(buf), bold, italic, strike });
+            out.push(Span::Text {
+                text: std::mem::take(buf),
+                bold,
+                italic,
+                strike,
+            });
         }
     };
     let n = c.len();
@@ -301,7 +333,10 @@ fn parse_inline_into(c: &[char], bold: bool, italic: bool, strike: bool, out: &m
         }
         if (ch == '*' || ch == '_') && next != ch && next != ' ' && next != '\0' {
             if let Some(end) = find_single_delim(c, i + 1, ch).filter(|&e| e > i + 1) {
-                if ch == '*' || (is_word_boundary(c, i as isize - 1) && is_word_boundary(c, end as isize + 1)) {
+                if ch == '*'
+                    || (is_word_boundary(c, i as isize - 1)
+                        && is_word_boundary(c, end as isize + 1))
+                {
                     flush(&mut buf, out);
                     parse_inline_into(&c[i + 1..end], bold, true, strike, out);
                     i = end + 1;
@@ -335,7 +370,10 @@ fn parse_inline_into(c: &[char], bold: bool, italic: bool, strike: bool, out: &m
                 if ch == '[' && close + 1 < n && c[close + 1] == '(' {
                     if let Some(url_end) = index_of(c, ")", close + 2) {
                         flush(&mut buf, out);
-                        out.push(Span::Link { text: inner, url: sub(c, close + 2, url_end) });
+                        out.push(Span::Link {
+                            text: inner,
+                            url: sub(c, close + 2, url_end),
+                        });
                         i = url_end + 1;
                         continue;
                     }
@@ -408,15 +446,48 @@ mod tests {
     #[test]
     fn parses_blocks_like_the_mobile_ports() {
         let b = parse(SAMPLE);
-        assert_eq!(b[0], Block::Heading { level: 1, text: "标题".into() });
+        assert_eq!(
+            b[0],
+            Block::Heading {
+                level: 1,
+                text: "标题".into()
+            }
+        );
         assert!(matches!(&b[1], Block::Paragraph(p) if p.ends_with("snake_case_name\n第二行")));
-        assert_eq!(b[2], Block::ListItem { ordered: false, marker: "•".into(), depth: 0, text: "项一".into() });
-        assert_eq!(b[3], Block::ListItem { ordered: false, marker: "•".into(), depth: 1, text: "子项 `code`".into() });
-        assert_eq!(b[4], Block::ListItem { ordered: true, marker: "1.".into(), depth: 0, text: "有序".into() });
+        assert_eq!(
+            b[2],
+            Block::ListItem {
+                ordered: false,
+                marker: "•".into(),
+                depth: 0,
+                text: "项一".into()
+            }
+        );
+        assert_eq!(
+            b[3],
+            Block::ListItem {
+                ordered: false,
+                marker: "•".into(),
+                depth: 1,
+                text: "子项 `code`".into()
+            }
+        );
+        assert_eq!(
+            b[4],
+            Block::ListItem {
+                ordered: true,
+                marker: "1.".into(),
+                depth: 0,
+                text: "有序".into()
+            }
+        );
         assert_eq!(b[5], Block::Math("\\frac{1}{n}\\sum_{i=1}^n x_i".into()));
         assert_eq!(
             b[6],
-            Block::Table { header: vec!["a".into(), "b".into()], rows: vec![vec!["1".into(), "$x^2$".into()]] }
+            Block::Table {
+                header: vec!["a".into(), "b".into()],
+                rows: vec![vec!["1".into(), "$x^2$".into()]]
+            }
         );
         assert_eq!(b[7], Block::Quote("引用块".into()));
         assert_eq!(b[8], Block::Rule);
@@ -428,7 +499,12 @@ mod tests {
     fn parses_inline_spans() {
         let line = SAMPLE.lines().nth(1).unwrap();
         let s = parse_inline(line);
-        let t = |x: &str, b: bool, i: bool| Span::Text { text: x.into(), bold: b, italic: i, strike: false };
+        let t = |x: &str, b: bool, i: bool| Span::Text {
+            text: x.into(),
+            bold: b,
+            italic: i,
+            strike: false,
+        };
         assert_eq!(
             s,
             vec![
@@ -443,7 +519,10 @@ mod tests {
                 t("，价格 $5 和 $6。引用", false, false),
                 Span::Cite(1),
                 t("。见", false, false),
-                Span::Link { text: "文档".into(), url: "http://x".into() },
+                Span::Link {
+                    text: "文档".into(),
+                    url: "http://x".into()
+                },
                 t("。snake_case_name", false, false),
             ]
         );

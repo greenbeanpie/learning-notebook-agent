@@ -16,13 +16,13 @@ use lna_retrieval::tokenize_for_fts;
 use lna_secrets::SecretStore;
 use lna_storage::{db::map_sql_err, Database};
 use lna_types::{new_ulid, now_ms, ApiEvent, ErrorCode, LnaError, LnaResult, Source, SourceKind};
-use serde_json::json;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::broadcast;
 use rusqlite::{params, OptionalExtension};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
 const MAX_SOURCES_PER_NOTEBOOK: i64 = 300;
 const MAX_FILE_BYTES: u64 = 200 * 1024 * 1024;
@@ -64,6 +64,7 @@ impl IngestService {
         self
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_ai_activity(
         &self,
         notebook_id: &str,
@@ -277,10 +278,15 @@ impl IngestService {
         let parsed: LnaResult<parser::ParsedDoc> = match kind {
             SourceKind::Pdf => {
                 let bp_clone = bp.clone();
-                let ext_res = tokio::task::spawn_blocking(move || parser::parse_pdf_detailed(&bp_clone))
-                    .await
-                    .map_err(|e| LnaError::internal(format!("Parser worker panicked or was cancelled: {e}")))
-                    .and_then(|r| r);
+                let ext_res =
+                    tokio::task::spawn_blocking(move || parser::parse_pdf_detailed(&bp_clone))
+                        .await
+                        .map_err(|e| {
+                            LnaError::internal(format!(
+                                "Parser worker panicked or was cancelled: {e}"
+                            ))
+                        })
+                        .and_then(|r| r);
 
                 match ext_res {
                     Ok(mut extract) => {
@@ -299,7 +305,11 @@ impl IngestService {
                         // Use low-token AI Vision TOC indexing (front pages only for large books;
                         // body pages are read on-demand during chat and permanently cached).
                         if extract.doc.blocks.is_empty() && !extract.ocr_needed_pages.is_empty() {
-                            let total_pages = extract.doc.page_count.unwrap_or(extract.page_meta.len() as i64).max(1) as u32;
+                            let total_pages = extract
+                                .doc
+                                .page_count
+                                .unwrap_or(extract.page_meta.len() as i64)
+                                .max(1) as u32;
                             match ai_indexer::run_ai_vision_toc_index(
                                 &self.db,
                                 &self.secrets,
@@ -391,20 +401,58 @@ impl IngestService {
                 );
                 {
                     let tid = format!("img:{}", src.id);
-                    self.emit_ai_activity(&src.notebook_id, Some(&src.id), &tid, "media_vision", "tool", &format!("AI 解析图片内容：{}", src.title), "正在提取图片中的文字、图表与关键信息…", true);
-                    let r = media::ingest_image(&self.db, &self.secrets, &self.llm, &src, &bp, &ext).await;
-                    self.emit_ai_activity(&src.notebook_id, Some(&src.id), &tid, "media_vision", "done", &format!("图片解析完成：{}", src.title), "", false);
+                    self.emit_ai_activity(
+                        &src.notebook_id,
+                        Some(&src.id),
+                        &tid,
+                        "media_vision",
+                        "tool",
+                        &format!("AI 解析图片内容：{}", src.title),
+                        "正在提取图片中的文字、图表与关键信息…",
+                        true,
+                    );
+                    let r =
+                        media::ingest_image(&self.db, &self.secrets, &self.llm, &src, &bp, &ext)
+                            .await;
+                    self.emit_ai_activity(
+                        &src.notebook_id,
+                        Some(&src.id),
+                        &tid,
+                        "media_vision",
+                        "done",
+                        &format!("图片解析完成：{}", src.title),
+                        "",
+                        false,
+                    );
                     r
                 }
             }
             SourceKind::Audio | SourceKind::Video => {
-                {
-                    let tid = format!("av:{}", src.id);
-                    self.emit_ai_activity(&src.notebook_id, Some(&src.id), &tid, "media_vision", "tool", &format!("AI 转录音视频：{}", src.title), "正在分析音视频内容并生成结构化转写…", true);
-                    let r = media::ingest_audio_video(&self.db, &self.secrets, &self.llm, &src, &bp, &ext).await;
-                    self.emit_ai_activity(&src.notebook_id, Some(&src.id), &tid, "media_vision", "done", &format!("音视频转录完成：{}", src.title), "", false);
-                    r
-                }
+                let tid = format!("av:{}", src.id);
+                self.emit_ai_activity(
+                    &src.notebook_id,
+                    Some(&src.id),
+                    &tid,
+                    "media_vision",
+                    "tool",
+                    &format!("AI 转录音视频：{}", src.title),
+                    "正在分析音视频内容并生成结构化转写…",
+                    true,
+                );
+                let r =
+                    media::ingest_audio_video(&self.db, &self.secrets, &self.llm, &src, &bp, &ext)
+                        .await;
+                self.emit_ai_activity(
+                    &src.notebook_id,
+                    Some(&src.id),
+                    &tid,
+                    "media_vision",
+                    "done",
+                    &format!("音视频转录完成：{}", src.title),
+                    "",
+                    false,
+                );
+                r
             }
             SourceKind::Docx
             | SourceKind::Pptx
@@ -479,30 +527,35 @@ impl IngestService {
                     Err(e) => Err(e),
                 }
             }
-            SourceKind::Csv | SourceKind::Rtf | SourceKind::Hwp | SourceKind::Md | SourceKind::Note
-            | SourceKind::Txt | SourceKind::Web => {
+            SourceKind::Csv
+            | SourceKind::Rtf
+            | SourceKind::Hwp
+            | SourceKind::Md
+            | SourceKind::Note
+            | SourceKind::Txt
+            | SourceKind::Web => {
                 let bp_clone = bp.clone();
                 let ext_clone = ext.clone();
                 tokio::task::spawn_blocking(move || match kind {
                     SourceKind::Csv => {
-                        let bytes =
-                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        let bytes = std::fs::read(&bp_clone)
+                            .map_err(|e| LnaError::internal(e.to_string()))?;
                         office::parse_csv(&bytes)
                     }
                     SourceKind::Rtf => {
-                        let bytes =
-                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        let bytes = std::fs::read(&bp_clone)
+                            .map_err(|e| LnaError::internal(e.to_string()))?;
                         office::parse_rtf(&bytes)
                     }
                     SourceKind::Hwp => office::parse_hwp(&bp_clone),
                     SourceKind::Md | SourceKind::Note => {
-                        let bytes =
-                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        let bytes = std::fs::read(&bp_clone)
+                            .map_err(|e| LnaError::internal(e.to_string()))?;
                         Ok(parser::parse_markdown(&parser::decode_text_bytes(&bytes)))
                     }
                     SourceKind::Txt => {
-                        let bytes =
-                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        let bytes = std::fs::read(&bp_clone)
+                            .map_err(|e| LnaError::internal(e.to_string()))?;
                         let text = parser::decode_text_bytes(&bytes);
                         if matches!(ext_clone.as_str(), "html" | "htm" | "xhtml") {
                             Ok(parser::parse_html(&text))
@@ -513,14 +566,16 @@ impl IngestService {
                         }
                     }
                     SourceKind::Web => {
-                        let bytes =
-                            std::fs::read(&bp_clone).map_err(|e| LnaError::internal(e.to_string()))?;
+                        let bytes = std::fs::read(&bp_clone)
+                            .map_err(|e| LnaError::internal(e.to_string()))?;
                         Ok(parser::parse_html(&parser::decode_text_bytes(&bytes)))
                     }
                     _ => unreachable!(),
                 })
                 .await
-                .map_err(|e| LnaError::internal(format!("Parser worker panicked or was cancelled: {e}")))
+                .map_err(|e| {
+                    LnaError::internal(format!("Parser worker panicked or was cancelled: {e}"))
+                })
                 .and_then(|r| r)
             }
         };
@@ -535,19 +590,44 @@ impl IngestService {
         // Stage 1: AI-driven structural indexing & Source Guide (1 low-token call)
         let ai_index = match precomputed_ai_index {
             Some(pre) => Some(pre),
-            None => match {
+            None => {
                 let tid = format!("index:{}", src.id);
-                self.emit_ai_activity(&src.notebook_id, Some(&src.id), &tid, "source_index", "tool", &format!("AI 构建资料索引与来源指南：{}", src.title), "正在分析文档目录结构、提炼核心主题并生成来源指南…", true);
-                let idx_res = ai_indexer::run_ai_index_for_doc(&self.db, &self.secrets, &self.llm, &src, &doc).await;
-                self.emit_ai_activity(&src.notebook_id, Some(&src.id), &tid, "source_index", "done", &format!("资料索引构建完成：{}", src.title), "", false);
-                idx_res
-            } {
-                Ok(opt) => opt,
-                Err(e) => {
-                    tracing::warn!(source_id, error = %e.message, "AI structural indexing failed; continuing with physical anchors");
-                    None
+                self.emit_ai_activity(
+                    &src.notebook_id,
+                    Some(&src.id),
+                    &tid,
+                    "source_index",
+                    "tool",
+                    &format!("AI 构建资料索引与来源指南：{}", src.title),
+                    "正在分析文档目录结构、提炼核心主题并生成来源指南…",
+                    true,
+                );
+                let idx_res = ai_indexer::run_ai_index_for_doc(
+                    &self.db,
+                    &self.secrets,
+                    &self.llm,
+                    &src,
+                    &doc,
+                )
+                .await;
+                self.emit_ai_activity(
+                    &src.notebook_id,
+                    Some(&src.id),
+                    &tid,
+                    "source_index",
+                    "done",
+                    &format!("资料索引构建完成：{}", src.title),
+                    "",
+                    false,
+                );
+                match idx_res {
+                    Ok(opt) => opt,
+                    Err(e) => {
+                        tracing::warn!(source_id, error = %e.message, "AI structural indexing failed; continuing with physical anchors");
+                        None
+                    }
                 }
-            },
+            }
         };
 
         let mut drafts = chunker::chunk_document(&doc);
@@ -569,7 +649,13 @@ impl IngestService {
             } else {
                 Some(ai.guide_summary_md.as_str())
             };
-            let _ = lna_storage::update_source_guide(&self.db, source_id, guide_md, &ai.guide_topics, true);
+            let _ = lna_storage::update_source_guide(
+                &self.db,
+                source_id,
+                guide_md,
+                &ai.guide_topics,
+                true,
+            );
         }
 
         let total_tokens: i64 = drafts.iter().map(|c| c.token_count as i64).sum();
@@ -766,17 +852,34 @@ impl IngestService {
             blocks,
         };
         let tid = format!("reindex:{}", src.id);
-        self.emit_ai_activity(&src.notebook_id, Some(&src.id), &tid, "source_index", "tool", &format!("AI 重建资料索引：{}", src.title), "正在重新扫描文档结构并更新来源指南…", true);
-        let ai_res = ai_indexer::run_ai_index_for_doc(&self.db, &self.secrets, &self.llm, &src, &doc)
-            .await;
-        self.emit_ai_activity(&src.notebook_id, Some(&src.id), &tid, "source_index", "done", &format!("资料索引重建完成：{}", src.title), "", false);
-        let ai = ai_res?
-            .ok_or_else(|| {
-                LnaError::new(
-                    ErrorCode::ModelNotConfigured,
-                    "请先在“模型协议配置”中配置并启用可用的 AI 模型",
-                )
-            })?;
+        self.emit_ai_activity(
+            &src.notebook_id,
+            Some(&src.id),
+            &tid,
+            "source_index",
+            "tool",
+            &format!("AI 重建资料索引：{}", src.title),
+            "正在重新扫描文档结构并更新来源指南…",
+            true,
+        );
+        let ai_res =
+            ai_indexer::run_ai_index_for_doc(&self.db, &self.secrets, &self.llm, &src, &doc).await;
+        self.emit_ai_activity(
+            &src.notebook_id,
+            Some(&src.id),
+            &tid,
+            "source_index",
+            "done",
+            &format!("资料索引重建完成：{}", src.title),
+            "",
+            false,
+        );
+        let ai = ai_res?.ok_or_else(|| {
+            LnaError::new(
+                ErrorCode::ModelNotConfigured,
+                "请先在“模型协议配置”中配置并启用可用的 AI 模型",
+            )
+        })?;
         lna_storage::replace_source_index_nodes(&self.db, source_id, &ai.nodes)?;
         let guide_md = if ai.guide_summary_md.trim().is_empty() {
             None
@@ -865,12 +968,7 @@ impl IngestService {
     }
 
     fn fail_ingest(&self, source_id: &str, e: LnaError) -> LnaError {
-        let _ = self.update_status(
-            source_id,
-            "FAILED",
-            Some(e.code.as_str()),
-            Some(&e.message),
-        );
+        let _ = self.update_status(source_id, "FAILED", Some(e.code.as_str()), Some(&e.message));
         e
     }
 

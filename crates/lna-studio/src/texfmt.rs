@@ -69,7 +69,10 @@ fn convert_runs(s: &str) -> Vec<MathRun> {
         match next_shift {
             Some(ns) => {
                 if !cur.is_empty() {
-                    runs.push(MathRun { text: std::mem::take(&mut cur), shift });
+                    runs.push(MathRun {
+                        text: std::mem::take(&mut cur),
+                        shift,
+                    });
                 }
                 shift = ns;
             }
@@ -88,14 +91,18 @@ pub fn convert_mindmap_payload(payload: &mut Value) {
         return;
     };
     for node in nodes {
-        let Some(obj) = node.as_object_mut() else { continue };
+        let Some(obj) = node.as_object_mut() else {
+            continue;
+        };
         for key in ["label", "summary"] {
             if let Some(Value::String(text)) = obj.get_mut(key) {
                 *text = tex_to_unicode(text);
             }
         }
         for list_key in ["prerequisites", "facets"] {
-            let Some(Value::Array(prereqs)) = obj.get_mut(list_key) else { continue };
+            let Some(Value::Array(prereqs)) = obj.get_mut(list_key) else {
+                continue;
+            };
             for p in prereqs {
                 if let Value::String(text) = p {
                     *text = tex_to_unicode(text);
@@ -309,7 +316,8 @@ fn command(c: &[char], pos: &mut usize) -> String {
 /// Parenthesise multi-term fraction / root operands: `\frac{a+b}{2}` → `(a+b)/2`.
 fn wrap_if_compound(s: &str) -> String {
     let compound = s.chars().count() > 1
-        && s.chars().any(|ch| matches!(ch, '+' | '-' | '−' | '·' | '×' | '/' | ' ' | '='));
+        && s.chars()
+            .any(|ch| matches!(ch, '+' | '-' | '−' | '·' | '×' | '/' | ' ' | '='));
     if compound {
         format!("({s})")
     } else {
@@ -339,7 +347,11 @@ fn script(s: &str, sup: bool) -> String {
     match mapped {
         Some(m) => m,
         None if sup && matches!(s, "*" | "′" | "″" | "†" | "∗" | "⊤") => {
-            if s == "⊤" { "ᵀ".into() } else { s.to_string() }
+            if s == "⊤" {
+                "ᵀ".into()
+            } else {
+                s.to_string()
+            }
         }
         None => {
             // Nested fallbacks flatten into the outer shifted run.
@@ -347,7 +359,11 @@ fn script(s: &str, sup: bool) -> String {
                 .chars()
                 .filter(|c| !matches!(*c, SUP_OPEN | SUP_CLOSE | SUB_OPEN | SUB_CLOSE))
                 .collect();
-            let (open, close) = if sup { (SUP_OPEN, SUP_CLOSE) } else { (SUB_OPEN, SUB_CLOSE) };
+            let (open, close) = if sup {
+                (SUP_OPEN, SUP_CLOSE)
+            } else {
+                (SUB_OPEN, SUB_CLOSE)
+            };
             format!("{open}{inner}{close}")
         }
     }
@@ -355,79 +371,287 @@ fn script(s: &str, sup: bool) -> String {
 
 fn sup_char(ch: char) -> Option<char> {
     Some(match ch {
-        '0' => '⁰', '1' => '¹', '2' => '²', '3' => '³', '4' => '⁴',
-        '5' => '⁵', '6' => '⁶', '7' => '⁷', '8' => '⁸', '9' => '⁹',
-        '+' => '⁺', '-' | '−' => '⁻', '=' => '⁼', '(' => '⁽', ')' => '⁾',
-        'a' => 'ᵃ', 'b' => 'ᵇ', 'c' => 'ᶜ', 'd' => 'ᵈ', 'e' => 'ᵉ', 'f' => 'ᶠ',
-        'g' => 'ᵍ', 'h' => 'ʰ', 'i' => 'ⁱ', 'j' => 'ʲ', 'k' => 'ᵏ', 'l' => 'ˡ',
-        'm' => 'ᵐ', 'n' => 'ⁿ', 'o' => 'ᵒ', 'p' => 'ᵖ', 'r' => 'ʳ', 's' => 'ˢ',
-        't' => 'ᵗ', 'u' => 'ᵘ', 'v' => 'ᵛ', 'w' => 'ʷ', 'x' => 'ˣ', 'y' => 'ʸ', 'z' => 'ᶻ',
-        'A' => 'ᴬ', 'B' => 'ᴮ', 'D' => 'ᴰ', 'E' => 'ᴱ', 'G' => 'ᴳ', 'H' => 'ᴴ',
-        'I' => 'ᴵ', 'J' => 'ᴶ', 'K' => 'ᴷ', 'L' => 'ᴸ', 'M' => 'ᴹ', 'N' => 'ᴺ',
-        'O' => 'ᴼ', 'P' => 'ᴾ', 'R' => 'ᴿ', 'T' | '⊤' => 'ᵀ', 'U' => 'ᵁ', 'V' => 'ⱽ', 'W' => 'ᵂ',
-        'α' => 'ᵅ', 'β' => 'ᵝ', 'γ' => 'ᵞ', 'δ' => 'ᵟ', 'θ' => 'ᶿ', 'φ' => 'ᵠ', 'χ' => 'ᵡ',
-        '′' => '′', ' ' => ' ',
+        '0' => '⁰',
+        '1' => '¹',
+        '2' => '²',
+        '3' => '³',
+        '4' => '⁴',
+        '5' => '⁵',
+        '6' => '⁶',
+        '7' => '⁷',
+        '8' => '⁸',
+        '9' => '⁹',
+        '+' => '⁺',
+        '-' | '−' => '⁻',
+        '=' => '⁼',
+        '(' => '⁽',
+        ')' => '⁾',
+        'a' => 'ᵃ',
+        'b' => 'ᵇ',
+        'c' => 'ᶜ',
+        'd' => 'ᵈ',
+        'e' => 'ᵉ',
+        'f' => 'ᶠ',
+        'g' => 'ᵍ',
+        'h' => 'ʰ',
+        'i' => 'ⁱ',
+        'j' => 'ʲ',
+        'k' => 'ᵏ',
+        'l' => 'ˡ',
+        'm' => 'ᵐ',
+        'n' => 'ⁿ',
+        'o' => 'ᵒ',
+        'p' => 'ᵖ',
+        'r' => 'ʳ',
+        's' => 'ˢ',
+        't' => 'ᵗ',
+        'u' => 'ᵘ',
+        'v' => 'ᵛ',
+        'w' => 'ʷ',
+        'x' => 'ˣ',
+        'y' => 'ʸ',
+        'z' => 'ᶻ',
+        'A' => 'ᴬ',
+        'B' => 'ᴮ',
+        'D' => 'ᴰ',
+        'E' => 'ᴱ',
+        'G' => 'ᴳ',
+        'H' => 'ᴴ',
+        'I' => 'ᴵ',
+        'J' => 'ᴶ',
+        'K' => 'ᴷ',
+        'L' => 'ᴸ',
+        'M' => 'ᴹ',
+        'N' => 'ᴺ',
+        'O' => 'ᴼ',
+        'P' => 'ᴾ',
+        'R' => 'ᴿ',
+        'T' | '⊤' => 'ᵀ',
+        'U' => 'ᵁ',
+        'V' => 'ⱽ',
+        'W' => 'ᵂ',
+        'α' => 'ᵅ',
+        'β' => 'ᵝ',
+        'γ' => 'ᵞ',
+        'δ' => 'ᵟ',
+        'θ' => 'ᶿ',
+        'φ' => 'ᵠ',
+        'χ' => 'ᵡ',
+        '′' => '′',
+        ' ' => ' ',
         _ => return None,
     })
 }
 
 fn sub_char(ch: char) -> Option<char> {
     Some(match ch {
-        '0' => '₀', '1' => '₁', '2' => '₂', '3' => '₃', '4' => '₄',
-        '5' => '₅', '6' => '₆', '7' => '₇', '8' => '₈', '9' => '₉',
-        '+' => '₊', '-' | '−' => '₋', '=' => '₌', '(' => '₍', ')' => '₎',
-        'a' => 'ₐ', 'e' => 'ₑ', 'h' => 'ₕ', 'i' => 'ᵢ', 'j' => 'ⱼ', 'k' => 'ₖ',
-        'l' => 'ₗ', 'm' => 'ₘ', 'n' => 'ₙ', 'o' => 'ₒ', 'p' => 'ₚ', 'r' => 'ᵣ',
-        's' => 'ₛ', 't' => 'ₜ', 'u' => 'ᵤ', 'v' => 'ᵥ', 'x' => 'ₓ',
-        'β' => 'ᵦ', 'γ' => 'ᵧ', 'ρ' => 'ᵨ', 'φ' => 'ᵩ', 'χ' => 'ᵪ',
-        ',' => ',', ' ' => ' ',
+        '0' => '₀',
+        '1' => '₁',
+        '2' => '₂',
+        '3' => '₃',
+        '4' => '₄',
+        '5' => '₅',
+        '6' => '₆',
+        '7' => '₇',
+        '8' => '₈',
+        '9' => '₉',
+        '+' => '₊',
+        '-' | '−' => '₋',
+        '=' => '₌',
+        '(' => '₍',
+        ')' => '₎',
+        'a' => 'ₐ',
+        'e' => 'ₑ',
+        'h' => 'ₕ',
+        'i' => 'ᵢ',
+        'j' => 'ⱼ',
+        'k' => 'ₖ',
+        'l' => 'ₗ',
+        'm' => 'ₘ',
+        'n' => 'ₙ',
+        'o' => 'ₒ',
+        'p' => 'ₚ',
+        'r' => 'ᵣ',
+        's' => 'ₛ',
+        't' => 'ₜ',
+        'u' => 'ᵤ',
+        'v' => 'ᵥ',
+        'x' => 'ₓ',
+        'β' => 'ᵦ',
+        'γ' => 'ᵧ',
+        'ρ' => 'ᵨ',
+        'φ' => 'ᵩ',
+        'χ' => 'ᵪ',
+        ',' => ',',
+        ' ' => ' ',
         _ => return None,
     })
 }
 
 fn double_struck(ch: char) -> char {
     match ch {
-        'R' => 'ℝ', 'C' => 'ℂ', 'N' => 'ℕ', 'Z' => 'ℤ', 'Q' => 'ℚ', 'P' => 'ℙ', 'H' => 'ℍ',
-        'E' => '𝔼', 'F' => '𝔽', '1' => '𝟙',
+        'R' => 'ℝ',
+        'C' => 'ℂ',
+        'N' => 'ℕ',
+        'Z' => 'ℤ',
+        'Q' => 'ℚ',
+        'P' => 'ℙ',
+        'H' => 'ℍ',
+        'E' => '𝔼',
+        'F' => '𝔽',
+        '1' => '𝟙',
         other => other,
     }
 }
 
 fn symbol(name: &str) -> Option<&'static str> {
     Some(match name {
-        "alpha" => "α", "beta" => "β", "gamma" => "γ", "delta" => "δ", "epsilon" => "ϵ",
-        "varepsilon" => "ε", "zeta" => "ζ", "eta" => "η", "theta" => "θ", "vartheta" => "ϑ",
-        "iota" => "ι", "kappa" => "κ", "lambda" => "λ", "mu" => "μ", "nu" => "ν", "xi" => "ξ",
-        "pi" => "π", "varpi" => "ϖ", "rho" => "ρ", "varrho" => "ϱ", "sigma" => "σ",
-        "varsigma" => "ς", "tau" => "τ", "upsilon" => "υ", "phi" => "ϕ", "varphi" => "φ",
-        "chi" => "χ", "psi" => "ψ", "omega" => "ω",
-        "Gamma" => "Γ", "Delta" => "Δ", "Theta" => "Θ", "Lambda" => "Λ", "Xi" => "Ξ",
-        "Pi" => "Π", "Sigma" => "Σ", "Upsilon" => "Υ", "Phi" => "Φ", "Psi" => "Ψ", "Omega" => "Ω",
-        "times" => "×", "cdot" => "·", "div" => "÷", "pm" => "±", "mp" => "∓", "ast" => "∗",
-        "star" => "⋆", "circ" => "∘", "bullet" => "•", "otimes" => "⊗", "oplus" => "⊕",
-        "le" | "leq" | "leqslant" => "≤", "ge" | "geq" | "geqslant" => "≥",
-        "ne" | "neq" => "≠", "approx" => "≈", "equiv" => "≡", "sim" => "∼", "simeq" => "≃",
-        "cong" => "≅", "propto" => "∝", "ll" => "≪", "gg" => "≫", "lt" => "<", "gt" => ">",
-        "infty" => "∞", "partial" => "∂", "nabla" => "∇", "sum" => "∑", "prod" => "∏",
-        "int" => "∫", "iint" => "∬", "iiint" => "∭", "oint" => "∮",
-        "to" | "rightarrow" => "→", "leftarrow" | "gets" => "←", "leftrightarrow" => "↔",
-        "Rightarrow" => "⇒", "Leftarrow" => "⇐", "Leftrightarrow" => "⇔",
-        "implies" => "⟹", "iff" => "⟺", "mapsto" => "↦", "longrightarrow" => "⟶",
-        "uparrow" => "↑", "downarrow" => "↓",
-        "in" => "∈", "notin" => "∉", "ni" => "∋", "subset" => "⊂", "subseteq" => "⊆",
-        "supset" => "⊃", "supseteq" => "⊇", "cup" => "∪", "cap" => "∩", "setminus" => "∖",
-        "emptyset" | "varnothing" => "∅", "forall" => "∀", "exists" => "∃", "neg" | "lnot" => "¬",
-        "land" | "wedge" => "∧", "lor" | "vee" => "∨",
-        "perp" => "⊥", "parallel" => "∥", "angle" => "∠", "triangle" => "△", "top" => "⊤",
-        "prime" => "′", "dagger" => "†", "ell" => "ℓ", "hbar" => "ℏ", "Re" => "ℜ", "Im" => "ℑ",
-        "ldots" | "dots" | "dotsc" => "…", "cdots" | "dotsb" => "⋯", "vdots" => "⋮", "ddots" => "⋱",
-        "langle" => "⟨", "rangle" => "⟩", "lceil" => "⌈", "rceil" => "⌉", "lfloor" => "⌊",
-        "rfloor" => "⌋", "vert" | "mid" => "|", "Vert" | "lVert" | "rVert" => "‖",
-        "lvert" | "rvert" => "|", "lbrace" => "{", "rbrace" => "}", "degree" => "°",
-        "det" => "det", "dim" => "dim", "ker" => "ker", "rank" => "rank", "tr" => "tr",
-        "lim" => "lim", "log" => "log", "ln" => "ln", "exp" => "exp", "sin" => "sin",
-        "cos" => "cos", "tan" => "tan", "max" => "max", "min" => "min", "sup" => "sup",
-        "inf" => "inf", "arg" => "arg", "span" => "span",
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "delta" => "δ",
+        "epsilon" => "ϵ",
+        "varepsilon" => "ε",
+        "zeta" => "ζ",
+        "eta" => "η",
+        "theta" => "θ",
+        "vartheta" => "ϑ",
+        "iota" => "ι",
+        "kappa" => "κ",
+        "lambda" => "λ",
+        "mu" => "μ",
+        "nu" => "ν",
+        "xi" => "ξ",
+        "pi" => "π",
+        "varpi" => "ϖ",
+        "rho" => "ρ",
+        "varrho" => "ϱ",
+        "sigma" => "σ",
+        "varsigma" => "ς",
+        "tau" => "τ",
+        "upsilon" => "υ",
+        "phi" => "ϕ",
+        "varphi" => "φ",
+        "chi" => "χ",
+        "psi" => "ψ",
+        "omega" => "ω",
+        "Gamma" => "Γ",
+        "Delta" => "Δ",
+        "Theta" => "Θ",
+        "Lambda" => "Λ",
+        "Xi" => "Ξ",
+        "Pi" => "Π",
+        "Sigma" => "Σ",
+        "Upsilon" => "Υ",
+        "Phi" => "Φ",
+        "Psi" => "Ψ",
+        "Omega" => "Ω",
+        "times" => "×",
+        "cdot" => "·",
+        "div" => "÷",
+        "pm" => "±",
+        "mp" => "∓",
+        "ast" => "∗",
+        "star" => "⋆",
+        "circ" => "∘",
+        "bullet" => "•",
+        "otimes" => "⊗",
+        "oplus" => "⊕",
+        "le" | "leq" | "leqslant" => "≤",
+        "ge" | "geq" | "geqslant" => "≥",
+        "ne" | "neq" => "≠",
+        "approx" => "≈",
+        "equiv" => "≡",
+        "sim" => "∼",
+        "simeq" => "≃",
+        "cong" => "≅",
+        "propto" => "∝",
+        "ll" => "≪",
+        "gg" => "≫",
+        "lt" => "<",
+        "gt" => ">",
+        "infty" => "∞",
+        "partial" => "∂",
+        "nabla" => "∇",
+        "sum" => "∑",
+        "prod" => "∏",
+        "int" => "∫",
+        "iint" => "∬",
+        "iiint" => "∭",
+        "oint" => "∮",
+        "to" | "rightarrow" => "→",
+        "leftarrow" | "gets" => "←",
+        "leftrightarrow" => "↔",
+        "Rightarrow" => "⇒",
+        "Leftarrow" => "⇐",
+        "Leftrightarrow" => "⇔",
+        "implies" => "⟹",
+        "iff" => "⟺",
+        "mapsto" => "↦",
+        "longrightarrow" => "⟶",
+        "uparrow" => "↑",
+        "downarrow" => "↓",
+        "in" => "∈",
+        "notin" => "∉",
+        "ni" => "∋",
+        "subset" => "⊂",
+        "subseteq" => "⊆",
+        "supset" => "⊃",
+        "supseteq" => "⊇",
+        "cup" => "∪",
+        "cap" => "∩",
+        "setminus" => "∖",
+        "emptyset" | "varnothing" => "∅",
+        "forall" => "∀",
+        "exists" => "∃",
+        "neg" | "lnot" => "¬",
+        "land" | "wedge" => "∧",
+        "lor" | "vee" => "∨",
+        "perp" => "⊥",
+        "parallel" => "∥",
+        "angle" => "∠",
+        "triangle" => "△",
+        "top" => "⊤",
+        "prime" => "′",
+        "dagger" => "†",
+        "ell" => "ℓ",
+        "hbar" => "ℏ",
+        "Re" => "ℜ",
+        "Im" => "ℑ",
+        "ldots" | "dots" | "dotsc" => "…",
+        "cdots" | "dotsb" => "⋯",
+        "vdots" => "⋮",
+        "ddots" => "⋱",
+        "langle" => "⟨",
+        "rangle" => "⟩",
+        "lceil" => "⌈",
+        "rceil" => "⌉",
+        "lfloor" => "⌊",
+        "rfloor" => "⌋",
+        "vert" | "mid" => "|",
+        "Vert" | "lVert" | "rVert" => "‖",
+        "lvert" | "rvert" => "|",
+        "lbrace" => "{",
+        "rbrace" => "}",
+        "degree" => "°",
+        "det" => "det",
+        "dim" => "dim",
+        "ker" => "ker",
+        "rank" => "rank",
+        "tr" => "tr",
+        "lim" => "lim",
+        "log" => "log",
+        "ln" => "ln",
+        "exp" => "exp",
+        "sin" => "sin",
+        "cos" => "cos",
+        "tan" => "tan",
+        "max" => "max",
+        "min" => "min",
+        "sup" => "sup",
+        "inf" => "inf",
+        "arg" => "arg",
+        "span" => "span",
         _ => return None,
     })
 }
@@ -465,9 +689,15 @@ mod tests {
     #[test]
     fn runs_mark_unmappable_scripts() {
         use super::{tex_to_runs, MathRun};
-        let r = |t: &str, s: i8| MathRun { text: t.into(), shift: s };
+        let r = |t: &str, s: i8| MathRun {
+            text: t.into(),
+            shift: s,
+        };
         assert_eq!(tex_to_runs("e^{i\\pi}"), vec![r("e", 0), r("iπ", 1)]);
-        assert_eq!(tex_to_runs("x_{q}+1"), vec![r("x", 0), r("q", -1), r("+1", 0)]);
+        assert_eq!(
+            tex_to_runs("x_{q}+1"),
+            vec![r("x", 0), r("q", -1), r("+1", 0)]
+        );
         assert_eq!(tex_to_runs("A^{-1}"), vec![r("A⁻¹", 0)]);
     }
 

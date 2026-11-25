@@ -281,7 +281,9 @@ pub fn normalize_mindmap(payload: &mut Value) {
     let mut rename: HashMap<String, String> = HashMap::new();
     let mut dropped_parent: HashMap<String, Option<String>> = HashMap::new();
     for (i, mut n) in nodes.into_iter().enumerate() {
-        let Some(obj) = n.as_object_mut() else { continue };
+        let Some(obj) = n.as_object_mut() else {
+            continue;
+        };
         let label = obj
             .get("label")
             .and_then(Value::as_str)
@@ -294,7 +296,10 @@ pub fn normalize_mindmap(payload: &mut Value) {
             .filter(|s| !s.is_empty())
             .map(String::from)
             .unwrap_or_else(|| format!("n{i}"));
-        let parent = obj.get("parent_id").and_then(Value::as_str).map(String::from);
+        let parent = obj
+            .get("parent_id")
+            .and_then(Value::as_str)
+            .map(String::from);
         if label.trim().is_empty() {
             dropped_parent.insert(old_id, parent);
             continue;
@@ -344,14 +349,18 @@ pub fn normalize_mindmap(payload: &mut Value) {
     };
     let root_id = out
         .iter()
-        .find(|n| n.get("parent_id").map_or(true, Value::is_null))
+        .find(|n| n.get("parent_id").is_none_or(Value::is_null))
         .or_else(|| out.first())
         .and_then(|n| n.get("id").and_then(Value::as_str))
         .map(String::from)
         .unwrap_or_default();
     let mut parent_of: HashMap<String, Option<String>> = HashMap::new();
     for n in out.iter_mut() {
-        let id = n.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let id = n
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let raw = n.get("parent_id").and_then(Value::as_str).map(String::from);
         let mut pid = resolve(raw);
         if id == root_id {
@@ -362,12 +371,19 @@ pub fn normalize_mindmap(payload: &mut Value) {
         }
         parent_of.insert(id, pid.clone());
         if let Some(obj) = n.as_object_mut() {
-            obj.insert("parent_id".into(), pid.map(Value::String).unwrap_or(Value::Null));
+            obj.insert(
+                "parent_id".into(),
+                pid.map(Value::String).unwrap_or(Value::Null),
+            );
         }
     }
     // Break cycles: a node whose ancestor chain never reaches the root is re-attached to it.
     for n in out.iter_mut() {
-        let id = n.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let id = n
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if id == root_id {
             continue;
         }
@@ -548,7 +564,9 @@ mod tests {
             nodes.push(json!({"id":format!("n{i}"),"parent_id":format!("n{}", i-1),"label":"x","citations":[]}));
         }
         for i in 0..40 {
-            nodes.push(json!({"id":format!("c{i}"),"parent_id":"n0","label":"Child","citations":[]}));
+            nodes.push(
+                json!({"id":format!("c{i}"),"parent_id":"n0","label":"Child","citations":[]}),
+            );
         }
         let mut mm = json!({"title":"m","nodes":nodes});
         normalize_mindmap(&mut mm);

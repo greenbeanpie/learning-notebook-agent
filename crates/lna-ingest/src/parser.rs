@@ -370,10 +370,7 @@ fn is_garbled_pdf_text(text: &str) -> bool {
             continue;
         }
         total += 1;
-        if c == '\u{FFFD}'
-            || ('\u{E000}'..='\u{F8FF}').contains(&c)
-            || c.is_control()
-        {
+        if c == '\u{FFFD}' || ('\u{E000}'..='\u{F8FF}').contains(&c) || c.is_control() {
             bad += 1;
         }
     }
@@ -407,9 +404,12 @@ pub fn render_pdf_pages_to_jpeg(
 
     let bindings = bind_pdfium(&pdfium_search_dirs(), true)?;
     let pdfium = Pdfium::new(bindings);
-    let doc = pdfium
-        .load_pdf_from_file(path, None)
-        .map_err(|e| LnaError::new(ErrorCode::SourceUnsupported, format!("Failed to open PDF: {e}")))?;
+    let doc = pdfium.load_pdf_from_file(path, None).map_err(|e| {
+        LnaError::new(
+            ErrorCode::SourceUnsupported,
+            format!("Failed to open PDF: {e}"),
+        )
+    })?;
 
     let cfg = PdfRenderConfig::new()
         .set_target_width(max_width.max(400))
@@ -457,9 +457,12 @@ pub fn extract_pdf_page_images(
 
     let bindings = bind_pdfium(&pdfium_search_dirs(), true)?;
     let pdfium = Pdfium::new(bindings);
-    let doc = pdfium
-        .load_pdf_from_file(path, None)
-        .map_err(|e| LnaError::new(ErrorCode::SourceUnsupported, format!("Failed to open PDF: {e}")))?;
+    let doc = pdfium.load_pdf_from_file(path, None).map_err(|e| {
+        LnaError::new(
+            ErrorCode::SourceUnsupported,
+            format!("Failed to open PDF: {e}"),
+        )
+    })?;
     let total = doc.pages().len() as u32;
     if page_no == 0 || page_no > total {
         return Err(LnaError::invalid(format!(

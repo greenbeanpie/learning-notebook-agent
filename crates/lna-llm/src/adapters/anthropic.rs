@@ -132,7 +132,11 @@ impl ProtocolAdapter for AnthropicAdapter {
         let use_legacy =
             profile.capabilities.anthropic_thinking.as_deref() == Some("budget_tokens");
         if use_legacy {
-            let desired: u32 = if req.reasoning.show_summary { 4096 } else { 1024 };
+            let desired: u32 = if req.reasoning.show_summary {
+                4096
+            } else {
+                1024
+            };
             let budget = if capped_max_tokens > 1024 {
                 desired.min(capped_max_tokens.saturating_sub(1024).max(1024))
             } else {

@@ -68,7 +68,9 @@ fn format_classification_covers_every_requested_extension_and_plain_text_fallbac
     for e in ["md", "markdown"] {
         assert_eq!(formats::classify_extension(e), Some(SourceKind::Md));
     }
-    for e in ["txt", "py", "rs", "json", "yaml", "xml", "html", "tex", "log", "cs", "sql"] {
+    for e in [
+        "txt", "py", "rs", "json", "yaml", "xml", "html", "tex", "log", "cs", "sql",
+    ] {
         assert_eq!(formats::classify_extension(e), Some(SourceKind::Txt));
     }
     assert_eq!(formats::classify_extension("docx"), Some(SourceKind::Docx));
@@ -92,8 +94,8 @@ fn format_classification_covers_every_requested_extension_and_plain_text_fallbac
     }
 
     for e in [
-        "aac", "aif", "aifc", "aiff", "amr", "au", "m4a", "mp3", "ogg", "opus", "ra", "snd",
-        "wav", "wma",
+        "aac", "aif", "aifc", "aiff", "amr", "au", "m4a", "mp3", "ogg", "opus", "ra", "snd", "wav",
+        "wma",
     ] {
         assert_eq!(
             formats::classify_extension(e),
@@ -110,8 +112,12 @@ fn format_classification_covers_every_requested_extension_and_plain_text_fallbac
         );
     }
 
-    assert!(formats::is_probably_plain_text("hello, 这是一份纯文本\n第二行".as_bytes()));
-    assert!(!formats::is_probably_plain_text(&[0x00, 0x01, 0xFF, 0x00, 0x10]));
+    assert!(formats::is_probably_plain_text(
+        "hello, 这是一份纯文本\n第二行".as_bytes()
+    ));
+    assert!(!formats::is_probably_plain_text(&[
+        0x00, 0x01, 0xFF, 0x00, 0x10
+    ]));
 }
 
 #[test]
@@ -153,8 +159,16 @@ fn office_and_ebook_parsers_extract_text_tables_and_images() {
     );
     let docx_res = office::parse_docx(&docx_path).unwrap();
     assert_eq!(docx_res.doc.title.as_deref(), Some("实验报告"));
-    assert!(docx_res.doc.blocks.iter().any(|b| b.text.contains("DOCX 正文段落")));
-    assert!(docx_res.doc.blocks.iter().any(|b| matches!(b.kind, BlockKind::Table) && b.text.contains("98.5%")));
+    assert!(docx_res
+        .doc
+        .blocks
+        .iter()
+        .any(|b| b.text.contains("DOCX 正文段落")));
+    assert!(docx_res
+        .doc
+        .blocks
+        .iter()
+        .any(|b| matches!(b.kind, BlockKind::Table) && b.text.contains("98.5%")));
     assert_eq!(docx_res.embedded_images.len(), 1);
     let extracted_img =
         office::extract_zip_embedded_image(&docx_path, &docx_res.embedded_images[0].zip_entry)
@@ -202,7 +216,11 @@ fn office_and_ebook_parsers_extract_text_tables_and_images() {
     );
     let epub_res = office::parse_epub(&epub_path).unwrap();
     assert_eq!(epub_res.doc.title.as_deref(), Some("电子书测试"));
-    assert!(epub_res.doc.blocks.iter().any(|b| b.text.contains("EPUB 正文")));
+    assert!(epub_res
+        .doc
+        .blocks
+        .iter()
+        .any(|b| b.text.contains("EPUB 正文")));
     assert_eq!(epub_res.embedded_images.len(), 1);
 
     // 5. ODT
@@ -210,7 +228,11 @@ fn office_and_ebook_parsers_extract_text_tables_and_images() {
     let odt_content = r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"><office:body><office:text><text:h text:outline-level="1">ODT 标题</text:h><text:p>ODT 正文内容。</text:p></office:text></office:body></office:document-content>"#;
     build_zip_file(&odt_path, &[("content.xml", odt_content.as_bytes())]);
     let odt_res = office::parse_odt(&odt_path).unwrap();
-    assert!(odt_res.doc.blocks.iter().any(|b| b.text.contains("ODT 正文内容")));
+    assert!(odt_res
+        .doc
+        .blocks
+        .iter()
+        .any(|b| b.text.contains("ODT 正文内容")));
 
     // 6. RTF with GBK ansicpg936 hex + Unicode escape + ignored fonttbl
     let (gbk_bytes, _, _) = encoding_rs::GBK.encode("中文内容");
@@ -219,7 +241,12 @@ fn office_and_ebook_parsers_extract_text_tables_and_images() {
         "{{\\rtf1\\ansi\\ansicpg936\\uc1{{\\fonttbl{{\\f0 SimSun;}}}}{{\\*\\generator test}}Hello {gbk_hex}\\u27979?\\par Second line}}"
     );
     let rtf_doc = office::parse_rtf(rtf_payload.as_bytes()).unwrap();
-    let rtf_joined: String = rtf_doc.blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join("\n");
+    let rtf_joined: String = rtf_doc
+        .blocks
+        .iter()
+        .map(|b| b.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(rtf_joined.contains("Hello 中文内容测"), "got: {rtf_joined}");
     assert!(rtf_joined.contains("Second line"), "got: {rtf_joined}");
     assert!(!rtf_joined.contains("SimSun"));
@@ -227,9 +254,16 @@ fn office_and_ebook_parsers_extract_text_tables_and_images() {
     // 7. HWPX
     let hwpx_path = dir.join("hangul.hwpx");
     let hwpx_sec = r#"<?xml version="1.0" encoding="UTF-8"?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p><hp:run><hp:t>안녕하세요 HWPX 테스트입니다.</hp:t></hp:run></hp:p></hs:sec>"#;
-    build_zip_file(&hwpx_path, &[("Contents/section0.xml", hwpx_sec.as_bytes())]);
+    build_zip_file(
+        &hwpx_path,
+        &[("Contents/section0.xml", hwpx_sec.as_bytes())],
+    );
     let hwpx_res = office::parse_hwpx(&hwpx_path).unwrap();
-    assert!(hwpx_res.doc.blocks.iter().any(|b| b.text.contains("HWPX 테스트")));
+    assert!(hwpx_res
+        .doc
+        .blocks
+        .iter()
+        .any(|b| b.text.contains("HWPX 테스트")));
 
     // 8. HWP 5.0 OLE2 compound file (compressed deflate stream)
     let hwp_path = dir.join("legacy.hwp");
@@ -263,7 +297,10 @@ fn office_and_ebook_parsers_extract_text_tables_and_images() {
         comp.flush().unwrap();
     }
     let hwp_doc = office::parse_hwp(&hwp_path).unwrap();
-    assert!(hwp_doc.blocks.iter().any(|b| b.text.contains("한글 HWP 본문")));
+    assert!(hwp_doc
+        .blocks
+        .iter()
+        .any(|b| b.text.contains("한글 HWP 본문")));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -331,16 +368,24 @@ async fn audio_video_toggle_and_multimodal_modality_routing_work_end_to_end() {
     let nb = lna_storage::create_notebook(&db, "MediaTest", None).unwrap();
 
     // 1. Disable audio/video -> add_file must reject .mp4 and .mp3 immediately
-    lna_storage::set_setting_json(&db, MEDIA_SETTINGS_KEY, &json!({ "audio_video_enabled": false }))
-        .unwrap();
+    lna_storage::set_setting_json(
+        &db,
+        MEDIA_SETTINGS_KEY,
+        &json!({ "audio_video_enabled": false }),
+    )
+    .unwrap();
     let mp4_path = dir.join("lecture.mp4");
     std::fs::write(&mp4_path, b"fake video stream bytes").unwrap();
     let err = ingest.add_file(&nb.id, &mp4_path).unwrap_err();
     assert_eq!(err.code, ErrorCode::SourceUnsupported);
 
     // 2. Re-enable audio/video and configure a secondary Gemini profile ONLY for video (chat stays inactive/different)
-    lna_storage::set_setting_json(&db, MEDIA_SETTINGS_KEY, &json!({ "audio_video_enabled": true }))
-        .unwrap();
+    lna_storage::set_setting_json(
+        &db,
+        MEDIA_SETTINGS_KEY,
+        &json!({ "audio_video_enabled": true }),
+    )
+    .unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -546,16 +591,20 @@ async fn scanned_pdf_triggers_vision_ocr_with_page_numbers() {
     )
     .unwrap();
 
-    let scanned = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/pdf/scanned.pdf");
+    let scanned =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/pdf/scanned.pdf");
     let (src, _) = ingest.add_file(&nb.id, &scanned).unwrap();
     ingest.process_ingest_job(&src.id).await.unwrap();
     srv.await.unwrap();
 
     let chunks = ingest.source_preview(&src.id, None).unwrap();
     assert!(!chunks.is_empty());
-    assert!(chunks.iter().any(|c| c.content.contains("第一页扫描图像识别出的数学定理") && c.page_start == Some(1)));
-    assert!(chunks.iter().any(|c| c.content.contains("第二页证明步骤") && c.page_end == Some(3)));
+    assert!(chunks
+        .iter()
+        .any(|c| c.content.contains("第一页扫描图像识别出的数学定理") && c.page_start == Some(1)));
+    assert!(chunks
+        .iter()
+        .any(|c| c.content.contains("第二页证明步骤") && c.page_end == Some(3)));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -641,7 +690,10 @@ fn explicit_per_modality_profile_assignment_overrides_active_chat() {
 
     // Without explicit assignment, active chat wins for vision
     assert_eq!(
-        lna_storage::resolve_modality_profile(&db, "vision").unwrap().unwrap().id,
+        lna_storage::resolve_modality_profile(&db, "vision")
+            .unwrap()
+            .unwrap()
+            .id,
         "prof_active"
     );
 
@@ -659,15 +711,24 @@ fn explicit_per_modality_profile_assignment_overrides_active_chat() {
     .unwrap();
 
     assert_eq!(
-        lna_storage::resolve_modality_profile(&db, "vision").unwrap().unwrap().id,
+        lna_storage::resolve_modality_profile(&db, "vision")
+            .unwrap()
+            .unwrap()
+            .id,
         "prof_vision_only"
     );
     assert_eq!(
-        lna_storage::resolve_modality_profile(&db, "audio").unwrap().unwrap().id,
+        lna_storage::resolve_modality_profile(&db, "audio")
+            .unwrap()
+            .unwrap()
+            .id,
         "prof_av"
     );
     assert_eq!(
-        lna_storage::resolve_modality_profile(&db, "video").unwrap().unwrap().id,
+        lna_storage::resolve_modality_profile(&db, "video")
+            .unwrap()
+            .unwrap()
+            .id,
         "prof_av"
     );
 

@@ -29,18 +29,17 @@ pub fn classify_extension(ext: &str) -> Option<SourceKind> {
         s if IMAGE_EXTENSIONS.contains(&s) => Some(SourceKind::Image),
         s if AUDIO_EXTENSIONS.contains(&s) => Some(SourceKind::Audio),
         s if VIDEO_EXTENSIONS.contains(&s) => Some(SourceKind::Video),
-        "txt" | "text" | "rst" | "org" | "log" | "json" | "jsonl" | "ndjson" | "yaml"
-        | "yml" | "toml" | "xml" | "html" | "htm" | "xhtml" | "svg" | "tex" | "latex"
-        | "ini" | "cfg" | "conf" | "tsv" | "sql" | "py" | "pyi" | "js" | "mjs" | "cjs"
-        | "ts" | "tsx" | "jsx" | "rs" | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "cs"
-        | "fs" | "vb" | "java" | "kt" | "kts" | "go" | "rb" | "php" | "sh" | "bash"
-        | "zsh" | "fish" | "ps1" | "psm1" | "bat" | "cmd" | "css" | "scss" | "sass"
-        | "less" | "vue" | "svelte" | "astro" | "r" | "rmd" | "swift" | "scala" | "dart"
-        | "lua" | "pl" | "pm" | "ex" | "exs" | "erl" | "hs" | "ml" | "mli" | "zig"
-        | "nim" | "v" | "sv" | "vhd" | "env" | "properties" | "srt" | "vtt" | "lrc"
-        | "ass" | "ssa" | "sub" | "bib" | "ris" | "graphql" | "gql" | "proto" | "gradle"
-        | "cmake" | "makefile" | "dockerfile" | "gitignore" | "editorconfig" | "diff"
-        | "patch" | "nfo" | "asc" | "asm" | "s" | "xaml" | "csproj" | "sln" => {
+        "txt" | "text" | "rst" | "org" | "log" | "json" | "jsonl" | "ndjson" | "yaml" | "yml"
+        | "toml" | "xml" | "html" | "htm" | "xhtml" | "svg" | "tex" | "latex" | "ini" | "cfg"
+        | "conf" | "tsv" | "sql" | "py" | "pyi" | "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx"
+        | "rs" | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "cs" | "fs" | "vb" | "java" | "kt"
+        | "kts" | "go" | "rb" | "php" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "psm1" | "bat"
+        | "cmd" | "css" | "scss" | "sass" | "less" | "vue" | "svelte" | "astro" | "r" | "rmd"
+        | "swift" | "scala" | "dart" | "lua" | "pl" | "pm" | "ex" | "exs" | "erl" | "hs" | "ml"
+        | "mli" | "zig" | "nim" | "v" | "sv" | "vhd" | "env" | "properties" | "srt" | "vtt"
+        | "lrc" | "ass" | "ssa" | "sub" | "bib" | "ris" | "graphql" | "gql" | "proto"
+        | "gradle" | "cmake" | "makefile" | "dockerfile" | "gitignore" | "editorconfig"
+        | "diff" | "patch" | "nfo" | "asc" | "asm" | "s" | "xaml" | "csproj" | "sln" => {
             Some(SourceKind::Txt)
         }
         _ => None,

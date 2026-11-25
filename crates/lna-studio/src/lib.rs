@@ -152,8 +152,10 @@ impl StudioService {
                 )
                 .map_err(map_sql_err)
             })?;
-            let catalog_tokens = ((index_chars / 3).max(1_600)).min(5_500);
-            (catalog_tokens + on_demand_cap * 6 / 10).min(on_demand_cap).min(raw_source_tokens)
+            let catalog_tokens = (index_chars / 3).clamp(1_600, 5_500);
+            (catalog_tokens + on_demand_cap * 6 / 10)
+                .min(on_demand_cap)
+                .min(raw_source_tokens)
         };
         let active_profile = lna_storage::get_active_profile(&self.db)?;
         let est_input =
@@ -588,7 +590,9 @@ impl StudioService {
                     )
                     .map_err(map_sql_err)?;
                 let rows = stmt
-                    .query_map([mid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))
+                    .query_map([mid], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                    })
                     .map_err(map_sql_err)?;
                 let mut ids = Vec::new();
                 for r in rows {
@@ -669,8 +673,9 @@ impl StudioService {
         if instr.is_empty() {
             return Err(LnaError::invalid("Revision instruction cannot be empty"));
         }
-        let profile = lna_storage::get_active_profile(&self.db)?
-            .ok_or_else(|| LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured"))?;
+        let profile = lna_storage::get_active_profile(&self.db)?.ok_or_else(|| {
+            LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured")
+        })?;
         let api_key = match profile.keychain_ref.as_deref() {
             Some(kref) => self.secrets.get(kref)?,
             None => None,
@@ -720,7 +725,10 @@ impl StudioService {
                 profile: &resolved,
                 atts: &files,
             };
-            let task = format!("按以下修改指令调整「{}」的提纲：{instr}", art.artifact_type.as_str());
+            let task = format!(
+                "按以下修改指令调整「{}」的提纲：{instr}",
+                art.artifact_type.as_str()
+            );
             let b = context_files::brief(&ctx, &task, 4, CancellationToken::new()).await?;
             format!("\n\nRelevant content from the user's attached files:\n{b}")
         };
@@ -794,8 +802,8 @@ User Revision Instruction:
         );
 
         let revised_md = revised_raw.trim().to_string();
-        let draft_md_json =
-            serde_json::to_string(&Value::String(revised_md)).unwrap_or_else(|_| String::from("\"\""));
+        let draft_md_json = serde_json::to_string(&Value::String(revised_md))
+            .unwrap_or_else(|_| String::from("\"\""));
         self.db.write(|conn| {
             conn.execute(
                 "UPDATE studio_artifacts SET draft_json=?1, updated_at=?2 WHERE id=?3 AND status='DRAFT_REVIEW'",
@@ -846,7 +854,10 @@ User Revision Instruction:
         }
     }
 
-    pub fn list_notebook_knowledge_graphs(&self, notebook_id: &str) -> LnaResult<Vec<StudioArtifact>> {
+    pub fn list_notebook_knowledge_graphs(
+        &self,
+        notebook_id: &str,
+    ) -> LnaResult<Vec<StudioArtifact>> {
         let ids: Vec<String> = self.db.read(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -857,7 +868,9 @@ User Revision Instruction:
                      ORDER BY created_at DESC",
                 )
                 .map_err(map_sql_err)?;
-            let rows = stmt.query_map([notebook_id], |r| r.get::<_, String>(0)).map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map([notebook_id], |r| r.get::<_, String>(0))
+                .map_err(map_sql_err)?;
             let mut out = Vec::new();
             for r in rows {
                 out.push(r.map_err(map_sql_err)?);
@@ -873,7 +886,11 @@ User Revision Instruction:
         Ok(out)
     }
 
-    pub fn compute_kg_progress_summary(&self, notebook_id: &str, source_id: Option<&str>) -> LnaResult<Value> {
+    pub fn compute_kg_progress_summary(
+        &self,
+        notebook_id: &str,
+        source_id: Option<&str>,
+    ) -> LnaResult<Value> {
         let graphs = if let Some(sid) = source_id.filter(|s| !s.trim().is_empty()) {
             self.get_source_knowledge_graph(sid)?.into_iter().collect()
         } else {
@@ -910,15 +927,22 @@ User Revision Instruction:
         let mut mastered_concepts: Vec<String> = Vec::new();
 
         for g in &ready_graphs {
-            let Some(payload) = g.payload.as_ref() else { continue };
-            let Some(nodes) = payload.get("nodes").and_then(Value::as_array) else { continue };
+            let Some(payload) = g.payload.as_ref() else {
+                continue;
+            };
+            let Some(nodes) = payload.get("nodes").and_then(Value::as_array) else {
+                continue;
+            };
             let mastery_map = g
                 .progress_state
                 .as_ref()
                 .and_then(|ps| ps.get("mastery"))
                 .and_then(Value::as_object);
             let concept_nodes: Vec<&Value> = if nodes.len() > 1 {
-                nodes.iter().filter(|n| !n.get("parent_id").map(Value::is_null).unwrap_or(true)).collect()
+                nodes
+                    .iter()
+                    .filter(|n| !n.get("parent_id").map(Value::is_null).unwrap_or(true))
+                    .collect()
             } else {
                 nodes.iter().collect()
             };
@@ -958,7 +982,7 @@ User Revision Instruction:
             }
         }
 
-        let mastery_percent = if total == 0 { 0 } else { (mastered * 100) / total };
+        let mastery_percent = (mastered * 100).checked_div(total).unwrap_or(0);
         let assessed = mastered + learning + weak;
         let recommended_difficulty = if total == 0 || assessed == 0 {
             "mixed"
@@ -1015,16 +1039,24 @@ User Revision Instruction:
             return Ok(json!({ "updated_graphs": 0, "updated_nodes": 0, "details": [] }));
         }
         // Prioritize knowledge graphs whose source overlaps with quiz sources
-        let quiz_sids: std::collections::HashSet<&str> = quiz.source_ids.iter().map(String::as_str).collect();
+        let quiz_sids: std::collections::HashSet<&str> =
+            quiz.source_ids.iter().map(String::as_str).collect();
         graphs.sort_by_key(|g| {
             let overlaps = g.source_ids.iter().any(|s| quiz_sids.contains(s.as_str()));
-            if overlaps { 0 } else { 1 }
+            if overlaps {
+                0
+            } else {
+                1
+            }
         });
 
         let mut result_by_qid: HashMap<String, (bool, f64)> = HashMap::new();
         for item in &result_items {
             if let Some(qid) = item.get("question_id").and_then(Value::as_str) {
-                let is_correct = item.get("is_correct").and_then(Value::as_bool).unwrap_or(false);
+                let is_correct = item
+                    .get("is_correct")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let score = item
                     .get("score")
                     .and_then(Value::as_f64)
@@ -1044,8 +1076,12 @@ User Revision Instruction:
         let mut details: Vec<Value> = Vec::new();
 
         for g in &graphs {
-            let Some(payload) = g.payload.as_ref() else { continue };
-            let Some(nodes) = payload.get("nodes").and_then(Value::as_array) else { continue };
+            let Some(payload) = g.payload.as_ref() else {
+                continue;
+            };
+            let Some(nodes) = payload.get("nodes").and_then(Value::as_array) else {
+                continue;
+            };
             let mut progress_obj = g
                 .progress_state
                 .as_ref()
@@ -1061,7 +1097,9 @@ User Revision Instruction:
 
             for q in &questions {
                 let qid = q.get("id").and_then(Value::as_str).unwrap_or("");
-                let Some(&(is_correct, q_score)) = result_by_qid.get(qid) else { continue };
+                let Some(&(is_correct, q_score)) = result_by_qid.get(qid) else {
+                    continue;
+                };
                 let q_text = format!(
                     "{} {} {}",
                     quiz.title,
@@ -1071,7 +1109,8 @@ User Revision Instruction:
 
                 let mut scored_nodes: Vec<(f64, &str, &str)> = Vec::new();
                 for n in nodes {
-                    let is_root = n.get("parent_id").map(Value::is_null).unwrap_or(false) && nodes.len() > 1;
+                    let is_root =
+                        n.get("parent_id").map(Value::is_null).unwrap_or(false) && nodes.len() > 1;
                     if is_root {
                         continue;
                     }
@@ -1096,7 +1135,8 @@ User Revision Instruction:
                         scored_nodes.push((s, nid, label));
                     }
                 }
-                scored_nodes.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                scored_nodes
+                    .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 scored_nodes.truncate(2);
 
                 for (_, nid, label) in scored_nodes {
@@ -1110,9 +1150,17 @@ User Revision Instruction:
                     let attempts = prev_attempts + 1;
                     let correct = prev_correct + if is_correct { 1 } else { 0 };
                     let acc = correct as f64 / attempts as f64;
-                    let new_score = if prev_attempts == 0 { q_score } else { (acc + q_score) / 2.0 };
+                    let new_score = if prev_attempts == 0 {
+                        q_score
+                    } else {
+                        (acc + q_score) / 2.0
+                    };
                     let status = if is_correct {
-                        if new_score >= 0.75 { "mastered" } else { "learning" }
+                        if new_score >= 0.75 {
+                            "mastered"
+                        } else {
+                            "learning"
+                        }
                     } else if new_score < 0.5 {
                         "weak"
                     } else {
@@ -1155,7 +1203,8 @@ User Revision Instruction:
         let profile = match lna_storage::get_active_profile(&self.db)? {
             Some(p) => p,
             None => {
-                let err = LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured");
+                let err =
+                    LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured");
                 let log = format_error_log(
                     &art,
                     None,
@@ -1192,8 +1241,8 @@ User Revision Instruction:
             anthropic_version: "2023-06-01".to_string(),
         };
 
-        let is_local_test = resolved.base_url.contains("127.0.0.1")
-            || resolved.base_url.contains("localhost");
+        let is_local_test =
+            resolved.base_url.contains("127.0.0.1") || resolved.base_url.contains("localhost");
         let mut records: Vec<AttemptFailureRecord> = Vec::new();
         let total_attempts = MAX_STUDIO_RETRIES + 1;
 
@@ -1383,7 +1432,13 @@ User Revision Instruction:
                 artifact_id,
                 &art.notebook_id,
                 "stage",
-                if is_lecture { "确定讲解范围与大纲" } else if is_report { "规划报告提纲" } else { "规划演示文稿提纲" },
+                if is_lecture {
+                    "确定讲解范围与大纲"
+                } else if is_report {
+                    "规划报告提纲"
+                } else {
+                    "规划演示文稿提纲"
+                },
                 if is_lecture {
                     "正在根据你给出的题目或范围，在来源中定位对应章节，并规划学习目标与讲解小节…"
                 } else if is_report {
@@ -1412,7 +1467,9 @@ User Revision Instruction:
                     role: Role::User,
                     parts: vec![Part::Text(format!(
                         "Artifact type: {}\nConfig: {}\nSources:\n{}",
-                        art.artifact_type.as_str(), art.config, evidence_txt
+                        art.artifact_type.as_str(),
+                        art.config,
+                        evidence_txt
                     ))],
                 }],
                 tools: vec![],
@@ -1443,7 +1500,14 @@ User Revision Instruction:
                 .map_err(map_sql_err)?;
                 Ok(())
             })?;
-            self.emit_status_event(artifact_id, "DRAFT_REVIEW", "DRAFT_REVIEW", 0.45, None, None);
+            self.emit_status_event(
+                artifact_id,
+                "DRAFT_REVIEW",
+                "DRAFT_REVIEW",
+                0.45,
+                None,
+                None,
+            );
             return Ok(());
         }
 
@@ -1585,7 +1649,11 @@ User Revision Instruction:
                 }
                 ArtifactType::Lecture => {
                     lecture::render_figure_assets(&payload, &out_dir)?;
-                    render::render_pptx_in(&payload, &out_dir.join("lecture.pptx"), Some(&out_dir))?;
+                    render::render_pptx_in(
+                        &payload,
+                        &out_dir.join("lecture.pptx"),
+                        Some(&out_dir),
+                    )?;
                 }
                 ArtifactType::Infographic => {
                     render::render_infographic_svg(&payload, &out_dir.join("infographic.svg"))?;
@@ -1738,7 +1806,10 @@ User Revision Instruction:
                         .take(20)
                         .map(String::as_str)
                         .collect();
-                    format!("\n\n已生成题干（严禁重复相同考点或题干）：\n- {}", recent.join("\n- "))
+                    format!(
+                        "\n\n已生成题干（严禁重复相同考点或题干）：\n- {}",
+                        recent.join("\n- ")
+                    )
                 };
                 let mut batch_cfg = art.config.clone();
                 if let Some(obj) = batch_cfg.as_object_mut() {
@@ -1786,7 +1857,11 @@ User Revision Instruction:
                 usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u.output_tokens);
                 usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u.cached_tokens);
                 if bi == 0 {
-                    if let Some(t) = part.get("title").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                    if let Some(t) = part
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.trim().is_empty())
+                    {
                         title = t.to_string();
                     }
                 }
@@ -1801,7 +1876,10 @@ User Revision Instruction:
                         if !prompt.is_empty() && !seen_prompts.contains(&prompt) {
                             seen_prompts.push(prompt);
                             if let Some(obj) = q.as_object_mut() {
-                                obj.insert("id".into(), json!(format!("q{}", all_questions.len() + 1)));
+                                obj.insert(
+                                    "id".into(),
+                                    json!(format!("q{}", all_questions.len() + 1)),
+                                );
                             }
                             all_questions.push(q);
                         }
@@ -1852,7 +1930,10 @@ User Revision Instruction:
                         .take(24)
                         .map(String::as_str)
                         .collect();
-                    format!("\n\n已生成卡片正面（请勿重复）：\n- {}", recent.join("\n- "))
+                    format!(
+                        "\n\n已生成卡片正面（请勿重复）：\n- {}",
+                        recent.join("\n- ")
+                    )
                 };
                 let mut batch_cfg = art.config.clone();
                 if let Some(obj) = batch_cfg.as_object_mut() {
@@ -1900,7 +1981,11 @@ User Revision Instruction:
                 usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u.output_tokens);
                 usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u.cached_tokens);
                 if bi == 0 {
-                    if let Some(t) = part.get("title").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                    if let Some(t) = part
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.trim().is_empty())
+                    {
                         title = t.to_string();
                     }
                 }
@@ -1938,7 +2023,12 @@ User Revision Instruction:
                 .and_then(Value::as_u64)
                 .map(|p| p.clamp(4, 30))
                 .unwrap_or_else(|| {
-                    match art.config.get("length").and_then(Value::as_str).unwrap_or("standard") {
+                    match art
+                        .config
+                        .get("length")
+                        .and_then(Value::as_str)
+                        .unwrap_or("standard")
+                    {
                         "concise" => 6,
                         "detailed" => 14,
                         _ => 10,
@@ -1988,9 +2078,12 @@ User Revision Instruction:
                     .await
                 {
                     Ok((txt, u)) => {
-                        usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u.input_tokens);
-                        usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u.output_tokens);
-                        usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u.cached_tokens);
+                        usage_sum.input_tokens =
+                            usage_sum.input_tokens.saturating_add(u.input_tokens);
+                        usage_sum.output_tokens =
+                            usage_sum.output_tokens.saturating_add(u.output_tokens);
+                        usage_sum.cached_tokens =
+                            usage_sum.cached_tokens.saturating_add(u.cached_tokens);
                         txt
                     }
                     Err(_) => String::new(),
@@ -2101,17 +2194,36 @@ Design rules:\n\
                 {
                     deck = polished;
                     usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u3.input_tokens);
-                    usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u3.output_tokens);
-                    usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u3.cached_tokens);
+                    usage_sum.output_tokens =
+                        usage_sum.output_tokens.saturating_add(u3.output_tokens);
+                    usage_sum.cached_tokens =
+                        usage_sum.cached_tokens.saturating_add(u3.cached_tokens);
                 }
             }
 
             // Stage 4: figures (each in its own clean-context call) and step builds
             if let Some(slides) = deck.get_mut("slides").and_then(Value::as_array_mut) {
-                if slides.iter().any(|s| s.get("figure_request").is_some_and(|r| r.is_object())) {
-                    self.append_thought(artifact_id, &art.notebook_id, "stage", "绘制配图", "正在为需要配图的页面单独绘制函数图 / 示意图，并检查渲染结果…");
+                if slides
+                    .iter()
+                    .any(|s| s.get("figure_request").is_some_and(|r| r.is_object()))
+                {
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        "绘制配图",
+                        "正在为需要配图的页面单独绘制函数图 / 示意图，并检查渲染结果…",
+                    );
                     let u4 = self
-                        .fulfil_figure_requests(art, profile, resolved, artifact_id, slides, evidence_txt, cancel.clone())
+                        .fulfil_figure_requests(
+                            art,
+                            profile,
+                            resolved,
+                            artifact_id,
+                            slides,
+                            evidence_txt,
+                            cancel.clone(),
+                        )
                         .await?;
                     add_usage(&mut usage_sum, &u4);
                 }
@@ -2120,7 +2232,13 @@ Design rules:\n\
                 }
                 let log = lecture::sanitize_deck_builds(slides);
                 if !log.is_empty() {
-                    self.append_thought(artifact_id, &art.notebook_id, "stage", "分步动画校验", &log.join("\n"));
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        "分步动画校验",
+                        &log.join("\n"),
+                    );
                 }
                 for s in slides.iter_mut() {
                     if let Some(o) = s.as_object_mut() {
@@ -2178,32 +2296,55 @@ Design rules:\n\
                     .map(str::trim)
                     .filter(|s| !s.is_empty() && *s != "auto");
                 if let Ok(kg_summary) = self.compute_kg_progress_summary(&art.notebook_id, None) {
-                    if kg_summary.get("has_knowledge_graph").and_then(Value::as_bool) == Some(true) {
+                    if kg_summary
+                        .get("has_knowledge_graph")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    {
                         let rec_diff = kg_summary
                             .get("recommended_difficulty")
                             .and_then(Value::as_str)
                             .unwrap_or("mixed");
                         let target_diff = explicit_diff.unwrap_or(rec_diff);
-                        let mastery_pct = kg_summary.get("mastery_percent").and_then(Value::as_u64).unwrap_or(0);
+                        let mastery_pct = kg_summary
+                            .get("mastery_percent")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
                         let weak: Vec<String> = kg_summary
                             .get("weak_concepts")
                             .and_then(Value::as_array)
-                            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(Value::as_str)
+                                    .map(String::from)
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         let unstarted: Vec<String> = kg_summary
                             .get("unstarted_concepts")
                             .and_then(Value::as_array)
-                            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(Value::as_str)
+                                    .map(String::from)
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         quiz_hint.push_str(&format!(
                             " Target difficulty: {} (current Knowledge Graph mastery: {}%).",
                             target_diff, mastery_pct
                         ));
                         if !weak.is_empty() {
-                            quiz_hint.push_str(&format!(" Prioritize reinforcing weak concepts: {}.", weak.join(", ")));
+                            quiz_hint.push_str(&format!(
+                                " Prioritize reinforcing weak concepts: {}.",
+                                weak.join(", ")
+                            ));
                         }
                         if !unstarted.is_empty() {
-                            quiz_hint.push_str(&format!(" Also assess unstarted concepts: {}.", unstarted.join(", ")));
+                            quiz_hint.push_str(&format!(
+                                " Also assess unstarted concepts: {}.",
+                                unstarted.join(", ")
+                            ));
                         }
                     } else if let Some(d) = explicit_diff {
                         quiz_hint.push_str(&format!(" Target difficulty: {}.", d));
@@ -2212,9 +2353,19 @@ Design rules:\n\
                 quiz_hint
             }
             ArtifactType::Audio => {
-                match art.config.get("length").and_then(Value::as_str).unwrap_or("standard") {
-                    "short" | "concise" => " Audio duration: SHORT concise overview (~2-3 minutes of dialogue).".into(),
-                    "long" | "detailed" => " Audio duration: DETAILED in-depth discussion (~6-10 minutes of dialogue).".into(),
+                match art
+                    .config
+                    .get("length")
+                    .and_then(Value::as_str)
+                    .unwrap_or("standard")
+                {
+                    "short" | "concise" => {
+                        " Audio duration: SHORT concise overview (~2-3 minutes of dialogue).".into()
+                    }
+                    "long" | "detailed" => {
+                        " Audio duration: DETAILED in-depth discussion (~6-10 minutes of dialogue)."
+                            .into()
+                    }
                     _ => String::new(),
                 }
             }
@@ -2274,7 +2425,14 @@ Design rules:\n\
             .map_err(map_sql_err)?;
             Ok(())
         })?;
-        self.emit_status_event(id, "FAILED", "FAILED", 0.0, Some(err.code.as_str()), Some(&err.message));
+        self.emit_status_event(
+            id,
+            "FAILED",
+            "FAILED",
+            0.0,
+            Some(err.code.as_str()),
+            Some(&err.message),
+        );
         Ok(())
     }
 
@@ -2290,7 +2448,14 @@ Design rules:\n\
             .map_err(map_sql_err)?;
             Ok(())
         })?;
-        self.emit_status_event(id, "FAILED", "FAILED", 0.0, Some(err.code.as_str()), Some(&err.message));
+        self.emit_status_event(
+            id,
+            "FAILED",
+            "FAILED",
+            0.0,
+            Some(err.code.as_str()),
+            Some(&err.message),
+        );
         Ok(())
     }
 
@@ -2366,7 +2531,11 @@ Design rules:\n\
         artifact_id: &str,
         cancel: CancellationToken,
     ) -> LnaResult<Option<String>> {
-        let atts = art.config.get("files").map(|v| attachments::resolve(&self.db.paths().root, v)).unwrap_or_default();
+        let atts = art
+            .config
+            .get("files")
+            .map(|v| attachments::resolve(&self.db.paths().root, v))
+            .unwrap_or_default();
         let atts = context_files::context_items(&atts);
         if atts.is_empty() {
             return Ok(None);
@@ -2405,7 +2574,11 @@ Design rules:\n\
             atts: &atts,
         };
         let text = context_files::brief(&ctx, &task, 6, cancel).await?;
-        self.save_checkpoint(artifact_id, "file_brief", json!({ "ids": ids, "text": text }))?;
+        self.save_checkpoint(
+            artifact_id,
+            "file_brief",
+            json!({ "ids": ids, "text": text }),
+        )?;
         Ok(Some(text).filter(|t| !t.trim().is_empty()))
     }
 
@@ -2416,7 +2589,11 @@ Design rules:\n\
         artifact_id: &str,
         cancel: CancellationToken,
     ) -> LnaResult<Option<String>> {
-        let atts = art.config.get("images").map(|v| attachments::resolve(&self.db.paths().root, v)).unwrap_or_default();
+        let atts = art
+            .config
+            .get("images")
+            .map(|v| attachments::resolve(&self.db.paths().root, v))
+            .unwrap_or_default();
         if atts.is_empty() {
             return Ok(None);
         }
@@ -2443,9 +2620,26 @@ Design rules:\n\
             "工具调用 · 识别附带图片",
             &format!("正在读取 {} 张图片", atts.len()),
         );
-        let topic = art.config.get("topic").and_then(Value::as_str).unwrap_or("");
-        let text = attachments::describe(&self.db, &self.secrets, &self.llm, &art.notebook_id, resolved, &atts, topic).await;
-        self.save_checkpoint(artifact_id, "image_brief", json!({ "ids": ids, "text": text }))?;
+        let topic = art
+            .config
+            .get("topic")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let text = attachments::describe(
+            &self.db,
+            &self.secrets,
+            &self.llm,
+            &art.notebook_id,
+            resolved,
+            &atts,
+            topic,
+        )
+        .await;
+        self.save_checkpoint(
+            artifact_id,
+            "image_brief",
+            json!({ "ids": ids, "text": text }),
+        )?;
         Ok(Some(text))
     }
 
@@ -2511,8 +2705,10 @@ Design rules:\n\
                 if !fresh.is_empty() {
                     if let Some(old) = art.config.get(key) {
                         let old = attachments::resolve(&self.db.paths().root, old);
-                        let stale: Vec<Attachment> =
-                            old.into_iter().filter(|o| !fresh.iter().any(|n| n.id == o.id)).collect();
+                        let stale: Vec<Attachment> = old
+                            .into_iter()
+                            .filter(|o| !fresh.iter().any(|n| n.id == o.id))
+                            .collect();
                         attachments::delete_files(&stale);
                     }
                     obj.insert(key.into(), attachments::ids_of(&fresh));
@@ -2653,7 +2849,11 @@ Design rules:\n\
             ),
             "pptx" => {
                 // figure assets live next to the artifact; (re)write them so the deck embeds them
-                let asset_dir = art.output_dir.as_deref().map(std::path::PathBuf::from).unwrap_or_else(|| self.db.paths().artifacts_dir.join(artifact_id));
+                let asset_dir = art
+                    .output_dir
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| self.db.paths().artifacts_dir.join(artifact_id));
                 if let Err(e) = lecture::render_figure_assets(&payload, &asset_dir) {
                     tracing::warn!("figure assets for export: {}", e.message);
                 }
@@ -2981,7 +3181,14 @@ Design rules:\n\
                     .filter(|s| !s.is_empty())
                     .map(|s| format!(", {s}"))
                     .unwrap_or_default();
-                format!("[{}] ({}{}{}) {}", idx + 1, title, page_label, section_label, content)
+                format!(
+                    "[{}] ({}{}{}) {}",
+                    idx + 1,
+                    title,
+                    page_label,
+                    section_label,
+                    content
+                )
             })
             .collect::<Vec<_>>()
             .join("\n\n");
@@ -3018,8 +3225,9 @@ Design rules:\n\
     }
 
     fn resolve_active_profile(&self) -> LnaResult<(ModelProfile, ResolvedProfile)> {
-        let profile = lna_storage::get_active_profile(&self.db)?
-            .ok_or_else(|| LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured"))?;
+        let profile = lna_storage::get_active_profile(&self.db)?.ok_or_else(|| {
+            LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured")
+        })?;
         let api_key = match profile.keychain_ref.as_deref() {
             Some(kref) => self.secrets.get(kref)?,
             None => None,
@@ -3059,7 +3267,11 @@ Design rules:\n\
         cancel: CancellationToken,
     ) -> LnaResult<(Value, Usage)> {
         let is_kg = art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
-        let detail = art.config.get("detail").and_then(Value::as_str).unwrap_or("standard");
+        let detail = art
+            .config
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or("standard");
         let kind = if is_kg { "knowledge graph" } else { "mind map" };
         let rules = mindmap_rules(is_kg, detail);
         let schema: Value =
@@ -3072,22 +3284,33 @@ Design rules:\n\
             None
         };
 
-        let saved = self.get_checkpoint(artifact_id, "mindmap_passes")?.filter(|v| {
-            v.get("sources_fingerprint").and_then(Value::as_str) == Some(art.sources_fingerprint.as_str())
-        });
+        let saved = self
+            .get_checkpoint(artifact_id, "mindmap_passes")?
+            .filter(|v| {
+                v.get("sources_fingerprint").and_then(Value::as_str)
+                    == Some(art.sources_fingerprint.as_str())
+            });
         let (mut payload, mut done): (Value, Vec<String>) = match saved {
             Some(v) => {
                 let done: Vec<String> = v
                     .get("done")
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(String::from)
+                            .collect()
+                    })
                     .unwrap_or_default();
                 self.append_thought(
                     artifact_id,
                     &art.notebook_id,
                     "stage",
                     "复用已完成的图谱分支",
-                    &format!("已从检查点恢复图谱骨架与 {} 个已追加的分支，继续处理剩余分支。", done.len()),
+                    &format!(
+                        "已从检查点恢复图谱骨架与 {} 个已追加的分支，继续处理剩余分支。",
+                        done.len()
+                    ),
                 );
                 (v.get("payload").cloned().unwrap_or_else(|| json!({})), done)
             }
@@ -3134,7 +3357,10 @@ Design rules:\n\
                 add_usage(&mut usage_sum, &u);
                 validate::normalize_mindmap(&mut skeleton);
                 if let Some(obj) = skeleton.as_object_mut() {
-                    obj.insert("kind".into(), json!(if is_kg { "knowledge_graph" } else { "mindmap" }));
+                    obj.insert(
+                        "kind".into(),
+                        json!(if is_kg { "knowledge_graph" } else { "mindmap" }),
+                    );
                 }
                 self.save_checkpoint(
                     artifact_id,
@@ -3249,7 +3475,12 @@ Design rules:\n\
         let facets: Vec<String> = node
             .get("facets")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default();
         let path = mm_ancestor_labels(&nodes, node_id);
         let mut outline = String::new();
@@ -3312,7 +3543,9 @@ Design rules:\n\
                                 .evidences
                                 .iter()
                                 .enumerate()
-                                .map(|(i, e)| format!("[{}] ({}) {}", i + 1, e.source_title, e.content))
+                                .map(|(i, e)| {
+                                    format!("[{}] ({}) {}", i + 1, e.source_title, e.content)
+                                })
                                 .collect::<Vec<_>>()
                                 .join("\n\n"),
                             Err(_) => String::new(),
@@ -3389,7 +3622,11 @@ Design rules:\n\
             NodeExpansion {
                 atomic: out.get("atomic").and_then(Value::as_bool).unwrap_or(false),
                 reason: mm_str(&out, "reason"),
-                nodes: out.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default(),
+                nodes: out
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
             },
             usage,
         ))
@@ -3401,7 +3638,9 @@ Design rules:\n\
     pub async fn refine_node(&self, artifact_id: &str, node_id: &str) -> LnaResult<Value> {
         let art = self.get(artifact_id)?;
         if art.artifact_type != ArtifactType::Mindmap {
-            return Err(LnaError::invalid("Only mind maps and knowledge graphs can be refined"));
+            return Err(LnaError::invalid(
+                "Only mind maps and knowledge graphs can be refined",
+            ));
         }
         let payload = art
             .payload
@@ -3414,11 +3653,17 @@ Design rules:\n\
             .ok_or_else(|| LnaError::new(ErrorCode::NotFound, "Node not found"))?;
         let label = mm_str(node, "label");
         if node.get("atomic").and_then(Value::as_bool) == Some(true) {
-            return Ok(json!({ "refined": false, "atomic": true, "added": 0, "reason": "", "artifact": art }));
+            return Ok(
+                json!({ "refined": false, "atomic": true, "added": 0, "reason": "", "artifact": art }),
+            );
         }
         let (profile, resolved) = self.resolve_active_profile()?;
         let is_kg = art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
-        let detail = art.config.get("detail").and_then(Value::as_str).unwrap_or("standard");
+        let detail = art
+            .config
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or("standard");
         let rules = mindmap_rules(is_kg, detail);
         let target_ids = Self::generation_source_ids(&art);
         let full = if self.sources_fit_directly(&target_ids, &resolved)? {
@@ -3565,6 +3810,7 @@ Design rules:\n\
     /// (source guides + index outline) and 3 read tools (`search_sources`, `read_index_node`,
     /// `read_source_pages`) so it fetches only the specific chapters/passages needed instead of
     /// stuffing an entire book into one prompt.
+    #[allow(clippy::too_many_arguments)]
     async fn gather_evidence_on_demand(
         &self,
         art: &StudioArtifact,
@@ -3579,7 +3825,8 @@ Design rules:\n\
     ) -> LnaResult<Option<String>> {
         let is_mindmap = art.artifact_type == ArtifactType::Mindmap;
         let effective_source_ids = source_ids_override.unwrap_or(&art.source_ids);
-        let selected_json = serde_json::to_string(effective_source_ids).unwrap_or_else(|_| "[]".into());
+        let selected_json =
+            serde_json::to_string(effective_source_ids).unwrap_or_else(|_| "[]".into());
         let sources_meta: Vec<(String, String, Option<String>, String, i64)> = self.db.read(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -3629,33 +3876,40 @@ Design rules:\n\
                 catalog_lines.push(format!("  Overview: {}", truncate_str(gmd, 420)));
             }
             let idx_limit: i64 = if is_mindmap { 400 } else { 120 };
-            let idx_nodes: Vec<(String, i32, String, String, Option<i32>, Option<i32>)> =
-                self.db.read(|conn| {
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT id, level, title, summary, page_start, page_end
+            #[allow(clippy::type_complexity)]
+            let idx_nodes: Vec<(
+                String,
+                i32,
+                String,
+                String,
+                Option<i32>,
+                Option<i32>,
+            )> = self.db.read(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, level, title, summary, page_start, page_end
                              FROM source_index_nodes WHERE source_id = ?1
                              ORDER BY ordinal ASC LIMIT ?2",
-                        )
-                        .map_err(map_sql_err)?;
-                    let rows = stmt
-                        .query_map(params![sid, idx_limit], |r| {
-                            Ok((
-                                r.get::<_, String>(0)?,
-                                r.get::<_, i32>(1)?,
-                                r.get::<_, String>(2)?,
-                                r.get::<_, String>(3)?,
-                                r.get::<_, Option<i32>>(4)?,
-                                r.get::<_, Option<i32>>(5)?,
-                            ))
-                        })
-                        .map_err(map_sql_err)?;
-                    let mut out = Vec::new();
-                    for r in rows {
-                        out.push(r.map_err(map_sql_err)?);
-                    }
-                    Ok(out)
-                })?;
+                    )
+                    .map_err(map_sql_err)?;
+                let rows = stmt
+                    .query_map(params![sid, idx_limit], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i32>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, Option<i32>>(4)?,
+                            r.get::<_, Option<i32>>(5)?,
+                        ))
+                    })
+                    .map_err(map_sql_err)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(map_sql_err)?);
+                }
+                Ok(out)
+            })?;
             for (nid, lvl, ntitle, nsum, ps, pe) in idx_nodes {
                 let pg = match (ps, pe) {
                     (Some(a), Some(b)) if b > a => format!(" p.{a}-{b}"),
@@ -3755,7 +4009,12 @@ Design rules:\n\
                 return false;
             }
             *used_chars += snippet.len() + header.len() + 16;
-            collected.push(format!("[{}] ({}) {}", collected.len() + 1, header, snippet));
+            collected.push(format!(
+                "[{}] ({}) {}",
+                collected.len() + 1,
+                header,
+                snippet
+            ));
             true
         }
 
@@ -3822,7 +4081,12 @@ Design rules:\n\
                                 || pending_thought.len() >= 80
                             {
                                 if let Some(s) = thought_seq {
-                                    self.emit_thought_delta(artifact_id, &art.notebook_id, s, &pending_thought);
+                                    self.emit_thought_delta(
+                                        artifact_id,
+                                        &art.notebook_id,
+                                        s,
+                                        &pending_thought,
+                                    );
                                 }
                                 pending_thought.clear();
                                 last_flush = std::time::Instant::now();
@@ -3929,7 +4193,10 @@ Design rules:\n\
                                         .unwrap_or_default();
                                     let key = format!("chunk:{}", ev.chunk_id);
                                     if push_evidence(
-                                        &mut seen_keys, &mut collected, &mut used_chars, char_budget,
+                                        &mut seen_keys,
+                                        &mut collected,
+                                        &mut used_chars,
+                                        char_budget,
                                         key,
                                         format!("{}{}", ev.source_title, pg),
                                         ev.content,
@@ -3990,7 +4257,10 @@ Design rules:\n\
                             for (cid, stitle, pg, content) in rows {
                                 let pstr = pg.map(|p| format!(", p.{p}")).unwrap_or_default();
                                 if push_evidence(
-                                        &mut seen_keys, &mut collected, &mut used_chars, char_budget,
+                                    &mut seen_keys,
+                                    &mut collected,
+                                    &mut used_chars,
+                                    char_budget,
                                     format!("chunk:{cid}"),
                                     format!("{stitle}{pstr}"),
                                     content,
@@ -3998,7 +4268,8 @@ Design rules:\n\
                                     added_here += 1;
                                 }
                             }
-                            summary_note = format!("Loaded {added_here} excerpts for node {node_id}.");
+                            summary_note =
+                                format!("Loaded {added_here} excerpts for node {node_id}.");
                         }
                     }
                     "read_source_pages" => {
@@ -4036,7 +4307,10 @@ Design rules:\n\
                             for (cid, stitle, pg, content) in rows {
                                 let pstr = pg.map(|p| format!(", p.{p}")).unwrap_or_default();
                                 if push_evidence(
-                                        &mut seen_keys, &mut collected, &mut used_chars, char_budget,
+                                    &mut seen_keys,
+                                    &mut collected,
+                                    &mut used_chars,
+                                    char_budget,
                                     format!("chunk:{cid}"),
                                     format!("{stitle}{pstr}"),
                                     content,
@@ -4044,9 +4318,8 @@ Design rules:\n\
                                     added_here += 1;
                                 }
                             }
-                            summary_note = format!(
-                                "Loaded {added_here} excerpts from pages {pstart}-{pend}."
-                            );
+                            summary_note =
+                                format!("Loaded {added_here} excerpts from pages {pstart}-{pend}.");
                         }
                     }
                     _ => {
@@ -4078,7 +4351,12 @@ Design rules:\n\
                     &art.notebook_id,
                     "tool",
                     &tool_label,
-                    &format!("{}（累计已读取 {} 条片段，约 {} tokens）", summary_note, collected.len(), used_chars / 3),
+                    &format!(
+                        "{}（累计已读取 {} 条片段，约 {} tokens）",
+                        summary_note,
+                        collected.len(),
+                        used_chars / 3
+                    ),
                 );
                 tool_results.push(Part::ToolResult {
                     call_id,
@@ -4105,7 +4383,11 @@ Design rules:\n\
                 &art.notebook_id,
                 "stage",
                 &format!("按需精读第 {} 轮", round + 1),
-                &format!("已按需读取 {} 条关键片段（约 {} tokens）。", collected.len(), used_chars / 3),
+                &format!(
+                    "已按需读取 {} 条关键片段（约 {} tokens）。",
+                    collected.len(),
+                    used_chars / 3
+                ),
             );
             if used_chars >= char_budget * 85 / 100 {
                 break;
@@ -4118,13 +4400,25 @@ Design rules:\n\
             if let Some(q) = topic_query {
                 if let Ok(res) = self
                     .retrieval
-                    .search(&art.notebook_id, &[q.to_string()], &art.source_ids, 10_000, 14)
+                    .search(
+                        &art.notebook_id,
+                        &[q.to_string()],
+                        &art.source_ids,
+                        10_000,
+                        14,
+                    )
                     .await
                 {
                     for ev in res.evidences {
-                        let pg = ev.page_start.map(|p| format!(", p.{p}")).unwrap_or_default();
+                        let pg = ev
+                            .page_start
+                            .map(|p| format!(", p.{p}"))
+                            .unwrap_or_default();
                         push_evidence(
-                                        &mut seen_keys, &mut collected, &mut used_chars, char_budget,
+                            &mut seen_keys,
+                            &mut collected,
+                            &mut used_chars,
+                            char_budget,
                             format!("chunk:{}", ev.chunk_id),
                             format!("{}{}", ev.source_title, pg),
                             ev.content,
@@ -4261,8 +4555,11 @@ Design rules:\n\
                     let topic_str = if topics.is_empty() {
                         String::new()
                     } else {
-                        format!("
-Core Topics: {}", topics.join(", "))
+                        format!(
+                            "
+Core Topics: {}",
+                            topics.join(", ")
+                        )
                     };
                     evidence_blocks.push(format!(
                         "[{}] {} (Overview)
@@ -4274,6 +4571,7 @@ Core Topics: {}", topics.join(", "))
                     ));
                 }
 
+                #[allow(clippy::type_complexity)]
                 let nodes: Vec<(i32, String, String, String, Option<i32>, Option<i32>)> =
                     self.db.read(|conn| {
                         let mut stmt = conn
@@ -4330,32 +4628,36 @@ Core Topics: {}", topics.join(", "))
                 }
                 if few_nodes {
                     // Fallback when no AI index exists: sample up to 16 evenly spaced chunks (never full book)
-                    let chunks: Vec<(Option<i32>, Option<String>, String)> = self.db.read(|conn| {
-                        let mut stmt = conn
-                            .prepare(
-                                "SELECT page_start, section_path, content FROM source_chunks
+                    let chunks: Vec<(Option<i32>, Option<String>, String)> =
+                        self.db.read(|conn| {
+                            let mut stmt = conn
+                                .prepare(
+                                    "SELECT page_start, section_path, content FROM source_chunks
                                  WHERE source_id = ?1 ORDER BY chunk_index ASC",
-                            )
-                            .map_err(map_sql_err)?;
-                        let rows = stmt
-                            .query_map([sid], |r| {
-                                Ok((
-                                    r.get::<_, Option<i32>>(0)?,
-                                    r.get::<_, Option<String>>(1)?,
-                                    r.get::<_, String>(2)?,
-                                ))
-                            })
-                            .map_err(map_sql_err)?;
-                        let mut out = Vec::new();
-                        for row in rows {
-                            out.push(row.map_err(map_sql_err)?);
-                        }
-                        Ok(out)
-                    })?;
+                                )
+                                .map_err(map_sql_err)?;
+                            let rows = stmt
+                                .query_map([sid], |r| {
+                                    Ok((
+                                        r.get::<_, Option<i32>>(0)?,
+                                        r.get::<_, Option<String>>(1)?,
+                                        r.get::<_, String>(2)?,
+                                    ))
+                                })
+                                .map_err(map_sql_err)?;
+                            let mut out = Vec::new();
+                            for row in rows {
+                                out.push(row.map_err(map_sql_err)?);
+                            }
+                            Ok(out)
+                        })?;
                     let step = (chunks.len() / 16).max(1);
                     for (ps, sec, content) in chunks.into_iter().step_by(step).take(16) {
                         let pg = ps.map(|p| format!(" (p.{p})")).unwrap_or_default();
-                        let sec_s = sec.filter(|s| !s.is_empty()).map(|s| format!(" · {s}")).unwrap_or_default();
+                        let sec_s = sec
+                            .filter(|s| !s.is_empty())
+                            .map(|s| format!(" · {s}"))
+                            .unwrap_or_default();
                         evidence_blocks.push(format!(
                             "[{}] {}{}{}
 {}",
@@ -4374,11 +4676,16 @@ Core Topics: {}", topics.join(", "))
                     &art.notebook_id,
                     "stage",
                     "Collecting structural outline for Knowledge Graph",
-                    &format!("Prepared {} compact structural items without sending full book text.", evidence_blocks.len()),
+                    &format!(
+                        "Prepared {} compact structural items without sending full book text.",
+                        evidence_blocks.len()
+                    ),
                 );
-                return Ok(evidence_blocks.join("
+                return Ok(evidence_blocks.join(
+                    "
 
-"));
+",
+                ));
             }
         }
 
@@ -4418,7 +4725,16 @@ Core Topics: {}", topics.join(", "))
                 resolved,
                 artifact_id,
                 topic_query.as_deref(),
-                evidence_budget.min(if matches!(art.artifact_type, ArtifactType::Slides | ArtifactType::Mindmap) { 28_000 } else { 18_000 }),
+                evidence_budget.min(
+                    if matches!(
+                        art.artifact_type,
+                        ArtifactType::Slides | ArtifactType::Mindmap
+                    ) {
+                        28_000
+                    } else {
+                        18_000
+                    },
+                ),
                 None,
                 false,
                 cancel.clone(),
@@ -4480,8 +4796,7 @@ Core Topics: {}", topics.join(", "))
                     .collect::<Vec<_>>()
                     .join("\n\n")
             };
-            let cached_digests =
-                self.load_cached_source_digests(&art.source_ids, language, 16)?;
+            let cached_digests = self.load_cached_source_digests(&art.source_ids, language, 16)?;
             let digest_text = cached_digests
                 .iter()
                 .map(|(title, section, digest)| format!("### {title} / {section}\n{digest}"))
@@ -4533,7 +4848,10 @@ Core Topics: {}", topics.join(", "))
             &art.notebook_id,
             "stage",
             "合并全局章节大纲",
-            &format!("已整理 {} 组章节摘要，正在提炼全局结构与关键细节…", digest_entries.len()),
+            &format!(
+                "已整理 {} 组章节摘要，正在提炼全局结构与关键细节…",
+                digest_entries.len()
+            ),
         );
 
         let mut reduced_batches = Vec::new();
@@ -4630,7 +4948,10 @@ Core Topics: {}", topics.join(", "))
                 &art.notebook_id,
                 "tool",
                 "工具调用 · 按章节检索关键原文片段",
-                &format!("正在为前 {} 个核心章节检索高相关证据片段…", digests.len().min(12)),
+                &format!(
+                    "正在为前 {} 个核心章节检索高相关证据片段…",
+                    digests.len().min(12)
+                ),
             );
         }
         let mut details = Vec::new();
@@ -4758,7 +5079,8 @@ Core Topics: {}", topics.join(", "))
                 cached_digest
             } else {
                 uncached_done += 1;
-                if uncached_done == 1 || uncached_done % 3 == 0 || idx + 1 == total_groups {
+                if uncached_done == 1 || uncached_done.is_multiple_of(3) || idx + 1 == total_groups
+                {
                     self.append_thought(
                         artifact_id,
                         notebook_id,
@@ -4999,7 +5321,11 @@ fn mm_str(v: &Value, key: &str) -> String {
 }
 
 fn mm_nodes(payload: &Value) -> Vec<Value> {
-    payload.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default()
+    payload
+        .get("nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn mm_parent(n: &Value) -> Option<String> {
@@ -5015,7 +5341,10 @@ fn mm_root_id(nodes: &[Value]) -> Option<String> {
 }
 
 fn mm_children<'a>(nodes: &'a [Value], id: &str) -> Vec<&'a Value> {
-    nodes.iter().filter(|n| mm_parent(n).as_deref() == Some(id)).collect()
+    nodes
+        .iter()
+        .filter(|n| mm_parent(n).as_deref() == Some(id))
+        .collect()
 }
 
 /// Labels from the root down to (excluding) `id`.
@@ -5058,7 +5387,11 @@ fn mm_outline(nodes: &[Value], id: &str, depth: usize, out: &mut String) {
         let cid = mm_str(c, "id");
         out.push_str(&"  ".repeat(depth));
         out.push_str(&format!("- [{cid}] {}", mm_str(c, "label")));
-        if let Some(f) = c.get("facets").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        if let Some(f) = c
+            .get("facets")
+            .and_then(Value::as_array)
+            .filter(|a| !a.is_empty())
+        {
             let fs: Vec<&str> = f.iter().filter_map(Value::as_str).collect();
             out.push_str(&format!(" (facets: {})", fs.join("; ")));
         }
@@ -5071,7 +5404,11 @@ fn mm_outline(nodes: &[Value], id: &str, depth: usize, out: &mut String) {
 }
 
 fn mm_label_key(label: &str) -> String {
-    label.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
+    label
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Appends model-generated nodes under `anchor_id`: ids are namespaced under the anchor so
@@ -5079,7 +5416,8 @@ fn mm_label_key(label: &str) -> String {
 /// node whose label duplicates an existing sibling is merged into it. Returns nodes added.
 fn merge_mindmap_subtree(payload: &mut Value, anchor_id: &str, new_nodes: Vec<Value>) -> usize {
     let existing = mm_nodes(payload);
-    let mut ids: std::collections::HashSet<String> = existing.iter().map(|n| mm_str(n, "id")).collect();
+    let mut ids: std::collections::HashSet<String> =
+        existing.iter().map(|n| mm_str(n, "id")).collect();
     let mut subtree: std::collections::HashSet<String> = std::collections::HashSet::new();
     subtree.insert(anchor_id.to_string());
     loop {
@@ -5095,7 +5433,9 @@ fn merge_mindmap_subtree(payload: &mut Value, anchor_id: &str, new_nodes: Vec<Va
     }
     let mut sibling_labels: HashMap<(String, String), String> = existing
         .iter()
-        .filter_map(|n| mm_parent(n).map(|p| ((p, mm_label_key(&mm_str(n, "label"))), mm_str(n, "id"))))
+        .filter_map(|n| {
+            mm_parent(n).map(|p| ((p, mm_label_key(&mm_str(n, "label"))), mm_str(n, "id")))
+        })
         .collect();
 
     // Pass 1: allocate ids for every new node.
@@ -5106,7 +5446,11 @@ fn merge_mindmap_subtree(payload: &mut Value, anchor_id: &str, new_nodes: Vec<Va
         if !orig.is_empty() && subtree.contains(&orig) {
             continue; // the model re-emitted an existing node
         }
-        let base = if orig.is_empty() { format!("{anchor_id}.{}", i + 1) } else { format!("{anchor_id}.{orig}") };
+        let base = if orig.is_empty() {
+            format!("{anchor_id}.{}", i + 1)
+        } else {
+            format!("{anchor_id}.{orig}")
+        };
         let mut nid = base.clone();
         let mut k = 2;
         while ids.contains(&nid) {
@@ -5345,15 +5689,32 @@ fn score_kg_node_match(label: &str, summary: &str, quiz_text: &str, topic_hint: 
     if label_tokens.is_empty() || quiz_tokens.is_empty() {
         return 0.0;
     }
-    let label_hits = label_tokens.iter().filter(|t| quiz_tokens.contains(*t)).count();
+    let label_hits = label_tokens
+        .iter()
+        .filter(|t| quiz_tokens.contains(*t))
+        .count();
     let label_ratio = label_hits as f64 / label_tokens.len() as f64;
     let summary_ratio = if summary_tokens.is_empty() {
         0.0
     } else {
-        let hits = summary_tokens.iter().filter(|t| quiz_tokens.contains(*t)).count();
+        let hits = summary_tokens
+            .iter()
+            .filter(|t| quiz_tokens.contains(*t))
+            .count();
         hits as f64 / summary_tokens.len().min(12) as f64
     };
     (label_ratio * 0.75 + summary_ratio * 0.25).min(0.8)
+}
+
+/// The request carries the user's own material (pictures or files), so it can be generated
+/// without any selected source.
+fn has_user_material(config: &Value) -> bool {
+    ["images", "files"].iter().any(|k| {
+        config
+            .get(*k)
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+    })
 }
 
 #[cfg(test)]
@@ -5372,17 +5733,27 @@ mod mindmap_merge_tests {
     #[test]
     fn merge_namespaces_ids_and_resolves_parents() {
         let mut p = skeleton();
-        let added = merge_mindmap_subtree(&mut p, "b1", vec![
-            json!({"id":"n1","parent_id":"b1x","label":"伴随矩阵法","citations":[3]}),
-            json!({"id":"n2","parent_id":"b1x","label":"初等变换法","citations":[]}),
-            json!({"id":"n3","parent_id":"n2","label":"[A|I]→[I|A⁻¹]","citations":[]}),
-            json!({"id":"n4","parent_id":"b2","label":"越界节点","citations":[]}),
-            json!({"id":"b1x","parent_id":"b1","label":"矩阵的逆","citations":[]}),
-            json!({"id":"n5","parent_id":"b1","label":" 矩阵的逆 ","citations":[]}),
-            json!({"id":"n6","parent_id":"n5","label":"分块求逆","citations":[]})
-        ]);
+        let added = merge_mindmap_subtree(
+            &mut p,
+            "b1",
+            vec![
+                json!({"id":"n1","parent_id":"b1x","label":"伴随矩阵法","citations":[3]}),
+                json!({"id":"n2","parent_id":"b1x","label":"初等变换法","citations":[]}),
+                json!({"id":"n3","parent_id":"n2","label":"[A|I]→[I|A⁻¹]","citations":[]}),
+                json!({"id":"n4","parent_id":"b2","label":"越界节点","citations":[]}),
+                json!({"id":"b1x","parent_id":"b1","label":"矩阵的逆","citations":[]}),
+                json!({"id":"n5","parent_id":"b1","label":" 矩阵的逆 ","citations":[]}),
+                json!({"id":"n6","parent_id":"n5","label":"分块求逆","citations":[]}),
+            ],
+        );
         let nodes = mm_nodes(&p);
-        let by = |label: &str| nodes.iter().find(|n| mm_str(n, "label") == label).unwrap().clone();
+        let by = |label: &str| {
+            nodes
+                .iter()
+                .find(|n| mm_str(n, "label") == label)
+                .unwrap()
+                .clone()
+        };
         assert_eq!(added, 5);
         assert_eq!(by("伴随矩阵法")["id"], "b1.n1");
         assert_eq!(by("伴随矩阵法")["parent_id"], "b1x");
@@ -5391,7 +5762,13 @@ mod mindmap_merge_tests {
         // a parent outside the anchor's subtree falls back to the anchor
         assert_eq!(by("越界节点")["parent_id"], "b1");
         // a duplicate of an existing sibling is merged; its children attach to the original
-        assert_eq!(nodes.iter().filter(|n| mm_str(n, "label").trim() == "矩阵的逆").count(), 1);
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|n| mm_str(n, "label").trim() == "矩阵的逆")
+                .count(),
+            1
+        );
         assert_eq!(by("分块求逆")["parent_id"], "b1x");
     }
 
@@ -5405,10 +5782,4 @@ mod mindmap_merge_tests {
         mm_outline(&nodes, "b1", 0, &mut outline);
         assert_eq!(outline, "- [b1x] 矩阵的逆\n");
     }
-}
-
-/// The request carries the user's own material (pictures or files), so it can be generated
-/// without any selected source.
-fn has_user_material(config: &Value) -> bool {
-    ["images", "files"].iter().any(|k| config.get(*k).and_then(Value::as_array).is_some_and(|a| !a.is_empty()))
 }

@@ -9,7 +9,8 @@
 use base64::Engine as _;
 use image::{imageops::FilterType, DynamicImage, ImageFormat};
 use lna_llm::{
-    LlmClient, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, ResolvedProfile, Role, ToolMode,
+    LlmClient, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, ResolvedProfile, Role,
+    ToolMode,
 };
 use lna_secrets::SecretStore;
 use lna_storage::Database;
@@ -76,8 +77,11 @@ fn store_one(dir: &Path, name: &str, raw: &[u8]) -> LnaResult<Attachment> {
             MAX_INPUT_BYTES / 1024 / 1024
         )));
     }
-    let img = image::load_from_memory(raw)
-        .map_err(|_| LnaError::invalid(format!("无法识别图片「{name}」的格式（支持 PNG、JPEG、WebP、GIF、BMP）")))?;
+    let img = image::load_from_memory(raw).map_err(|_| {
+        LnaError::invalid(format!(
+            "无法识别图片「{name}」的格式（支持 PNG、JPEG、WebP、GIF、BMP）"
+        ))
+    })?;
     let img = if img.width().max(img.height()) > MAX_EDGE {
         img.resize(MAX_EDGE, MAX_EDGE, FilterType::Triangle)
     } else {
@@ -85,7 +89,8 @@ fn store_one(dir: &Path, name: &str, raw: &[u8]) -> LnaResult<Attachment> {
     };
     let has_alpha = img.color().has_alpha();
     let (bytes, mime, ext) = encode(&img, has_alpha)?;
-    std::fs::create_dir_all(dir).map_err(|e| LnaError::internal(format!("无法创建附件目录：{e}")))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| LnaError::internal(format!("无法创建附件目录：{e}")))?;
     let id = new_ulid();
     let path = dir.join(format!("{id}.{ext}"));
     std::fs::write(&path, &bytes).map_err(|e| LnaError::internal(format!("无法保存图片：{e}")))?;
@@ -149,7 +154,13 @@ pub fn parse_stored_str(s: &str) -> Vec<Attachment> {
 pub fn resolve(root: &Path, ids: &Value) -> Vec<Attachment> {
     let dir = attachments_dir(root);
     let mut out = Vec::new();
-    for (i, id) in ids.as_array().into_iter().flatten().filter_map(Value::as_str).enumerate() {
+    for (i, id) in ids
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .enumerate()
+    {
         // ids are ULIDs we generated; reject anything that could escape the directory
         if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
             continue;
@@ -235,7 +246,9 @@ pub fn sweep_orphans(db: &Database, min_age: std::time::Duration) -> usize {
     let mut removed = 0;
     for e in entries.flatten() {
         let path = e.path();
-        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else { continue };
+        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
         if used.contains(id_of_file_name(fname)) {
             continue;
         }
@@ -244,7 +257,7 @@ pub fn sweep_orphans(db: &Database, min_age: std::time::Duration) -> usize {
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.elapsed().ok())
-            .map_or(false, |age| age >= min_age);
+            .is_some_and(|age| age >= min_age);
         if old_enough && std::fs::remove_file(&path).is_ok() {
             removed += 1;
         }
@@ -256,7 +269,9 @@ pub fn sweep_orphans(db: &Database, min_age: std::time::Duration) -> usize {
 pub fn delete_files(atts: &[Attachment]) {
     for a in atts {
         let _ = std::fs::remove_file(&a.path);
-        let Some(dir) = Path::new(&a.path).parent() else { continue };
+        let Some(dir) = Path::new(&a.path).parent() else {
+            continue;
+        };
         for suffix in ["meta.json", "parsed.json"] {
             let _ = std::fs::remove_file(dir.join(format!("{}.{suffix}", a.id)));
         }
@@ -350,7 +365,10 @@ pub async fn describe(
             max_output_tokens: profile.max_output_tokens.clamp(1024, 4096),
             reasoning: ReasoningOptions::default(),
         };
-        if let Ok((txt, usage)) = llm.complete_text(profile, &req, CancellationToken::new()).await {
+        if let Ok((txt, usage)) = llm
+            .complete_text(profile, &req, CancellationToken::new())
+            .await
+        {
             let _ = lna_storage::record_usage(
                 db,
                 Some(notebook_id),
@@ -384,7 +402,12 @@ pub async fn describe(
 
 /// Parts for an earlier user turn. Pictures are re-sent (vision models only) when `with_media`;
 /// otherwise the turn just notes that pictures were attached.
-pub fn history_parts(profile: &ResolvedProfile, text: String, atts: &[Attachment], with_media: bool) -> Vec<Part> {
+pub fn history_parts(
+    profile: &ResolvedProfile,
+    text: String,
+    atts: &[Attachment],
+    with_media: bool,
+) -> Vec<Part> {
     let pics = images(atts);
     let atts = pics.as_slice();
     if atts.is_empty() {
@@ -396,7 +419,10 @@ pub fn history_parts(profile: &ResolvedProfile, text: String, atts: &[Attachment
         return parts;
     }
     let names: Vec<&str> = atts.iter().map(|a| a.name.as_str()).collect();
-    vec![Part::Text(format!("{text}\n[该问题附带了图片：{}]", names.join("、")))]
+    vec![Part::Text(format!(
+        "{text}\n[该问题附带了图片：{}]",
+        names.join("、")
+    ))]
 }
 
 #[cfg(test)]
@@ -405,9 +431,17 @@ mod tests {
 
     fn png_bytes(w: u32, h: u32, alpha: bool) -> Vec<u8> {
         let img = if alpha {
-            DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(w, h, image::Rgba([200, 30, 30, 128])))
+            DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                w,
+                h,
+                image::Rgba([200, 30, 30, 128]),
+            ))
         } else {
-            DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb([20, 120, 220])))
+            DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                w,
+                h,
+                image::Rgb([20, 120, 220]),
+            ))
         };
         let mut buf = Cursor::new(Vec::new());
         img.write_to(&mut buf, ImageFormat::Png).unwrap();
@@ -441,7 +475,11 @@ mod tests {
     #[test]
     fn keeps_transparency_as_png_and_small_size() {
         let root = tmp();
-        let out = save_images(&root, &serde_json::json!([item("a.png", &png_bytes(64, 48, true))])).unwrap();
+        let out = save_images(
+            &root,
+            &serde_json::json!([item("a.png", &png_bytes(64, 48, true))]),
+        )
+        .unwrap();
         assert_eq!(out[0].mime, "image/png");
         assert_eq!((out[0].width, out[0].height), (64, 48));
         let _ = std::fs::remove_dir_all(root);
@@ -452,7 +490,9 @@ mod tests {
         let root = tmp();
         assert!(save_images(&root, &serde_json::json!([item("x.png", b"not an image")])).is_err());
         assert!(save_images(&root, &serde_json::json!([{ "name": "x" }])).is_err());
-        let many: Vec<Value> = (0..MAX_IMAGES_PER_MESSAGE + 1).map(|i| item(&format!("{i}.png"), &png_bytes(4, 4, false))).collect();
+        let many: Vec<Value> = (0..MAX_IMAGES_PER_MESSAGE + 1)
+            .map(|i| item(&format!("{i}.png"), &png_bytes(4, 4, false)))
+            .collect();
         assert!(save_images(&root, &Value::Array(many)).is_err());
         assert!(save_images(&root, &Value::Null).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
@@ -461,7 +501,11 @@ mod tests {
     #[test]
     fn resolve_finds_stored_files_by_id_and_ignores_unsafe_ids() {
         let root = tmp();
-        let out = save_images(&root, &serde_json::json!([item("a.png", &png_bytes(8, 8, false))])).unwrap();
+        let out = save_images(
+            &root,
+            &serde_json::json!([item("a.png", &png_bytes(8, 8, false))]),
+        )
+        .unwrap();
         let ids = ids_of(&out);
         let found = resolve(&root, &ids);
         assert_eq!(found.len(), 1);
@@ -475,7 +519,11 @@ mod tests {
     #[test]
     fn stored_json_round_trips() {
         let root = tmp();
-        let out = save_images(&root, &serde_json::json!([item("a.png", &png_bytes(8, 8, false))])).unwrap();
+        let out = save_images(
+            &root,
+            &serde_json::json!([item("a.png", &png_bytes(8, 8, false))]),
+        )
+        .unwrap();
         let json = serde_json::to_string(&out).unwrap();
         assert_eq!(parse_stored_str(&json), out);
         assert_eq!(parse_stored(&serde_json::to_value(&out).unwrap()), out);

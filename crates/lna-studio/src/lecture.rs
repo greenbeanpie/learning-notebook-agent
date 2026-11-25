@@ -187,11 +187,18 @@ pub(crate) fn figure_spec_schema() -> Value {
 // validation
 
 fn sv(v: &Value, k: &str) -> String {
-    v.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn arr_len(v: &Value, k: &str) -> usize {
-    v.get(k).and_then(Value::as_array).map(|a| a.len()).unwrap_or(0)
+    v.get(k)
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0)
 }
 
 /// Every element id a cue/build may target on this slide.
@@ -256,7 +263,8 @@ fn has_tex(s: &str) -> bool {
         return true;
     }
     let b = s.as_bytes();
-    b.windows(2).any(|w| w[0] == b'\\' && w[1].is_ascii_alphabetic())
+    b.windows(2)
+        .any(|w| w[0] == b'\\' && w[1].is_ascii_alphabetic())
 }
 
 /// One validation problem; `fix` is the local fallback applied only after repair rounds fail.
@@ -296,28 +304,56 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
     let mut prev_display_only = false;
     for (si, slide) in slides.iter().enumerate() {
         let ids: HashSet<String> = slide_element_ids(slide).into_iter().collect();
-        let narration = slide.get("narration").and_then(Value::as_array).cloned().unwrap_or_default();
-        let spoken: Vec<&Value> = narration.iter().filter(|n| !sv(n, "text").is_empty()).collect();
-        let display_only = slide.get("display_only").and_then(|d| d.get("reason")).and_then(Value::as_str).is_some_and(|r| !r.trim().is_empty());
+        let narration = slide
+            .get("narration")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let spoken: Vec<&Value> = narration
+            .iter()
+            .filter(|n| !sv(n, "text").is_empty())
+            .collect();
+        let display_only = slide
+            .get("display_only")
+            .and_then(|d| d.get("reason"))
+            .and_then(Value::as_str)
+            .is_some_and(|r| !r.trim().is_empty());
         if spoken.is_empty() && !display_only {
             issues.push(Issue { slide: si, msg: "has no narration; add narration sentences or mark it \"display_only\": {\"reason\": ...}".into(), fix: Fix::MarkDisplayOnly });
         }
         if spoken.is_empty() && display_only && prev_display_only {
-            issues.push(Issue { slide: si, msg: "is the second display-only slide in a row; give one of them narration".into(), fix: Fix::None });
+            issues.push(Issue {
+                slide: si,
+                msg: "is the second display-only slide in a row; give one of them narration".into(),
+                fix: Fix::None,
+            });
         }
         prev_display_only = spoken.is_empty() && display_only;
 
         // builds
-        let builds = slide.get("builds").and_then(Value::as_array).cloned().unwrap_or_default();
+        let builds = slide
+            .get("builds")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let mut steps: Vec<i64> = Vec::new();
         for b in &builds {
             let step = b.get("step").and_then(Value::as_i64).unwrap_or(0);
             if step < 1 {
-                issues.push(Issue { slide: si, msg: "has a build without a positive \"step\"".into(), fix: Fix::RemoveBuilds });
+                issues.push(Issue {
+                    slide: si,
+                    msg: "has a build without a positive \"step\"".into(),
+                    fix: Fix::RemoveBuilds,
+                });
                 continue;
             }
             steps.push(step);
-            for t in b.get("targets").and_then(Value::as_array).into_iter().flatten() {
+            for t in b
+                .get("targets")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 let t = t.as_str().unwrap_or("");
                 if !ids.contains(t) {
                     issues.push(Issue {
@@ -328,8 +364,15 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
                 }
             }
             let eff = sv(b, "effect");
-            if !eff.is_empty() && !["appear", "fade", "fly_up", "draw", "emphasis", "dim_others"].contains(&eff.as_str()) {
-                issues.push(Issue { slide: si, msg: format!("build step {step} has unknown effect \"{eff}\""), fix: Fix::RemoveBuildStep(step) });
+            if !eff.is_empty()
+                && !["appear", "fade", "fly_up", "draw", "emphasis", "dim_others"]
+                    .contains(&eff.as_str())
+            {
+                issues.push(Issue {
+                    slide: si,
+                    msg: format!("build step {step} has unknown effect \"{eff}\""),
+                    fix: Fix::RemoveBuildStep(step),
+                });
             }
         }
         let mut uniq = steps.clone();
@@ -337,7 +380,14 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
         uniq.dedup();
         let max_step = uniq.last().copied().unwrap_or(0);
         if !uniq.is_empty() && uniq != (1..=max_step).collect::<Vec<_>>() {
-            issues.push(Issue { slide: si, msg: format!("build steps must be numbered 1..K consecutively, got {:?}", uniq), fix: Fix::RemoveBuilds });
+            issues.push(Issue {
+                slide: si,
+                msg: format!(
+                    "build steps must be numbered 1..K consecutively, got {:?}",
+                    uniq
+                ),
+                fix: Fix::RemoveBuilds,
+            });
         }
 
         // cues
@@ -351,7 +401,13 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
                     fix: Fix::PlainNarration { sentence: ni },
                 });
             }
-            for (ci, c) in n.get("cues").and_then(Value::as_array).into_iter().flatten().enumerate() {
+            for (ci, c) in n
+                .get("cues")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
                 match sv(c, "type").as_str() {
                     "laser" => {
                         let target = sv(c, "target");
@@ -366,9 +422,21 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
                         if !shape.is_empty() && shape != "circle" && shape != "ellipse" {
                             issues.push(Issue { slide: si, msg: format!("laser cue in sentence {} has shape \"{}\" (use circle or ellipse)", ni + 1, shape), fix: Fix::RemoveCue { sentence: ni, cue: ci } });
                         }
-                        for (k, lo, hi) in [("scale", 1.0, 1.6), ("speed", 0.3, 1.5), ("angle_deg", -90.0, 90.0), ("duration_ms", 800.0, 6000.0)] {
+                        for (k, lo, hi) in [
+                            ("scale", 1.0, 1.6),
+                            ("speed", 0.3, 1.5),
+                            ("angle_deg", -90.0, 90.0),
+                            ("duration_ms", 800.0, 6000.0),
+                        ] {
                             if let Err(e) = num_in(c, k, lo, hi) {
-                                issues.push(Issue { slide: si, msg: format!("laser cue in sentence {}: {}", ni + 1, e), fix: Fix::RemoveCue { sentence: ni, cue: ci } });
+                                issues.push(Issue {
+                                    slide: si,
+                                    msg: format!("laser cue in sentence {}: {}", ni + 1, e),
+                                    fix: Fix::RemoveCue {
+                                        sentence: ni,
+                                        cue: ci,
+                                    },
+                                });
                             }
                         }
                     }
@@ -381,12 +449,30 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
                                 fix: Fix::RemoveCue { sentence: ni, cue: ci },
                             });
                         } else if revealed.last().is_some_and(|last| k <= *last) {
-                            issues.push(Issue { slide: si, msg: format!("step cue n={} in sentence {} is out of order or repeated", k, ni + 1), fix: Fix::RemoveCue { sentence: ni, cue: ci } });
+                            issues.push(Issue {
+                                slide: si,
+                                msg: format!(
+                                    "step cue n={} in sentence {} is out of order or repeated",
+                                    k,
+                                    ni + 1
+                                ),
+                                fix: Fix::RemoveCue {
+                                    sentence: ni,
+                                    cue: ci,
+                                },
+                            });
                         } else {
                             revealed.push(k);
                         }
                     }
-                    other => issues.push(Issue { slide: si, msg: format!("unknown cue type \"{}\" in sentence {}", other, ni + 1), fix: Fix::RemoveCue { sentence: ni, cue: ci } }),
+                    other => issues.push(Issue {
+                        slide: si,
+                        msg: format!("unknown cue type \"{}\" in sentence {}", other, ni + 1),
+                        fix: Fix::RemoveCue {
+                            sentence: ni,
+                            cue: ci,
+                        },
+                    }),
                 }
             }
         }
@@ -400,10 +486,18 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
         if let Some(cp) = slide.get("checkpoint").filter(|c| c.is_object()) {
             let kind = sv(cp, "kind");
             if sv(cp, "question").is_empty() {
-                issues.push(Issue { slide: si, msg: "checkpoint has no question".into(), fix: Fix::DropCheckpoint });
+                issues.push(Issue {
+                    slide: si,
+                    msg: "checkpoint has no question".into(),
+                    fix: Fix::DropCheckpoint,
+                });
             }
             if kind == "attempt" && mode != "practice" && sv(cp, "expect").is_empty() {
-                issues.push(Issue { slide: si, msg: "attempt checkpoint needs \"expect\" (the answer)".into(), fix: Fix::DropCheckpoint });
+                issues.push(Issue {
+                    slide: si,
+                    msg: "attempt checkpoint needs \"expect\" (the answer)".into(),
+                    fix: Fix::DropCheckpoint,
+                });
             }
             if kind == "ask" && sv(cp, "reason").is_empty() {
                 issues.push(Issue { slide: si, msg: "checkpoint must state \"reason\" (why pausing here helps); drop it if a pause is not really needed".into(), fix: Fix::DropCheckpoint });
@@ -425,7 +519,9 @@ pub fn apply_fallbacks(slides: &mut [Value], issues: &[Issue]) -> Vec<String> {
     // cue removals must go from the highest index down so indices stay valid
     let mut cue_removals: Vec<(usize, usize, usize)> = Vec::new();
     for is in issues {
-        let Some(slide) = slides.get_mut(is.slide) else { continue };
+        let Some(slide) = slides.get_mut(is.slide) else {
+            continue;
+        };
         match &is.fix {
             Fix::RemoveCue { sentence, cue } => cue_removals.push((is.slide, *sentence, *cue)),
             Fix::MarkDisplayOnly => {
@@ -435,7 +531,11 @@ pub fn apply_fallbacks(slides: &mut [Value], issues: &[Issue]) -> Vec<String> {
             Fix::RemoveBuildStep(step) => {
                 if let Some(b) = slide.get_mut("builds").and_then(Value::as_array_mut) {
                     b.retain(|x| x.get("step").and_then(Value::as_i64) != Some(*step));
-                    log.push(format!("slide {}: removed build step {}", is.slide + 1, step));
+                    log.push(format!(
+                        "slide {}: removed build step {}",
+                        is.slide + 1,
+                        step
+                    ));
                 }
             }
             Fix::RemoveBuilds => {
@@ -445,7 +545,10 @@ pub fn apply_fallbacks(slides: &mut [Value], issues: &[Issue]) -> Vec<String> {
                 log.push(format!("slide {}: removed builds", is.slide + 1));
             }
             Fix::PlainNarration { sentence } => {
-                if let Some(n) = slide.get_mut("narration").and_then(|n| n.get_mut(*sentence)) {
+                if let Some(n) = slide
+                    .get_mut("narration")
+                    .and_then(|n| n.get_mut(*sentence))
+                {
                     let t = crate::texfmt::tex_to_unicode(&sv(n, "text")).replace('$', "");
                     n["text"] = Value::String(t);
                 }
@@ -462,10 +565,17 @@ pub fn apply_fallbacks(slides: &mut [Value], issues: &[Issue]) -> Vec<String> {
     cue_removals.sort();
     cue_removals.dedup();
     for (s, n, c) in cue_removals.into_iter().rev() {
-        if let Some(cues) = slides[s].pointer_mut(&format!("/narration/{n}/cues")).and_then(Value::as_array_mut) {
+        if let Some(cues) = slides[s]
+            .pointer_mut(&format!("/narration/{n}/cues"))
+            .and_then(Value::as_array_mut)
+        {
             if c < cues.len() {
                 cues.remove(c);
-                log.push(format!("slide {}: removed an invalid cue in sentence {}", s + 1, n + 1));
+                log.push(format!(
+                    "slide {}: removed an invalid cue in sentence {}",
+                    s + 1,
+                    n + 1
+                ));
             }
         }
     }
@@ -483,20 +593,31 @@ pub fn sanitize_deck_builds(slides: &mut [Value]) -> Vec<String> {
     let mut log = Vec::new();
     for (si, slide) in slides.iter_mut().enumerate() {
         let ids: HashSet<String> = slide_element_ids(slide).into_iter().collect();
-        let Some(builds) = slide.get_mut("builds").and_then(Value::as_array_mut) else { continue };
+        let Some(builds) = slide.get_mut("builds").and_then(Value::as_array_mut) else {
+            continue;
+        };
         let before = builds.len();
         builds.retain(|b| {
-            let step_ok = b.get("step").and_then(Value::as_i64).is_some_and(|s| s >= 1);
+            let step_ok = b
+                .get("step")
+                .and_then(Value::as_i64)
+                .is_some_and(|s| s >= 1);
             let eff = b.get("effect").and_then(Value::as_str).unwrap_or("fade");
-            let eff_ok = ["appear", "fade", "fly_up", "draw", "emphasis", "dim_others"].contains(&eff);
-            let targets_ok = b
-                .get("targets")
-                .and_then(Value::as_array)
-                .is_some_and(|t| !t.is_empty() && t.iter().all(|x| x.as_str().is_some_and(|x| ids.contains(x))));
+            let eff_ok =
+                ["appear", "fade", "fly_up", "draw", "emphasis", "dim_others"].contains(&eff);
+            let targets_ok = b.get("targets").and_then(Value::as_array).is_some_and(|t| {
+                !t.is_empty()
+                    && t.iter()
+                        .all(|x| x.as_str().is_some_and(|x| ids.contains(x)))
+            });
             step_ok && eff_ok && targets_ok
         });
         if builds.len() != before {
-            log.push(format!("slide {}: removed {} invalid build(s)", si + 1, before - builds.len()));
+            log.push(format!(
+                "slide {}: removed {} invalid build(s)",
+                si + 1,
+                before - builds.len()
+            ));
         }
         renumber_builds(slide);
     }
@@ -504,11 +625,20 @@ pub fn sanitize_deck_builds(slides: &mut [Value]) -> Vec<String> {
 }
 
 fn renumber_builds(slide: &mut Value) {
-    let Some(builds) = slide.get("builds").and_then(Value::as_array).cloned() else { return };
-    let mut steps: Vec<i64> = builds.iter().filter_map(|b| b.get("step").and_then(Value::as_i64)).collect();
+    let Some(builds) = slide.get("builds").and_then(Value::as_array).cloned() else {
+        return;
+    };
+    let mut steps: Vec<i64> = builds
+        .iter()
+        .filter_map(|b| b.get("step").and_then(Value::as_i64))
+        .collect();
     steps.sort();
     steps.dedup();
-    let map: HashMap<i64, i64> = steps.iter().enumerate().map(|(i, s)| (*s, i as i64 + 1)).collect();
+    let map: HashMap<i64, i64> = steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (*s, i as i64 + 1))
+        .collect();
     if map.iter().all(|(k, v)| k == v) {
         return;
     }
@@ -522,7 +652,12 @@ fn renumber_builds(slide: &mut Value) {
     if let Some(ns) = slide.get_mut("narration").and_then(Value::as_array_mut) {
         for n in ns.iter_mut() {
             if let Some(cues) = n.get_mut("cues").and_then(Value::as_array_mut) {
-                cues.retain(|c| sv(c, "type") != "step" || c.get("n").and_then(Value::as_i64).is_some_and(|k| map.contains_key(&k)));
+                cues.retain(|c| {
+                    sv(c, "type") != "step"
+                        || c.get("n")
+                            .and_then(Value::as_i64)
+                            .is_some_and(|k| map.contains_key(&k))
+                });
                 for c in cues.iter_mut() {
                     if sv(c, "type") == "step" {
                         if let Some(k) = c.get("n").and_then(Value::as_i64) {
@@ -538,7 +673,17 @@ fn renumber_builds(slide: &mut Value) {
 fn issues_text(issues: &[Issue], slides: &[Value]) -> String {
     issues
         .iter()
-        .map(|i| format!("- slide {} (\"{}\"): {}", i.slide + 1, slides.get(i.slide).map(|s| sv(s, "title")).unwrap_or_default(), i.msg))
+        .map(|i| {
+            format!(
+                "- slide {} (\"{}\"): {}",
+                i.slide + 1,
+                slides
+                    .get(i.slide)
+                    .map(|s| sv(s, "title"))
+                    .unwrap_or_default(),
+                i.msg
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -575,10 +720,18 @@ pub fn estimate_minutes(slides: &[Value]) -> f64 {
     let mut cjk = 0usize;
     let mut words = 0usize;
     for s in slides {
-        for n in s.get("narration").and_then(Value::as_array).into_iter().flatten() {
+        for n in s
+            .get("narration")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let t = sv(n, "text");
             cjk += t.chars().filter(|c| (*c as u32) >= 0x2E80).count();
-            words += t.split_whitespace().filter(|w| w.chars().any(|c| c.is_ascii_alphanumeric())).count();
+            words += t
+                .split_whitespace()
+                .filter(|w| w.chars().any(|c| c.is_ascii_alphanumeric()))
+                .count();
         }
     }
     let secs = cjk as f64 / 250.0 * 60.0 + words as f64 / 150.0 * 60.0 + slides.len() as f64 * 1.5;
@@ -588,15 +741,27 @@ pub fn estimate_minutes(slides: &[Value]) -> f64 {
 /// Step at which each figure part becomes visible (0 = from the start).
 pub fn figure_part_steps(slide: &Value) -> HashMap<String, i64> {
     let mut out = HashMap::new();
-    for b in slide.get("builds").and_then(Value::as_array).into_iter().flatten() {
+    for b in slide
+        .get("builds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let step = b.get("step").and_then(Value::as_i64).unwrap_or(0);
         let effect = sv(b, "effect");
         if effect == "emphasis" || effect == "dim_others" {
             continue;
         }
-        for t in b.get("targets").and_then(Value::as_array).into_iter().flatten() {
+        for t in b
+            .get("targets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if let Some(p) = t.as_str().and_then(|t| t.strip_prefix("figure:")) {
-                out.entry(p.to_string()).and_modify(|s: &mut i64| *s = (*s).min(step)).or_insert(step);
+                out.entry(p.to_string())
+                    .and_modify(|s: &mut i64| *s = (*s).min(step))
+                    .or_insert(step);
             }
         }
     }
@@ -609,20 +774,38 @@ pub fn figure_part_steps(slide: &Value) -> HashMap<String, i64> {
 pub fn render_figure_assets(payload: &Value, out_dir: &std::path::Path) -> LnaResult<usize> {
     let dir = out_dir.join("figures");
     let mut written = 0;
-    for (idx, slide) in payload.get("slides").and_then(Value::as_array).into_iter().flatten().enumerate() {
-        let Some(spec) = slide.pointer("/figure/spec") else { continue };
+    for (idx, slide) in payload
+        .get("slides")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let Some(spec) = slide.pointer("/figure/spec") else {
+            continue;
+        };
         std::fs::create_dir_all(&dir).map_err(|e| LnaError::internal(e.to_string()))?;
         let sid = slide_file_id(slide, idx);
         let full = render_figure(spec, &HashSet::new());
-        std::fs::write(dir.join(format!("{sid}.svg")), &full.svg).map_err(|e| LnaError::internal(e.to_string()))?;
+        std::fs::write(dir.join(format!("{sid}.svg")), &full.svg)
+            .map_err(|e| LnaError::internal(e.to_string()))?;
         let steps = figure_part_steps(slide);
         let max = steps.values().copied().max().unwrap_or(0);
         for k in 0..=max {
-            let hidden: HashSet<String> = steps.iter().filter(|(_, s)| **s > k).map(|(p, _)| p.clone()).collect();
-            let out = if hidden.is_empty() { full.clone() } else { render_figure(spec, &hidden) };
+            let hidden: HashSet<String> = steps
+                .iter()
+                .filter(|(_, s)| **s > k)
+                .map(|(p, _)| p.clone())
+                .collect();
+            let out = if hidden.is_empty() {
+                full.clone()
+            } else {
+                render_figure(spec, &hidden)
+            };
             match svg_to_png(&out.svg, 2.0) {
                 Ok(png) => {
-                    std::fs::write(dir.join(format!("{sid}_{k}.png")), png).map_err(|e| LnaError::internal(e.to_string()))?;
+                    std::fs::write(dir.join(format!("{sid}_{k}.png")), png)
+                        .map_err(|e| LnaError::internal(e.to_string()))?;
                     written += 1;
                 }
                 Err(e) => tracing::warn!("figure png for slide {sid} failed: {e}"),
@@ -635,8 +818,15 @@ pub fn render_figure_assets(payload: &Value, out_dir: &std::path::Path) -> LnaRe
 /// File-safe id for a slide's figure assets (lecture slides have ids; deck slides use the index).
 pub fn slide_file_id(slide: &Value, idx: usize) -> String {
     let id = sv(slide, "id");
-    let id: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.').collect();
-    if id.is_empty() { format!("slide{}", idx + 1) } else { id }
+    let id: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect();
+    if id.is_empty() {
+        format!("slide{}", idx + 1)
+    } else {
+        id
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -656,8 +846,13 @@ impl StudioService {
         if resolved.capabilities.supports_vision {
             return Some(resolved.clone());
         }
-        let prof = lna_storage::resolve_modality_profile(&self.db, "vision").ok().flatten()?;
-        let api_key = prof.keychain_ref.as_deref().and_then(|k| self.secrets.get(k).ok().flatten());
+        let prof = lna_storage::resolve_modality_profile(&self.db, "vision")
+            .ok()
+            .flatten()?;
+        let api_key = prof
+            .keychain_ref
+            .as_deref()
+            .and_then(|k| self.secrets.get(k).ok().flatten());
         Some(ResolvedProfile {
             id: prof.id,
             display_name: prof.display_name,
@@ -701,7 +896,10 @@ impl StudioService {
         );
         let req = LlmRequest {
             system: system.clone(),
-            messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(user.clone())] }],
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text(user.clone())],
+            }],
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
@@ -710,8 +908,18 @@ impl StudioService {
         };
         let (mut spec, u) = {
             let _p = self.acquire_llm_slots(&profile.id).await?;
-            self.run_structured_with_thought(artifact_id, &art.notebook_id, &format!("绘制配图：{slide_title}"), resolved, &req, "figure_spec", &schema, 2, cancel.clone())
-                .await?
+            self.run_structured_with_thought(
+                artifact_id,
+                &art.notebook_id,
+                &format!("绘制配图：{slide_title}"),
+                resolved,
+                &req,
+                "figure_spec",
+                &schema,
+                2,
+                cancel.clone(),
+            )
+            .await?
         };
         add_usage(&mut usage, &u);
         let vision = self.vision_profile(resolved);
@@ -742,7 +950,9 @@ impl StudioService {
                         use base64::Engine as _;
                         parts.push(Part::Media {
                             mime_type: "image/png".into(),
-                            data_base64: Some(base64::engine::general_purpose::STANDARD.encode(png)),
+                            data_base64: Some(
+                                base64::engine::general_purpose::STANDARD.encode(png),
+                            ),
                             file_uri: None,
                             audio_format: None,
                         });
@@ -758,14 +968,21 @@ impl StudioService {
             });
             let review_req = LlmRequest {
                 system: system.clone(),
-                messages: vec![LlmMessage { role: Role::User, parts }],
+                messages: vec![LlmMessage {
+                    role: Role::User,
+                    parts,
+                }],
                 tools: vec![],
                 tool_mode: ToolMode::None,
                 output: OutputMode::Text,
                 max_output_tokens: resolved.max_output_tokens.min(4000),
                 reasoning: ReasoningOptions::default(),
             };
-            let target = if !problems { vision.clone().unwrap_or_else(|| resolved.clone()) } else { resolved.clone() };
+            let target = if !problems {
+                vision.clone().unwrap_or_else(|| resolved.clone())
+            } else {
+                resolved.clone()
+            };
             let res = {
                 let _p = self.acquire_llm_slots(&profile.id).await?;
                 self.run_structured_with_thought(
@@ -801,9 +1018,19 @@ impl StudioService {
                 }
             }
         }
-        let content_parts = out.parts.iter().filter(|p| !matches!(p.id.as_str(), "title" | "grid" | "axes")).count();
+        let content_parts = out
+            .parts
+            .iter()
+            .filter(|p| !matches!(p.id.as_str(), "title" | "grid" | "axes"))
+            .count();
         if content_parts == 0 {
-            self.append_thought(artifact_id, &art.notebook_id, "stage", &format!("配图未能生成：{slide_title}"), &out.report_text());
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &format!("配图未能生成：{slide_title}"),
+                &out.report_text(),
+            );
             return Ok((None, usage));
         }
         let incomplete = !out.errors.is_empty();
@@ -813,7 +1040,10 @@ impl StudioService {
                 &art.notebook_id,
                 "stage",
                 &format!("配图可能不完整：{slide_title}"),
-                &format!("经 {FIGURE_REVIEW_ROUNDS} 轮检查后仍有问题，已保留可绘制的部分：\n{}", out.report_text()),
+                &format!(
+                    "经 {FIGURE_REVIEW_ROUNDS} 轮检查后仍有问题，已保留可绘制的部分：\n{}",
+                    out.report_text()
+                ),
             );
         }
         Ok((
@@ -841,12 +1071,30 @@ impl StudioService {
     ) -> LnaResult<Usage> {
         let mut usage = Usage::default();
         for slide in slides.iter_mut() {
-            let Some(req) = slide.get("figure_request").cloned().filter(|r| r.is_object()) else { continue };
+            let Some(req) = slide
+                .get("figure_request")
+                .cloned()
+                .filter(|r| r.is_object())
+            else {
+                continue;
+            };
             if slide.get("figure").is_some_and(|f| f.is_object()) {
                 continue;
             }
             let title = sv(slide, "title");
-            match self.generate_figure(art, profile, resolved, artifact_id, &title, &req, excerpt, cancel.clone()).await {
+            match self
+                .generate_figure(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    &title,
+                    &req,
+                    excerpt,
+                    cancel.clone(),
+                )
+                .await
+            {
                 Ok((fig, u)) => {
                     add_usage(&mut usage, &u);
                     if let Some(fig) = fig {
@@ -855,7 +1103,13 @@ impl StudioService {
                 }
                 Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
                 Err(e) => {
-                    self.append_thought(artifact_id, &art.notebook_id, "stage", &format!("配图失败：{title}"), &truncate_str(&e.message, 300));
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        &format!("配图失败：{title}"),
+                        &truncate_str(&e.message, 300),
+                    );
                 }
             }
         }
@@ -864,6 +1118,7 @@ impl StudioService {
 
     /// Evidence for one section: full text for small sources, else multi-round on-demand
     /// reading focused on the section, else plain retrieval.
+    #[allow(clippy::too_many_arguments)]
     async fn section_evidence(
         &self,
         art: &StudioArtifact,
@@ -883,23 +1138,39 @@ impl StudioService {
         let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
         let budget = (available_input.saturating_mul(70) / 100).min(16_000);
         match self
-            .gather_evidence_on_demand(art, profile, resolved, artifact_id, Some(focus), budget, Some(&target_ids), true, cancel)
+            .gather_evidence_on_demand(
+                art,
+                profile,
+                resolved,
+                artifact_id,
+                Some(focus),
+                budget,
+                Some(&target_ids),
+                true,
+                cancel,
+            )
             .await
         {
             Ok(Some(t)) if !t.trim().is_empty() => Ok(t),
             Err(e) if e.code == ErrorCode::Cancelled => Err(e),
             _ => {
                 let queries = vec![focus.to_string()];
-                Ok(match self.retrieval.search(&art.notebook_id, &queries, &target_ids, 8_000, 14).await {
-                    Ok(res) => res
-                        .evidences
-                        .iter()
-                        .enumerate()
-                        .map(|(i, e)| format!("[{}] ({}) {}", i + 1, e.source_title, e.content))
-                        .collect::<Vec<_>>()
-                        .join("\n\n"),
-                    Err(_) => String::new(),
-                })
+                Ok(
+                    match self
+                        .retrieval
+                        .search(&art.notebook_id, &queries, &target_ids, 8_000, 14)
+                        .await
+                    {
+                        Ok(res) => res
+                            .evidences
+                            .iter()
+                            .enumerate()
+                            .map(|(i, e)| format!("[{}] ({}) {}", i + 1, e.source_title, e.content))
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                        Err(_) => String::new(),
+                    },
+                )
             }
         }
     }
@@ -919,8 +1190,16 @@ impl StudioService {
         max_repairs: usize,
         cancel: CancellationToken,
     ) -> LnaResult<(Vec<Value>, Usage)> {
-        let mode = art.config.get("mode").and_then(Value::as_str).unwrap_or("general");
-        let detail = art.config.get("detail").and_then(Value::as_str).unwrap_or("auto");
+        let mode = art
+            .config
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("general");
+        let detail = art
+            .config
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or("auto");
         let rules = lecture_rules(mode, detail);
         let schema = section_schema();
         let system = format!(
@@ -940,7 +1219,10 @@ impl StudioService {
         );
         let mk_req = |text: String| LlmRequest {
             system: system.clone(),
-            messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(text)] }],
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text(text)],
+            }],
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
@@ -964,11 +1246,28 @@ impl StudioService {
             .await?
         };
         add_usage(&mut usage, &u);
-        let mut slides = out.get("slides").and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut slides = out
+            .get("slides")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         if slides.is_empty() {
-            return Err(LnaError::new(ErrorCode::OutputInvalid, "Lecture section produced no slides"));
+            return Err(LnaError::new(
+                ErrorCode::OutputInvalid,
+                "Lecture section produced no slides",
+            ));
         }
-        let u = self.fulfil_figure_requests(art, profile, resolved, artifact_id, &mut slides, evidence, cancel.clone()).await?;
+        let u = self
+            .fulfil_figure_requests(
+                art,
+                profile,
+                resolved,
+                artifact_id,
+                &mut slides,
+                evidence,
+                cancel.clone(),
+            )
+            .await?;
         add_usage(&mut usage, &u);
 
         for round in 0..=LECTURE_REPAIR_ROUNDS {
@@ -998,13 +1297,23 @@ impl StudioService {
             let figures: Vec<(usize, Value)> = slides
                 .iter()
                 .enumerate()
-                .filter_map(|(i, s)| s.get("figure").filter(|f| f.is_object()).map(|f| (i, f.clone())))
+                .filter_map(|(i, s)| {
+                    s.get("figure")
+                        .filter(|f| f.is_object())
+                        .map(|f| (i, f.clone()))
+                })
                 .collect();
             let mut shown = slides.clone();
             for s in shown.iter_mut() {
                 if let Some(o) = s.as_object_mut() {
                     if let Some(f) = o.remove("figure") {
-                        let ids: Vec<String> = f.pointer("/meta/parts").and_then(Value::as_array).into_iter().flatten().map(|p| format!("figure:{}", sv(p, "id"))).collect();
+                        let ids: Vec<String> = f
+                            .pointer("/meta/parts")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .map(|p| format!("figure:{}", sv(p, "id")))
+                            .collect();
                         o.insert("figure_parts_available".into(), json!(ids));
                     }
                 }
@@ -1032,7 +1341,11 @@ impl StudioService {
             match res {
                 Ok((fixed, u)) => {
                     add_usage(&mut usage, &u);
-                    let mut new_slides = fixed.get("slides").and_then(Value::as_array).cloned().unwrap_or_default();
+                    let mut new_slides = fixed
+                        .get("slides")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
                     if new_slides.is_empty() {
                         continue;
                     }
@@ -1049,7 +1362,17 @@ impl StudioService {
                         }
                     }
                     // a repair may add a brand-new figure request
-                    let u = self.fulfil_figure_requests(art, profile, resolved, artifact_id, &mut new_slides, evidence, cancel.clone()).await?;
+                    let u = self
+                        .fulfil_figure_requests(
+                            art,
+                            profile,
+                            resolved,
+                            artifact_id,
+                            &mut new_slides,
+                            evidence,
+                            cancel.clone(),
+                        )
+                        .await?;
                     add_usage(&mut usage, &u);
                     slides = new_slides;
                 }
@@ -1068,18 +1391,37 @@ impl StudioService {
     }
 
     fn lecture_kg_hint(&self, art: &StudioArtifact) -> String {
-        let mode = art.config.get("mode").and_then(Value::as_str).unwrap_or("general");
+        let mode = art
+            .config
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("general");
         if mode != "review" && mode != "practice" {
             return String::new();
         }
-        let Ok(sum) = self.compute_kg_progress_summary(&art.notebook_id, None) else { return String::new() };
+        let Ok(sum) = self.compute_kg_progress_summary(&art.notebook_id, None) else {
+            return String::new();
+        };
         if sum.get("has_knowledge_graph").and_then(Value::as_bool) != Some(true) {
             return String::new();
         }
         let list = |k: &str| -> Vec<String> {
-            sum.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).take(30).collect()).unwrap_or_default()
+            sum.get(k)
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .take(30)
+                        .collect()
+                })
+                .unwrap_or_default()
         };
-        let (weak, unstarted, mastered) = (list("weak_concepts"), list("unstarted_concepts"), list("mastered_concepts"));
+        let (weak, unstarted, mastered) = (
+            list("weak_concepts"),
+            list("unstarted_concepts"),
+            list("mastered_concepts"),
+        );
         format!(
             "Learner knowledge-graph status — weak (prioritise): {}; not yet studied: {}; mastered (pass quickly): {}.",
             if weak.is_empty() { "(none)".into() } else { weak.join(", ") },
@@ -1101,16 +1443,33 @@ impl StudioService {
         max_repairs: usize,
         cancel: CancellationToken,
     ) -> LnaResult<(Value, Usage)> {
-        let mode = art.config.get("mode").and_then(Value::as_str).unwrap_or("general").to_string();
-        let detail = art.config.get("detail").and_then(Value::as_str).unwrap_or("auto").to_string();
+        let mode = art
+            .config
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("general")
+            .to_string();
+        let detail = art
+            .config
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or("auto")
+            .to_string();
         let mut usage_sum = Usage::default();
         let target_ids = Self::generation_source_ids(art);
-        let full_text = if self.sources_fit_directly(&target_ids, resolved)? { Some(evidence_txt) } else { None };
+        let full_text = if self.sources_fit_directly(&target_ids, resolved)? {
+            Some(evidence_txt)
+        } else {
+            None
+        };
         let kg_hint = self.lecture_kg_hint(art);
 
-        let saved = self.get_checkpoint(artifact_id, "lecture_passes")?.filter(|v| {
-            v.get("sources_fingerprint").and_then(Value::as_str) == Some(art.sources_fingerprint.as_str())
-        });
+        let saved = self
+            .get_checkpoint(artifact_id, "lecture_passes")?
+            .filter(|v| {
+                v.get("sources_fingerprint").and_then(Value::as_str)
+                    == Some(art.sources_fingerprint.as_str())
+            });
         let (outline, mut done) = match saved {
             Some(v) => {
                 let done: BTreeMap<String, Value> = v
@@ -1118,7 +1477,13 @@ impl StudioService {
                     .and_then(Value::as_object)
                     .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                     .unwrap_or_default();
-                self.append_thought(artifact_id, &art.notebook_id, "stage", "复用已完成的讲解小节", &format!("已从检查点恢复大纲与 {} 个已完成的小节。", done.len()));
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    "复用已完成的讲解小节",
+                    &format!("已从检查点恢复大纲与 {} 个已完成的小节。", done.len()),
+                );
                 (v.get("outline").cloned().unwrap_or_else(|| json!({})), done)
             }
             None => {
@@ -1152,21 +1517,54 @@ impl StudioService {
                 };
                 let (outline, u) = {
                     let _p = self.acquire_llm_slots(&profile.id).await?;
-                    self.run_structured_with_thought(artifact_id, &art.notebook_id, "讲解大纲规划思考", resolved, &req, "lecture_outline", &outline_schema(), max_repairs, cancel.clone())
-                        .await?
+                    self.run_structured_with_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "讲解大纲规划思考",
+                        resolved,
+                        &req,
+                        "lecture_outline",
+                        &outline_schema(),
+                        max_repairs,
+                        cancel.clone(),
+                    )
+                    .await?
                 };
                 add_usage(&mut usage_sum, &u);
                 if arr_len(&outline, "sections") == 0 {
-                    return Err(LnaError::new(ErrorCode::OutputInvalid, "Lecture outline has no sections"));
+                    return Err(LnaError::new(
+                        ErrorCode::OutputInvalid,
+                        "Lecture outline has no sections",
+                    ));
                 }
                 self.save_checkpoint(artifact_id, "lecture_passes", json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": {} }))?;
                 (outline, BTreeMap::new())
             }
         };
 
-        let title = { let t = sv(&outline, "title"); if t.is_empty() { art.title.clone() } else { t } };
-        let objectives: Vec<String> = outline.get("objectives").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
-        let sections: Vec<Value> = outline.get("sections").and_then(Value::as_array).cloned().unwrap_or_default();
+        let title = {
+            let t = sv(&outline, "title");
+            if t.is_empty() {
+                art.title.clone()
+            } else {
+                t
+            }
+        };
+        let objectives: Vec<String> = outline
+            .get("objectives")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let sections: Vec<Value> = outline
+            .get("sections")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let outline_txt = sections
             .iter()
             .enumerate()
@@ -1184,9 +1582,23 @@ impl StudioService {
             }
             let stitle = sv(sec, "title");
             let focus = sv(sec, "focus");
-            self.append_thought(artifact_id, &art.notebook_id, "stage", &format!("撰写小节 {}/{}：{}", i + 1, total, stitle), "正在查阅该小节对应的原文，并撰写幻灯片、讲稿与激光/分步动画提示…");
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &format!("撰写小节 {}/{}：{}", i + 1, total, stitle),
+                "正在查阅该小节对应的原文，并撰写幻灯片、讲稿与激光/分步动画提示…",
+            );
             let evidence = self
-                .section_evidence(art, profile, resolved, artifact_id, &format!("{stitle} — {focus}"), full_text, cancel.clone())
+                .section_evidence(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    &format!("{stitle} — {focus}"),
+                    full_text,
+                    cancel.clone(),
+                )
                 .await?;
             let prev_titles: Vec<String> = done
                 .values()
@@ -1199,14 +1611,45 @@ impl StudioService {
                 outline_txt: &outline_txt,
                 section_title: &stitle,
                 section_focus: &focus,
-                position: format!("section {} of {}{}", i + 1, total, if i == 0 { "; open the lecture with a title slide" } else if i + 1 == total { "; close the lecture with a summary slide" } else { "" }),
+                position: format!(
+                    "section {} of {}{}",
+                    i + 1,
+                    total,
+                    if i == 0 {
+                        "; open the lecture with a title slide"
+                    } else if i + 1 == total {
+                        "; close the lecture with a summary slide"
+                    } else {
+                        ""
+                    }
+                ),
                 extra: format!(
                     "{}{}",
-                    if prev_titles.is_empty() { String::new() } else { format!("Slides already covered in earlier sections: {}\n", prev_titles.join(" | ")) },
+                    if prev_titles.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "Slides already covered in earlier sections: {}\n",
+                            prev_titles.join(" | ")
+                        )
+                    },
                     kg_hint
                 ),
             };
-            match self.author_section(art, profile, resolved, artifact_id, &sc, &evidence, reasoning.clone(), max_repairs, cancel.clone()).await {
+            match self
+                .author_section(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    &sc,
+                    &evidence,
+                    reasoning.clone(),
+                    max_repairs,
+                    cancel.clone(),
+                )
+                .await
+            {
                 Ok((mut slides, u)) => {
                     add_usage(&mut usage_sum, &u);
                     finalize_slides(&mut slides, &sid, &format!("{sid}-"));
@@ -1215,7 +1658,13 @@ impl StudioService {
                 Err(e) if e.code == ErrorCode::Cancelled || cancel.is_cancelled() => return Err(e),
                 Err(e) => {
                     // keep going: a failed section must not discard the rest, but it is reported
-                    self.append_thought(artifact_id, &art.notebook_id, "stage", &format!("小节生成失败：{stitle}"), &truncate_str(&e.message, 300));
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        &format!("小节生成失败：{stitle}"),
+                        &truncate_str(&e.message, 300),
+                    );
                     return Err(e);
                 }
             }
@@ -1256,7 +1705,10 @@ impl StudioService {
         if art.artifact_type != ArtifactType::Lecture {
             return Err(LnaError::invalid("Not a lecture"));
         }
-        let payload = art.payload.clone().ok_or_else(|| LnaError::new(ErrorCode::Conflict, "Lecture has no content yet"))?;
+        let payload = art
+            .payload
+            .clone()
+            .ok_or_else(|| LnaError::new(ErrorCode::Conflict, "Lecture has no content yet"))?;
         Ok((art, payload))
     }
 
@@ -1266,7 +1718,12 @@ impl StudioService {
         if !sub.is_empty() {
             s.push_str(&format!("{sub}\n"));
         }
-        for b in slide.get("bullets").and_then(Value::as_array).into_iter().flatten() {
+        for b in slide
+            .get("bullets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             s.push_str(&format!("- {}\n", b.as_str().unwrap_or("")));
         }
         for k in ["cards", "steps", "metrics", "columns"] {
@@ -1291,25 +1748,63 @@ impl StudioService {
 
     /// Answers an interruption question in the context of the current slide and judges whether
     /// the remaining lecture should be adapted.
-    pub async fn lecture_ask(&self, artifact_id: &str, slide_id: &str, sentence_id: Option<&str>, question: &str, history: &[Value], images: &[Attachment]) -> LnaResult<Value> {
+    pub async fn lecture_ask(
+        &self,
+        artifact_id: &str,
+        slide_id: &str,
+        sentence_id: Option<&str>,
+        question: &str,
+        history: &[Value],
+        images: &[Attachment],
+    ) -> LnaResult<Value> {
         let (art, payload) = self.lecture_payload(artifact_id)?;
-        let slides = payload.get("slides").and_then(Value::as_array).cloned().unwrap_or_default();
-        let idx = slides.iter().position(|s| sv(s, "id") == slide_id).unwrap_or(0);
+        let slides = payload
+            .get("slides")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let idx = slides
+            .iter()
+            .position(|s| sv(s, "id") == slide_id)
+            .unwrap_or(0);
         let slide = slides.get(idx).cloned().unwrap_or_else(|| json!({}));
         let mut spoken = String::new();
-        for n in slide.get("narration").and_then(Value::as_array).into_iter().flatten() {
+        for n in slide
+            .get("narration")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             spoken.push_str(&sv(n, "text"));
             if Some(sv(n, "id").as_str()) == sentence_id {
                 break;
             }
         }
         let covered: Vec<String> = slides[..idx].iter().map(|s| sv(s, "title")).collect();
-        let upcoming: Vec<String> = slides.iter().skip(idx + 1).take(8).map(|s| sv(s, "title")).collect();
+        let upcoming: Vec<String> = slides
+            .iter()
+            .skip(idx + 1)
+            .take(8)
+            .map(|s| sv(s, "title"))
+            .collect();
         let (_profile, resolved) = self.resolve_active_profile()?;
         let target_ids = Self::generation_source_ids(&art);
-        let queries = vec![question.to_string(), format!("{} {}", sv(&slide, "title"), question)];
-        let evidence = match self.retrieval.search(&art.notebook_id, &queries, &target_ids, 6_000, 10).await {
-            Ok(res) => res.evidences.iter().enumerate().map(|(i, e)| format!("[{}] ({}) {}", i + 1, e.source_title, e.content)).collect::<Vec<_>>().join("\n\n"),
+        let queries = vec![
+            question.to_string(),
+            format!("{} {}", sv(&slide, "title"), question),
+        ];
+        let evidence = match self
+            .retrieval
+            .search(&art.notebook_id, &queries, &target_ids, 6_000, 10)
+            .await
+        {
+            Ok(res) => res
+                .evidences
+                .iter()
+                .enumerate()
+                .map(|(i, e)| format!("[{}] ({}) {}", i + 1, e.source_title, e.content))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
             Err(_) => String::new(),
         };
         let hist: String = history
@@ -1350,7 +1845,13 @@ impl StudioService {
                 profile: &resolved,
                 atts: &files,
             };
-            let b = lna_ingest::context_files::brief(&ctx, &format!("回答学生在讲解中提出的问题：{question}"), 4, CancellationToken::new()).await?;
+            let b = lna_ingest::context_files::brief(
+                &ctx,
+                &format!("回答学生在讲解中提出的问题：{question}"),
+                4,
+                CancellationToken::new(),
+            )
+            .await?;
             format!("{evidence}\n\nFrom the learner's attached files:\n{b}")
         };
         let req = LlmRequest {
@@ -1385,9 +1886,32 @@ impl StudioService {
             max_output_tokens: resolved.max_output_tokens.min(3000),
             reasoning: ReasoningOptions::default(),
         };
-        let (out, usage) = self.llm.complete_structured(&resolved, &req, "lecture_answer", &schema, CancellationToken::new()).await?;
-        let _ = lna_storage::record_usage(&self.db, Some(&art.notebook_id), Some(&resolved.id), "studio_lecture_ask", Some(artifact_id), usage.input_tokens as i64, usage.output_tokens as i64, usage.cached_tokens as i64, false);
-        let kind = out.pointer("/adapt/kind").and_then(Value::as_str).unwrap_or("none").to_string();
+        let (out, usage) = self
+            .llm
+            .complete_structured(
+                &resolved,
+                &req,
+                "lecture_answer",
+                &schema,
+                CancellationToken::new(),
+            )
+            .await?;
+        let _ = lna_storage::record_usage(
+            &self.db,
+            Some(&art.notebook_id),
+            Some(&resolved.id),
+            "studio_lecture_ask",
+            Some(artifact_id),
+            usage.input_tokens as i64,
+            usage.output_tokens as i64,
+            usage.cached_tokens as i64,
+            false,
+        );
+        let kind = out
+            .pointer("/adapt/kind")
+            .and_then(Value::as_str)
+            .unwrap_or("none")
+            .to_string();
         Ok(json!({
             // shown without a TeX engine on every client
             "answer": crate::texfmt::tex_to_unicode(&sv(&out, "answer")),
@@ -1398,23 +1922,64 @@ impl StudioService {
 
     /// Adapts the lecture after an interruption. `extend` inserts 1-2 supplementary slides after
     /// the current slide; other kinds regenerate every slide after it. Recorded for undo.
-    pub async fn lecture_adapt(&self, artifact_id: &str, slide_id: &str, kind: &str, reason: &str, question: &str) -> LnaResult<Value> {
+    pub async fn lecture_adapt(
+        &self,
+        artifact_id: &str,
+        slide_id: &str,
+        kind: &str,
+        reason: &str,
+        question: &str,
+    ) -> LnaResult<Value> {
         let (art, payload) = self.lecture_payload(artifact_id)?;
-        let slides = payload.get("slides").and_then(Value::as_array).cloned().unwrap_or_default();
+        let slides = payload
+            .get("slides")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let idx = slides
             .iter()
             .position(|s| sv(s, "id") == slide_id)
             .ok_or_else(|| LnaError::new(ErrorCode::NotFound, "Slide not found"))?;
         let (profile, resolved) = self.resolve_active_profile()?;
-        let reasoning = ReasoningOptions { show_summary: resolved.show_thinking || resolved.capabilities.reasoning_summary, effort: resolved.effort.clone() };
+        let reasoning = ReasoningOptions {
+            show_summary: resolved.show_thinking || resolved.capabilities.reasoning_summary,
+            effort: resolved.effort.clone(),
+        };
         let cancel = CancellationToken::new();
         let title = sv(&payload, "title");
-        let objectives: Vec<String> = payload.get("objectives").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
-        let sections: Vec<Value> = payload.get("sections").and_then(Value::as_array).cloned().unwrap_or_default();
-        let outline_txt = sections.iter().enumerate().map(|(i, s)| format!("{}. {}", i + 1, sv(s, "title"))).collect::<Vec<_>>().join("\n");
+        let objectives: Vec<String> = payload
+            .get("objectives")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let sections: Vec<Value> = payload
+            .get("sections")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let outline_txt = sections
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("{}. {}", i + 1, sv(s, "title")))
+            .collect::<Vec<_>>()
+            .join("\n");
         let target_ids = Self::generation_source_ids(&art);
-        let full = if self.sources_fit_directly(&target_ids, &resolved)? { Some(self.load_full_source_text(&target_ids)?.1) } else { None };
-        let n_adapt = payload.get("adaptations").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0) + 1;
+        let full = if self.sources_fit_directly(&target_ids, &resolved)? {
+            Some(self.load_full_source_text(&target_ids)?.1)
+        } else {
+            None
+        };
+        let n_adapt = payload
+            .get("adaptations")
+            .and_then(Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0)
+            + 1;
         let aid = format!("a{}", n_adapt);
         let cur = &slides[idx];
         let cur_section = sv(cur, "section");
@@ -1426,12 +1991,28 @@ impl StudioService {
             "skip_known" => "The learner is ahead: compress what they already know, keep only what is new or hard.",
             _ => "Insert supplementary explanation.",
         };
-        self.append_thought(artifact_id, &art.notebook_id, "stage", "根据提问调整后续讲解", &format!("{kind}：{reason}"));
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "stage",
+            "根据提问调整后续讲解",
+            &format!("{kind}：{reason}"),
+        );
 
         let mut usage = Usage::default();
         let (new_slides, removed, from) = if kind == "extend" {
             let focus = format!("{} — {}", sv(cur, "title"), question);
-            let evidence = self.section_evidence(&art, &profile, &resolved, artifact_id, &focus, full.as_deref(), cancel.clone()).await?;
+            let evidence = self
+                .section_evidence(
+                    &art,
+                    &profile,
+                    &resolved,
+                    artifact_id,
+                    &focus,
+                    full.as_deref(),
+                    cancel.clone(),
+                )
+                .await?;
             let sc = SectionCtx {
                 lecture_title: &title,
                 objectives: &objectives,
@@ -1445,7 +2026,19 @@ impl StudioService {
                     Self::slide_text(cur)
                 ),
             };
-            let (mut add, u) = self.author_section(&art, &profile, &resolved, artifact_id, &sc, &evidence, reasoning.clone(), 2, cancel.clone()).await?;
+            let (mut add, u) = self
+                .author_section(
+                    &art,
+                    &profile,
+                    &resolved,
+                    artifact_id,
+                    &sc,
+                    &evidence,
+                    reasoning.clone(),
+                    2,
+                    cancel.clone(),
+                )
+                .await?;
             add_usage(&mut usage, &u);
             add.truncate(3);
             finalize_slides(&mut add, &cur_section, &format!("{aid}-"));
@@ -1463,10 +2056,24 @@ impl StudioService {
             }
             let mut out = Vec::new();
             for (gi, (sec, old)) in groups.iter().enumerate() {
-                let stitle = sections.iter().find(|s| sv(s, "id") == *sec).map(|s| sv(s, "title")).unwrap_or_else(|| sec.clone());
+                let stitle = sections
+                    .iter()
+                    .find(|s| sv(s, "id") == *sec)
+                    .map(|s| sv(s, "title"))
+                    .unwrap_or_else(|| sec.clone());
                 let planned: Vec<String> = old.iter().map(|s| sv(s, "title")).collect();
                 let focus = format!("{stitle}: {}", planned.join("; "));
-                let evidence = self.section_evidence(&art, &profile, &resolved, artifact_id, &focus, full.as_deref(), cancel.clone()).await?;
+                let evidence = self
+                    .section_evidence(
+                        &art,
+                        &profile,
+                        &resolved,
+                        artifact_id,
+                        &focus,
+                        full.as_deref(),
+                        cancel.clone(),
+                    )
+                    .await?;
                 let sc = SectionCtx {
                     lecture_title: &title,
                     objectives: &objectives,
@@ -1480,19 +2087,48 @@ impl StudioService {
                         planned.join(" | ")
                     ),
                 };
-                let (mut part, u) = self.author_section(&art, &profile, &resolved, artifact_id, &sc, &evidence, reasoning.clone(), 2, cancel.clone()).await?;
+                let (mut part, u) = self
+                    .author_section(
+                        &art,
+                        &profile,
+                        &resolved,
+                        artifact_id,
+                        &sc,
+                        &evidence,
+                        reasoning.clone(),
+                        2,
+                        cancel.clone(),
+                    )
+                    .await?;
                 add_usage(&mut usage, &u);
                 finalize_slides(&mut part, sec, &format!("{aid}{}-", gi + 1));
                 out.extend(part);
             }
             (out, rest, idx + 1)
         };
-        let _ = lna_storage::record_usage(&self.db, Some(&art.notebook_id), Some(&profile.id), "studio_lecture_adapt", Some(artifact_id), usage.input_tokens as i64, usage.output_tokens as i64, usage.cached_tokens as i64, false);
+        let _ = lna_storage::record_usage(
+            &self.db,
+            Some(&art.notebook_id),
+            Some(&profile.id),
+            "studio_lecture_adapt",
+            Some(artifact_id),
+            usage.input_tokens as i64,
+            usage.output_tokens as i64,
+            usage.cached_tokens as i64,
+            false,
+        );
 
         // apply to the latest stored payload
         let (_, mut latest) = self.lecture_payload(artifact_id)?;
-        let arr = latest.get_mut("slides").and_then(Value::as_array_mut).ok_or_else(|| LnaError::internal("payload without slides"))?;
-        let at = arr.iter().position(|s| sv(s, "id") == slide_id).map(|i| i + 1).unwrap_or(from);
+        let arr = latest
+            .get_mut("slides")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| LnaError::internal("payload without slides"))?;
+        let at = arr
+            .iter()
+            .position(|s| sv(s, "id") == slide_id)
+            .map(|i| i + 1)
+            .unwrap_or(from);
         if !removed.is_empty() {
             let rm_ids: HashSet<String> = removed.iter().map(|s| sv(s, "id")).collect();
             arr.retain(|s| !rm_ids.contains(&sv(s, "id")));
@@ -1517,13 +2153,26 @@ impl StudioService {
         } else {
             latest["adaptations"] = json!([record.clone()]);
         }
-        let all: Vec<Value> = latest.get("slides").and_then(Value::as_array).cloned().unwrap_or_default();
+        let all: Vec<Value> = latest
+            .get("slides")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         latest["estimated_minutes"] = json!(estimate_minutes(&all));
         self.store_lecture_payload(artifact_id, &latest)?;
         let mut summary = record.clone();
         if let Some(o) = summary.as_object_mut() {
-            o.insert("removed_titles".into(), json!(removed.iter().map(|s| sv(s, "title")).collect::<Vec<_>>()));
-            o.insert("inserted_titles".into(), json!(new_slides.iter().map(|s| sv(s, "title")).collect::<Vec<_>>()));
+            o.insert(
+                "removed_titles".into(),
+                json!(removed.iter().map(|s| sv(s, "title")).collect::<Vec<_>>()),
+            );
+            o.insert(
+                "inserted_titles".into(),
+                json!(new_slides
+                    .iter()
+                    .map(|s| sv(s, "title"))
+                    .collect::<Vec<_>>()),
+            );
             o.remove("removed");
         }
         self.emit_status_event(artifact_id, "READY", "READY", 1.0, None, None);
@@ -1532,21 +2181,46 @@ impl StudioService {
 
     /// Undoes an adaptation (only the most recent one still applied, so the slide order stays
     /// consistent); `all` restores the original lecture.
-    pub fn lecture_undo(&self, artifact_id: &str, adaptation_id: Option<&str>, all: bool) -> LnaResult<Value> {
+    pub fn lecture_undo(
+        &self,
+        artifact_id: &str,
+        adaptation_id: Option<&str>,
+        all: bool,
+    ) -> LnaResult<Value> {
         let (_, mut payload) = self.lecture_payload(artifact_id)?;
         let mut undone = Vec::new();
-        loop {
-            let Some(last) = payload.get("adaptations").and_then(Value::as_array).and_then(|a| a.last()).cloned() else { break };
+        while let Some(last) = payload
+            .get("adaptations")
+            .and_then(Value::as_array)
+            .and_then(|a| a.last())
+            .cloned()
+        {
             let id = sv(&last, "id");
             if !all && adaptation_id.is_some_and(|want| want != id) {
-                return Err(LnaError::invalid("Only the most recent adaptation can be undone"));
+                return Err(LnaError::invalid(
+                    "Only the most recent adaptation can be undone",
+                ));
             }
-            let inserted: HashSet<String> = last.get("inserted").and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
-            let removed: Vec<Value> = last.get("removed").and_then(Value::as_array).cloned().unwrap_or_default();
+            let inserted: HashSet<String> = last
+                .get("inserted")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            let removed: Vec<Value> = last
+                .get("removed")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             let at = sv(&last, "at_slide");
             if let Some(arr) = payload.get_mut("slides").and_then(Value::as_array_mut) {
                 arr.retain(|s| !inserted.contains(&sv(s, "id")));
-                let pos = arr.iter().position(|s| sv(s, "id") == at).map(|i| i + 1).unwrap_or(arr.len());
+                let pos = arr
+                    .iter()
+                    .position(|s| sv(s, "id") == at)
+                    .map(|i| i + 1)
+                    .unwrap_or(arr.len());
                 for (k, s) in removed.into_iter().enumerate() {
                     arr.insert((pos + k).min(arr.len()), s);
                 }
@@ -1559,7 +2233,11 @@ impl StudioService {
                 break;
             }
         }
-        let all_slides: Vec<Value> = payload.get("slides").and_then(Value::as_array).cloned().unwrap_or_default();
+        let all_slides: Vec<Value> = payload
+            .get("slides")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         payload["estimated_minutes"] = json!(estimate_minutes(&all_slides));
         self.store_lecture_payload(artifact_id, &payload)?;
         self.emit_status_event(artifact_id, "READY", "READY", 1.0, None, None);
@@ -1573,8 +2251,11 @@ impl StudioService {
         }
         let s = payload.to_string();
         self.db.write(|conn| {
-            conn.execute("UPDATE studio_artifacts SET payload_json=?1, updated_at=?2 WHERE id=?3", params![s, now_ms(), artifact_id])
-                .map_err(map_sql_err)?;
+            conn.execute(
+                "UPDATE studio_artifacts SET payload_json=?1, updated_at=?2 WHERE id=?3",
+                params![s, now_ms(), artifact_id],
+            )
+            .map_err(map_sql_err)?;
             Ok(())
         })
     }
@@ -1614,13 +2295,19 @@ mod tests {
         assert!(msgs.iter().any(|m| m.contains("LaTeX")), "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("no narration")), "{msgs:?}");
         // no silent re-targeting: the fallback removes the broken cue only
-        assert!(issues.iter().any(|i| matches!(i.fix, Fix::RemoveCue { sentence: 0, cue: 1 })));
+        assert!(issues.iter().any(|i| matches!(
+            i.fix,
+            Fix::RemoveCue {
+                sentence: 0,
+                cue: 1
+            }
+        )));
     }
 
     #[test]
     fn display_only_rules() {
         let d = json!({"layout": "figure", "title": "图", "narration": [], "display_only": {"reason": "大图展示"}});
-        assert!(check_lecture_slides(&[d.clone()], "general").is_empty());
+        assert!(check_lecture_slides(std::slice::from_ref(&d), "general").is_empty());
         let issues = check_lecture_slides(&[d.clone(), d], "general");
         assert!(issues.iter().any(|i| i.msg.contains("second display-only")));
     }
@@ -1640,7 +2327,9 @@ mod tests {
     fn checkpoint_needs_reason() {
         let mut s = slide();
         s["checkpoint"] = json!({"kind": "ask", "question": "为什么？"});
-        assert!(check_lecture_slides(&[s.clone()], "general").iter().any(|i| i.msg.contains("reason")));
+        assert!(check_lecture_slides(&[s.clone()], "general")
+            .iter()
+            .any(|i| i.msg.contains("reason")));
         s["checkpoint"]["reason"] = json!("易混淆");
         assert!(check_lecture_slides(&[s], "general").is_empty());
     }
@@ -1655,10 +2344,18 @@ mod tests {
         apply_fallbacks(&mut slides, &issues);
         let s = &slides[0];
         // laser cue removed (not re-pointed), build step 1 removed, step 2 renumbered to 1
-        assert!(s["narration"][0]["cues"].as_array().unwrap().iter().all(|c| c["type"] != "laser"));
+        assert!(s["narration"][0]["cues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["type"] != "laser"));
         assert_eq!(s["builds"].as_array().unwrap().len(), 1);
         assert_eq!(s["builds"][0]["step"], 1);
-        assert!(check_lecture_slides(&slides, "general").is_empty(), "{:?}", check_lecture_slides(&slides, "general"));
+        assert!(
+            check_lecture_slides(&slides, "general").is_empty(),
+            "{:?}",
+            check_lecture_slides(&slides, "general")
+        );
     }
 
     #[test]
@@ -1676,7 +2373,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lna_fig_{}", std::process::id()));
         let n = render_figure_assets(&json!({"slides": [s.clone()]}), &dir).unwrap();
         assert_eq!(n, 2);
-        assert!(dir.join("figures/s1-2.svg").is_file() && dir.join("figures/s1-2_0.png").is_file() && dir.join("figures/s1-2_1.png").is_file());
+        assert!(
+            dir.join("figures/s1-2.svg").is_file()
+                && dir.join("figures/s1-2_0.png").is_file()
+                && dir.join("figures/s1-2_1.png").is_file()
+        );
         let _ = std::fs::remove_dir_all(&dir);
         s["narration"][0]["cues"][1]["target"] = json!("figure:Q");
         assert!(!check_lecture_slides(&[s], "general").is_empty());
@@ -1684,7 +2385,10 @@ mod tests {
 
     #[test]
     fn finalize_assigns_ids_notes_and_estimate() {
-        let mut v = vec![slide(), json!({"layout": "summary", "title": "小结", "narration": [{"text": "今天我们学习了逆矩阵的定义和求法。"}]})];
+        let mut v = vec![
+            slide(),
+            json!({"layout": "summary", "title": "小结", "narration": [{"text": "今天我们学习了逆矩阵的定义和求法。"}]}),
+        ];
         finalize_slides(&mut v, "s1", "s1-");
         assert_eq!(v[0]["id"], "s1-1");
         assert_eq!(v[1]["narration"][0]["id"], "s1-2.1");
@@ -1698,19 +2402,33 @@ mod tests {
 pub fn texify_slide_text(slide: &mut Value) {
     fn conv(v: &mut Value) {
         match v {
-            Value::String(s) if s.contains('$') || s.contains('\\') => *s = crate::texfmt::tex_to_unicode(s),
+            Value::String(s) if s.contains('$') || s.contains('\\') => {
+                *s = crate::texfmt::tex_to_unicode(s)
+            }
             Value::Array(a) => a.iter_mut().for_each(conv),
             _ => {}
         }
     }
-    let Some(o) = slide.as_object_mut() else { return };
+    let Some(o) = slide.as_object_mut() else {
+        return;
+    };
     for k in ["title", "subtitle", "formula", "callout", "bullets"] {
         if let Some(v) = o.get_mut(k) {
             conv(v);
         }
     }
-    for (k, fields) in [("cards", &["tag", "title", "body"][..]), ("metrics", &["value", "label", "detail"][..]), ("steps", &["title", "detail"][..]), ("columns", &["heading", "items"][..])] {
-        for item in o.get_mut(k).and_then(Value::as_array_mut).into_iter().flatten() {
+    for (k, fields) in [
+        ("cards", &["tag", "title", "body"][..]),
+        ("metrics", &["value", "label", "detail"][..]),
+        ("steps", &["title", "detail"][..]),
+        ("columns", &["heading", "items"][..]),
+    ] {
+        for item in o
+            .get_mut(k)
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
             for f in fields {
                 if let Some(v) = item.get_mut(*f) {
                     conv(v);
@@ -1727,11 +2445,9 @@ pub fn texify_slide_text(slide: &mut Value) {
     }
     if let Some(t) = o.get_mut("table") {
         for k in ["headers", "rows"] {
-            if let Some(v) = t.get_mut(k) {
-                if let Value::Array(rows) = v {
-                    for r in rows.iter_mut() {
-                        conv(r);
-                    }
+            if let Some(Value::Array(rows)) = t.get_mut(k) {
+                for r in rows.iter_mut() {
+                    conv(r);
                 }
             }
         }
