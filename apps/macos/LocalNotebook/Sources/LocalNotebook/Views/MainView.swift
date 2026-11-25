@@ -5,12 +5,18 @@ struct MainView: View {
     @Environment(\.colorScheme) private var systemColorScheme
 
     @State private var chatInput = ""
+    @StateObject private var chatAttach = AttachmentStore()
+    @StateObject private var studioAttach = AttachmentStore()
+    /// Unsent chat text and attachments of the notebooks that are not open.
+    @State private var chatDrafts: [String: (text: String, items: [AttachedItem])] = [:]
     @State private var hoveredSourceId: String? = nil
     @State private var hoveredTileKind: String? = nil
     @State private var hoveredArtifactId: String? = nil
     @State private var pendingStudioKind: String? = nil
     @State private var studioPromptInput: String = ""
     @State private var studioDetailLevel: String = "standard"
+    @State private var studioLectureMode: String = "general"
+    @State private var studioConfirmScope: Bool = true
 
     // Windows-synced helper dialogs
     @State private var titleDraft = ""
@@ -88,6 +94,9 @@ struct MainView: View {
         .preferredColorScheme(themeId.preferredColorScheme)
         .sheet(isPresented: Binding(get: { pendingStudioKind != nil }, set: { if !$0 { pendingStudioKind = nil } })) {
             studioConfigSheet
+        }
+        .onChange(of: state.activeNotebookId) { oldId, newId in
+            swapChatDraft(from: oldId, to: newId)
         }
         .sheet(isPresented: $state.showSettingsSheet) {
             UnifiedSettingsSheet().environmentObject(state)
@@ -538,6 +547,9 @@ struct MainView: View {
                             en: state.isEnglish,
                             fontSize: state.prefs.fontSize,
                             palette: palette,
+                            onPromoteAttachment: { id in
+                                Task { await state.promoteAttachment(id) }
+                            },
                             onSaveToNote: {
                                 Task {
                                     _ = try? await state.core.call(method: "note.from_message", params: ["message_id": msg.id])
@@ -558,8 +570,11 @@ struct MainView: View {
                 }
             }
 
+            AttachChips(store: chatAttach, en: state.isEnglish)
+
             // Windows-synced capsule composer (CornerRadius 26, MinHeight 52, 40x40 accent send / stop button)
             HStack(spacing: 10) {
+                AttachMenuButton(store: chatAttach, en: state.isEnglish, tint: palette.textSecondary)
                 TextField(state.t("chat.placeholder"), text: $chatInput)
                     .textFieldStyle(.plain)
                     .font(.system(size: state.prefs.fontSize))
@@ -600,6 +615,7 @@ struct MainView: View {
             .background(palette.elevatedBg)
             .overlay(RoundedRectangle(cornerRadius: 26).stroke(palette.strongBorder, lineWidth: 1))
             .cornerRadius(26)
+            .attachDrop(chatAttach, en: state.isEnglish)
         }
         .padding(18)
         .background(palette.panelBg)
@@ -629,13 +645,17 @@ struct MainView: View {
                     ("quiz", state.t("studio.quiz"), "checkmark.circle.fill"),
                     ("infographic", state.t("studio.infographic"), "chart.bar.xaxis"),
                     ("knowledge_graph", state.t("studio.knowledge_graph"), "circle.hexagongrid.fill"),
+                    ("lecture", state.t("studio.lecture"), "graduationcap.fill"),
                 ]
 
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
                     ForEach(tiles, id: \.0) { kind, label, icon in
                         Button {
                             studioPromptInput = ""
-                            studioDetailLevel = "standard"
+                            studioDetailLevel = kind == "lecture" ? "auto" : "standard"
+                            studioLectureMode = "general"
+                            studioConfirmScope = true
+                            studioAttach.clear()
                             pendingStudioKind = kind
                         } label: {
                             HStack(spacing: 10) {
@@ -769,6 +789,7 @@ struct MainView: View {
         case "report": return "doc.richtext.fill"
         case "flashcards": return "square.on.square"
         case "quiz": return "checkmark.circle.fill"
+        case "lecture": return "graduationcap.fill"
         case "infographic": return "chart.bar.xaxis"
         case "knowledge_graph": return "circle.hexagongrid.fill"
         default: return "sparkles"
@@ -782,7 +803,9 @@ struct MainView: View {
             Text(state.isEnglish ? "Configure Studio Artifact" : "生成配置")
                 .font(.headline)
                 .foregroundColor(palette.textPrimary)
-            Text(state.isEnglish ? "Prompt / Focus & Scope (Optional)" : "生成提示与范围要求（可选）")
+            Text(pendingStudioKind == "lecture"
+                 ? L10n.t("studio.cfg.lecture_topic_header", en: state.isEnglish)
+                 : (state.isEnglish ? "Prompt / Focus & Scope (Optional)" : "生成提示与范围要求（可选）"))
                 .font(.subheadline)
                 .foregroundColor(palette.textSecondary)
             TextEditor(text: $studioPromptInput)
@@ -795,6 +818,24 @@ struct MainView: View {
                     Text(state.isEnglish ? "Detailed (4-5 levels)" : "详尽（4~5 层细分）").tag("detailed")
                 }
                 .pickerStyle(.segmented)
+            } else if pendingStudioKind == "lecture" {
+                Picker(L10n.t("studio.cfg.lecture_mode_header", en: state.isEnglish), selection: $studioLectureMode) {
+                    ForEach(["general", "preview", "review", "practice"], id: \.self) { code in
+                        Text(L10n.t("studio.cfg.lecture_mode_\(code)", en: state.isEnglish)).tag(code)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Picker(state.isEnglish ? "Detail" : "详细程度", selection: $studioDetailLevel) {
+                    Text(L10n.t("studio.cfg.level_auto", en: state.isEnglish)).tag("auto")
+                    Text(state.isEnglish ? "Brief" : "简要").tag("brief")
+                    Text(state.isEnglish ? "Standard" : "标准").tag("standard")
+                    Text(state.isEnglish ? "Detailed" : "详细").tag("detailed")
+                }
+                .pickerStyle(.segmented)
+                Toggle(L10n.t("studio.cfg.btn_lecture_confirm_scope", en: state.isEnglish), isOn: $studioConfirmScope)
+                Text(L10n.t("studio.cfg.lecture_hint", en: state.isEnglish))
+                    .font(.caption)
+                    .foregroundColor(palette.textMuted)
             } else if pendingStudioKind == "report" {
                 Picker(state.isEnglish ? "Depth" : "报告深度", selection: $studioDetailLevel) {
                     Text(state.isEnglish ? "Brief" : "简明摘要").tag("brief")
@@ -803,15 +844,31 @@ struct MainView: View {
                 }
                 .pickerStyle(.segmented)
             }
+            HStack(spacing: 8) {
+                AttachMenuButton(store: studioAttach, en: state.isEnglish, tint: palette.textSecondary)
+                Text(L10n.t("ctx.cfg_hint", en: state.isEnglish))
+                    .font(.caption)
+                    .foregroundColor(palette.textMuted)
+            }
+            AttachChips(store: studioAttach, en: state.isEnglish)
             HStack {
                 Spacer()
-                Button(state.isEnglish ? "Cancel" : "取消") { pendingStudioKind = nil }
+                Button(state.isEnglish ? "Cancel" : "取消") {
+                    pendingStudioKind = nil
+                    studioAttach.clear()
+                }
                 Button(state.isEnglish ? "Generate" : "开始生成") {
                     let k = pendingStudioKind ?? "mindmap"
                     let p = studioPromptInput.trimmingCharacters(in: .whitespacesAndNewlines)
                     let d = studioDetailLevel
+                    var extra: [String: Any] = [:]
+                    studioAttach.merge(into: &extra)
+                    studioAttach.clear()
                     pendingStudioKind = nil
-                    Task { await state.createStudio(kind: k, topic: p, detail: d) }
+                    let lectureCfg: [String: Any] = k == "lecture"
+                        ? Lecture.config(mode: studioLectureMode, detail: d, confirmScope: studioConfirmScope)
+                        : [:]
+                    Task { await state.createStudio(kind: k, topic: p, detail: d, extra: extra, config: lectureCfg) }
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -820,6 +877,7 @@ struct MainView: View {
         .frame(width: 460)
         .background(palette.panelBg)
         .preferredColorScheme(themeId.preferredColorScheme)
+        .attachDrop(studioAttach, en: state.isEnglish)
     }
 
     private var addUrlSheet: some View {
@@ -1016,9 +1074,35 @@ struct MainView: View {
 
     private func submitChat() {
         let txt = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !txt.isEmpty else { return }
-        chatInput = ""
-        Task { await state.sendChat(txt) }
+        guard !txt.isEmpty || !chatAttach.isEmpty else { return }
+        var extra: [String: Any] = [:]
+        chatAttach.merge(into: &extra)
+        let sentFrom = state.activeNotebookId
+        Task {
+            // the box is only cleared once the message is sent, so a failed send keeps its attachments
+            if await state.sendChat(txt, extra: extra), state.activeNotebookId == sentFrom {
+                chatInput = ""
+                chatAttach.clear()
+            }
+        }
+    }
+
+    /// Keeps the unsent chat text and attachments per notebook.
+    private func swapChatDraft(from oldId: String, to newId: String) {
+        if !oldId.isEmpty {
+            if chatInput.isEmpty && chatAttach.isEmpty {
+                chatDrafts.removeValue(forKey: oldId)
+            } else {
+                chatDrafts[oldId] = (chatInput, chatAttach.items)
+            }
+        }
+        if let d = chatDrafts.removeValue(forKey: newId) {
+            chatInput = d.text
+            chatAttach.restore(d.items)
+        } else {
+            chatInput = ""
+            chatAttach.clear()
+        }
     }
 
     private func pickAndAddFile() {
@@ -1124,6 +1208,7 @@ struct ChatMessageRow: View {
     let en: Bool
     let fontSize: Double
     let palette: AppThemePalette
+    var onPromoteAttachment: ((String) -> Void)? = nil
     var onSaveToNote: (() -> Void)? = nil
     var onRegenerate: (() -> Void)? = nil
     var onFeedback: ((Int) -> Void)? = nil
@@ -1180,6 +1265,10 @@ struct ChatMessageRow: View {
                     }
                     .padding(.vertical, 4)
                 }
+            }
+
+            if !message.attachments.isEmpty {
+                MessageAttachments(attachments: message.attachments, en: en, onPromote: onPromoteAttachment)
             }
 
             if message.role == "user" {

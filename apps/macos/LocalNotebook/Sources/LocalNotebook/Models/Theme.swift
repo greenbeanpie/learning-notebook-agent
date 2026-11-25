@@ -215,6 +215,7 @@ extension Color {
         case "quiz": return Color(hex: 0x78D9EC)
         case "infographic": return Color(hex: 0xFCAD70)
         case "knowledge_graph": return Color(hex: 0xA8C7FA)
+        case "lecture": return Color(hex: 0xF28B82)
         default: return Color(hex: 0xA8C7FA)
         }
     }

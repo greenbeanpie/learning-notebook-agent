@@ -17,9 +17,6 @@ struct ProviderPresetItem: Identifiable {
 }
 
 struct ModelProfileItem: Identifiable {
-    /// false: probed and lacking tool calling or structured output (cannot be used)
-    var eligible: Bool = true
-    var unsupportedReason: String? = nil
     let id: String
     let displayName: String
     let protocolName: String
@@ -39,6 +36,9 @@ struct ModelProfileItem: Identifiable {
     let supportsAudio: Bool
     let supportsVideo: Bool
     let extraHeaders: [String: String]
+    /// false: probed and lacking tool calling or structured output (cannot be used)
+    var eligible: Bool = true
+    var unsupportedReason: String? = nil
 }
 
 struct UnifiedSettingsSheet: View {

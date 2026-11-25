@@ -45,6 +45,8 @@ struct ChatMessageItem: Identifiable {
     let role: String
     var content: String
     var thoughts: [ThoughtStepItem]
+    /// Pictures, files and links the user attached to the message.
+    var attachments: [[String: Any]] = []
 }
 
 struct StudioArtifactItem: Identifiable {
@@ -61,6 +63,10 @@ struct StudioArtifactItem: Identifiable {
     let errorCode: String
     let errorDetail: String
     let errorLog: String
+    /// Folder with the generated files (a lecture's figures live under `figures/`).
+    var outputDir: String = ""
+    /// What the player saved, e.g. a lecture's position.
+    var progressState: [String: Any] = [:]
 }
 
 @MainActor
@@ -345,7 +351,8 @@ final class AppState: ObservableObject {
                     id: m["id"] as? String ?? UUID().uuidString,
                     role: m["role"] as? String ?? "assistant",
                     content: m["content"] as? String ?? "",
-                    thoughts: ths
+                    thoughts: ths,
+                    attachments: m["attachments"] as? [[String: Any]] ?? []
                 )
             }
 
@@ -374,7 +381,9 @@ final class AppState: ObservableObject {
                     payload: a["payload"] as? [String: Any] ?? [:],
                     errorCode: a["error_code"] as? String ?? "",
                     errorDetail: a["error_detail"] as? String ?? "",
-                    errorLog: a["error_log"] as? String ?? ""
+                    errorLog: a["error_log"] as? String ?? "",
+                    outputDir: a["output_dir"] as? String ?? "",
+                    progressState: a["progress_state"] as? [String: Any] ?? [:]
                 )
             }
             if let openId = activeArtifact?.id, let updated = artifacts.first(where: { $0.id == openId }) {
@@ -385,16 +394,38 @@ final class AppState: ObservableObject {
         }
     }
 
-    func sendChat(_ text: String) async {
-        guard !activeNotebookId.isEmpty, !text.isEmpty else { return }
+    /// `extra` carries the attachments (`images`, `files`, `links`). Returns whether the message was sent.
+    @discardableResult
+    func sendChat(_ text: String, extra: [String: Any] = [:]) async -> Bool {
+        guard !activeNotebookId.isEmpty, !text.isEmpty || !extra.isEmpty else { return false }
         isGeneratingChat = true
+        var sent = false
         do {
-            _ = try await core.call(method: "chat.send", params: ["notebook_id": activeNotebookId, "text": text])
+            var params: [String: Any] = ["notebook_id": activeNotebookId, "text": text]
+            params.merge(extra) { _, new in new }
+            _ = try await core.call(method: "chat.send", params: params)
+            sent = true
             await refreshAll()
         } catch {
             statusMessage = error.localizedDescription
         }
         isGeneratingChat = false
+        return sent
+    }
+
+    /// Adds a stored attachment (file or link) of a message to the notebook's sources.
+    func promoteAttachment(_ attachmentId: String) async {
+        guard !activeNotebookId.isEmpty else { return }
+        do {
+            _ = try await core.call(
+                method: "attachment.promote",
+                params: ["notebook_id": activeNotebookId, "attachment_id": attachmentId]
+            )
+            statusMessage = t("ctx.promoted")
+            await refreshAll()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
     }
 
     func cancelChat() async {
@@ -430,7 +461,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    func createStudio(kind: String, topic: String = "", detail: String = "standard") async {
+    func createStudio(kind: String, topic: String = "", detail: String = "standard", extra: [String: Any] = [:], config: [String: Any] = [:]) async {
         guard !activeNotebookId.isEmpty else { return }
         let actualType = kind == "knowledge_graph" ? "mindmap" : kind
         var cfg: [String: Any] = kind == "slides"
@@ -445,8 +476,11 @@ final class AppState: ObservableObject {
         if !prefs.defaultStudioLang.isEmpty {
             cfg["lang"] = prefs.defaultStudioLang
         }
+        cfg.merge(config) { _, new in new }
         do {
-            _ = try await core.call(method: "studio.create", params: ["notebook_id": activeNotebookId, "artifact_type": actualType, "config": cfg])
+            var params: [String: Any] = ["notebook_id": activeNotebookId, "artifact_type": actualType, "config": cfg]
+            params.merge(extra) { _, new in new }
+            _ = try await core.call(method: "studio.create", params: params)
             statusMessage = t("studio.submitted")
             await refreshAll()
         } catch {
@@ -511,14 +545,18 @@ final class AppState: ObservableObject {
         }
     }
 
-    func reviseDraft(artifactId: String, instruction: String, currentDraft: String) async -> String? {
+    func reviseDraft(artifactId: String, instruction: String, currentDraft: String, extra: [String: Any] = [:]) async -> String? {
         guard !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        if let res = try? await core.call(
-            method: "studio.revise_draft",
-            params: ["artifact_id": artifactId, "instruction": instruction, "draft": currentDraft]
-        ), let newDraft = res["draft"] as? String {
-            await refreshAll()
-            return newDraft
+        var params: [String: Any] = ["artifact_id": artifactId, "instruction": instruction, "draft": currentDraft]
+        params.merge(extra) { _, new in new }
+        do {
+            let res = try await core.call(method: "studio.revise_draft", params: params)
+            if let newDraft = res["draft"] as? String {
+                await refreshAll()
+                return newDraft
+            }
+        } catch {
+            statusMessage = error.localizedDescription
         }
         return nil
     }

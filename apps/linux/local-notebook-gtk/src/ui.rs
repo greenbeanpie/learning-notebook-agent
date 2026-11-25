@@ -1,3 +1,4 @@
+use crate::attach::{self, AttachBar};
 use crate::i18n::{tr, user_error_advice, UiPreferences};
 use crate::icons::{studio_icon_image, svg_image, SVG_BRAIN, SVG_CLOSE, SVG_FULLSCREEN, SVG_RING, SVG_SEARCH_DOC};
 use crate::mindmap_view::build_mindmap_widget;
@@ -9,12 +10,13 @@ use gtk4::{
 };
 use lna_api::CoreRuntime;
 use serde_json::{json, Value};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-fn call_core(core: &Arc<CoreRuntime>, method: &str, params: Value) -> Result<Value, (String, String)> {
+pub(crate) fn call_core(core: &Arc<CoreRuntime>, method: &str, params: Value) -> Result<Value, (String, String)> {
     let req = json!({ "id": "gtk", "method": method, "params": params });
     let raw = core.handle_json(&req.to_string());
     let parsed: Value = serde_json::from_str(&raw).map_err(|e| (String::new(), e.to_string()))?;
@@ -74,6 +76,14 @@ struct UiState {
     chat_entry: Entry,
     send_btn: Button,
     tile_labels: Vec<(String, Label)>,
+    /// Pictures, files and links attached to the next chat message.
+    attach: AttachBar,
+    /// Current UI language, read by the attachment widgets.
+    en_cell: Rc<Cell<bool>>,
+    /// Unsent chat text and attachments of the notebooks that are not open.
+    drafts: RefCell<HashMap<String, (String, Vec<attach::Item>)>>,
+    /// The notebook whose draft is in the chat box right now.
+    draft_owner: RefCell<String>,
 }
 
 impl UiState {
@@ -125,6 +135,8 @@ impl UiState {
         self.add_note_btn.set_label(tr(en, "sources.create_note"));
         self.chat_entry.set_placeholder_text(Some(tr(en, "chat.placeholder")));
         self.send_btn.set_label(tr(en, "chat.send"));
+        self.en_cell.set(en);
+        self.attach.relabel();
         for (kind, lbl) in &self.tile_labels {
             lbl.set_text(tr(en, &format!("studio.{kind}")));
         }
@@ -279,6 +291,20 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         .build();
     center_panel.append(&chat_scroll);
 
+    let status_label = Label::new(Some(tr(en, "status.ready")));
+    status_label.add_css_class("lna-muted");
+    status_label.set_halign(gtk4::Align::Start);
+
+    let en_cell = Rc::new(Cell::new(en));
+    let attach_bar = {
+        let en_c = en_cell.clone();
+        let status_c = status_label.clone();
+        AttachBar::new(
+            window.upcast_ref::<gtk4::Window>(),
+            Rc::new(move || en_c.get()),
+            Rc::new(move |m| status_c.set_text(m)),
+        )
+    };
     let input_row = GtkBox::new(Orientation::Horizontal, 8);
     let chat_entry = Entry::builder()
         .placeholder_text(tr(en, "chat.placeholder"))
@@ -286,9 +312,14 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         .build();
     let send_btn = Button::with_label(tr(en, "chat.send"));
     send_btn.add_css_class("lna-primary-btn");
+    input_row.append(attach_bar.button());
     input_row.append(&chat_entry);
     input_row.append(&send_btn);
-    center_panel.append(&input_row);
+    let input_col = GtkBox::new(Orientation::Vertical, 6);
+    input_col.append(attach_bar.chips());
+    input_col.append(&input_row);
+    attach_bar.accept_drops(&input_col);
+    center_panel.append(&input_col);
 
     // Right panel: Studio
     let right_panel = GtkBox::new(Orientation::Vertical, 10);
@@ -317,6 +348,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         "quiz",
         "infographic",
         "knowledge_graph",
+        "lecture",
     ];
     let mut tile_labels = Vec::new();
 
@@ -346,9 +378,6 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     outer_paned.set_vexpand(true);
     root.append(&outer_paned);
 
-    let status_label = Label::new(Some(tr(en, "status.ready")));
-    status_label.add_css_class("lna-muted");
-    status_label.set_halign(gtk4::Align::Start);
     root.append(&status_label);
 
     for (idx, kind) in modalities.iter().enumerate() {
@@ -386,6 +415,10 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         chat_entry: chat_entry.clone(),
         send_btn: send_btn.clone(),
         tile_labels,
+        attach: attach_bar.clone(),
+        en_cell: en_cell.clone(),
+        drafts: RefCell::new(HashMap::new()),
+        draft_owner: RefCell::new(String::new()),
     });
     state.apply_preferences();
 
@@ -417,13 +450,21 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             vbox.set_margin_start(16);
             vbox.set_margin_end(16);
 
-            let prompt_lbl = Label::new(Some(if en {
+            let prompt_lbl = Label::new(Some(if k == "lecture" {
+                tr(en, "studio.cfg.lecture_topic_header")
+            } else if en {
                 "Prompt / Focus & Scope (Optional)"
             } else {
                 "生成提示与范围要求（可选）"
             }));
             prompt_lbl.set_xalign(0.0);
             vbox.append(&prompt_lbl);
+
+            let ctx_bar = {
+                let en_c = st.en_cell.clone();
+                let status_c = st.status_label.clone();
+                AttachBar::new(&win, Rc::new(move || en_c.get()), Rc::new(move |m| status_c.set_text(m)))
+            };
 
             let tv = gtk4::TextView::new();
             tv.set_wrap_mode(gtk4::WrapMode::WordChar);
@@ -461,6 +502,52 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             } else {
                 None
             };
+
+            // lecture: mode, detail and whether the scope is confirmed first
+            let lecture_opts = if k == "lecture" {
+                let ml = Label::new(Some(tr(en, "studio.cfg.lecture_mode_header")));
+                ml.set_xalign(0.0);
+                vbox.append(&ml);
+                let modes = ["general", "preview", "review", "practice"];
+                let mode_labels: Vec<&str> = modes
+                    .iter()
+                    .map(|m| tr(en, &format!("studio.cfg.lecture_mode_{m}")))
+                    .collect();
+                let mode_dd = gtk4::DropDown::from_strings(&mode_labels);
+                vbox.append(&mode_dd);
+                let dl = Label::new(Some(if en { "Detail" } else { "详细程度" }));
+                dl.set_xalign(0.0);
+                vbox.append(&dl);
+                let level_dd = gtk4::DropDown::from_strings(&[
+                    tr(en, "studio.cfg.level_auto"),
+                    if en { "Brief" } else { "简要" },
+                    if en { "Standard" } else { "标准" },
+                    if en { "Detailed" } else { "详细" },
+                ]);
+                vbox.append(&level_dd);
+                let confirm = CheckButton::with_label(tr(en, "studio.cfg.btn_lecture_confirm_scope"));
+                confirm.set_active(true);
+                vbox.append(&confirm);
+                let hint = Label::new(Some(tr(en, "studio.cfg.lecture_hint")));
+                hint.set_wrap(true);
+                hint.set_xalign(0.0);
+                hint.add_css_class("lna-muted");
+                vbox.append(&hint);
+                Some((mode_dd, level_dd, confirm))
+            } else {
+                None
+            };
+
+            let ctx_row = GtkBox::new(Orientation::Horizontal, 8);
+            ctx_row.append(ctx_bar.button());
+            let ctx_hint = Label::new(Some(tr(en, "ctx.cfg_hint")));
+            ctx_hint.add_css_class("lna-muted");
+            ctx_hint.set_wrap(true);
+            ctx_hint.set_xalign(0.0);
+            ctx_row.append(&ctx_hint);
+            vbox.append(&ctx_row);
+            vbox.append(ctx_bar.chips());
+            ctx_bar.accept_drops(&vbox);
 
             let actions = GtkBox::new(Orientation::Horizontal, 8);
             actions.set_halign(gtk4::Align::End);
@@ -512,13 +599,22 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
                         }
                     }
                 }
+                if let (Some(obj), Some((mode_dd, level_dd, confirm))) = (cfg.as_object_mut(), lecture_opts.as_ref()) {
+                    let modes = ["general", "preview", "review", "practice"];
+                    let levels = ["auto", "brief", "standard", "detailed"];
+                    let mode = modes.get(mode_dd.selected() as usize).copied().unwrap_or("general");
+                    let level = levels.get(level_dd.selected() as usize).copied().unwrap_or("auto");
+                    if let Some(extra) = crate::lecture_model::lecture_config(mode, level, confirm.is_active()).as_object() {
+                        for (key, v) in extra {
+                            obj.insert(key.clone(), v.clone());
+                        }
+                    }
+                }
                 let actual_type = if k_ok == "knowledge_graph" { "mindmap" } else { k_ok.as_str() };
                 let en2 = st_ok.is_en();
-                match call_core(
-                    &st_ok.core,
-                    "studio.create",
-                    json!({ "notebook_id": nid, "artifact_type": actual_type, "config": cfg }),
-                ) {
+                let mut params = json!({ "notebook_id": nid, "artifact_type": actual_type, "config": cfg });
+                ctx_bar.add_to(&mut params);
+                match call_core(&st_ok.core, "studio.create", params) {
                     Ok(_) => {
                         st_ok.status_label.set_text(tr(en2, "studio.submitted"));
                         refresh_all(&st_ok);
@@ -538,14 +634,23 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         let entry = chat_entry.clone();
         send_btn.connect_clicked(move |_| {
             let text = entry.text().trim().to_string();
-            if text.is_empty() {
+            if text.is_empty() && st.attach.is_empty() {
                 return;
             }
-            entry.set_text("");
             let nid = st.active_notebook_id.borrow().clone();
+            if nid.is_empty() {
+                return;
+            }
             let en = st.is_en();
-            match call_core(&st.core, "chat.send", json!({ "notebook_id": nid, "text": text })) {
-                Ok(_) => refresh_all(&st),
+            let mut params = json!({ "notebook_id": nid, "text": text });
+            st.attach.add_to(&mut params);
+            match call_core(&st.core, "chat.send", params) {
+                Ok(_) => {
+                    // sent: only now are the box and the attachments cleared, so a failed send keeps them
+                    entry.set_text("");
+                    st.attach.clear();
+                    refresh_all(&st)
+                }
                 Err(e) => st.status_label.set_text(&friendly_err(en, e)),
             }
         });
@@ -779,6 +884,9 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
 /// No notebook exists: clear the workspace so the user is asked to create one.
 fn enter_empty_state(st: &Rc<UiState>) {
     st.active_notebook_id.borrow_mut().clear();
+    st.draft_owner.borrow_mut().clear();
+    st.chat_entry.set_text("");
+    st.attach.clear();
     st.title_lbl.set_text("");
     clear_box(&st.nb_switch_popover_box);
     clear_box(&st.sources_box);
@@ -1020,11 +1128,42 @@ fn animate_fullscreen_toggle(st: &Rc<UiState>, to_fullscreen: bool) {
     });
 }
 
+/// Keeps the unsent chat text and attachments per notebook: stores the draft of the notebook that
+/// was open and shows the one of `nid`.
+fn swap_chat_draft(st: &Rc<UiState>, nid: &str) {
+    let owner = st.draft_owner.borrow().clone();
+    if owner == nid {
+        return;
+    }
+    if !owner.is_empty() {
+        let text = st.chat_entry.text().to_string();
+        let items = st.attach.snapshot();
+        if text.is_empty() && items.is_empty() {
+            st.drafts.borrow_mut().remove(&owner);
+        } else {
+            st.drafts.borrow_mut().insert(owner, (text, items));
+        }
+    }
+    let next = st.drafts.borrow_mut().remove(nid);
+    match next {
+        Some((text, items)) => {
+            st.chat_entry.set_text(&text);
+            st.attach.restore(items);
+        }
+        None => {
+            st.chat_entry.set_text("");
+            st.attach.clear();
+        }
+    }
+    *st.draft_owner.borrow_mut() = nid.to_string();
+}
+
 fn refresh_all(st: &Rc<UiState>) {
     let nid = st.active_notebook_id.borrow().clone();
     if nid.is_empty() {
         return;
     }
+    swap_chat_draft(st, &nid);
     let en = st.is_en();
 
     // Update notebook switcher popover & current title
@@ -1212,6 +1351,27 @@ fn refresh_all(st: &Rc<UiState>) {
                     }
                 }
 
+                if let Some(atts) = m.get("attachments") {
+                    let st_p = st.clone();
+                    let nid_p = nid.clone();
+                    let promote: Rc<dyn Fn(&str)> = Rc::new(move |att_id| {
+                        let en = st_p.is_en();
+                        match call_core(
+                            &st_p.core,
+                            "attachment.promote",
+                            json!({ "notebook_id": nid_p, "attachment_id": att_id }),
+                        ) {
+                            Ok(_) => {
+                                st_p.status_label.set_text(tr(en, "ctx.promoted"));
+                                refresh_all(&st_p);
+                            }
+                            Err(e) => st_p.status_label.set_text(&friendly_err(en, e)),
+                        }
+                    });
+                    if let Some(row) = attach::attachments_row(atts, en, promote) {
+                        card.append(&row);
+                    }
+                }
                 if role == "user" {
                     let body_lbl = Label::new(Some(content));
                     body_lbl.set_wrap(true);
@@ -1593,31 +1753,49 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
             })
             .hexpand(true)
             .build();
+        let rev_bar = {
+            let en_c = st.en_cell.clone();
+            let status_c = st.status_label.clone();
+            AttachBar::new(
+                st.window.upcast_ref::<gtk4::Window>(),
+                Rc::new(move || en_c.get()),
+                Rc::new(move |m| status_c.set_text(m)),
+            )
+        };
         let rev_btn = Button::with_label(if en { "Revise with AI" } else { "AI 调整提纲" });
         rev_btn.add_css_class("lna-pill-btn");
         let st_rv = st.clone();
         let aid_rv = artifact_id.to_string();
         let buf_rv = tv.buffer();
         let rev_entry_c = rev_entry.clone();
+        let rev_bar_c = rev_bar.clone();
         rev_btn.connect_clicked(move |_| {
-            let instr = rev_entry_c.text().to_string();
-            if instr.trim().is_empty() { return; }
+            let mut instr = rev_entry_c.text().trim().to_string();
+            if instr.is_empty() && rev_bar_c.is_empty() { return; }
+            if instr.is_empty() {
+                instr = tr(st_rv.is_en(), "ctx.revise_default").to_string();
+            }
             let (s, e) = buf_rv.bounds();
             let cur_draft = buf_rv.text(&s, &e, false).to_string();
-            if let Ok(updated) = call_core(
-                &st_rv.core,
-                "studio.revise_draft",
-                json!({ "artifact_id": aid_rv, "instruction": instr.trim(), "draft": cur_draft }),
-            ) {
-                if let Some(new_md) = updated.get("draft").and_then(Value::as_str) {
-                    buf_rv.set_text(new_md);
-                    rev_entry_c.set_text("");
+            let mut params = json!({ "artifact_id": aid_rv, "instruction": instr, "draft": cur_draft });
+            rev_bar_c.add_to(&mut params);
+            match call_core(&st_rv.core, "studio.revise_draft", params) {
+                Ok(updated) => {
+                    if let Some(new_md) = updated.get("draft").and_then(Value::as_str) {
+                        buf_rv.set_text(new_md);
+                        rev_entry_c.set_text("");
+                        rev_bar_c.clear();
+                    }
                 }
+                Err(e) => st_rv.status_label.set_text(&friendly_err(st_rv.is_en(), e)),
             }
         });
+        rev_row.append(rev_bar.button());
         rev_row.append(&rev_entry);
         rev_row.append(&rev_btn);
+        rev_bar.accept_drops(&rev_row);
         st.studio_detail_box.append(&ScrolledWindow::builder().child(&tv).vexpand(true).build());
+        st.studio_detail_box.append(rev_bar.chips());
         st.studio_detail_box.append(&rev_row);
         st.studio_detail_box.append(&approve);
     } else if kind == "mindmap" {
@@ -1745,6 +1923,13 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
             }
         }
         st.studio_detail_box.append(&ScrolledWindow::builder().child(&canvas).vexpand(true).build());
+    } else if kind == "lecture" {
+        st.studio_detail_box.append(&crate::lecture::build_lecture_player(
+            &st.core,
+            st.window.upcast_ref::<gtk4::Window>(),
+            &art,
+            en,
+        ));
     } else if let Some(w) =
         crate::md_view::readable_artifact_widget(kind, art.get("payload").unwrap_or(&Value::Null), en)
     {

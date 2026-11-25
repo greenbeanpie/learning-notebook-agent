@@ -1,4 +1,7 @@
+mod attach;
 mod i18n;
+mod lecture;
+mod lecture_model;
 mod icons;
 mod md_view;
 mod mindmap_view;

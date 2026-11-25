@@ -17,6 +17,7 @@ let package = Package(
             name: "LocalNotebook",
             dependencies: ["CLnaFfi"],
             path: "Sources/LocalNotebook",
+            resources: [.copy("Resources/deck_player.html")],
             linkerSettings: [
                 .unsafeFlags(["-L../../../target/release", "-llna_ffi"])
             ]

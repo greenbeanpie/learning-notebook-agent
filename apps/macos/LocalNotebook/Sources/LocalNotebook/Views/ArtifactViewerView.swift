@@ -7,6 +7,7 @@ struct ArtifactViewerView: View {
     @State private var infographicScale: CGFloat = 1.0
     @State private var draftText: String = ""
     @State private var revisePrompt: String = ""
+    @StateObject private var reviseAttach = AttachmentStore()
     @State private var isRevisingDraft: Bool = false
     @State private var editingDraft: Bool = false
     @State private var selectedSectionId: Int = 0
@@ -121,6 +122,10 @@ struct ArtifactViewerView: View {
                 feedbackBar
             } else if artifact.artifactType == "audio" {
                 AudioScriptReadableView(payload: artifact.payload)
+                feedbackBar
+            } else if artifact.artifactType == "lecture" {
+                LecturePlayerView(artifact: artifact, core: state.core, en: state.isEnglish)
+                    .id(artifact.id)
                 feedbackBar
             } else {
                 ScrollView {
@@ -284,26 +289,33 @@ struct ArtifactViewerView: View {
                 .background(Color(white: 0.16))
                 .cornerRadius(12)
             }
+            AttachChips(store: reviseAttach, en: state.isEnglish)
             HStack(spacing: 8) {
+                AttachMenuButton(store: reviseAttach, en: state.isEnglish)
                 TextField(
                     state.isEnglish ? "Enter revision prompt to refine outline..." : "输入调整要求（如：拆分第3部分、补充案例），可反复调整…",
                     text: $revisePrompt
                 )
                 .textFieldStyle(.roundedBorder)
                 Button(isRevisingDraft ? (state.isEnglish ? "Revising..." : "调整中…") : (state.isEnglish ? "Revise with AI" : "AI 调整提纲")) {
-                    let instr = revisePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !instr.isEmpty else { return }
+                    var instr = revisePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !instr.isEmpty || !reviseAttach.isEmpty else { return }
+                    if instr.isEmpty { instr = L10n.t("ctx.revise_default", en: state.isEnglish) }
+                    var extra: [String: Any] = [:]
+                    reviseAttach.merge(into: &extra)
                     isRevisingDraft = true
                     Task {
-                        if let updated = await state.reviseDraft(artifactId: artifact.id, instruction: instr, currentDraft: draftText) {
+                        if let updated = await state.reviseDraft(artifactId: artifact.id, instruction: instr, currentDraft: draftText, extra: extra) {
                             draftText = updated
                             revisePrompt = ""
+                            reviseAttach.clear()
                         }
                         isRevisingDraft = false
                     }
                 }
-                .disabled(isRevisingDraft || revisePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(isRevisingDraft || (revisePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && reviseAttach.isEmpty))
             }
+            .attachDrop(reviseAttach, en: state.isEnglish)
             Button(state.t("studio.approve_draft")) {
                 Task { await state.approveDraft(artifactId: artifact.id, markdown: draftText) }
             }
