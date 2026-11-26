@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 #if canImport(Combine)
 import Combine
 #endif
@@ -110,6 +113,43 @@ final class AttachmentStore: ObservableObject {
         }
         notice = warn
     }
+
+#if canImport(AppKit)
+    /// Attaches what a paste would bring in: copied files (Finder) or a picture (screenshot, "Copy Image").
+    /// Returns false when the pasteboard holds plain text, which the text field should paste itself.
+    @discardableResult
+    func addFromPasteboard(_ pb: NSPasteboard, en: Bool) -> Bool {
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            add(urls: urls, en: en)
+            return true
+        }
+        // A picture, unless the pasteboard also carries real text (copying spreadsheet cells puts both on it).
+        let text = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let textIsReal = !text.isEmpty && !Attach.isValidLink(text) && (text.contains(" ") || text.contains("\n"))
+        guard !textIsReal, let png = Self.pngData(from: pb) else { return false }
+        guard items.count < Attach.maxItems else {
+            notice = Attach.format(L10n.t("ctx.too_many", en: en), [String(Attach.maxItems)])
+            return true
+        }
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+        let name = "pasted-image-\(stamp.string(from: Date())).png"
+        guard png.count <= Attach.maxImageBytes else {
+            notice = Attach.format(L10n.t("ctx.too_large", en: en), [name, String(Attach.maxImageBytes / 1024 / 1024)])
+            return true
+        }
+        items.append(AttachedItem(kind: .image, name: name, data: png, size: png.count))
+        notice = ""
+        return true
+    }
+
+    private static func pngData(from pb: NSPasteboard) -> Data? {
+        if let png = pb.data(forType: .png), !png.isEmpty { return png }
+        guard let tiff = pb.data(forType: .tiff) ?? pb.data(forType: NSPasteboard.PasteboardType("public.jpeg")),
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+#endif
 
     /// Returns false (and sets a notice) when `text` is not a web address.
     @discardableResult

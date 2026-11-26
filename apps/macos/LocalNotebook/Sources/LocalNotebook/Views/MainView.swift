@@ -44,24 +44,36 @@ struct MainView: View {
         VStack(spacing: 12) {
             topBar
             GeometryReader { geo in
-                HStack(spacing: 14) {
+                // Every pane gets an explicit width, so their sum is the window width: a pane whose content
+                // wants more room is clipped inside its own frame instead of pushing the Studio pane off-screen.
+                let gap: CGFloat = 14
+                let total = geo.size.width
+                let srcW = sourcesWidth(total)
+                let minChat: CGFloat = 300
+                let studioWanted: CGFloat = state.studioFullscreen
+                    ? total
+                    : (state.activeArtifact != nil ? max(460, total * 0.48) : 340)
+                let studioW: CGFloat = state.studioFullscreen
+                    ? total
+                    : min(studioWanted, max(320, total - srcW - gap * 2 - minChat))
+                let chatW = max(0, total - srcW - studioW - gap * 2)
+                HStack(spacing: gap) {
                     if !state.studioFullscreen {
                         sourcesPane
-                            .frame(width: sourcesWidth(geo.size.width))
+                            .frame(width: srcW)
+                            .clipped()
                             .transition(.opacity.combined(with: .move(edge: .leading)))
                         if !state.sourceFullscreen {
                             chatPane
-                                .frame(maxWidth: .infinity)
+                                .frame(width: chatW)
+                                .clipped()
                                 .transition(.opacity)
                         }
                     }
                     if !state.sourceFullscreen {
                         studioPane
-                            .frame(
-                                width: state.studioFullscreen
-                                    ? geo.size.width
-                                    : (state.activeArtifact != nil ? max(460, geo.size.width * 0.48) : 340)
-                            )
+                            .frame(width: studioW)
+                            .clipped()
                     }
                 }
                 .animation(state.prefs.fullscreenAnimation ? .spring(response: 0.22, dampingFraction: 0.86) : nil, value: state.studioFullscreen)
@@ -140,11 +152,20 @@ struct MainView: View {
 
     // MARK: - Top Header Bar (synced with Windows MainWindow.xaml)
 
+    /// Width that fits the current title text (a flexible `.frame(maxWidth:)` would always grow to the maximum).
+    private var titleFieldWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: 18, weight: .semibold)
+        let text = titleDraft.isEmpty ? state.t("nb.none_hint") : titleDraft
+        let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
+        return min(360, max(120, ceil(textWidth) + 16 + 10)) // 8pt padding each side + caret room
+    }
+
     private var topBar: some View {
         HStack(spacing: 12) {
             AppLogoView(size: 30, accent: palette.accent)
 
             // Click the title to rename in place (Return / focus loss commits, Esc reverts).
+            // The field is as wide as its text, clamped to 120...360 pt.
             TextField(state.t("nb.none_hint"), text: $titleDraft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 18, weight: .semibold))
@@ -154,8 +175,7 @@ struct MainView: View {
                 .disabled(state.activeNotebookId.isEmpty)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .frame(minWidth: 120, maxWidth: 320)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: titleFieldWidth)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(titleFocused ? palette.accent : (titleHovered ? palette.subtleBorder : Color.clear), lineWidth: 1)

@@ -142,7 +142,21 @@ final class AppState: ObservableObject {
     var isEnglish: Bool { prefs.isEnglish }
     func t(_ key: String) -> String { L10n.t(key, en: isEnglish) }
 
+    /// Safety net: while any artifact is still PENDING/RUNNING, re-read the list every few seconds, so a missed
+    /// or reordered status event can never leave a finished artifact showing "in progress".
+    private func startRunningArtifactWatchdog() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard let self else { return }
+                let running = self.artifacts.contains { $0.status == "PENDING" || $0.status == "RUNNING" }
+                if running { await self.refreshAll() }
+            }
+        }
+    }
+
     func start() {
+        startRunningArtifactWatchdog()
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("LocalNotebook", isDirectory: true).path
         do {
@@ -348,7 +362,27 @@ final class AppState: ObservableObject {
         }
     }
 
+    private var refreshInFlight = false
+    private var refreshAgain = false
+
+    /// Reloads everything. Refreshes never overlap: core replies can arrive out of order, so a slow refresh that
+    /// started while an artifact was still RUNNING could land after the READY one and put the old status back.
+    /// A call made while one is running schedules exactly one more pass (which sees the newest state) and waits for it.
     func refreshAll() async {
+        if refreshInFlight {
+            refreshAgain = true
+            while refreshInFlight { try? await Task.sleep(nanoseconds: 20_000_000) }
+            return
+        }
+        refreshInFlight = true
+        defer { refreshInFlight = false }
+        repeat {
+            refreshAgain = false
+            await refreshAllOnce()
+        } while refreshAgain
+    }
+
+    private func refreshAllOnce() async {
         guard !activeNotebookId.isEmpty else { return }
         do {
             let nbList = try await core.call(method: "notebook.list")

@@ -109,12 +109,17 @@ struct StudioConfigSheet: View {
                 Text(state.t(isLecture ? "studio.cfg.lecture_topic_header" : "studio.cfg.topic_header"))
                     .font(.subheadline).foregroundColor(p.textSecondary)
                 TextEditor(text: $topic)
-                    .frame(minHeight: 96, maxHeight: 200)
+                    .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, minHeight: 96, maxHeight: 200)
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.strongBorder))
                     .overlay(alignment: .topLeading) {
                         if topic.isEmpty {
                             Text(state.t(isLecture ? "studio.cfg.lecture_topic_placeholder" : "studio.cfg.topic_placeholder"))
-                                .foregroundColor(p.textMuted).padding(8).allowsHitTesting(false)
+                                .foregroundColor(p.textMuted)
+                                .padding(.horizontal, 11).padding(.vertical, 8)
+                                .allowsHitTesting(false)
                         }
                     }
 
@@ -133,18 +138,28 @@ struct StudioConfigSheet: View {
                 ForEach(options(for: kind), id: \.key) { opt in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(state.t(opt.headerKey)).font(.subheadline).foregroundColor(p.textSecondary)
-                        Picker("", selection: Binding(get: { chosen[opt.key] ?? opt.fallback }, set: { chosen[opt.key] = $0 })) {
-                            ForEach(opt.choices, id: \.value) { c in Text(state.t(c.labelKey)).tag(c.value) }
+                        let selection = Binding(get: { chosen[opt.key] ?? opt.fallback }, set: { chosen[opt.key] = $0 })
+                        // Segmented when the labels fit the sheet, a menu otherwise (long labels used to widen the whole sheet).
+                        ViewThatFits(in: .horizontal) {
+                            Picker("", selection: selection) {
+                                ForEach(opt.choices, id: \.value) { c in Text(state.t(c.labelKey)).tag(c.value) }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            Picker("", selection: selection) {
+                                ForEach(opt.choices, id: \.value) { c in Text(state.t(c.labelKey)).tag(c.value) }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
                     }
                 }
 
                 if kind == "quiz" {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(state.t("studio.cfg.types_header")).font(.subheadline).foregroundColor(p.textSecondary)
-                        HStack(spacing: 8) {
+                        WrapFlowLayout(spacing: 8) {
                             ForEach([("single", "studio.cfg.type_single"), ("multi", "studio.cfg.type_multi"),
                                      ("fill", "studio.cfg.type_fill"), ("short", "studio.cfg.type_short")], id: \.0) { code, key in
                                 Toggle(state.t(key), isOn: Binding(
@@ -182,6 +197,7 @@ struct StudioConfigSheet: View {
                 }
             }
             .padding(20)
+            .frame(width: 500, alignment: .leading)
         }
         .frame(width: 500)
         .frame(maxHeight: 640)

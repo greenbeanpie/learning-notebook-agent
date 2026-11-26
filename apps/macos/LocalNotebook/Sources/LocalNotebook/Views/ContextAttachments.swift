@@ -142,7 +142,7 @@ struct AttachChips: View {
 extension View {
     /// Lets files dropped on the view be attached.
     func attachDrop(_ store: AttachmentStore, en: Bool) -> some View {
-        onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
+        attachPaste(store, en: en).onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
             var accepted = false
             for p in providers where p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 accepted = true
