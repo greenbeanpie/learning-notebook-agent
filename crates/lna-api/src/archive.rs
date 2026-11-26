@@ -203,7 +203,7 @@ fn import_inner(
 
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(z_err)?;
-        let name = entry.name().to_string();
+        let name = entry.name().map(|n| n.into_owned()).unwrap_or_default();
         if name.starts_with('/') || name.contains('\\') || name.contains("..") || name.contains(':')
         {
             return Err(LnaError::new(

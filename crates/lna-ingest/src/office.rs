@@ -151,7 +151,7 @@ fn collect_zip_images(
             if entry.is_dir() {
                 continue;
             }
-            let name = entry.name().to_string();
+            let name = entry.name().map(|n| n.into_owned()).unwrap_or_default();
             let lower = name.to_ascii_lowercase();
             let prefix_ok = prefix_filter.is_empty()
                 || prefix_filter
@@ -188,7 +188,7 @@ fn attr_value<'a>(
 ) -> Option<String> {
     for attr in e.attributes().flatten() {
         if local_name_str(attr.key.as_ref()).eq_ignore_ascii_case(local_target) {
-            if let Ok(v) = attr.decode_and_unescape_value(reader.decoder()) {
+            if let Ok(v) = attr.decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, reader.decoder()) {
                 return Some(v.into_owned());
             }
         }
@@ -360,7 +360,7 @@ fn parse_wordprocessing_xml(
             }
             Ok(Event::Text(e)) => {
                 if in_t && !in_del {
-                    if let Ok(t) = e.unescape() {
+                    if let Ok(t) = e.xml10_content() {
                         p_text.push_str(&t);
                     }
                 }
@@ -487,7 +487,7 @@ fn extract_dc_title(xml: &str) -> Option<String> {
                 }
             }
             Ok(Event::Text(e)) if in_title => {
-                if let Ok(t) = e.unescape() {
+                if let Ok(t) = e.xml10_content() {
                     title.push_str(&t);
                 }
             }
@@ -524,7 +524,7 @@ pub fn parse_pptx(path: &Path) -> LnaResult<RichParseOutput> {
     let mut slide_entries: Vec<(u32, String)> = Vec::new();
     for i in 0..archive.len() {
         if let Ok(entry) = archive.by_index(i) {
-            let name = entry.name().to_string();
+            let name = entry.name().map(|n| n.into_owned()).unwrap_or_default();
             if let Some(rest) = name.strip_prefix("ppt/slides/slide") {
                 if let Some(num_str) = rest.strip_suffix(".xml") {
                     if let Ok(n) = num_str.parse::<u32>() {
@@ -702,7 +702,7 @@ fn parse_drawingml_slide(xml: &str, slide_no: u32, blocks: &mut Vec<Block>, curs
                 }
             }
             Ok(Event::Text(e)) if in_t => {
-                if let Ok(t) = e.unescape() {
+                if let Ok(t) = e.xml10_content() {
                     p_text.push_str(&t);
                 }
             }
@@ -852,7 +852,7 @@ pub fn parse_epub(path: &Path) -> LnaResult<RichParseOutput> {
     if content_paths.is_empty() {
         for i in 0..archive.len() {
             if let Ok(entry) = archive.by_index(i) {
-                let n = entry.name().to_string();
+                let n = entry.name().map(|n| n.into_owned()).unwrap_or_default();
                 let low = n.to_ascii_lowercase();
                 if low.ends_with(".xhtml") || low.ends_with(".html") || low.ends_with(".htm") {
                     content_paths.push(n);
@@ -919,8 +919,8 @@ fn find_epub_opf_path(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<St
     }
     for i in 0..archive.len() {
         if let Ok(entry) = archive.by_index(i) {
-            if entry.name().to_ascii_lowercase().ends_with(".opf") {
-                return Some(entry.name().to_string());
+            if entry.name().is_ok_and(|n| n.to_ascii_lowercase().ends_with(".opf")) {
+                return Some(entry.name().map(|n| n.into_owned()).unwrap_or_default());
             }
         }
     }
@@ -1050,7 +1050,7 @@ pub fn parse_odt(path: &Path) -> LnaResult<RichParseOutput> {
                 }
             }
             Ok(Event::Text(e)) if in_text_el => {
-                if let Ok(t) = e.unescape() {
+                if let Ok(t) = e.xml10_content() {
                     cur_text.push_str(&t);
                 }
             }
@@ -1480,7 +1480,7 @@ pub fn parse_hwpx(path: &Path) -> LnaResult<RichParseOutput> {
     let mut sections: Vec<(u32, String)> = Vec::new();
     for i in 0..archive.len() {
         if let Ok(entry) = archive.by_index(i) {
-            let name = entry.name().to_string();
+            let name = entry.name().map(|n| n.into_owned()).unwrap_or_default();
             let low = name.to_ascii_lowercase();
             if low.starts_with("contents/section") && low.ends_with(".xml") {
                 let digits: String = low
@@ -1572,7 +1572,7 @@ fn parse_hwpx_section(xml: &str, section_no: u32, blocks: &mut Vec<Block>, curso
                 _ => {}
             },
             Ok(Event::Text(e)) if in_t => {
-                if let Ok(t) = e.unescape() {
+                if let Ok(t) = e.xml10_content() {
                     p_text.push_str(&t);
                 }
             }
