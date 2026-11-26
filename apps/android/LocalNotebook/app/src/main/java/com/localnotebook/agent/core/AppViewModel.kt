@@ -18,6 +18,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
+/** Unvalidated in-progress artifact payload pushed by `studio.preview`. */
+data class PreviewState(val stage: String, val validated: Boolean, val payload: JSONObject)
+
 data class AppUiState(
     val coreReady: Boolean = false,
     val prefs: UiPreferences = UiPreferences(),
@@ -30,6 +33,7 @@ data class AppUiState(
     val messages: List<ChatMessageItem> = emptyList(),
     val artifacts: List<StudioArtifactItem> = emptyList(),
     val studioThoughts: Map<String, List<ThoughtStepItem>> = emptyMap(),
+    val studioPreviews: Map<String, PreviewState> = emptyMap(),
     val activeArtifact: StudioArtifactItem? = null,
     val activeSourcePreview: SourceItem? = null,
     val pdfPreview: PdfPreviewTarget? = null,
@@ -110,6 +114,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                             }
                         }
+                        "studio.preview" -> {
+                            val aid = ev.data.optString("artifact_id")
+                            val pl = ev.data.optJSONObject("payload")
+                            if (aid.isNotEmpty() && pl != null) {
+                                val pv = PreviewState(ev.data.optString("stage"), ev.data.optBoolean("validated", false), pl)
+                                _ui.update { st -> st.copy(studioPreviews = st.studioPreviews + (aid to pv)) }
+                            }
+                        }
                         "ai.activity" -> {
                             val active = ev.data.optBoolean("active", false)
                             val title = ev.data.optString("title")
@@ -148,6 +160,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _ui.update { it.copy(activeArtifact = art, studioFullscreen = if (art == null) false else it.studioFullscreen) }
         if (art != null) {
             viewModelScope.launch {
+                if (art.status == "PENDING" || art.status == "RUNNING") {
+                    runCatching {
+                        val pv = core.call("studio.preview.get", JSONObject().put("artifact_id", art.id))
+                        val pl = pv.optJSONObject("payload")
+                        if (pl != null) {
+                            _ui.update { st ->
+                                if (st.studioPreviews.containsKey(art.id)) st
+                                else st.copy(studioPreviews = st.studioPreviews + (art.id to PreviewState(pv.optString("stage"), pv.optBoolean("validated", false), pl)))
+                            }
+                        }
+                    }
+                }
                 runCatching {
                     val res = core.call("studio.get", JSONObject().put("artifact_id", art.id))
                     val raw = res.optJSONArray("thoughts") ?: return@runCatching
@@ -428,6 +452,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     artifacts = artifacts,
                     activeArtifact = refreshedOpenArt,
                     activeSourcePreview = refreshedOpenSrc,
+                    // previews are only meaningful while the run is in flight
+                    studioPreviews = st.studioPreviews.filterKeys { pid ->
+                        val a = artifacts.firstOrNull { it.id == pid }
+                        a == null || a.status == "PENDING" || a.status == "RUNNING"
+                    },
                 )
             }
         }

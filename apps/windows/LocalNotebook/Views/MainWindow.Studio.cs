@@ -342,6 +342,9 @@ public sealed partial class MainWindow
         StudioDetailHost.Content = null;
         StudioHomeView.Visibility = Visibility.Visible;
         ApplyPaneLayout();
+        // The focused close button just vanished; without this WinUI hands focus to the first
+        // field, the notebook title, with its text selected, so a stray keypress would rename it.
+        ChatInputBox.Focus(FocusState.Programmatic);
     }
 
     private Storyboard? _paneStoryboard;

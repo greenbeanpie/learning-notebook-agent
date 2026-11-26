@@ -14,6 +14,7 @@ struct ArtifactViewerView: View {
     @State private var showPromptPopover: Bool = false
     @State private var showDiagLog: Bool = false
     @State private var showThoughts: Bool = false
+    @State private var showPreviewTab: Bool = false
 
     private var promptPillText: String {
         if artifact.sourceCount > 0 {
@@ -88,7 +89,9 @@ struct ArtifactViewerView: View {
 
             Divider()
 
-            if artifact.status == "PENDING" || artifact.status == "RUNNING" || showThoughts {
+            if artifact.status == "PENDING" || artifact.status == "RUNNING" {
+                generatingBody
+            } else if showThoughts {
                 thoughtsWorkflowBody
             } else if artifact.status == "FAILED" {
                 failedBody
@@ -137,7 +140,7 @@ struct ArtifactViewerView: View {
                 feedbackBar
             }
         }
-        .onAppear { draftText = artifact.draftMarkdown; Task { await state.loadStudioThoughts(artifactId: artifact.id) } }
+        .onAppear { draftText = artifact.draftMarkdown; Task { await state.loadStudioThoughts(artifactId: artifact.id); await state.loadStudioPreview(artifactId: artifact.id) } }
     }
 
     private var promptAndSourcesPopover: some View {
@@ -423,47 +426,127 @@ struct ArtifactViewerView: View {
         return s
     }
 
+    /// Generating screen: process view, plus an unvalidated preview tab once a preview exists.
+    @ViewBuilder
+    private var generatingBody: some View {
+        if let preview = state.studioPreviews[artifact.id] {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("", selection: $showPreviewTab) {
+                    Text(state.t("art.tab_process")).tag(false)
+                    Text(state.t("art.tab_preview")).tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 220)
+                if showPreviewTab {
+                    Text(state.t("art.preview_unvalidated"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    ArtifactPreviewView(
+                        stage: preview.stage,
+                        artifactType: artifact.artifactType,
+                        payload: preview.payload,
+                        en: state.isEnglish
+                    )
+                } else {
+                    thoughtsWorkflowBody
+                }
+            }
+        } else {
+            thoughtsWorkflowBody
+        }
+    }
+
     private var thoughtsWorkflowBody: some View {
         let steps = state.studioThoughts[artifact.id] ?? []
+        let running = artifact.status == "PENDING" || artifact.status == "RUNNING"
         return VStack(alignment: .leading, spacing: 10) {
-            if artifact.status == "PENDING" || artifact.status == "RUNNING" {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(state.isEnglish ? "AI workflow in progress..." : "AI 正在执行工具调用与思考…")
-                        .font(.subheadline.bold())
-                }
+            HStack(spacing: 8) {
+                if running { ProgressView().controlSize(.small) }
+                Text(state.t("art.thoughts_header"))
+                    .font(.subheadline.bold())
             }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
+                    if !running && !steps.contains(where: { $0.kind == "reasoning" }) {
+                        Text(state.t("art.no_reasoning_note"))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                     if steps.isEmpty {
                         Text(state.isEnglish ? "Waiting for AI steps..." : "正在等待 AI 工作步骤与思考记录…")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     } else {
                         ForEach(steps) { step in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 6) {
-                                    Circle()
-                                        .fill(step.kind == "tool" ? Color.cyan : (step.kind == "reasoning" ? Color.blue : Color.green))
-                                        .frame(width: 6, height: 6)
-                                    Text(step.title)
-                                        .font(.caption.bold())
-                                }
-                                if !step.detail.isEmpty {
-                                    Text(step.detail)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white.opacity(0.05))
-                            .cornerRadius(8)
+                            ThoughtCardView(step: step, omittedText: state.t("art.reasoning_omitted"))
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// One card of the process view. Reasoning cards start collapsed and only show the last
+/// `tailChars` characters of very long text until the user asks for all of it.
+private struct ThoughtCardView: View {
+    let step: ThoughtStepItem
+    let omittedText: String
+    @State private var expanded: Bool = false
+    @State private var showFull: Bool = false
+
+    private let tailChars = 8000
+
+    private var collapsible: Bool { step.kind == "reasoning" }
+
+    private var dotColor: Color {
+        switch step.kind {
+        case "tool": return Color.cyan
+        case "reasoning": return Color.blue
+        case "error": return Color.red
+        default: return Color.green
+        }
+    }
+
+    private var shownDetail: String {
+        if showFull || step.detail.count <= tailChars { return step.detail }
+        return String(step.detail.suffix(tailChars))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 6, height: 6)
+                Text(step.title.isEmpty ? step.kind : step.title)
+                    .font(.caption.bold())
+                if collapsible {
+                    Text(expanded ? "▾" : "▸")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if collapsible { expanded.toggle() }
+            }
+            if (!collapsible || expanded) && !step.detail.isEmpty {
+                if !showFull && step.detail.count > tailChars {
+                    Button(omittedText) { showFull = true }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                Text(shownDetail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.05))
+        .cornerRadius(8)
     }
 }

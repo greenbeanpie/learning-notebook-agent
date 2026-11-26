@@ -6,6 +6,7 @@ private final class MindNodeItem: Identifiable {
     var summary: String = ""
     var facets: [String] = []
     var atomic: Bool = false
+    var expandable: Bool = false
     var depth: Int = 0
     var children: [MindNodeItem] = []
     var x: CGFloat = 0
@@ -35,10 +36,14 @@ struct MindmapTreeView: View {
     var onAskConcept: ((String) -> Void)? = nil
     /// (nodeId, label): split the node into finer knowledge points.
     var onRefineNode: ((String, String) -> Void)? = nil
+    /// Read-only (preview) mode: no node menu, a tap only expands / collapses locally.
+    var readOnly: Bool = false
 
-    @State private var collapsedIds: Set<String> = []
+    /// Explicit user choices (id -> collapsed). Nodes without an entry use the default:
+    /// only the first two levels are shown, every deeper branch starts collapsed.
+    @State private var collapseOverrides: [String: Bool] = [:]
     @State private var scale: CGFloat = 1.0
-    @State private var allCollapsed: Bool = false
+    @State private var allExpanded: Bool = false
     @State private var panOffset: CGSize = .zero
     @GestureState private var dragDelta: CGSize = .zero
 
@@ -48,7 +53,7 @@ struct MindmapTreeView: View {
     private let padX: CGFloat = 70
     private let padY: CGFloat = 30
 
-    private var treeLayout: (roots: [MindNodeItem], visible: [MindNodeItem], width: CGFloat, height: CGFloat) {
+    private var treeLayout: (roots: [MindNodeItem], visible: [MindNodeItem], collapsed: Set<String>, parents: [String], total: Int, width: CGFloat, height: CGFloat) {
         let rawNodes = payload["nodes"] as? [[String: Any]] ?? []
         var map: [String: MindNodeItem] = [:]
         var parentById: [String: String] = [:]
@@ -66,6 +71,7 @@ struct MindmapTreeView: View {
                 facets: facets,
                 atomic: n["atomic"] as? Bool ?? false
             )
+            node.expandable = n["expandable"] as? Bool ?? false
             map[id] = node
             parentById[id] = n["parent_id"] as? String ?? ""
             order.append(node)
@@ -94,12 +100,14 @@ struct MindmapTreeView: View {
         var maxX: CGFloat = 440
         var maxY: CGFloat = 320
         var visible: [MindNodeItem] = []
+        var collapsedSet: Set<String> = []
 
         @discardableResult
         func layout(_ node: MindNodeItem, _ x: CGFloat) -> CGFloat {
             node.x = x
             visible.append(node)
-            let isCol = collapsedIds.contains(node.id)
+            let isCol = !node.children.isEmpty && (collapseOverrides[node.id] ?? (node.depth >= 1))
+            if isCol { collapsedSet.insert(node.id) }
             if node.children.isEmpty || isCol {
                 node.y = cursorY
                 cursorY += node.height + rowGap
@@ -121,7 +129,8 @@ struct MindmapTreeView: View {
             layout(r, padX)
             cursorY += rowGap
         }
-        return (roots, visible, maxX, maxY)
+        let parents = order.filter { !$0.children.isEmpty && $0.depth >= 1 }.map { $0.id }
+        return (roots, visible, collapsedSet, parents, order.count, maxX, maxY)
     }
 
     var body: some View {
@@ -131,7 +140,7 @@ struct MindmapTreeView: View {
                 ZStack(alignment: .topLeading) {
                     Canvas { ctx, _ in
                         func drawEdges(_ node: MindNodeItem) {
-                            guard !collapsedIds.contains(node.id), !node.children.isEmpty else { return }
+                            guard !laid.collapsed.contains(node.id), !node.children.isEmpty else { return }
                             let sx = node.x + node.width + toggleSize + 6
                             let sy = node.y + node.height / 2
                             let strokeColor = edgeColor(node.depth)
@@ -155,58 +164,15 @@ struct MindmapTreeView: View {
 
                     ForEach(laid.visible) { node in
                         let colors = nodeColors(node.depth)
-                        Menu {
-                            if !node.summary.isEmpty {
-                                Text(node.summary)
-                            }
-                            if !node.facets.isEmpty {
-                                Menu("\(L10n.t("kg.facets", en: en)) (\(node.facets.count))") {
-                                    ForEach(node.facets, id: \.self) { facet in
-                                        Button(facet) { onAskConcept?("\(node.label)：\(facet)") }
-                                    }
-                                }
-                            }
-                            if let refine = onRefineNode, node.depth > 0 {
-                                Button(L10n.t(node.atomic ? "kg.atomic" : "kg.action_refine", en: en)) {
-                                    refine(node.id, node.label)
-                                }
-                                .disabled(node.atomic)
-                            }
-                            Divider()
-                            Button(L10n.t("kg.action_quiz", en: en)) { onQuizConcept?(node.label) }
-                            Button(L10n.t("kg.action_mindmap", en: en)) { onExpandMindmap?(node.label) }
-                            Button(L10n.t("kg.action_chat", en: en)) { onAskConcept?(node.label) }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Text(node.label)
-                                    .font(.system(size: 13, weight: node.depth == 0 ? .semibold : .regular))
-                                    .foregroundColor(Color(white: 0.93))
-                                    .lineLimit(1)
-                                if !node.facets.isEmpty {
-                                    Text("\(node.facets.count)")
-                                        .font(.system(size: 10.5))
-                                        .foregroundColor(Color(white: 0.86))
-                                        .padding(.horizontal, 5)
-                                        .background(Color(white: 0.4, opacity: 0.6))
-                                        .cornerRadius(7)
-                                }
-                            }
-                                .padding(.horizontal, 11)
-                                .frame(width: node.width, height: node.height, alignment: .leading)
-                                .background(colors.bg)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(colors.border, lineWidth: 1))
-                                .cornerRadius(8)
-                        }
-                        .menuStyle(.borderlessButton)
+                        nodeView(node, colors: colors, collapsed: laid.collapsed.contains(node.id))
                         .frame(width: node.width, height: node.height)
                         .position(x: node.x + node.width / 2, y: node.y + node.height / 2)
 
                         if !node.children.isEmpty {
-                            let isCol = collapsedIds.contains(node.id)
+                            let isCol = laid.collapsed.contains(node.id)
                             Button {
                                 withAnimation(.easeOut(duration: 0.16)) {
-                                    if isCol { collapsedIds.remove(node.id) }
-                                    else { collapsedIds.insert(node.id) }
+                                    collapseOverrides[node.id] = !isCol
                                 }
                             } label: {
                                 Text(isCol ? ">" : "<")
@@ -237,16 +203,30 @@ struct MindmapTreeView: View {
             .background(Color(red: 29/255, green: 31/255, blue: 36/255))
             .cornerRadius(12)
 
+            if laid.total > 400 {
+                VStack {
+                    Spacer()
+                    Text(L10n.t("mindmap.large_hint_fmt", en: en).replacingOccurrences(of: "{0}", with: "\(laid.total)"))
+                        .font(.system(size: 11.5))
+                        .foregroundColor(Color(white: 0.9))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color(red: 30/255, green: 42/255, blue: 56/255).opacity(0.86))
+                        .cornerRadius(8)
+                        .padding(.bottom, 12)
+                }
+                .frame(maxWidth: .infinity)
+                .allowsHitTesting(false)
+            }
+
             // Left floating vertical controls
             VStack(spacing: 8) {
                 Button {
                     withAnimation(.easeOut(duration: 0.18)) {
-                        allCollapsed.toggle()
-                        collapsedIds.removeAll()
-                        if allCollapsed {
-                            for n in laid.visible where n.depth > 0 && !n.children.isEmpty {
-                                collapsedIds.insert(n.id)
-                            }
+                        allExpanded.toggle()
+                        collapseOverrides.removeAll()
+                        if allExpanded {
+                            for id in laid.parents { collapseOverrides[id] = false }
                         }
                     }
                 } label: {
@@ -271,6 +251,89 @@ struct MindmapTreeView: View {
             }
             .padding(.leading, 14)
             .padding(.top, 16)
+        }
+    }
+
+    private func expandNode(_ node: MindNodeItem) {
+        withAnimation(.easeOut(duration: 0.16)) {
+            collapseOverrides[node.id] = false
+        }
+    }
+
+    private func nodeLabel(_ node: MindNodeItem, colors: (bg: Color, border: Color), collapsed: Bool) -> some View {
+        let needsPlus = (collapsed && !node.children.isEmpty) || (node.children.isEmpty && node.expandable)
+        return HStack(spacing: 5) {
+            Text(node.label)
+                .font(.system(size: 13, weight: node.depth == 0 ? .semibold : .regular))
+                .foregroundColor(Color(white: 0.93))
+                .lineLimit(1)
+            if !node.facets.isEmpty {
+                Text("\(node.facets.count)")
+                    .font(.system(size: 10.5))
+                    .foregroundColor(Color(white: 0.86))
+                    .padding(.horizontal, 5)
+                    .background(Color(white: 0.4, opacity: 0.6))
+                    .cornerRadius(7)
+            }
+            if needsPlus {
+                Text("+")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(Color(red: 253/255, green: 214/255, blue: 99/255))
+            }
+        }
+        .padding(.horizontal, 11)
+        .frame(width: node.width, height: node.height, alignment: .leading)
+        .background(colors.bg)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(colors.border, lineWidth: 1))
+        .cornerRadius(8)
+    }
+
+    @ViewBuilder
+    private func nodeMenuItems(_ node: MindNodeItem) -> some View {
+        if !node.summary.isEmpty {
+            Text(node.summary)
+        }
+        if !node.facets.isEmpty {
+            Menu("\(L10n.t("kg.facets", en: en)) (\(node.facets.count))") {
+                ForEach(node.facets, id: \.self) { facet in
+                    Button(facet) { onAskConcept?("\(node.label)：\(facet)") }
+                }
+            }
+        }
+        if let refine = onRefineNode, node.depth > 0 {
+            Button(L10n.t(node.atomic ? "kg.atomic" : "kg.action_refine", en: en)) {
+                refine(node.id, node.label)
+            }
+            .disabled(node.atomic)
+        }
+        Divider()
+        Button(L10n.t("kg.action_quiz", en: en)) { onQuizConcept?(node.label) }
+        Button(L10n.t("kg.action_mindmap", en: en)) { onExpandMindmap?(node.label) }
+        Button(L10n.t("kg.action_chat", en: en)) { onAskConcept?(node.label) }
+    }
+
+    @ViewBuilder
+    private func nodeView(_ node: MindNodeItem, colors: (bg: Color, border: Color), collapsed: Bool) -> some View {
+        let label = nodeLabel(node, colors: colors, collapsed: collapsed)
+        if collapsed && !node.children.isEmpty {
+            // Click on a collapsed node expands it locally; the action menu stays on right-click.
+            if readOnly {
+                Button { expandNode(node) } label: { label }
+                    .buttonStyle(.plain)
+            } else {
+                Button { expandNode(node) } label: { label }
+                    .buttonStyle(.plain)
+                    .contextMenu { nodeMenuItems(node) }
+            }
+        } else if readOnly {
+            label
+        } else {
+            Menu {
+                nodeMenuItems(node)
+            } label: {
+                label
+            }
+            .menuStyle(.borderlessButton)
         }
     }
 

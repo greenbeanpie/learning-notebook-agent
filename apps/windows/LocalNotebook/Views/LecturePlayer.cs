@@ -53,7 +53,6 @@ internal sealed class LecturePlayer : IDisposable
     // UI
     private readonly Button _playBtn;
     private readonly TextBlock _counter;
-    private readonly TextBlock _sentenceText;
     private readonly StackPanel _adaptHost;
     private readonly Border _side;
     private readonly StackPanel _qaList;
@@ -78,7 +77,7 @@ internal sealed class LecturePlayer : IDisposable
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
-            MinHeight = 360,
+            MinHeight = 300,
             DefaultBackgroundColor = Windows.UI.Color.FromArgb(255, 19, 20, 24),
         };
         _web.Loaded += async (_, _) => await InitWebAsync();
@@ -143,22 +142,17 @@ internal sealed class LecturePlayer : IDisposable
         moreMenu.Items.Add(restore);
         more.Flyout = moreMenu;
 
-        var bar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        // wrap the buttons onto a second line in a narrow pane instead of scrolling sideways
+        var bar = new FlowWrapPanel { HorizontalSpacing = 6, VerticalSpacing = 6 };
         foreach (var c in new FrameworkElement[] { prevSlide, prevSent, _playBtn, nextSent, nextSlide, _counter, speed, captions, askBtn, more })
             bar.Children.Add(c);
         _adaptHost = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        var barRow = new Grid { ColumnSpacing = 8 };
-        barRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        barRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        barRow.Children.Add(new ScrollViewer { Content = bar, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled });
-        Grid.SetColumn(_adaptHost, 1);
+        var barRow = new StackPanel { Spacing = 6 };
+        barRow.Children.Add(bar);
         barRow.Children.Add(_adaptHost);
-
-        _sentenceText = new TextBlock { FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap, MaxLines = 2 };
 
         var stage = new Grid { RowSpacing = 8 };
         stage.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var webFrame = new Border
         {
@@ -170,8 +164,8 @@ internal sealed class LecturePlayer : IDisposable
         stage.Children.Add(webFrame);
         Grid.SetRow(barRow, 1);
         stage.Children.Add(barRow);
-        Grid.SetRow(_sentenceText, 2);
-        stage.Children.Add(_sentenceText);
+        // the host may measure us with unbounded width, which would leave the wrapped second row unaccounted for
+        stage.SizeChanged += (_, e) => { if (e.NewSize.Width > 0) bar.Width = e.NewSize.Width; };
 
         // --- side panel: checkpoint + questions ---
         _checkpointHost = new StackPanel { Spacing = 8 };
@@ -234,7 +228,7 @@ internal sealed class LecturePlayer : IDisposable
             Visibility = Visibility.Collapsed,
         };
 
-        var root = new Grid { ColumnSpacing = 10, MinHeight = 520 };
+        var root = new Grid { ColumnSpacing = 10 };
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         root.Children.Add(stage);
@@ -364,7 +358,6 @@ internal sealed class LecturePlayer : IDisposable
         await Js($"lecture.show({s.Slide},{StepBefore(_pos)})");
         _shownSlide = s.Slide;
         await Js($"lecture.caption({(_captions ? JsStr(s.Text) : "''")})");
-        _sentenceText.Text = s.Text;
         UpdateCounter();
     }
 
@@ -422,7 +415,6 @@ internal sealed class LecturePlayer : IDisposable
                 if (Str(c, "type") == "step" && c.TryGetProperty("n", out var n) && n.TryGetInt32(out var k))
                     await Js($"lecture.step({k})");
             await Js($"lecture.caption({(_captions ? JsStr(s.Text) : "''")})");
-            _sentenceText.Text = s.Text;
             PrefetchCloud(_pos + 1);
             PrefetchCloud(_pos + 2);
 

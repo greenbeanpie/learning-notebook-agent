@@ -40,6 +40,12 @@ struct ThoughtStepItem: Identifiable {
     }
 }
 
+/// Unvalidated in-progress payload of a running artifact (event `studio.preview`).
+struct StudioPreviewItem {
+    let stage: String
+    let payload: [String: Any]
+}
+
 struct ChatMessageItem: Identifiable {
     let id: String
     let role: String
@@ -89,6 +95,8 @@ final class AppState: ObservableObject {
     @Published var indexingSourceIds: Set<String> = []
     @Published var activeAiActivity: String = ""
     @Published var studioThoughts: [String: [ThoughtStepItem]] = [:]
+    /// artifact id -> latest unvalidated preview; dropped once the artifact leaves PENDING/RUNNING.
+    @Published var studioPreviews: [String: StudioPreviewItem] = [:]
     @Published var showSettingsSheet: Bool = false
     @Published var showPrivacySheet: Bool = false
     @Published var isGeneratingChat: Bool = false
@@ -172,6 +180,14 @@ final class AppState: ObservableObject {
                                 list[idx] = ThoughtStepItem(id: cur.id, kind: cur.kind, title: cur.title, detail: cur.detail + delta)
                                 self?.studioThoughts[aid] = list
                             }
+                        }
+                    } else if ev.event == "studio.preview" {
+                        if let aid = ev.data["artifact_id"] as? String,
+                           let payload = ev.data["payload"] as? [String: Any] {
+                            self?.studioPreviews[aid] = StudioPreviewItem(
+                                stage: ev.data["stage"] as? String ?? "",
+                                payload: payload
+                            )
                         }
                     } else if ev.event == "ai.activity" {
                         let active = ev.data["active"] as? Bool ?? false
@@ -386,6 +402,13 @@ final class AppState: ObservableObject {
                     progressState: a["progress_state"] as? [String: Any] ?? [:]
                 )
             }
+            // A preview only exists while generating; drop it once the artifact has left PENDING/RUNNING.
+            if !studioPreviews.isEmpty {
+                let running = Set(artifacts.filter { $0.status == "PENDING" || $0.status == "RUNNING" }.map { $0.id })
+                for key in Array(studioPreviews.keys) where !running.contains(key) {
+                    studioPreviews.removeValue(forKey: key)
+                }
+            }
             if let openId = activeArtifact?.id, let updated = artifacts.first(where: { $0.id == openId }) {
                 activeArtifact = updated
             }
@@ -592,6 +615,16 @@ final class AppState: ObservableObject {
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    /// Fetches the current preview once (e.g. when the window opens mid-generation).
+    func loadStudioPreview(artifactId: String) async {
+        if studioPreviews[artifactId] != nil { return }
+        guard let res = try? await core.call(method: "studio.preview.get", params: ["artifact_id": artifactId]),
+              let payload = res["payload"] as? [String: Any] else { return }
+        // An event may have delivered something newer while the call was in flight.
+        if studioPreviews[artifactId] != nil { return }
+        studioPreviews[artifactId] = StudioPreviewItem(stage: res["stage"] as? String ?? "", payload: payload)
     }
 
     func loadStudioThoughts(artifactId: String) async {

@@ -35,9 +35,12 @@ public partial class App : Application
         _window = new MainWindow();
         _window.Activate();
 
-        var appData = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "LocalNotebook");
+        // LNA_DATA_DIR points the app at a copy of the data (testing); unset in normal use.
+        var appData = Environment.GetEnvironmentVariable("LNA_DATA_DIR") is { Length: > 0 } over
+            ? over
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "LocalNotebook");
 
         _ = Task.Run(() =>
         {

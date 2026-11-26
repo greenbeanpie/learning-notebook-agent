@@ -26,7 +26,7 @@
                         <SvgImageSource UriSource="ms-appx:///Assets/logo.svg" />
                     </Image.Source>
                 </Image>
-                <TextBox x:Name="NotebookTitleText" FontSize="18" FontWeight="SemiBold" MinWidth="120" MaxWidth="360" MaxLength="120"
+                <TextBox x:Name="NotebookTitleText" IsTabStop="False" FontSize="18" FontWeight="SemiBold" MinWidth="120" MaxWidth="360" MaxLength="120"
                          Foreground="{StaticResource TextPrimaryBrush}" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" Padding="8,4"
                          VerticalAlignment="Center" VerticalContentAlignment="Center" AcceptsReturn="False"
                          GotFocus="OnTitleBoxGotFocus" LostFocus="OnTitleBoxLostFocus" KeyDown="OnTitleBoxKeyDown" PointerEntered="OnTitleBoxPointerEntered" PointerExited="OnTitleBoxPointerExited" />

@@ -2,6 +2,7 @@ using LocalNotebook.Services;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using System.Text.RegularExpressions;
 using Microsoft.UI.Xaml.Media;
@@ -35,6 +36,7 @@ internal sealed class MindmapTreeView
         public List<string> Prerequisites { get; } = new();
         public List<string> Facets { get; } = new();
         public bool Atomic { get; init; }
+        public bool Expandable { get; init; }
         public int Depth { get; set; }
         public bool IsCollapsed { get; set; }
         public List<MindNode> Children { get; } = new();
@@ -51,6 +53,7 @@ internal sealed class MindmapTreeView
     private readonly CompositeTransform _viewTransform = new() { ScaleX = 1.0, ScaleY = 1.0, TranslateX = 0, TranslateY = 0 };
     private readonly Grid _viewport = new();
     private readonly bool _compact;
+    private readonly bool _readOnly;
     private readonly bool _isKnowledgeGraph;
     private readonly Action? _onDownloadSvg;
     private readonly Action<string>? _onQuizConcept;
@@ -62,7 +65,7 @@ internal sealed class MindmapTreeView
     private readonly List<MindNode> _allNodes = new();
     private TextBlock? _kgProgressText;
     private ProgressBar? _kgProgressBar;
-    private bool _allCollapsed;
+    private bool _allCollapsed = true;
     private bool _isPanning;
     private Point _panStartPoint;
     private double _panStartTx;
@@ -89,8 +92,10 @@ internal sealed class MindmapTreeView
         Action<string>? onAskConcept = null,
         JsonElement? progressState = null,
         Action<JsonElement>? onProgressChanged = null,
-        Func<string, string, Task>? onRefineNode = null)
+        Func<string, string, Task>? onRefineNode = null,
+        bool readOnly = false)
     {
+        _readOnly = readOnly;
         _onRefineNode = onRefineNode;
         _compact = compact;
         _isKnowledgeGraph = isKnowledgeGraph || Str(payload, "kind") == "knowledge_graph";
@@ -127,6 +132,8 @@ internal sealed class MindmapTreeView
             {
                 Rect = new Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height),
             };
+            FitOnFirstLayout(e.NewSize);
+            UpdateRealization(force: true);
         };
         AttachDragPan(_viewport);
         AttachWheelZoom(_viewport);
@@ -170,6 +177,27 @@ internal sealed class MindmapTreeView
             UpdateKgProgressBanner();
         }
 
+        if (_allNodes.Count > 400)
+        {
+            stageGrid.Children.Add(new Border
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(0, 0, 0, 12),
+                Padding = new Thickness(10, 5, 10, 5),
+                CornerRadius = new CornerRadius(8),
+                IsHitTestVisible = false,
+                Background = new SolidColorBrush(Color.FromArgb(220, 30, 42, 56)),
+                Child = new TextBlock
+                {
+                    Text = L10n.Fmt("mindmap.large_hint_fmt", _allNodes.Count),
+                    FontSize = 11.5,
+                    FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI"),
+                    Foreground = new SolidColorBrush(Color.FromArgb(255, 224, 236, 255)),
+                },
+            });
+        }
+
         var stage = new Border
         {
             CornerRadius = new CornerRadius(12),
@@ -194,6 +222,40 @@ internal sealed class MindmapTreeView
         Redraw();
     }
 
+    /// <summary>
+    /// Replaces the node data with a newer payload (streaming preview) while keeping the user's
+    /// expand/collapse state, selection and pan/zoom. Returns false when this view cannot be updated in place.
+    /// </summary>
+    public bool TryUpdate(JsonElement payload)
+    {
+        if (_viewport.Children.Count == 0) return false;
+        var rawNodes = Arr(payload, "nodes").ToList();
+        if (rawNodes.Count == 0) return false;
+
+        // id -> collapsed, only for nodes that already had children (otherwise the user could not have toggled them)
+        var prior = new Dictionary<string, bool>(StringComparer.Ordinal);
+        foreach (var n in _allNodes)
+            if (n.Children.Count > 0) prior[n.Id] = n.IsCollapsed;
+        var selectedId = _selected?.Id;
+
+        _roots.Clear();
+        BuildHierarchy(rawNodes);
+        foreach (var n in _allNodes)
+            if (n.Children.Count > 0 && prior.TryGetValue(n.Id, out var was)) n.IsCollapsed = was;
+
+        _selected = null;
+        _prereqNodes.Clear();
+        if (selectedId != null && _byId.TryGetValue(selectedId, out var sel))
+        {
+            _selected = sel;
+            foreach (var name in sel.Prerequisites)
+                if (_byLabel.TryGetValue(StripCitationMarkers(name), out var pn) && pn != sel) _prereqNodes.Add(pn);
+        }
+        UpdateKgProgressBanner();
+        Redraw();
+        return true;
+    }
+
     private static string StripCitationMarkers(string text)
     {
         if (string.IsNullOrEmpty(text)) return "";
@@ -208,6 +270,7 @@ internal sealed class MindmapTreeView
             var pt = e.GetCurrentPoint(viewport);
             if (!pt.Properties.IsLeftButtonPressed) return;
             _isPanning = true;
+            _didPan = false;
             _panStartPoint = pt.Position;
             _panStartTx = _viewTransform.TranslateX;
             _panStartTy = _viewTransform.TranslateY;
@@ -226,17 +289,40 @@ internal sealed class MindmapTreeView
             var dy = pt.Position.Y - _panStartPoint.Y;
             if (Math.Abs(dx) > 4 || Math.Abs(dy) > 4)
             {
+                _didPan = true;
                 _viewTransform.TranslateX = _panStartTx + dx;
                 _viewTransform.TranslateY = _panStartTy + dy;
+                UpdateRealization();
             }
         }), handledEventsToo: true);
 
-        viewport.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) => _isPanning = false), handledEventsToo: true);
+        viewport.AddHandler(UIElement.PointerReleasedEvent, new PointerEventHandler((_, _) =>
+        {
+            _isPanning = false;
+            if (_didPan) UpdateRealization(force: true);
+        }), handledEventsToo: true);
         viewport.AddHandler(UIElement.PointerCanceledEvent, new PointerEventHandler((_, _) => _isPanning = false), handledEventsToo: true);
         viewport.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler((_, e) =>
         {
             if (!e.GetCurrentPoint(viewport).Properties.IsLeftButtonPressed) _isPanning = false;
         }), handledEventsToo: true);
+    }
+
+    private bool _fitted;
+
+    /// <summary>
+    /// On first display, shrink a map that is wider than the viewport so it is not cut off at the
+    /// right edge, and centre it vertically when it is shorter than the viewport.
+    /// </summary>
+    private void FitOnFirstLayout(Windows.Foundation.Size vp)
+    {
+        if (_fitted || vp.Width < 50 || vp.Height < 50 || _canvas.Width <= 0) return;
+        _fitted = true;
+        var scale = Math.Clamp(vp.Width / _canvas.Width, 0.5, 1.0);
+        _viewTransform.ScaleX = scale;
+        _viewTransform.ScaleY = scale;
+        _viewTransform.TranslateX = 0;
+        _viewTransform.TranslateY = Math.Max(0, (vp.Height - _canvas.Height * scale) / 2.0);
     }
 
     private void ZoomAt(double targetScale, Point anchorInViewport)
@@ -252,6 +338,7 @@ internal sealed class MindmapTreeView
         _viewTransform.ScaleY = newScale;
         _viewTransform.TranslateX = anchorInViewport.X - worldX * newScale;
         _viewTransform.TranslateY = anchorInViewport.Y - worldY * newScale;
+        UpdateRealization();
     }
 
     private void AttachWheelZoom(UIElement viewport)
@@ -306,7 +393,7 @@ internal sealed class MindmapTreeView
         };
         _mastery[nodeId] = (status, score, prev.Attempts, prev.Correct);
         UpdateKgProgressBanner();
-        Redraw();
+        if (_byId.TryGetValue(nodeId, out var changed)) RecolorNode(changed);
         _onProgressChanged?.Invoke(BuildProgressJson());
     }
 
@@ -381,6 +468,7 @@ internal sealed class MindmapTreeView
                 Importance = imp,
                 Summary = sum,
                 Atomic = n.TryGetProperty("atomic", out var at) && at.ValueKind == JsonValueKind.True,
+                Expandable = n.TryGetProperty("expandable", out var ex) && ex.ValueKind == JsonValueKind.True,
                 Width = EstimateWidth(label, imp.Length > 0) + (facets.Count > 0 ? 26 : 0),
             };
             node.Facets.AddRange(facets);
@@ -410,6 +498,18 @@ internal sealed class MindmapTreeView
             AssignDepth(r, 0);
         _allNodes.Clear();
         _allNodes.AddRange(order);
+
+        _byId.Clear();
+        _byLabel.Clear();
+        foreach (var n in order)
+        {
+            _byId[n.Id] = n;
+            _byLabel.TryAdd(n.Label, n);
+            // Room for the "+" marker.
+            if (n.Children.Count > 0 || n.Expandable) n.Width = Math.Min(n.Width + 16, 320);
+            // Default view: only the first two levels (root + its children); deeper branches start collapsed.
+            if (n.Depth >= 1 && n.Children.Count > 0) n.IsCollapsed = true;
+        }
     }
 
     private static void AssignDepth(MindNode node, int depth)
@@ -427,9 +527,94 @@ internal sealed class MindmapTreeView
         return Math.Clamp(units + (hasDot ? 42 : 28), 104, 290);
     }
 
+    private sealed record EdgeGroup(MindNode Parent, Rect Bounds);
+
+    private const double RealizeMargin = 600;
+    private const double UnrealizeMargin = 1800;
+
+    private readonly List<MindNode> _laidOut = new();
+    private readonly List<EdgeGroup> _edgeGroups = new();
+    private readonly Dictionary<MindNode, (Border Card, Run? Dot)> _cards = new();
+    private readonly Dictionary<MindNode, (Border Toggle, TextBlock Glyph)> _toggles = new();
+    private readonly Dictionary<MindNode, Microsoft.UI.Xaml.Shapes.Path> _edgePaths = new();
+    private readonly Dictionary<string, MindNode> _byId = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MindNode> _byLabel = new(StringComparer.Ordinal);
+    private readonly List<Microsoft.UI.Xaml.Shapes.Path> _prereqLines = new();
+    private readonly HashSet<MindNode> _prereqNodes = new();
+    private MindNode? _selected;
+    private bool _didPan;
+    private double _realizedTx = double.NaN;
+    private double _realizedTy = double.NaN;
+    private double _realizedScale = double.NaN;
+
+    private static readonly Color SelectedColor = Color.FromArgb(255, 253, 214, 99);
+    private static readonly Color PrereqColor = Color.FromArgb(255, 240, 150, 70);
+
+    private string MasteryOf(MindNode node) =>
+        _isKnowledgeGraph && node.Depth > 0 && _mastery.TryGetValue(node.Id, out var ms) ? ms.Status : "unstarted";
+
+    private static bool NeedsPlus(MindNode node) =>
+        (node.Children.Count > 0 && node.IsCollapsed) || (node.Children.Count == 0 && node.Expandable);
+
+    private Color BorderColorFor(MindNode node)
+    {
+        if (_selected == node) return SelectedColor;
+        if (_prereqNodes.Contains(node)) return PrereqColor;
+        var (_, border, _) = NodeColors(node.Depth, _isKnowledgeGraph);
+        if (_isKnowledgeGraph && node.Depth > 0)
+        {
+            return MasteryOf(node) switch
+            {
+                "mastered" => Color.FromArgb(255, 110, 198, 134),
+                "learning" => Color.FromArgb(255, 118, 174, 246),
+                "weak" => Color.FromArgb(255, 238, 124, 114),
+                _ => border,
+            };
+        }
+        return border;
+    }
+
+    private Color DotColorFor(MindNode node)
+    {
+        if (_isKnowledgeGraph && node.Depth > 0)
+        {
+            return MasteryOf(node) switch
+            {
+                "mastered" => Color.FromArgb(255, 129, 201, 149),
+                "learning" => Color.FromArgb(255, 138, 180, 248),
+                "weak" => Color.FromArgb(255, 242, 139, 130),
+                _ => Color.FromArgb(255, 110, 118, 129),
+            };
+        }
+        return node.Importance switch
+        {
+            "core" => Color.FromArgb(255, 253, 214, 99),
+            "key" => Color.FromArgb(255, 138, 180, 248),
+            _ => Color.FromArgb(255, 129, 201, 149),
+        };
+    }
+
+    private double BorderThicknessFor(MindNode node) => _selected == node || _prereqNodes.Contains(node) ? 2 : 1;
+
+    /// <summary>Recolors only the card of one node (mastery change / highlight change); never rebuilds the graph.</summary>
+    private void RecolorNode(MindNode node)
+    {
+        if (!_cards.TryGetValue(node, out var c)) return;
+        c.Card.BorderBrush = new SolidColorBrush(BorderColorFor(node));
+        c.Card.BorderThickness = new Thickness(BorderThicknessFor(node));
+        if (c.Dot != null) c.Dot.Foreground = new SolidColorBrush(DotColorFor(node));
+    }
+
     private void Redraw()
     {
         _canvas.Children.Clear();
+        _cards.Clear();
+        _toggles.Clear();
+        _edgePaths.Clear();
+        _prereqLines.Clear();
+        _laidOut.Clear();
+        _edgeGroups.Clear();
+        _realizedTx = _realizedTy = _realizedScale = double.NaN;
 
         double cursorY = CanvasPadY;
         double maxX = 420;
@@ -438,6 +623,7 @@ internal sealed class MindmapTreeView
         double LayoutNode(MindNode node, double x)
         {
             node.X = x;
+            _laidOut.Add(node);
             double childX = x + node.Width + ColGap;
             if (node.Children.Count == 0 || node.IsCollapsed)
             {
@@ -466,272 +652,418 @@ internal sealed class MindmapTreeView
         _canvas.Width = maxX;
         _canvas.Height = maxY;
 
-        void DrawEdges(MindNode node)
+        foreach (var node in _laidOut)
         {
-            if (node.IsCollapsed || node.Children.Count == 0) return;
-            double startX = node.X + node.Width + ToggleSize + 6;
-            double startY = node.Y + NodeHeight / 2.0;
-            var stroke = EdgeBrush(node.Depth, _isKnowledgeGraph);
+            if (node.IsCollapsed || node.Children.Count == 0) continue;
+            var startX = node.X + node.Width + ToggleSize + 6;
+            var top = Math.Min(node.Y, node.Children[0].Y);
+            var bottom = Math.Max(node.Y, node.Children[^1].Y);
+            _edgeGroups.Add(new EdgeGroup(node, new Rect(startX, top, Math.Max(1, node.Children[0].X - startX), bottom - top + NodeHeight)));
+        }
 
-            foreach (var child in node.Children)
+        RebuildPrereqLines();
+        UpdateRealization(force: true);
+    }
+
+    private Rect VisibleCanvasRect(double margin)
+    {
+        var vw = _viewport.ActualWidth > 0 ? _viewport.ActualWidth : 1600;
+        var vh = _viewport.ActualHeight > 0 ? _viewport.ActualHeight : 1000;
+        var s = Math.Max(0.01, _viewTransform.ScaleX);
+        var x = -_viewTransform.TranslateX / s - margin;
+        var y = -_viewTransform.TranslateY / s - margin;
+        return new Rect(x, y, vw / s + margin * 2, vh / s + margin * 2);
+    }
+
+    private static bool Intersects(Rect a, double x, double y, double w, double h) =>
+        x < a.X + a.Width && x + w > a.X && y < a.Y + a.Height && y + h > a.Y;
+
+    /// <summary>
+    /// Viewport culling: only cards/edges that intersect the visible area (plus a margin) exist as XAML elements.
+    /// Elements far outside the viewport are released again.
+    /// </summary>
+    private void UpdateRealization(bool force = false)
+    {
+        if (!force
+            && Math.Abs(_viewTransform.TranslateX - _realizedTx) < 150
+            && Math.Abs(_viewTransform.TranslateY - _realizedTy) < 150
+            && Math.Abs(_viewTransform.ScaleX - _realizedScale) < 0.0001)
+            return;
+        _realizedTx = _viewTransform.TranslateX;
+        _realizedTy = _viewTransform.TranslateY;
+        _realizedScale = _viewTransform.ScaleX;
+
+        var near = VisibleCanvasRect(RealizeMargin);
+        var far = VisibleCanvasRect(UnrealizeMargin);
+
+        if (_cards.Count > 0 || _edgePaths.Count > 0)
+        {
+            List<MindNode>? dropCards = null;
+            foreach (var kv in _cards)
             {
-                double endX = child.X;
-                double endY = child.Y + NodeHeight / 2.0;
-                double midX = (startX + endX) / 2.0;
-
-                var fig = new PathFigure { StartPoint = new Point(startX, startY), IsClosed = false };
-                fig.Segments.Add(new BezierSegment
+                var n = kv.Key;
+                if (!Intersects(far, n.X, n.Y, n.Width + ToggleSize + 6, NodeHeight)) (dropCards ??= new()).Add(n);
+            }
+            if (dropCards != null)
+            {
+                foreach (var n in dropCards)
                 {
-                    Point1 = new Point(midX, startY),
-                    Point2 = new Point(midX, endY),
-                    Point3 = new Point(endX, endY),
-                });
-                var geom = new PathGeometry();
-                geom.Figures.Add(fig);
-                var path = new Microsoft.UI.Xaml.Shapes.Path
+                    _canvas.Children.Remove(_cards[n].Card);
+                    _cards.Remove(n);
+                    if (_toggles.Remove(n, out var t)) _canvas.Children.Remove(t.Toggle);
+                }
+            }
+            List<MindNode>? dropEdges = null;
+            foreach (var g in _edgeGroups)
+            {
+                if (_edgePaths.ContainsKey(g.Parent) && !Intersects(far, g.Bounds.X, g.Bounds.Y, g.Bounds.Width, g.Bounds.Height))
+                    (dropEdges ??= new()).Add(g.Parent);
+            }
+            if (dropEdges != null)
+            {
+                foreach (var n in dropEdges)
                 {
-                    Data = geom,
-                    Stroke = stroke,
-                    StrokeThickness = 1.6,
-                };
-                _canvas.Children.Add(path);
-                DrawEdges(child);
+                    _canvas.Children.Remove(_edgePaths[n]);
+                    _edgePaths.Remove(n);
+                }
             }
         }
 
-        void DrawNodes(MindNode node)
+        foreach (var g in _edgeGroups)
         {
-            var (bg, border, fg) = NodeColors(node.Depth, _isKnowledgeGraph);
-            var masteryStatus = _isKnowledgeGraph && node.Depth > 0 && _mastery.TryGetValue(node.Id, out var ms)
-                ? ms.Status
-                : "unstarted";
-            if (_isKnowledgeGraph && node.Depth > 0)
+            if (_edgePaths.ContainsKey(g.Parent)) continue;
+            if (!Intersects(near, g.Bounds.X, g.Bounds.Y, g.Bounds.Width, g.Bounds.Height)) continue;
+            var path = BuildEdgePath(g.Parent);
+            _edgePaths[g.Parent] = path;
+            _canvas.Children.Insert(0, path);
+        }
+
+        foreach (var node in _laidOut)
+        {
+            if (_cards.ContainsKey(node)) continue;
+            if (!Intersects(near, node.X, node.Y, node.Width + ToggleSize + 6, NodeHeight)) continue;
+            RealizeNode(node);
+        }
+    }
+
+    private Microsoft.UI.Xaml.Shapes.Path BuildEdgePath(MindNode node)
+    {
+        double startX = node.X + node.Width + ToggleSize + 6;
+        double startY = node.Y + NodeHeight / 2.0;
+        var geom = new PathGeometry();
+        foreach (var child in node.Children)
+        {
+            double endX = child.X;
+            double endY = child.Y + NodeHeight / 2.0;
+            double midX = (startX + endX) / 2.0;
+            var fig = new PathFigure { StartPoint = new Point(startX, startY), IsClosed = false };
+            fig.Segments.Add(new BezierSegment
             {
-                border = masteryStatus switch
-                {
-                    "mastered" => Color.FromArgb(255, 110, 198, 134),
-                    "learning" => Color.FromArgb(255, 118, 174, 246),
-                    "weak" => Color.FromArgb(255, 238, 124, 114),
-                    _ => border,
-                };
-            }
-            var contentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7, VerticalAlignment = VerticalAlignment.Center };
-            if (_isKnowledgeGraph && node.Depth > 0)
-            {
-                var statusColor = masteryStatus switch
-                {
-                    "mastered" => Color.FromArgb(255, 129, 201, 149),
-                    "learning" => Color.FromArgb(255, 138, 180, 248),
-                    "weak" => Color.FromArgb(255, 242, 139, 130),
-                    _ => Color.FromArgb(255, 110, 118, 129),
-                };
-                contentRow.Children.Add(new Border
-                {
-                    Width = 8,
-                    Height = 8,
-                    CornerRadius = new CornerRadius(4),
-                    Background = new SolidColorBrush(statusColor),
-                    VerticalAlignment = VerticalAlignment.Center,
-                });
-            }
-            else if (node.Importance.Length > 0)
-            {
-                var dotColor = node.Importance switch
-                {
-                    "core" => Color.FromArgb(255, 253, 214, 99),
-                    "key" => Color.FromArgb(255, 138, 180, 248),
-                    _ => Color.FromArgb(255, 129, 201, 149),
-                };
-                contentRow.Children.Add(new Border
-                {
-                    Width = 7,
-                    Height = 7,
-                    CornerRadius = new CornerRadius(3.5),
-                    Background = new SolidColorBrush(dotColor),
-                    VerticalAlignment = VerticalAlignment.Center,
-                });
-            }
-            contentRow.Children.Add(new TextBlock
-            {
-                Text = node.Label,
-                Foreground = new SolidColorBrush(fg),
-                FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI"),
-                FontSize = 13,
-                FontWeight = node.Depth == 0 ? FontWeights.SemiBold : FontWeights.Normal,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
+                Point1 = new Point(midX, startY),
+                Point2 = new Point(midX, endY),
+                Point3 = new Point(endX, endY),
             });
-            if (node.Facets.Count > 0)
-            {
-                // Small count chip: this node carries sub-points (facets) shown in tooltip/menu.
-                contentRow.Children.Add(new Border
-                {
-                    CornerRadius = new CornerRadius(7),
-                    Padding = new Thickness(5, 0, 5, 1),
-                    Background = new SolidColorBrush(Color.FromArgb(150, 80, 92, 112)),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Child = new TextBlock
-                    {
-                        Text = node.Facets.Count.ToString(),
-                        FontSize = 10.5,
-                        Foreground = new SolidColorBrush(Color.FromArgb(255, 214, 222, 236)),
-                    },
-                });
-            }
+            geom.Figures.Add(fig);
+        }
+        return new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Data = geom,
+            Stroke = EdgeBrush(node.Depth, _isKnowledgeGraph),
+            StrokeThickness = 1.6,
+            IsHitTestVisible = false,
+        };
+    }
 
-            var card = new Button
+    private void RealizeNode(MindNode node)
+    {
+        var (bg, _, fg) = NodeColors(node.Depth, _isKnowledgeGraph);
+        var label = new TextBlock
+        {
+            Foreground = new SolidColorBrush(fg),
+            FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI"),
+            FontSize = 13,
+            FontWeight = node.Depth == 0 ? FontWeights.SemiBold : FontWeights.Normal,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.NoWrap,
+        };
+        Run? dot = null;
+        if ((_isKnowledgeGraph && node.Depth > 0) || node.Importance.Length > 0)
+        {
+            dot = new Run { Text = "● ", FontSize = 10, Foreground = new SolidColorBrush(DotColorFor(node)) };
+            label.Inlines.Add(dot);
+        }
+        label.Inlines.Add(new Run { Text = node.Label });
+        if (node.Facets.Count > 0)
+        {
+            label.Inlines.Add(new Run
             {
-                Width = node.Width,
-                Height = NodeHeight,
-                MinHeight = NodeHeight,
-                CornerRadius = new CornerRadius(8),
-                Background = new SolidColorBrush(bg),
-                BorderBrush = new SolidColorBrush(border),
-                BorderThickness = new Thickness(1),
-                Padding = new Thickness(11, 0, 11, 0),
-                HorizontalContentAlignment = HorizontalAlignment.Left,
-                VerticalContentAlignment = VerticalAlignment.Center,
-                Content = contentRow,
-            };
-
-            var tipParts = new List<string> { node.Label };
-            if (_isKnowledgeGraph && node.Depth > 0)
+                Text = " · " + node.Facets.Count,
+                FontSize = 10.5,
+                Foreground = new SolidColorBrush(Color.FromArgb(255, 170, 182, 204)),
+            });
+        }
+        if (NeedsPlus(node))
+        {
+            label.Inlines.Add(new Run
             {
-                var statusLabel = masteryStatus switch
-                {
-                    "mastered" => L10n.T("kg.status_mastered"),
-                    "learning" => L10n.T("kg.status_learning"),
-                    "weak" => L10n.T("kg.status_weak"),
-                    _ => L10n.T("kg.status_unstarted"),
-                };
-                tipParts.Add($"{L10n.T("kg.status_label")}: {statusLabel}");
-            }
-            if (node.Summary.Length > 0) tipParts.Add(node.Summary);
-            if (node.Facets.Count > 0)
-                tipParts.Add($"{L10n.T("kg.facets")}:\n" + string.Join("\n", node.Facets.Select(f => $"• {f}")));
-            if (node.Prerequisites.Count > 0) tipParts.Add($"{L10n.T("kg.prereq")}: {string.Join(", ", node.Prerequisites)}");
-            ToolTipService.SetToolTip(card, string.Join("\n", tipParts));
-
-            if (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null || _onRefineNode != null || (_isKnowledgeGraph && node.Depth > 0))
-            {
-                var cleanConcept = node.Label.Split('[')[0].Trim();
-                var menu = new MenuFlyout();
-                if (node.Facets.Count > 0)
-                {
-                    var sub = new MenuFlyoutSubItem { Text = $"{L10n.T("kg.facets")} ({node.Facets.Count})" };
-                    foreach (var facet in node.Facets)
-                    {
-                        var fi = new MenuFlyoutItem { Text = facet };
-                        var target = $"{cleanConcept}：{facet}";
-                        if (_onAskConcept != null) fi.Click += (_, _) => _onAskConcept(target);
-                        else if (_onQuizConcept != null) fi.Click += (_, _) => _onQuizConcept(target);
-                        else fi.IsEnabled = false;
-                        sub.Items.Add(fi);
-                    }
-                    menu.Items.Add(sub);
-                }
-                if (_onRefineNode != null && node.Depth > 0)
-                {
-                    var mi = new MenuFlyoutItem
-                    {
-                        Text = node.Atomic ? L10n.T("kg.atomic") : L10n.T("kg.action_refine"),
-                        IsEnabled = !node.Atomic,
-                    };
-                    var refineId = node.Id;
-                    var refineLabel = node.Label;
-                    mi.Click += async (_, _) => await _onRefineNode(refineId, refineLabel);
-                    menu.Items.Add(mi);
-                }
-                if (menu.Items.Count > 0 && (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null))
-                    menu.Items.Add(new MenuFlyoutSeparator());
-                if (_onQuizConcept != null)
-                {
-                    var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_quiz") };
-                    mi.Click += (_, _) => _onQuizConcept(cleanConcept);
-                    menu.Items.Add(mi);
-                }
-                if (_onExpandMindmap != null)
-                {
-                    var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_mindmap") };
-                    mi.Click += (_, _) => _onExpandMindmap(cleanConcept);
-                    menu.Items.Add(mi);
-                }
-                if (_onAskConcept != null)
-                {
-                    var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_chat") };
-                    mi.Click += (_, _) => _onAskConcept(cleanConcept);
-                    menu.Items.Add(mi);
-                }
-                if (_isKnowledgeGraph && node.Depth > 0)
-                {
-                    if (menu.Items.Count > 0) menu.Items.Add(new MenuFlyoutSeparator());
-                    foreach (var (labelKey, tag) in new[]
-                    {
-                        ("kg.mark_mastered", "mastered"),
-                        ("kg.mark_learning", "learning"),
-                        ("kg.mark_weak", "weak"),
-                        ("kg.mark_unstarted", "unstarted"),
-                    })
-                    {
-                        var mi = new MenuFlyoutItem { Text = L10n.T(labelKey) };
-                        var nodeId = node.Id;
-                        var newStatus = tag;
-                        mi.Click += (_, _) => SetNodeMasteryStatus(nodeId, newStatus);
-                        menu.Items.Add(mi);
-                    }
-                }
-                card.Flyout = menu;
-            }
-
-            Canvas.SetLeft(card, node.X);
-            Canvas.SetTop(card, node.Y);
-            _canvas.Children.Add(card);
-
-            if (node.Children.Count > 0)
-            {
-                var target = node;
-                var toggleBtn = new Button
-                {
-                    Width = ToggleSize,
-                    Height = ToggleSize,
-                    MinWidth = ToggleSize,
-                    MinHeight = ToggleSize,
-                    Padding = new Thickness(0),
-                    CornerRadius = new CornerRadius(ToggleSize / 2.0),
-                    Background = new SolidColorBrush(Color.FromArgb(255, 52, 56, 68)),
-                    BorderBrush = new SolidColorBrush(Color.FromArgb(255, 86, 92, 112)),
-                    BorderThickness = new Thickness(1),
-                    HorizontalContentAlignment = HorizontalAlignment.Center,
-                    VerticalContentAlignment = VerticalAlignment.Center,
-                    Content = new TextBlock
-                    {
-                        Text = target.IsCollapsed ? ">" : "<",
-                        FontSize = 11,
-                        FontWeight = FontWeights.SemiBold,
-                        Foreground = new SolidColorBrush(Color.FromArgb(255, 224, 228, 238)),
-                        VerticalAlignment = VerticalAlignment.Center,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                    },
-                };
-                toggleBtn.Click += (_, _) =>
-                {
-                    target.IsCollapsed = !target.IsCollapsed;
-                    Redraw();
-                };
-                Canvas.SetLeft(toggleBtn, node.X + node.Width + 6);
-                Canvas.SetTop(toggleBtn, node.Y + (NodeHeight - ToggleSize) / 2.0);
-                _canvas.Children.Add(toggleBtn);
-            }
-
-            if (!node.IsCollapsed)
-            {
-                foreach (var child in node.Children)
-                    DrawNodes(child);
-            }
+                Text = " +",
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(SelectedColor),
+            });
         }
 
-        foreach (var root in _roots) DrawEdges(root);
-        foreach (var root in _roots) DrawNodes(root);
+        var card = new Border
+        {
+            Width = node.Width,
+            Height = NodeHeight,
+            CornerRadius = new CornerRadius(8),
+            Background = new SolidColorBrush(bg),
+            BorderBrush = new SolidColorBrush(BorderColorFor(node)),
+            BorderThickness = new Thickness(BorderThicknessFor(node)),
+            Padding = new Thickness(11, 0, 11, 0),
+            Child = label,
+        };
+        // ToolTip and menu are created lazily (hover / right-click / tap), not per card at creation.
+        card.PointerEntered += (_, _) => ToolTipService.SetToolTip(card, BuildTip(node));
+        card.RightTapped += (_, e) =>
+        {
+            e.Handled = true;
+            SelectNode(node);
+            ShowMenu(node, card);
+        };
+        card.Tapped += (_, e) =>
+        {
+            if (_didPan) return;
+            e.Handled = true;
+            SelectNode(node);
+            if (node.Children.Count > 0 && node.IsCollapsed)
+            {
+                node.IsCollapsed = false;
+                Redraw();
+                return;
+            }
+            ShowMenu(node, card);
+        };
+        Canvas.SetLeft(card, node.X);
+        Canvas.SetTop(card, node.Y);
+        _canvas.Children.Add(card);
+        _cards[node] = (card, dot);
+
+        if (node.Children.Count > 0)
+        {
+            var glyph = new TextBlock
+            {
+                Text = node.IsCollapsed ? ">" : "<",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromArgb(255, 224, 228, 238)),
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+            };
+            var toggle = new Border
+            {
+                Width = ToggleSize,
+                Height = ToggleSize,
+                CornerRadius = new CornerRadius(ToggleSize / 2.0),
+                Background = new SolidColorBrush(Color.FromArgb(255, 52, 56, 68)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 86, 92, 112)),
+                BorderThickness = new Thickness(1),
+                Child = glyph,
+            };
+            toggle.Tapped += (_, e) =>
+            {
+                if (_didPan) return;
+                e.Handled = true;
+                node.IsCollapsed = !node.IsCollapsed;
+                Redraw();
+            };
+            Canvas.SetLeft(toggle, node.X + node.Width + 6);
+            Canvas.SetTop(toggle, node.Y + (NodeHeight - ToggleSize) / 2.0);
+            _canvas.Children.Add(toggle);
+            _toggles[node] = (toggle, glyph);
+        }
+    }
+
+    private string BuildTip(MindNode node)
+    {
+        var tipParts = new List<string> { node.Label };
+        if (_isKnowledgeGraph && node.Depth > 0)
+        {
+            var statusLabel = MasteryOf(node) switch
+            {
+                "mastered" => L10n.T("kg.status_mastered"),
+                "learning" => L10n.T("kg.status_learning"),
+                "weak" => L10n.T("kg.status_weak"),
+                _ => L10n.T("kg.status_unstarted"),
+            };
+            tipParts.Add($"{L10n.T("kg.status_label")}: {statusLabel}");
+        }
+        if (node.Summary.Length > 0) tipParts.Add(node.Summary);
+        if (node.Facets.Count > 0)
+            tipParts.Add($"{L10n.T("kg.facets")}:\n" + string.Join("\n", node.Facets.Select(f => $"• {f}")));
+        if (node.Prerequisites.Count > 0) tipParts.Add($"{L10n.T("kg.prereq")}: {string.Join(", ", node.Prerequisites)}");
+        return string.Join("\n", tipParts);
+    }
+
+    private void SelectNode(MindNode node)
+    {
+        var previous = _selected;
+        var oldPrereq = _prereqNodes.ToList();
+        _selected = node;
+        _prereqNodes.Clear();
+        foreach (var name in node.Prerequisites)
+        {
+            if (_byLabel.TryGetValue(StripCitationMarkers(name), out var pn) && pn != node) _prereqNodes.Add(pn);
+        }
+        if (previous != null) RecolorNode(previous);
+        foreach (var n in oldPrereq) RecolorNode(n);
+        RecolorNode(node);
+        foreach (var n in _prereqNodes) RecolorNode(n);
+        RebuildPrereqLines();
+    }
+
+    /// <summary>Dashed prerequisite connectors, drawn only for the selected node.</summary>
+    private void RebuildPrereqLines()
+    {
+        foreach (var l in _prereqLines) _canvas.Children.Remove(l);
+        _prereqLines.Clear();
+        if (_selected == null || _prereqNodes.Count == 0) return;
+        var laid = new HashSet<MindNode>(_laidOut);
+        if (!laid.Contains(_selected)) return;
+        var brush = new SolidColorBrush(PrereqColor);
+        foreach (var pre in _prereqNodes)
+        {
+            if (!laid.Contains(pre)) continue;
+            var sx = pre.X + pre.Width;
+            var sy = pre.Y + NodeHeight / 2.0;
+            var ex = _selected.X;
+            var ey = _selected.Y + NodeHeight / 2.0;
+            if (ex < sx) { sx = pre.X; ex = _selected.X + _selected.Width; }
+            var midX = (sx + ex) / 2.0;
+            var fig = new PathFigure { StartPoint = new Point(sx, sy), IsClosed = false };
+            fig.Segments.Add(new BezierSegment
+            {
+                Point1 = new Point(midX, sy - 30),
+                Point2 = new Point(midX, ey - 30),
+                Point3 = new Point(ex, ey),
+            });
+            var geom = new PathGeometry();
+            geom.Figures.Add(fig);
+            var line = new Microsoft.UI.Xaml.Shapes.Path
+            {
+                Data = geom,
+                Stroke = brush,
+                StrokeThickness = 1.6,
+                StrokeDashArray = new DoubleCollection { 4, 3 },
+                IsHitTestVisible = false,
+            };
+            _prereqLines.Add(line);
+            _canvas.Children.Insert(0, line);
+        }
+    }
+
+    private void ShowMenu(MindNode node, FrameworkElement anchor)
+    {
+        var menu = BuildMenu(node);
+        if (menu != null) menu.ShowAt(anchor);
+    }
+
+    private MenuFlyout? BuildMenu(MindNode node)
+    {
+        if (_readOnly)
+        {
+            if (node.Children.Count == 0) return null;
+            var ro = new MenuFlyout();
+            var roItem = new MenuFlyoutItem { Text = node.IsCollapsed ? L10n.T("mindmap.menu_expand_local") : L10n.T("mindmap.menu_collapse_local") };
+            roItem.Click += (_, _) =>
+            {
+                node.IsCollapsed = !node.IsCollapsed;
+                Redraw();
+            };
+            ro.Items.Add(roItem);
+            return ro;
+        }
+        if (!(_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null || _onRefineNode != null || (_isKnowledgeGraph && node.Depth > 0)))
+            return null;
+
+        var cleanConcept = node.Label.Split('[')[0].Trim();
+        var menu = new MenuFlyout();
+        if (node.Children.Count > 0)
+        {
+            var toggleItem = new MenuFlyoutItem { Text = node.IsCollapsed ? L10n.T("mindmap.menu_expand_local") : L10n.T("mindmap.menu_collapse_local") };
+            toggleItem.Click += (_, _) =>
+            {
+                node.IsCollapsed = !node.IsCollapsed;
+                Redraw();
+            };
+            menu.Items.Add(toggleItem);
+        }
+        if (node.Facets.Count > 0)
+        {
+            var sub = new MenuFlyoutSubItem { Text = $"{L10n.T("kg.facets")} ({node.Facets.Count})" };
+            foreach (var facet in node.Facets)
+            {
+                var fi = new MenuFlyoutItem { Text = facet };
+                var target = $"{cleanConcept}：{facet}";
+                if (_onAskConcept != null) fi.Click += (_, _) => _onAskConcept(target);
+                else if (_onQuizConcept != null) fi.Click += (_, _) => _onQuizConcept(target);
+                else fi.IsEnabled = false;
+                sub.Items.Add(fi);
+            }
+            menu.Items.Add(sub);
+        }
+        if (_onRefineNode != null && node.Depth > 0)
+        {
+            var mi = new MenuFlyoutItem
+            {
+                Text = node.Atomic ? L10n.T("kg.atomic") : L10n.T("kg.action_refine"),
+                IsEnabled = !node.Atomic,
+            };
+            var refineId = node.Id;
+            var refineLabel = node.Label;
+            mi.Click += async (_, _) => await _onRefineNode(refineId, refineLabel);
+            menu.Items.Add(mi);
+        }
+        if (menu.Items.Count > 0 && (_onQuizConcept != null || _onExpandMindmap != null || _onAskConcept != null))
+            menu.Items.Add(new MenuFlyoutSeparator());
+        if (_onQuizConcept != null)
+        {
+            var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_quiz") };
+            mi.Click += (_, _) => _onQuizConcept(cleanConcept);
+            menu.Items.Add(mi);
+        }
+        if (_onExpandMindmap != null)
+        {
+            var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_mindmap") };
+            mi.Click += (_, _) => _onExpandMindmap(cleanConcept);
+            menu.Items.Add(mi);
+        }
+        if (_onAskConcept != null)
+        {
+            var mi = new MenuFlyoutItem { Text = L10n.T("kg.action_chat") };
+            mi.Click += (_, _) => _onAskConcept(cleanConcept);
+            menu.Items.Add(mi);
+        }
+        if (_isKnowledgeGraph && node.Depth > 0)
+        {
+            if (menu.Items.Count > 0) menu.Items.Add(new MenuFlyoutSeparator());
+            foreach (var (labelKey, tag) in new[]
+            {
+                ("kg.mark_mastered", "mastered"),
+                ("kg.mark_learning", "learning"),
+                ("kg.mark_weak", "weak"),
+                ("kg.mark_unstarted", "unstarted"),
+            })
+            {
+                var mi = new MenuFlyoutItem { Text = L10n.T(labelKey) };
+                var nodeId = node.Id;
+                var newStatus = tag;
+                mi.Click += (_, _) => SetNodeMasteryStatus(nodeId, newStatus);
+                menu.Items.Add(mi);
+            }
+        }
+        return menu;
     }
 
     private FrameworkElement BuildFloatingControls()

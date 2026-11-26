@@ -5,6 +5,8 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Web.WebView2.Core;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
@@ -22,7 +24,7 @@ public sealed record MathRenderResult(
     ImageSource? Image = null);
 
 /// <summary>
-/// One shared WebView2 for inline &amp; block LaTeX formulas, created on demand and released after 60 s
+/// One shared WebView2 for inline &amp; block LaTeX formulas, created on demand and released after 120 s
 /// without use (G6). Coalesces concurrent formulas into a single atlas screenshot and crops each
 /// expression directly into a cached WriteableBitmap so multi-formula documents render in ~1 frame.
 /// </summary>
@@ -30,7 +32,13 @@ public sealed class WebContentHost : IDisposable
 {
     public const int MaxFormulaLength = 2000;
     private const int MaxCacheEntries = 1000;
-    private const int MaxBatchSize = 40;
+    private const int MaxBatchCount = 80;
+    // Estimated atlas area (DIP^2) per batch; the atlas is at most 1560 wide so this keeps it near 1024 tall.
+    private const double BatchAreaBudget = 1_100_000;
+    private const int MaxAtlasWidth = 1600;
+    private const int MaxAtlasHeight = 1024;
+    private const int MaxDiskEntries = 6000;
+    private const string DiskCacheVersion = "v1-katex-1.05em";
     private const int RenderTimeoutMs = 8000;
     private const string HostName = "katex.local";
 
@@ -38,7 +46,17 @@ public sealed class WebContentHost : IDisposable
         string Key,
         string Latex,
         bool DisplayMode,
+        string DiskKey,
         TaskCompletionSource<MathRenderResult> Tcs);
+
+    private sealed record CropToPersist(string DiskKey, byte[] Pixels, int PxW, int PxH, int W, int H, int Descent, bool Overflow);
+
+    private static readonly string LocalRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalNotebook");
+    private static readonly string DiskCacheDir = Path.Combine(LocalRoot, "formula-cache");
+    private static readonly string UserDataDir = Path.Combine(LocalRoot, "webview-math");
+    private CoreWebView2Environment? _env;
+    private bool _diskPruned;
 
     private WebView2? _webView;
     private bool _pageReady;
@@ -54,7 +72,7 @@ public sealed class WebContentHost : IDisposable
 
     public WebContentHost()
     {
-        _idleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
+        _idleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(120) };
         _idleTimer.Tick += (_, _) => Release();
     }
 
@@ -85,6 +103,51 @@ public sealed class WebContentHost : IDisposable
         result = new MathRenderResult(false, null, 0, 0, 0, false, null);
         bitmap = null;
         return false;
+    }
+
+    private int _uncachedSeen;
+
+    /// <summary>Number of displayed formulas that were found in neither memory nor disk cache.</summary>
+    public int UncachedSeen => _uncachedSeen;
+
+    public void NoteUncached() => _uncachedSeen++;
+
+    /// <summary>
+    /// True when rendering this formula costs no WebView2 (memory cache or disk cache has it).
+    /// </summary>
+    public bool IsCached(string latex, bool displayMode, double scale)
+    {
+        if (_cache.ContainsKey(CacheKey(latex, displayMode))) return true;
+        try
+        {
+            var dk = DiskKeyFor(latex, displayMode, scale);
+            return File.Exists(Path.Combine(DiskCacheDir, dk + ".meta"))
+                && File.Exists(Path.Combine(DiskCacheDir, dk + ".png"));
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Starts WebView2 by rendering one tiny formula, after an idle delay. No-op if cancelled or disposed.
+    /// </summary>
+    public async Task PrewarmAsync(Panel hostContainer, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(1500, ct);
+            if (ct.IsCancellationRequested || _disposed || _webView != null) return;
+            var tcs = new TaskCompletionSource();
+            if (!hostContainer.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+                {
+                    if (ct.IsCancellationRequested || _disposed) { tcs.TrySetResult(); return; }
+                    _ = RenderFormulaAsync(hostContainer, "x", false)
+                        .ContinueWith(_ => tcs.TrySetResult(), TaskScheduler.Default);
+                }))
+                return;
+            await tcs.Task;
+        }
+        catch (OperationCanceledException) { }
+        catch { }
     }
 
     /// <summary>
@@ -121,7 +184,8 @@ public sealed class WebContentHost : IDisposable
 
         var tcs = new TaskCompletionSource<MathRenderResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         _inFlight[cacheKey] = tcs;
-        _pendingQueue.Enqueue(new PendingFormula(cacheKey, latex, displayMode, tcs));
+        var scale = hostContainer.XamlRoot?.RasterizationScale ?? 1.0;
+        _pendingQueue.Enqueue(new PendingFormula(cacheKey, latex, displayMode, DiskKeyFor(latex, displayMode, scale), tcs));
 
         if (!_batchScheduled)
         {
@@ -149,8 +213,8 @@ public sealed class WebContentHost : IDisposable
         {
             while (_pendingQueue.Count > 0 && !_disposed)
             {
-                var batch = new List<PendingFormula>(Math.Min(MaxBatchSize, _pendingQueue.Count));
-                while (batch.Count < MaxBatchSize && _pendingQueue.Count > 0)
+                var drained = new List<PendingFormula>(_pendingQueue.Count);
+                while (_pendingQueue.Count > 0)
                 {
                     var item = _pendingQueue.Dequeue();
                     if (_cache.TryGetValue(item.Key, out var cached))
@@ -159,11 +223,46 @@ public sealed class WebContentHost : IDisposable
                         item.Tcs.TrySetResult(cached);
                         continue;
                     }
-                    batch.Add(item);
+                    drained.Add(item);
                 }
-                if (batch.Count == 0) continue;
+                if (drained.Count == 0) continue;
 
-                await RenderBatchInternalAsync(hostContainer, batch);
+                // Disk cache first: a hit never starts WebView2.
+                var diskHits = await Task.WhenAll(drained.Select(TryLoadFromDiskAsync));
+                var misses = new List<PendingFormula>();
+                for (var i = 0; i < drained.Count; i++)
+                {
+                    var item = drained[i];
+                    var hit = diskHits[i];
+                    if (hit == null) { misses.Add(item); continue; }
+                    CachePut(item.Key, hit);
+                    if (hit.Image != null) _bitmapCache[item.Key] = hit.Image;
+                    _inFlight.Remove(item.Key);
+                    item.Tcs.TrySetResult(hit);
+                }
+
+                var idx = 0;
+                while (idx < misses.Count && !_disposed)
+                {
+                    var batch = new List<PendingFormula>();
+                    double area = 0;
+                    while (idx < misses.Count && batch.Count < MaxBatchCount)
+                    {
+                        var est = EstimateArea(misses[idx]);
+                        if (batch.Count > 0 && area + est > BatchAreaBudget) break;
+                        area += est;
+                        batch.Add(misses[idx++]);
+                    }
+                    await RenderBatchInternalAsync(hostContainer, batch);
+                }
+                if (_disposed)
+                {
+                    foreach (var left in misses.Skip(idx))
+                    {
+                        _inFlight.Remove(left.Key);
+                        left.Tcs.TrySetResult(new MathRenderResult(false, null, 0, 0, 0, false, L10n.T("math.disposed")));
+                    }
+                }
             }
         }
         finally
@@ -176,6 +275,95 @@ public sealed class WebContentHost : IDisposable
                 hostContainer.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Normal, () => _ = ProcessQueueAsync(hostContainer));
             }
         }
+    }
+
+    private static double EstimateArea(PendingFormula f)
+    {
+        var w = Math.Min(1560, 24 + f.Latex.Length * (f.DisplayMode ? 9.0 : 7.5));
+        var h = f.DisplayMode ? 64 : 36;
+        return (w + 8) * (h + 8);
+    }
+
+    private static string DiskKeyFor(string latex, bool displayMode, double scale)
+    {
+        var raw = $"{DiskCacheVersion}|{(displayMode ? 'D' : 'I')}|{scale:0.##}|{latex}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)));
+    }
+
+    private static async Task<MathRenderResult?> TryLoadFromDiskAsync(PendingFormula item)
+    {
+        try
+        {
+            var metaPath = Path.Combine(DiskCacheDir, item.DiskKey + ".meta");
+            var pngPath = Path.Combine(DiskCacheDir, item.DiskKey + ".png");
+            if (!File.Exists(metaPath) || !File.Exists(pngPath)) return null;
+            var parts = (await File.ReadAllTextAsync(metaPath)).Split(' ');
+            if (parts.Length < 4
+                || !int.TryParse(parts[0], out var w) || !int.TryParse(parts[1], out var h)
+                || !int.TryParse(parts[2], out var descent)) return null;
+            var bytes = await File.ReadAllBytesAsync(pngPath);
+            using var mem = new InMemoryRandomAccessStream();
+            await mem.WriteAsync(bytes.AsBuffer());
+            mem.Seek(0);
+            var bmp = new BitmapImage();
+            await bmp.SetSourceAsync(mem);
+            return new MathRenderResult(true, null, w, h, descent, parts[3] == "1", null, bmp);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task PersistAsync(List<CropToPersist> crops)
+    {
+        try
+        {
+            Directory.CreateDirectory(DiskCacheDir);
+            if (!_diskPruned)
+            {
+                _diskPruned = true;
+                PruneDiskCache();
+            }
+            foreach (var c in crops)
+            {
+                using var ms = new InMemoryRandomAccessStream();
+                var enc = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, ms);
+                enc.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, (uint)c.PxW, (uint)c.PxH, 96, 96, c.Pixels);
+                await enc.FlushAsync();
+                ms.Seek(0);
+                var buf = new byte[ms.Size];
+                await ms.ReadAsync(buf.AsBuffer(), (uint)ms.Size, InputStreamOptions.None);
+                var pngPath = Path.Combine(DiskCacheDir, c.DiskKey + ".png");
+                var tmp = pngPath + ".tmp";
+                await File.WriteAllBytesAsync(tmp, buf);
+                File.Move(tmp, pngPath, true);
+                // Meta is written last: its presence marks a complete entry.
+                await File.WriteAllTextAsync(
+                    Path.Combine(DiskCacheDir, c.DiskKey + ".meta"),
+                    $"{c.W} {c.H} {c.Descent} {(c.Overflow ? 1 : 0)}");
+            }
+        }
+        catch
+        {
+            // Disk cache is best effort.
+        }
+    }
+
+    private static void PruneDiskCache()
+    {
+        try
+        {
+            var files = new DirectoryInfo(DiskCacheDir).GetFiles("*.meta");
+            if (files.Length <= MaxDiskEntries) return;
+            foreach (var f in files.OrderBy(f => f.LastWriteTimeUtc).Take(files.Length - MaxDiskEntries / 2))
+            {
+                f.Delete();
+                var png = Path.ChangeExtension(f.FullName, ".png");
+                if (File.Exists(png)) File.Delete(png);
+            }
+        }
+        catch { }
     }
 
     private void FailRemainingQueue(string error)
@@ -200,11 +388,41 @@ public sealed class WebContentHost : IDisposable
         }
     }
 
+    private string _batchStage = "";
+    private readonly HashSet<string> _retried = new();
+
+    /// <summary>
+    /// Runs one batch under a watchdog: a hung WebView2 call must not freeze every later formula.
+    /// A stalled batch drops the view (the next batch recreates it) and is retried once.
+    /// </summary>
     private async Task RenderBatchInternalAsync(Panel hostContainer, List<PendingFormula> batch)
+    {
+        _batchStage = "start";
+        var work = RenderBatchCoreAsync(hostContainer, batch);
+        if (await Task.WhenAny(work, Task.Delay(RenderTimeoutMs * 3)) == work)
+        {
+            await work;
+            return;
+        }
+        Diag($"batch of {batch.Count} stalled at stage '{_batchStage}'; resetting WebView2");
+        Release();
+        foreach (var item in batch)
+        {
+            if (_retried.Add(item.Key)) _pendingQueue.Enqueue(item);
+            else
+            {
+                _inFlight.Remove(item.Key);
+                item.Tcs.TrySetResult(new MathRenderResult(false, null, 0, 0, 0, false, L10n.T("math.timeout")));
+            }
+        }
+    }
+
+    private async Task RenderBatchCoreAsync(Panel hostContainer, List<PendingFormula> batch)
     {
         try
         {
             _idleTimer.Stop();
+            _batchStage = "ensure";
             var ready = await EnsureReadyAsync(hostContainer);
             if (!ready || _webView?.CoreWebView2 == null)
             {
@@ -223,6 +441,7 @@ public sealed class WebContentHost : IDisposable
             }
 
             var jsonArg = JsonSerializer.Serialize(inputList, Interop.LnaJsonContext.Default.ListMathBatchItemInputDto);
+            _batchStage = "measure";
             var evalTask = _webView.CoreWebView2.ExecuteScriptAsync($"window.lnaRenderBatch({jsonArg})").AsTask();
             if (await Task.WhenAny(evalTask, Task.Delay(RenderTimeoutMs)) != evalTask)
             {
@@ -245,6 +464,25 @@ public sealed class WebContentHost : IDisposable
                 return;
             }
 
+            // Cap atlas height: if the atlas is too tall, render only the first half now and requeue the rest.
+            while (measure.AtlasHeight > MaxAtlasHeight && batch.Count > 1)
+            {
+                var keep = batch.Count / 2;
+                foreach (var extra in batch.Skip(keep)) _pendingQueue.Enqueue(extra);
+                batch = batch.Take(keep).ToList();
+                inputList.RemoveRange(keep, inputList.Count - keep);
+                jsonArg = JsonSerializer.Serialize(inputList, Interop.LnaJsonContext.Default.ListMathBatchItemInputDto);
+                var rawAgain = await _webView.CoreWebView2.ExecuteScriptAsync($"window.lnaRenderBatch({jsonArg})").AsTask();
+                var innerAgain = JsonSerializer.Deserialize(rawAgain, Interop.LnaJsonContext.Default.String);
+                var again = string.IsNullOrEmpty(innerAgain) ? null : JsonSerializer.Deserialize(innerAgain, Interop.LnaJsonContext.Default.MathBatchMeasureDto);
+                if (again == null || again.Items.Count != batch.Count)
+                {
+                    ResolveBatchError(batch, L10n.T("math.empty_result"));
+                    return;
+                }
+                measure = again;
+            }
+
             // If every item in the batch failed KaTeX parsing, skip screenshot capture completely.
             var hasAnyOk = false;
             foreach (var m in measure.Items)
@@ -265,14 +503,15 @@ public sealed class WebContentHost : IDisposable
                 return;
             }
 
-            var atlasW = Math.Clamp(measure.AtlasWidth, 4, 1600);
-            var atlasH = Math.Clamp(measure.AtlasHeight, 4, 3200);
+            var atlasW = Math.Clamp(measure.AtlasWidth, 4, MaxAtlasWidth);
+            var atlasH = Math.Clamp(measure.AtlasHeight, 4, MaxAtlasHeight);
             _webView.Width = atlasW;
             _webView.Height = atlasH;
             _webView.UpdateLayout();
 
             // Wait for WebView2 viewport resize, font loading, and two compositor rAF frames
             // before measuring final bounding boxes and capturing the atlas screenshot.
+            _batchStage = "paint";
             await _webView.CoreWebView2.ExecuteScriptAsync("window.lnaStartPaintWait()").AsTask();
             for (var attempt = 0; attempt < 15; attempt++)
             {
@@ -284,6 +523,7 @@ public sealed class WebContentHost : IDisposable
                     break;
             }
 
+            _batchStage = "remeasure";
             var remeasureRaw = await _webView.CoreWebView2.ExecuteScriptAsync("window.lnaMeasureBatch()").AsTask();
             var remeasureInner = JsonSerializer.Deserialize(remeasureRaw, Interop.LnaJsonContext.Default.String);
             if (!string.IsNullOrEmpty(remeasureInner))
@@ -292,8 +532,8 @@ public sealed class WebContentHost : IDisposable
                 if (freshMeasure != null && freshMeasure.Items.Count == batch.Count)
                 {
                     measure = freshMeasure;
-                    var newW = Math.Clamp(measure.AtlasWidth, 4, 1600);
-                    var newH = Math.Clamp(measure.AtlasHeight, 4, 3200);
+                    var newW = Math.Clamp(measure.AtlasWidth, 4, MaxAtlasWidth);
+                    var newH = Math.Clamp(measure.AtlasHeight, 4, MaxAtlasHeight);
                     if (newW != atlasW || newH != atlasH)
                     {
                         atlasW = newW;
@@ -306,6 +546,7 @@ public sealed class WebContentHost : IDisposable
                 }
             }
 
+            _batchStage = "capture";
             using var mem = new InMemoryRandomAccessStream();
             var capTask = _webView.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, mem).AsTask();
             if (await Task.WhenAny(capTask, Task.Delay(RenderTimeoutMs)) != capTask)
@@ -336,6 +577,7 @@ public sealed class WebContentHost : IDisposable
             var scaleX = (double)atlasPxW / atlasW;
             var scaleY = (double)atlasPxH / atlasH;
 
+            var toPersist = new List<CropToPersist>();
             for (var i = 0; i < batch.Count; i++)
             {
                 var item = batch[i];
@@ -359,24 +601,27 @@ public sealed class WebContentHost : IDisposable
                 var pxW = Math.Clamp((int)Math.Round(w * scaleX), 1, Math.Max(1, atlasPxW - pxX));
                 var pxH = Math.Clamp((int)Math.Round(h * scaleY), 1, Math.Max(1, atlasPxH - pxY));
 
+                var cropped = new byte[pxW * pxH * 4];
+                var rowBytes = pxW * 4;
+                for (var rowIdx = 0; rowIdx < pxH; rowIdx++)
+                {
+                    System.Buffer.BlockCopy(atlasPixels, (pxY + rowIdx) * atlasStride + pxX * 4, cropped, rowIdx * rowBytes, rowBytes);
+                }
                 var wb = new WriteableBitmap(pxW, pxH);
                 using (var dst = wb.PixelBuffer.AsStream())
                 {
-                    var rowBytes = pxW * 4;
-                    for (var rowIdx = 0; rowIdx < pxH; rowIdx++)
-                    {
-                        var srcOffset = (pxY + rowIdx) * atlasStride + pxX * 4;
-                        dst.Write(atlasPixels, srcOffset, rowBytes);
-                    }
+                    dst.Write(cropped, 0, cropped.Length);
                 }
                 wb.Invalidate();
 
+                if (!m.Overflow) toPersist.Add(new CropToPersist(item.DiskKey, cropped, pxW, pxH, w, h, descent, m.Overflow));
                 var okRes = new MathRenderResult(true, null, w, h, descent, m.Overflow, null, wb);
                 CachePut(item.Key, okRes);
                 _bitmapCache[item.Key] = wb;
                 _inFlight.Remove(item.Key);
                 item.Tcs.TrySetResult(okRes);
             }
+            if (toPersist.Count > 0) _ = PersistAsync(toPersist);
         }
         catch (Exception ex)
         {
@@ -416,9 +661,26 @@ public sealed class WebContentHost : IDisposable
             hostContainer.Children.Clear();
             hostContainer.Children.Add(view);
 
-            var ensureTask = view.EnsureCoreWebView2Async().AsTask();
+            // Software rendering and a private profile keep the formula browser off the GPU (no dGPU wake-up).
+            if (_env == null)
+            {
+                var envTask = CoreWebView2Environment.CreateWithOptionsAsync(
+                    null,
+                    UserDataDir,
+                    new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = "--disable-gpu" }).AsTask();
+                if (await Task.WhenAny(envTask, Task.Delay(RenderTimeoutMs)) != envTask)
+                {
+                    Diag("environment creation timed out");
+                    return false;
+                }
+                _env = await envTask;
+            }
+            var ensureTask = view.EnsureCoreWebView2Async(_env).AsTask();
             if (await Task.WhenAny(ensureTask, Task.Delay(RenderTimeoutMs)) != ensureTask)
+            {
+                Diag("WebView2 creation timed out");
                 return false;
+            }
             await ensureTask;
 
             var core = view.CoreWebView2;
@@ -450,7 +712,10 @@ public sealed class WebContentHost : IDisposable
             view.Source = new Uri($"https://{HostName}/view.html");
             var completed = await Task.WhenAny(loaded.Task, Task.Delay(RenderTimeoutMs));
             if (completed != loaded.Task || !await loaded.Task)
+            {
+                Diag("view.html did not load");
                 return false;
+            }
 
             // Preload all KaTeX @font-face fonts so the first batch never measures fallback glyphs.
             var warmupRaw = await core.ExecuteScriptAsync("window.lnaWarmupFonts()").AsTask();
@@ -466,11 +731,24 @@ public sealed class WebContentHost : IDisposable
             }
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            Diag("EnsureReady failed: " + ex);
             _pageReady = false;
             return false;
         }
+    }
+
+    /// <summary>Appends a line to logs/math.log; formula rendering otherwise fails silently.</summary>
+    internal static void Diag(string message)
+    {
+        try
+        {
+            var dir = Path.Combine(LocalRoot, "logs");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "math.log"), $"{DateTime.Now:O} {message}{Environment.NewLine}");
+        }
+        catch { }
     }
 
     private void CachePut(string key, MathRenderResult value)

@@ -22,6 +22,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -45,6 +46,7 @@ private class MindNode(
     val widthDp: Float,
     val facets: List<String> = emptyList(),
     val atomic: Boolean = false,
+    val expandable: Boolean = false,
 ) {
     var depth: Int = 0
     val children = mutableListOf<MindNode>()
@@ -62,9 +64,19 @@ fun MindmapTreeView(
     onAskConcept: (String) -> Unit,
     modifier: Modifier = Modifier,
     onRefineNode: ((nodeId: String, label: String) -> Unit)? = null,
+    readOnly: Boolean = false,
 ) {
     val isKg = isKnowledgeGraph || payload.optString("kind") == "knowledge_graph"
-    val roots = remember(payload) { buildTree(payload.optJSONArray("nodes") ?: JSONArray()) }
+    // Content key: the core hands us a fresh JSONObject on every refresh, so key on content
+    // to keep the collapse state and layout stable across identical refreshes.
+    val payloadKey = remember(payload) { payload.toString().hashCode() }
+    val roots = remember(payloadKey) { buildTree(payload.optJSONArray("nodes") ?: JSONArray()) }
+    val allNodes = remember(roots) {
+        val l = ArrayList<MindNode>()
+        fun walk(n: MindNode) { l.add(n); n.children.forEach(::walk) }
+        roots.forEach(::walk)
+        l
+    }
 
     if (roots.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -73,8 +85,13 @@ fun MindmapTreeView(
         return
     }
 
-    var collapsedIds by remember(payload) { mutableStateOf(setOf<String>()) }
-    var allCollapsed by remember(payload) { mutableStateOf(false) }
+    // Default: only the first two levels are shown; deeper subtrees are collapsed and create no composables.
+    var collapsedIds by remember(roots) {
+        mutableStateOf(allNodes.filter { it.depth >= 1 && it.children.isNotEmpty() }.map { it.id }.toSet())
+    }
+    var allCollapsed by remember(roots) { mutableStateOf(true) }
+    var viewW by remember { mutableFloatStateOf(0f) }
+    var viewH by remember { mutableFloatStateOf(0f) }
     var scale by remember { mutableFloatStateOf(1f) }
     var panX by remember { mutableFloatStateOf(0f) }
     var panY by remember { mutableFloatStateOf(0f) }
@@ -123,7 +140,8 @@ fun MindmapTreeView(
         modifier = modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF1D1F24)),
+            .background(Color(0xFF1D1F24))
+            .onSizeChanged { viewW = it.width.toFloat(); viewH = it.height.toFloat() },
     ) {
         Box(
             modifier = Modifier
@@ -166,6 +184,15 @@ fun MindmapTreeView(
                     val (bg, border) = nodeColors(node.depth, isKg)
                     val leftPx = with(density) { (node.xDp * scale).dp.toPx().roundToInt() }
                     val topPx = with(density) { (node.yDp * scale).dp.toPx().roundToInt() }
+                    // Viewport culling: only compose nodes that can be on screen (plus a margin).
+                    if (viewW > 0f) {
+                        val wPx = with(density) { ((node.widthDp + toggleSize + 12f) * scale).dp.toPx() }
+                        val hPx = with(density) { (nodeH * scale).dp.toPx() }
+                        val margin = 240f
+                        val sx0 = leftPx + panX
+                        val sy0 = topPx + panY
+                        if (sx0 + wPx < -margin || sx0 > viewW + margin || sy0 + hPx < -margin || sy0 > viewH + margin) continue
+                    }
                     Surface(
                         color = bg,
                         shape = RoundedCornerShape(8.dp),
@@ -173,7 +200,13 @@ fun MindmapTreeView(
                         modifier = Modifier
                             .offset { IntOffset(leftPx, topPx) }
                             .size((node.widthDp * scale).dp, (nodeH * scale).dp)
-                            .clickable { selectedNode = node },
+                            .clickable {
+                                if (node.children.isNotEmpty() && node.id in collapsedIds) {
+                                    collapsedIds = collapsedIds - node.id // tap on a collapsed node expands it locally
+                                } else if (!readOnly) {
+                                    selectedNode = node
+                                }
+                            },
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -216,6 +249,19 @@ fun MindmapTreeView(
                         }
                     }
 
+                    if (node.children.isEmpty() && node.expandable) {
+                        val bLeft = with(density) { ((node.xDp + node.widthDp + 6f) * scale).dp.toPx().roundToInt() }
+                        val bTop = with(density) { ((node.yDp + (nodeH - toggleSize) / 2f) * scale).dp.toPx().roundToInt() }
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .offset { IntOffset(bLeft, bTop) }
+                                .size((toggleSize * scale).dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF3A4A66)),
+                        ) { Text("+", color = Color(0xFFE0E4EE), fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                    }
+
                     if (node.children.isNotEmpty()) {
                         val isCol = node.id in collapsedIds
                         val tLeftPx = with(density) { ((node.xDp + node.widthDp + 6f) * scale).dp.toPx().roundToInt() }
@@ -233,7 +279,7 @@ fun MindmapTreeView(
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Text(
-                                    text = if (isCol) ">" else "<",
+                                    text = if (isCol) "+" else "–",
                                     color = Color(0xFFE0E4EE),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
@@ -256,7 +302,7 @@ fun MindmapTreeView(
                 onClick = {
                     allCollapsed = !allCollapsed
                     collapsedIds = if (allCollapsed) {
-                        visibleNodes.filter { it.depth > 0 && it.children.isNotEmpty() }.map { it.id }.toSet()
+                        allNodes.filter { it.depth >= 1 && it.children.isNotEmpty() }.map { it.id }.toSet()
                     } else {
                         emptySet()
                     }
@@ -274,6 +320,21 @@ fun MindmapTreeView(
                         Icon(Icons.Default.Remove, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                     }
                 }
+            }
+        }
+
+        if (allNodes.size > 400 && collapsedIds.isNotEmpty()) {
+            Surface(
+                color = Color(0xE0262930),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
+            ) {
+                Text(
+                    L10n.t("kg.auto_collapsed", en),
+                    color = Color(0xFFC4C8D2),
+                    fontSize = 11.5.sp,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                )
             }
         }
 
@@ -357,7 +418,7 @@ private fun buildTree(arr: JSONArray): List<MindNode> {
             if (fa != null) for (j in 0 until fa.length()) fa.optString(j).takeIf { it.isNotBlank() }?.let(::add)
         }
         val width = (units + (if (imp.isNotEmpty()) 40f else 28f) + (if (facets.isNotEmpty()) 24f else 0f)).coerceIn(104f, 284f)
-        val node = MindNode(id, label, imp, sum, width, facets, o.optBoolean("atomic", false))
+        val node = MindNode(id, label, imp, sum, width, facets, o.optBoolean("atomic", false), o.optBoolean("expandable", false))
         map[id] = node
         parents[id] = if (o.isNull("parent_id")) "" else o.optString("parent_id", "")
     }

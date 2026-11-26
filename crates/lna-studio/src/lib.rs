@@ -18,7 +18,7 @@ use lna_types::*;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -55,6 +55,9 @@ type ChunkRow = (String, String, String, String, i32, i64, String, String);
 /// source id -> (title, content hash, language)
 type SourceMeta = HashMap<String, (String, String, String)>;
 
+/// Appended to prompts whose output is rendered as Markdown with formulas.
+const MATH_LATEX_RULE: &str = " MATH: write EVERY mathematical symbol or expression in LaTeX wrapped in $...$, even a single variable or short term (e.g. $\\mathbb{R}^n$, $A^T$, $x_1$, $N(A)$, $\\dim C(A)=r$, $A\\mathbf{x}=\\mathbf{0}$). Bare ASCII such as R^n, A^T, x1 or Ax=0 outside $...$ is wrong. Double-escape backslashes in JSON strings.";
+
 #[derive(Clone)]
 pub struct StudioService {
     db: Database,
@@ -68,6 +71,8 @@ pub struct StudioService {
     text_generation_slots: Arc<Semaphore>,
     profile_generation_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     audio_render_slot: Arc<Semaphore>,
+    /// Latest unvalidated preview per artifact while it is generating: `(stage, payload)`.
+    previews: Arc<std::sync::Mutex<HashMap<String, (String, Value)>>>,
 }
 
 impl StudioService {
@@ -92,7 +97,52 @@ impl StudioService {
             text_generation_slots: Arc::new(Semaphore::new(6)),
             profile_generation_slots: Arc::new(Mutex::new(HashMap::new())),
             audio_render_slot: Arc::new(Semaphore::new(1)),
+            previews: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Pushes an unvalidated preview of a generating artifact to the clients and keeps it for
+    /// `preview_get`. Previews are never persisted (checkpoints aside) and are dropped when
+    /// the artifact leaves the generating state.
+    fn emit_preview(&self, artifact_id: &str, notebook_id: &str, stage: &str, payload: &Value) {
+        if let Ok(mut m) = self.previews.lock() {
+            m.insert(
+                artifact_id.to_string(),
+                (stage.to_string(), payload.clone()),
+            );
+        }
+        self.emit(
+            &format!("studio:{notebook_id}"),
+            "studio.preview",
+            json!({
+                "artifact_id": artifact_id,
+                "stage": stage,
+                "validated": false,
+                "payload": payload,
+            }),
+        );
+    }
+
+    /// Preview of an artifact that is still generating: the live buffer first, else the
+    /// latest checkpoint (mind map passes, lecture sections), else `null`.
+    pub fn preview_get(&self, artifact_id: &str) -> LnaResult<Value> {
+        if let Some((stage, payload)) = self
+            .previews
+            .lock()
+            .ok()
+            .and_then(|m| m.get(artifact_id).cloned())
+        {
+            return Ok(json!({ "stage": stage, "validated": false, "payload": payload }));
+        }
+        if let Some(v) = self.get_checkpoint(artifact_id, "mindmap_passes")? {
+            if let Some(p) = v.get("payload") {
+                return Ok(json!({ "stage": "mindmap_passes", "validated": false, "payload": p }));
+            }
+        }
+        if let Some(v) = self.get_checkpoint(artifact_id, "lecture_passes")? {
+            return Ok(json!({ "stage": "lecture_passes", "validated": false, "payload": v }));
+        }
+        Ok(Value::Null)
     }
 
     fn emit(&self, topic: &str, event: &str, data: Value) {
@@ -469,6 +519,15 @@ impl StudioService {
         art.thoughts = self.list_thoughts(id)?;
         art.source_refs = self.load_source_refs(&art.source_ids)?;
         art.progress_state = self.load_progress_state(id)?;
+        // infographics made before the PNG existed get it the first time they are opened
+        if art.artifact_type == ArtifactType::Infographic && art.status == ArtifactStatus::Ready {
+            if let (Some(dir), Some(p)) = (art.output_dir.as_deref(), art.payload.as_ref()) {
+                let png = std::path::Path::new(dir).join("infographic.png");
+                if !png.exists() && std::path::Path::new(dir).join("infographic.svg").exists() {
+                    let _ = render::render_infographic_png(p, &png);
+                }
+            }
+        }
         Ok(art)
     }
 
@@ -839,7 +898,8 @@ User Revision Instruction:
                        COALESCE(json_extract(config_json, '$.source_id'), '') = ?1
                        OR EXISTS (SELECT 1 FROM json_each(source_ids_json) WHERE value = ?1)
                    )
-                 ORDER BY CASE WHEN COALESCE(json_extract(config_json, '$.source_id'), '') = ?1 THEN 0 ELSE 1 END,
+                 ORDER BY CASE WHEN status = 'READY' THEN 0 ELSE 1 END,
+                          CASE WHEN COALESCE(json_extract(config_json, '$.source_id'), '') = ?1 THEN 0 ELSE 1 END,
                           created_at DESC
                  LIMIT 1",
                 [source_id],
@@ -1657,6 +1717,9 @@ User Revision Instruction:
                 }
                 ArtifactType::Infographic => {
                     render::render_infographic_svg(&payload, &out_dir.join("infographic.svg"))?;
+                    // best effort: clients that cannot draw SVG text show the picture instead
+                    let _ =
+                        render::render_infographic_png(&payload, &out_dir.join("infographic.png"));
                 }
                 ArtifactType::Audio => {
                     let voice_a = Voice {
@@ -1670,18 +1733,23 @@ User Revision Instruction:
                         lang: "auto".into(),
                     };
                     let mut seg_paths = Vec::new();
+                    // the first distinct speaker gets voice A, the second voice B, and so on
+                    let mut speakers: Vec<String> = Vec::new();
                     if let Some(turns) = payload.get("turns").and_then(|t| t.as_array()) {
                         for (i, t) in turns.iter().enumerate() {
                             let txt = t.get("text").and_then(|x| x.as_str()).unwrap_or("");
                             let spk = t.get("speaker").and_then(|x| x.as_str()).unwrap_or("A");
+                            let slot = match speakers.iter().position(|s| s == spk) {
+                                Some(p) => p,
+                                None => {
+                                    speakers.push(spk.to_string());
+                                    speakers.len() - 1
+                                }
+                            };
                             if !txt.is_empty() {
                                 let seg_path = out_dir.join(format!("turn_{i:03}.wav"));
                                 if !seg_path.exists() {
-                                    let v = if spk.contains('B') || spk.contains('2') {
-                                        &voice_b
-                                    } else {
-                                        &voice_a
-                                    };
+                                    let v = if slot % 2 == 1 { &voice_b } else { &voice_a };
                                     self.tts
                                         .synthesize(txt, v, &seg_path, cancel.clone())
                                         .await?;
@@ -1941,7 +2009,7 @@ User Revision Instruction:
                 }
                 let batch_req = LlmRequest {
                     system: format!(
-                        "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep each flashcard front and back crisp and focused on core definitions or takeaways.",
+                        "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep each flashcard front and back crisp and focused on core definitions or takeaways. Flashcards are drawn as plain text: write mathematics as compact Unicode (e.g. ℝⁿ, Aᵀ, x₁, N(A), dim C(A)=r, n−r, Ax=0), never LaTeX or `$` delimiters.",
                         art.artifact_type.as_str()
                     ),
                     messages: vec![LlmMessage {
@@ -2274,21 +2342,25 @@ Design rules:\n\
         let extra_hint = match art.artifact_type {
             ArtifactType::Mindmap => mindmap_rules(is_kg, detail_level),
             ArtifactType::Report => {
-                match art.config.get("depth").and_then(Value::as_str).unwrap_or("standard") {
-                    "brief" => " Report depth: BRIEF executive overview with concise bulleted takeaways.".into(),
-                    "deep" => " Report depth: DEEP analytical synthesis with thorough explanations, derivations/examples, and structured comparisons.".into(),
-                    _ => String::new(),
-                }
+                let depth = match art.config.get("depth").and_then(Value::as_str).unwrap_or("standard") {
+                    "brief" => " Report depth: BRIEF executive overview with concise bulleted takeaways.",
+                    "deep" => " Report depth: DEEP analytical synthesis with thorough explanations, derivations/examples, and structured comparisons.",
+                    _ => "",
+                };
+                format!("{depth}{MATH_LATEX_RULE} Exception: headings and the title are plain text, so write maths in them as compact Unicode (e.g. ℝⁿ, N(A), Aᵀ), never with $.")
             }
+            ArtifactType::Infographic => " Infographic text is drawn as plain SVG text: write mathematics as compact Unicode (e.g. ℝⁿ, Aᵀ, x₁, N(A), dim C(A)=r, n−r), never LaTeX or ASCII carets. Keep each heading under 20 characters, each metric under 24 characters, and each summary within about 100 characters.".to_string(),
             ArtifactType::Slides => {
-                match art.config.get("length").and_then(Value::as_str).unwrap_or("standard") {
-                    "concise" => " Deck length: CONCISE overview (~5-6 slides focusing on core takeaways).".into(),
-                    "detailed" => " Deck length: DETAILED coverage (~12-16 slides with thorough explanations and examples).".into(),
-                    _ => " Deck length: BALANCED (~8-10 slides covering main themes cleanly).".into(),
-                }
+                let len = match art.config.get("length").and_then(Value::as_str).unwrap_or("standard") {
+                    "concise" => " Deck length: CONCISE overview (~5-6 slides focusing on core takeaways).",
+                    "detailed" => " Deck length: DETAILED coverage (~12-16 slides with thorough explanations and examples).",
+                    _ => " Deck length: BALANCED (~8-10 slides covering main themes cleanly).",
+                };
+                format!("{len} Slide text is drawn as plain text: write mathematics as compact Unicode (e.g. ℝⁿ, Aᵀ, x₁, N(A), dim C(A)=r, n−r, Ax=0), never LaTeX or `$` delimiters.")
             }
             ArtifactType::Quiz => {
                 let mut quiz_hint = " Format all mathematical expressions and chemical formulas/equations in prompt, options, accepted_answers, rubric, and explanation using LaTeX wrapped in $...$ (e.g., $\\\\ce{H2O}$, $\\\\ce{O2}$, $\\\\ce{CO2}$, $\\\\ce{2H2 + O2 -> 2H2O}$, $x^2$, $\\\\frac{a}{b}$); never write bare ASCII formulas without subscripts/LaTeX, and double-escape all LaTeX backslashes in JSON strings so \\\\frac, \\\\times, \\\\text, \\\\ce are not corrupted.".to_string();
+                quiz_hint.push_str(" QUESTION QUALITY: every question must test the knowledge point's condition of use (when it applies and when it does not) or a common misconception, not just recall of a definition. Each wrong option must correspond to a typical mistake that really occurs for this topic according to the sources; never invent arbitrary distractors. The explanation must say where the wrong options go wrong and when the right method applies. If a node summary or facets are given as clues, use them as the starting point.");
                 let explicit_diff = art
                     .config
                     .get("difficulty")
@@ -2353,21 +2425,21 @@ Design rules:\n\
                 quiz_hint
             }
             ArtifactType::Audio => {
-                match art
+                let dur: &str = match art
                     .config
                     .get("length")
                     .and_then(Value::as_str)
                     .unwrap_or("standard")
                 {
                     "short" | "concise" => {
-                        " Audio duration: SHORT concise overview (~2-3 minutes of dialogue).".into()
+                        " Audio duration: SHORT concise overview (~2-3 minutes of dialogue)."
                     }
                     "long" | "detailed" => {
                         " Audio duration: DETAILED in-depth discussion (~6-10 minutes of dialogue)."
-                            .into()
                     }
-                    _ => String::new(),
-                }
+                    _ => "",
+                };
+                format!("{dur} The script is read aloud by a speech engine: write mathematics the way it is spoken (for example \"R n\", \"A 转置\", \"n 减 r\", \"A x 等于 0\") instead of symbols, carets or LaTeX.")
             }
             _ => String::new(),
         };
@@ -3082,19 +3154,62 @@ Design rules:\n\
         max_repairs: usize,
         cancel: CancellationToken,
     ) -> LnaResult<(Value, Usage)> {
+        self.run_structured_with_thought_ex(
+            artifact_id,
+            notebook_id,
+            thought_title,
+            profile,
+            req,
+            schema_name,
+            schema,
+            max_repairs,
+            None,
+            cancel,
+        )
+        .await
+    }
+
+    /// `array_key`: the flat item array of the answer; a length cut-off then keeps finished
+    /// items and continues instead of rewriting the whole output.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_structured_with_thought_ex(
+        &self,
+        artifact_id: &str,
+        notebook_id: &str,
+        thought_title: &str,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        schema_name: &str,
+        schema: &Value,
+        max_repairs: usize,
+        array_key: Option<&str>,
+        cancel: CancellationToken,
+    ) -> LnaResult<(Value, Usage)> {
         let mut seq: Option<i32> = None;
         let mut full_thought = String::new();
         let mut pending = String::new();
         let mut last_flush = std::time::Instant::now();
+        // Streamed text is previewed only for the artifact's own payload call (schema name
+        // `*_payload`, not the mind map, which previews from its checkpoints).
+        let preview_type: Option<ArtifactType> = if schema_name.ends_with("_payload")
+            && schema_name != "mindmap_payload"
+            && schema_name != "lecture_payload"
+        {
+            self.get(artifact_id).ok().map(|a| a.artifact_type)
+        } else {
+            None
+        };
+        let mut last_preview = std::time::Instant::now();
         let res = self
             .llm
-            .complete_structured_with_thinking(
+            .complete_structured_continuing(
                 profile,
                 req,
                 schema_name,
                 schema,
                 cancel,
                 max_repairs,
+                array_key,
                 |delta| {
                     if delta.is_empty() {
                         return;
@@ -3131,6 +3246,17 @@ Design rules:\n\
                         "结构化输出自动修复",
                         status_msg,
                     );
+                },
+                |text| {
+                    let Some(ty) = preview_type else { return };
+                    if last_preview.elapsed() < std::time::Duration::from_millis(500) {
+                        return;
+                    }
+                    last_preview = std::time::Instant::now();
+                    if let Some(mut v) = close_partial_json(text) {
+                        sanitize_preview(ty, &mut v);
+                        self.emit_preview(artifact_id, notebook_id, "stream", &v);
+                    }
                 },
             )
             .await;
@@ -3324,7 +3450,7 @@ Design rules:\n\
                 );
                 let req = LlmRequest {
                     system: format!(
-                        "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}), built in several passes. THIS IS PASS 1 (initialization): output ONLY the skeleton as structured JSON — the root node, EVERY top-level branch of the requested scope (all major chapters/themes; omit none), and, where already clear, their direct sub-topics. Later passes re-read the sources branch by branch and append the detailed descendants, so do not try to fit every detail now. Give every top-level branch a \"summary\" stating its scope (which chapters / sections / pages it covers). Use short ids such as \"b1\", \"b2\".{rules} Strictly ground the structure in the provided sources. Match the language requested in config or the primary language of the sources."
+                        "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}), built in several passes. THIS IS PASS 1 (initialization): output ONLY the skeleton as structured JSON — the root node and the top-level branches (3-7 major themes of the requested scope that together cover all of it; omit nothing, but merge thin chapters into one theme and split none just because the book has many chapters). Do NOT output any deeper nodes: later passes re-read the sources branch by branch and add the topics and knowledge points. Each top-level branch is a reorganized theme, not a copy of a chapter title; its \"summary\" states in one or two sentences what the theme is about and which chapters / pages it draws from. Use short ids such as \"b1\", \"b2\".{rules} Strictly ground the structure in the provided sources. Match the language requested in config or the primary language of the sources."
                     ),
                     messages: vec![LlmMessage {
                         role: Role::User,
@@ -3356,6 +3482,11 @@ Design rules:\n\
                 drop(permits);
                 add_usage(&mut usage_sum, &u);
                 validate::normalize_mindmap(&mut skeleton);
+                // The skeleton is root + top-level themes only; anything deeper the model
+                // produced is folded into the theme's facets and re-derived by the branch pass.
+                if let Some(root) = mm_root_id(&mm_nodes(&skeleton)) {
+                    mm_enforce_shape(&mut skeleton, &root, 1);
+                }
                 if let Some(obj) = skeleton.as_object_mut() {
                     obj.insert(
                         "kind".into(),
@@ -3380,49 +3511,89 @@ Design rules:\n\
             .map(|n| (mm_str(n, "id"), mm_str(n, "label")))
             .collect();
         let total = branches.len();
-        for (i, (bid, blabel)) in branches.iter().enumerate() {
-            if done.contains(bid) {
-                continue;
-            }
-            if cancel.is_cancelled() {
-                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
-            }
-            self.append_thought(
-                artifact_id,
-                &art.notebook_id,
-                "stage",
-                &format!("追加分支 {}/{}：{}", i + 1, total, blabel),
-                "正在针对该分支查阅原文，并追加更细的知识点节点…",
-            );
-            match self
-                .expand_mindmap_node(
-                    art,
-                    profile,
-                    resolved,
+        let pending: Vec<(usize, String, String)> = branches
+            .iter()
+            .enumerate()
+            .filter(|(_, (bid, _))| !done.contains(bid))
+            .map(|(i, (bid, label))| (i, bid.clone(), label.clone()))
+            .collect();
+        // Branches are independent (own ids, same skeleton titles), so several are generated
+        // at once. Each task works on a local copy; only this task merges and checkpoints.
+        let concurrency = art
+            .config
+            .get("branch_concurrency")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize)
+            .unwrap_or(3)
+            .clamp(1, 6)
+            .min(pending.len().max(1));
+        let base = payload.clone();
+        let mut queue = pending.into_iter();
+        let mut running = futures_util::stream::FuturesUnordered::new();
+        let mut finished = done.len();
+        let mut first_error: Option<LnaError> = None;
+        loop {
+            while running.len() < concurrency && first_error.is_none() {
+                let Some((i, bid, blabel)) = queue.next() else {
+                    break;
+                };
+                if cancel.is_cancelled() {
+                    first_error = Some(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+                    break;
+                }
+                self.append_thought(
                     artifact_id,
-                    &payload,
-                    bid,
-                    false,
-                    full_text,
-                    &rules,
-                    reasoning.clone(),
-                    max_repairs,
-                    cancel.clone(),
-                )
-                .await
-            {
-                Ok((exp, u)) => {
+                    &art.notebook_id,
+                    "stage",
+                    &format!("追加分支「{blabel}」（共 {total} 个分支，并行 {concurrency} 个）"),
+                    "正在针对该分支查阅原文，并追加更细的知识点节点…",
+                );
+                let base_ref = &base;
+                let (rules_ref, reasoning_c, cancel_c) =
+                    (&rules, reasoning.clone(), cancel.clone());
+                running.push(async move {
+                    let res = self
+                        .process_mindmap_branch(
+                            art,
+                            profile,
+                            resolved,
+                            artifact_id,
+                            base_ref,
+                            &bid,
+                            full_text,
+                            rules_ref,
+                            reasoning_c,
+                            max_repairs,
+                            cancel_c,
+                        )
+                        .await;
+                    (i, bid, blabel, res)
+                });
+            }
+            let Some((_i, bid, blabel, res)) = futures_util::StreamExt::next(&mut running).await
+            else {
+                break;
+            };
+            match res {
+                Ok((local, u, added, regrouped, retried)) => {
                     add_usage(&mut usage_sum, &u);
-                    let added = merge_mindmap_subtree(&mut payload, bid, exp.nodes);
+                    mm_adopt_branch(&mut payload, &local, &bid);
+                    let kept = mm_nodes(&payload).len();
                     self.append_thought(
                         artifact_id,
                         &art.notebook_id,
                         "tool",
                         &format!("工具调用 · 追加节点：{blabel}"),
-                        &format!("已为该分支追加 {added} 个节点。"),
+                        &format!(
+                            "已为该分支追加 {added} 个节点{}；新建 {regrouped} 个分组；全图目前 {kept} 个节点。",
+                            if retried { "（首次失败，重试后成功）" } else { "" }
+                        ),
                     );
                 }
-                Err(e) if e.code == ErrorCode::Cancelled || cancel.is_cancelled() => return Err(e),
+                Err(e) if e.code == ErrorCode::Cancelled || cancel.is_cancelled() => {
+                    first_error.get_or_insert(e);
+                    continue;
+                }
                 Err(e) => {
                     self.append_thought(
                         artifact_id,
@@ -3430,21 +3601,229 @@ Design rules:\n\
                         "stage",
                         &format!("分支追加失败：{blabel}"),
                         &format!(
-                            "{}。已保留该分支的骨架节点，可稍后对其使用「细化」。",
+                            "{}。已重试仍失败，保留该分支的骨架节点，可稍后对其使用「细化」。",
                             truncate_str(&e.message, 200)
                         ),
                     );
                 }
             }
             done.push(bid.clone());
+            finished += 1;
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &format!("已完成 {finished}/{total} 个分支"),
+                "",
+            );
             self.save_checkpoint(
                 artifact_id,
                 "mindmap_passes",
                 json!({ "sources_fingerprint": art.sources_fingerprint, "payload": payload, "done": done }),
             )?;
+            self.emit_preview(artifact_id, &art.notebook_id, "mindmap_passes", &payload);
         }
+        if let Some(e) = first_error {
+            return Err(e);
+        }
+        let order: Vec<String> = branches.iter().map(|(b, _)| b.clone()).collect();
+        mm_sort_by_branch_order(&mut payload, &order);
+        let merged = mm_dedup_labels(&mut payload);
+        if merged > 0 {
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                "合并重复节点",
+                &format!("按标题归一化后合并了 {merged} 个跨分支重复的节点。"),
+            );
+        }
+        match self
+            .review_mindmap_structure(
+                art,
+                resolved,
+                artifact_id,
+                &mut payload,
+                reasoning.clone(),
+                max_repairs,
+                cancel.clone(),
+            )
+            .await
+        {
+            Ok((n, u)) => {
+                add_usage(&mut usage_sum, &u);
+                if n > 0 {
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        "结构审查",
+                        &format!("按审查建议调整了 {n} 处主题的位置或合并。"),
+                    );
+                }
+            }
+            Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+            Err(_) => {}
+        }
+        mm_mark_expandable(&mut payload);
         validate::normalize_mindmap(&mut payload);
         Ok((payload, usage_sum))
+    }
+
+    /// One branch append pass on a local copy of the skeleton: read sources, append at most
+    /// two levels, enforce the shape rules, regroup crowded parents. A failed attempt is
+    /// retried once with a smaller scope. Returns `(local payload, usage, added, regrouped, retried)`.
+    #[allow(clippy::too_many_arguments)]
+    async fn process_mindmap_branch(
+        &self,
+        art: &StudioArtifact,
+        profile: &ModelProfile,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        base: &Value,
+        bid: &str,
+        full_text: Option<&str>,
+        rules: &str,
+        reasoning: ReasoningOptions,
+        max_repairs: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<(Value, Usage, usize, usize, bool)> {
+        let mut local = base.clone();
+        let mut usage = Usage::default();
+        let mut retried = false;
+        let mut attempt_rules = rules.to_string();
+        let exp = loop {
+            match self
+                .expand_mindmap_node(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    &local,
+                    bid,
+                    false,
+                    full_text,
+                    &attempt_rules,
+                    reasoning.clone(),
+                    max_repairs,
+                    cancel.clone(),
+                )
+                .await
+            {
+                Ok((exp, u)) => {
+                    add_usage(&mut usage, &u);
+                    break exp;
+                }
+                Err(e) if e.code == ErrorCode::Cancelled || cancel.is_cancelled() => return Err(e),
+                Err(e) if !retried => {
+                    retried = true;
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        "分支追加失败，缩小范围重试",
+                        &truncate_str(&e.message, 200),
+                    );
+                    attempt_rules = format!(
+                        "{rules} RETRY: the previous attempt failed. Produce a smaller, simpler answer: at most 25 nodes in total, concise summaries, and no more than 2 facets per node."
+                    );
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        let mut exp = exp;
+        // Deviation check: a branch far outside the range expected for the detail level is
+        // regenerated once with feedback (merge or split) instead of being truncated.
+        let detail = art
+            .config
+            .get("detail")
+            .and_then(Value::as_str)
+            .unwrap_or("standard");
+        let (lo, hi) = match detail {
+            "concise" => (4usize, 28usize),
+            "detailed" => (12, 90),
+            _ => (6, 55),
+        };
+        let n_new = exp.nodes.len();
+        if !retried && (n_new > hi || n_new < lo) && !cancel.is_cancelled() {
+            let feedback = if n_new > hi {
+                format!(
+                    "{rules} FEEDBACK: your previous answer had {n_new} nodes, far too fine for this detail level. Merge related knowledge points into fewer, broader ones (about {} nodes at most) and put minor items into facets.",
+                    hi * 3 / 4
+                )
+            } else {
+                format!(
+                    "{rules} FEEDBACK: your previous answer had only {n_new} nodes, too coarse for the material of this branch. Cover the branch's sub-topics and methods more fully (at least {lo} nodes), reading the sources again if needed."
+                )
+            };
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                "粒度偏离，带反馈重新生成该分支",
+                &format!("首次生成 {n_new} 个节点，超出该详细程度的合理范围（{lo}–{hi}）。"),
+            );
+            if let Ok((again, u)) = self
+                .expand_mindmap_node(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    &local,
+                    bid,
+                    false,
+                    full_text,
+                    &feedback,
+                    reasoning.clone(),
+                    max_repairs,
+                    cancel.clone(),
+                )
+                .await
+            {
+                add_usage(&mut usage, &u);
+                let m = again.nodes.len();
+                let better = if n_new > hi {
+                    m < n_new && m > 0
+                } else {
+                    m > n_new
+                };
+                if better {
+                    exp = again;
+                }
+            }
+        }
+        let added = merge_mindmap_subtree(&mut local, bid, exp.nodes);
+        // Shape rules: at most topic + knowledge-point levels under the branch, no
+        // single-child parents, and crowded parents regrouped into topics.
+        let mut crowded = mm_enforce_shape(&mut local, bid, 2);
+        let mut regrouped = 0;
+        for pid in crowded.drain(..).take(6) {
+            match self
+                .regroup_mindmap_children(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    &mut local,
+                    &pid,
+                    reasoning.clone(),
+                    max_repairs,
+                    cancel.clone(),
+                )
+                .await
+            {
+                Ok((n, u)) => {
+                    add_usage(&mut usage, &u);
+                    regrouped += n;
+                }
+                Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+                Err(_) => {}
+            }
+        }
+        if regrouped > 0 {
+            mm_enforce_shape(&mut local, bid, 3);
+        }
+        Ok((local, usage, added, regrouped, retried))
     }
 
     /// Generates new descendants for one node: a branch append pass (`refine == false`) or a
@@ -3576,7 +3955,7 @@ Design rules:\n\
             )
         } else {
             format!(
-                "THIS IS AN APPEND PASS for the top-level branch \"{label}\" of a {kind} whose skeleton already exists. Using the source excerpts, output ONLY the NEW descendant nodes of this branch, down to atomic knowledge points at the requested detail level. Do not repeat nodes listed under \"Existing subtree\" and do not cover material that belongs to the other top-level branches. Set \"atomic\": false."
+                "THIS IS AN APPEND PASS for the top-level branch \"{label}\" of a {kind} whose skeleton already exists. Using the source excerpts, output ONLY the NEW descendant nodes of this branch, in AT MOST TWO LEVELS: topic nodes directly under the branch, and knowledge-point nodes under each topic, at the requested detail level. Anything finer goes into facets; the learner can expand a knowledge point later on demand. Do not repeat nodes listed under \"Existing subtree\" and do not cover material that belongs to the other top-level branches."
             )
         };
         let req = LlmRequest {
@@ -3601,7 +3980,7 @@ Design rules:\n\
         };
         let permits = self.acquire_llm_slots(&profile.id).await?;
         let (out, usage) = self
-            .run_structured_with_thought(
+            .run_structured_with_thought_ex(
                 artifact_id,
                 &art.notebook_id,
                 &if refine {
@@ -3614,6 +3993,7 @@ Design rules:\n\
                 "mindmap_branch",
                 &schema,
                 max_repairs,
+                Some("nodes"),
                 cancel,
             )
             .await?;
@@ -3630,6 +4010,191 @@ Design rules:\n\
             },
             usage,
         ))
+    }
+
+    /// One cheap review pass over the finished map (titles and summaries of branches and
+    /// topics only): moves topics that sit under the wrong branch and merges overlapping
+    /// topics. Returns the number of changes applied.
+    #[allow(clippy::too_many_arguments)]
+    async fn review_mindmap_structure(
+        &self,
+        art: &StudioArtifact,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        payload: &mut Value,
+        reasoning: ReasoningOptions,
+        max_repairs: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<(usize, Usage)> {
+        let nodes = mm_nodes(payload);
+        let Some(root) = mm_root_id(&nodes) else {
+            return Ok((0, Usage::default()));
+        };
+        let mut listing = String::new();
+        for b in mm_children(&nodes, &root) {
+            let bid = mm_str(b, "id");
+            listing.push_str(&format!(
+                "BRANCH [{bid}] {} — {}\n",
+                mm_str(b, "label"),
+                mm_str(b, "summary")
+            ));
+            for t in mm_children(&nodes, &bid) {
+                listing.push_str(&format!(
+                    "  TOPIC [{}] {} — {}\n",
+                    mm_str(t, "id"),
+                    mm_str(t, "label"),
+                    mm_str(t, "summary")
+                ));
+            }
+        }
+        if listing.lines().count() < 6 {
+            return Ok((0, Usage::default()));
+        }
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["moves", "merges"],
+            "properties": {
+                "moves": { "type": "array", "items": { "type": "object", "additionalProperties": false,
+                    "required": ["topic_id", "new_branch_id"],
+                    "properties": { "topic_id": {"type":"string"}, "new_branch_id": {"type":"string"}, "reason": {"type":"string"} } } },
+                "merges": { "type": "array", "items": { "type": "object", "additionalProperties": false,
+                    "required": ["keep_id", "drop_id"],
+                    "properties": { "keep_id": {"type":"string"}, "drop_id": {"type":"string"}, "reason": {"type":"string"} } } }
+            }
+        });
+        let req = LlmRequest {
+            system: "You review the structure of a knowledge map. You see its top-level BRANCHES and their TOPICS (title and summary only). Return structured JSON with: \"moves\" — topics that clearly belong to a different branch (e.g. a concept that a later branch builds on sits in the wrong theme), each with the id of the better branch; \"merges\" — two topics that cover the same ground (keep one, drop the other; both must be under the same or different branches). Be conservative: only clear problems, at most 6 changes in total, empty arrays when the structure is fine. Use only ids that appear in the listing.".into(),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text(listing)],
+            }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            max_output_tokens: resolved.max_output_tokens.min(2000),
+            reasoning,
+        };
+        let (out, usage) = self
+            .run_structured_with_thought(
+                artifact_id,
+                &art.notebook_id,
+                "图谱结构审查思考",
+                resolved,
+                &req,
+                "mindmap_review",
+                &schema,
+                max_repairs.min(1),
+                cancel,
+            )
+            .await?;
+        let moves: Vec<(String, String)> = out
+            .get("moves")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|m| (mm_str(m, "topic_id"), mm_str(m, "new_branch_id")))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let merges: Vec<(String, String)> = out
+            .get("merges")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|m| (mm_str(m, "keep_id"), mm_str(m, "drop_id")))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok((mm_apply_review(payload, &moves, &merges), usage))
+    }
+
+    /// Asks the model to group the children of a crowded parent (more than
+    /// `MM_MAX_CHILDREN`) under 3-7 intermediate topics, then applies the grouping.
+    #[allow(clippy::too_many_arguments)]
+    async fn regroup_mindmap_children(
+        &self,
+        art: &StudioArtifact,
+        profile: &ModelProfile,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        payload: &mut Value,
+        parent_id: &str,
+        reasoning: ReasoningOptions,
+        max_repairs: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<(usize, Usage)> {
+        let nodes = mm_nodes(payload);
+        let Some(parent) = nodes.iter().find(|n| mm_str(n, "id") == parent_id) else {
+            return Ok((0, Usage::default()));
+        };
+        let parent_label = mm_str(parent, "label");
+        let listing: String = mm_children(&nodes, parent_id)
+            .iter()
+            .map(|c| {
+                let s = mm_str(c, "summary");
+                if s.is_empty() {
+                    format!("- [{}] {}\n", mm_str(c, "id"), mm_str(c, "label"))
+                } else {
+                    format!("- [{}] {} — {}\n", mm_str(c, "id"), mm_str(c, "label"), s)
+                }
+            })
+            .collect();
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["groups"],
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["label", "summary", "members"],
+                        "properties": {
+                            "label": { "type": "string" },
+                            "summary": { "type": "string" },
+                            "members": { "type": "array", "items": { "type": "string" } }
+                        }
+                    }
+                }
+            }
+        });
+        let req = LlmRequest {
+            system: "You are the Local Notebook Studio generator. A node of a mind map / knowledge graph has too many children. Group them into 3-7 cohesive intermediate topics by concept (not by order of appearance). Output {\"groups\": [{\"label\", \"summary\", \"members\": [child ids]}]}. Every child id belongs to exactly one group; a child that fits no group may be left out and stays directly under the node. Labels are short; each summary is one or two sentences that synthesize what the members share. Match the language of the labels.".into(),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text(format!(
+                    "Node: [{parent_id}] {parent_label}\nChildren:\n{listing}"
+                ))],
+            }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            max_output_tokens: resolved.max_output_tokens,
+            reasoning,
+        };
+        let permits = self.acquire_llm_slots(&profile.id).await?;
+        let (out, usage) = self
+            .run_structured_with_thought(
+                artifact_id,
+                &art.notebook_id,
+                &format!("重新分组「{parent_label}」思考"),
+                resolved,
+                &req,
+                "mindmap_groups",
+                &schema,
+                max_repairs,
+                cancel,
+            )
+            .await?;
+        drop(permits);
+        let groups = out
+            .get("groups")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok((mm_apply_groups(payload, parent_id, &groups), usage))
     }
 
     /// Splits one mind-map / knowledge-graph node into finer child nodes from the sources.
@@ -3728,7 +4293,9 @@ Design rules:\n\
                 }
             }
         }
+        mm_enforce_shape(&mut latest, node_id, 2);
         validate::normalize_mindmap(&mut latest);
+        mm_mark_expandable(&mut latest);
         let payload_str = latest.to_string();
         self.db.write(|conn| {
             conn.execute(
@@ -4222,28 +4789,27 @@ Design rules:\n\
                             let rows: Vec<(i64, String, Option<i32>, String)> = self
                                 .db
                                 .read(|conn| {
-                                    let node_meta: Option<(String, i64, i64)> = conn
+                                    let node_meta: Option<String> = conn
                                         .query_row(
-                                            "SELECT source_id, COALESCE(chunk_start, 0), COALESCE(chunk_end, 0)
-                                             FROM source_index_nodes WHERE id = ?1",
+                                            "SELECT source_id FROM source_index_nodes WHERE id = ?1",
                                             [node_id],
-                                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                                            |r| r.get(0),
                                         )
                                         .optional()
                                         .map_err(map_sql_err)?;
-                                    let Some((sid, cstart, cend)) = node_meta else {
+                                    let Some(sid) = node_meta else {
                                         return Ok(Vec::new());
                                     };
                                     let mut stmt = conn
                                         .prepare(
                                             "SELECT c.id, s.title, c.page_start, c.content
                                              FROM source_chunks c JOIN sources s ON s.id = c.source_id
-                                             WHERE c.source_id = ?1 AND c.chunk_index BETWEEN ?2 AND ?3
-                                             ORDER BY c.chunk_index ASC LIMIT ?4",
+                                             WHERE c.source_id = ?1 AND c.node_id = ?2
+                                             ORDER BY c.chunk_index ASC LIMIT ?3",
                                         )
                                         .map_err(map_sql_err)?;
                                     let mapped = stmt
-                                        .query_map(params![sid, cstart, cend.max(cstart), max_chunks], |r| {
+                                        .query_map(params![sid, node_id, max_chunks], |r| {
                                             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                                         })
                                         .map_err(map_sql_err)?;
@@ -5218,6 +5784,11 @@ Core Topics: {}",
         if let Some(ed) = error_detail {
             payload["error_detail"] = json!(ed);
         }
+        if matches!(status, "READY" | "FAILED" | "CANCELLED") {
+            if let Ok(mut m) = self.previews.lock() {
+                m.remove(id);
+            }
+        }
         self.emit(&format!("studio:{nid}"), "studio.status", payload);
 
         if let Some(ref mid) = origin_message_id {
@@ -5283,24 +5854,104 @@ fn stage_progress(stage: &str) -> f64 {
 /// Generation rules shared by single-pass, multi-pass and refine prompts for mind maps and
 /// knowledge graphs: correct granularity, facets, atomic marking and no size cap.
 fn mindmap_rules(is_kg: bool, detail: &str) -> String {
+    // Granularity is defined per leaf (how much source material one knowledge point stands
+    // for), never as a total node count, so a short book and a long textbook both get a map
+    // whose size follows the material.
     let detail_rule = match detail {
-        "concise" => " Detail level: CONCISE — cover every major theme but expand each only to its core concepts (typically 2-3 levels).",
-        "detailed" => " Detail level: DETAILED — expand every branch down to atomic knowledge points (definitions, theorems, individual methods, formulas, conditions, typical examples); use as many levels as the material needs.",
-        _ => " Detail level: STANDARD — expand every branch down to the knowledge points a learner must master separately (typically 3-5 levels).",
+        "concise" => " DETAIL LEVEL: CONCISE — one knowledge point stands for roughly one textbook section.",
+        "detailed" => " DETAIL LEVEL: DETAILED — one knowledge point stands for roughly one page of material, or one important property / corollary.",
+        _ => " DETAIL LEVEL: STANDARD — one knowledge point stands for roughly 2-4 pages of material, or one concept / theorem / method that deserves its own explanation or its own quiz question.",
     };
-    let size_rule = " NO SIZE LIMIT: there is no cap on the number of nodes or the depth. Never merge distinct knowledge points or drop sections to keep the map small; completeness and correct granularity matter more than brevity, while each label stays short.";
-    let granularity_rule = " GRANULARITY: every leaf must be ONE separately learnable and testable knowledge point. When a concept has several distinct methods, cases, theorems or forms that each need their own explanation or skill (e.g. \"matrix inverse\" → \"adjugate formula A⁻¹=adj(A)/det(A)\", \"Gauss–Jordan elimination [A|I]→[I|A⁻¹]\", \"block-matrix inverse\", \"2×2 shortcut\"), make each one its own child node instead of merging them into one node.";
-    let facet_rule = " FACETS: small sub-aspects that do not deserve their own node (conditions, special cases, notations, common pitfalls, minor variants) go into the node's optional \"facets\" array as short phrases (e.g. \"invertible ⇔ det≠0\"); keep 0-6 facets per node.";
-    let atomic_rule = " ATOMIC: set \"atomic\": true only on a node that is already a minimal knowledge point that cannot be meaningfully split further.";
-    let structure_rule = " STRUCTURE ADAPTATION: organize the hierarchy by the actual knowledge structure of the material rather than copying chapter headings mechanically; group thin related sections under a cohesive parent and split dense topics into finer sub-branches that go beyond table-of-contents titles to definitions, theorems, formulas and mechanisms.";
+    let size_rule = " SIZE FOLLOWS THE MATERIAL: there is no target node count. The number of nodes must follow from the amount of distinct knowledge in the sources at the requested detail level — a short simple text yields few nodes, a long dense textbook more. STOP SPLITTING a node when the material it covers is smaller than one knowledge point at this detail level, or when its parts could not each be explained or tested on their own; put those parts into facets instead.";
+    let granularity_rule = " BRANCHING: every parent has 3-7 children. If you would list more than 7, group them under intermediate topic nodes (e.g. vector addition, scalar multiplication, subtraction, zero vector → one node \"向量的基础运算\"). Never create a parent with a single child. Parallel operations, properties, conditions, notations and examples of the same concept are NOT separate nodes — they are facets of one node.";
+    let facet_rule = " FACETS: 0-3 short phrases per node for details that do not deserve a node (conditions, special cases, notations, minor variants, e.g. \"invertible ⇔ det≠0\"); leave the array empty when there is nothing worth adding.";
+    let atomic_rule = " Do not set \"atomic\"; the program decides it.";
+    let structure_rule = " REORGANIZE, DO NOT COPY THE BOOK: the table of contents is raw material, not the map structure. Organize by concept dependency and learning logic (what it is → why it is needed → how to compute / use it), not by chapter order; do not reuse section titles verbatim as labels. Place a concept that is used in many places (e.g. linear combination) once, where it is first defined, and refer to it from elsewhere via \"prerequisites\". SUMMARIES must synthesize, not describe: say what the grouped ideas have in common and how they relate (bad: \"介绍向量的加法和数乘\"; good: \"加法与数乘都逐分量进行，满足交换律和结合律，是线性组合的基础\"); keep each summary within two sentences.";
     let kg_rule = if is_kg {
         r#" Set "kind": "knowledge_graph". Build a concept Knowledge Graph structured as a collapsible tree from foundational prerequisites to core theorems and advanced applications. For each node, set "importance" ("core" | "key" | "detail"), a brief 1-sentence "summary", and "prerequisites" (names of prerequisite concepts when applicable)."#
     } else {
         ""
     };
     format!(
-        " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels or facets; keep labels clean and readable, and leave every node's citations array empty []. Node labels are shown as plain text, so write any math in labels and facets as compact Unicode (e.g. A=SΛS⁻¹, Aᵀ, x₁, ℝⁿ, √2) instead of LaTeX.{detail_rule}{size_rule}{granularity_rule}{facet_rule}{atomic_rule}{structure_rule}{kg_rule}"
+        " IMPORTANT: Do NOT include any bracketed citation numbers like [1], [2], or [1][17] inside node labels or facets; keep labels clean and readable, and omit the \"citations\" field of every node. Node labels are shown as plain text, so write any math in labels and facets as compact Unicode (e.g. A=SΛS⁻¹, Aᵀ, x₁, ℝⁿ, √2) instead of LaTeX.{detail_rule}{size_rule}{granularity_rule}{facet_rule}{atomic_rule}{structure_rule}{kg_rule}"
     )
+}
+
+/// Best-effort parse of a JSON document that is still streaming in: closes an open string
+/// and all open containers, and drops a dangling partial element if needed.
+fn close_partial_json(text: &str) -> Option<Value> {
+    let start = text.find(['{', '['])?;
+    let mut cur: &str = text[start..].trim_end();
+    for _ in 0..64 {
+        let mut stack: Vec<char> = Vec::new();
+        let mut in_str = false;
+        let mut esc = false;
+        let mut last_cut: Option<usize> = None;
+        for (i, ch) in cur.char_indices() {
+            if in_str {
+                if esc {
+                    esc = false;
+                } else if ch == '\\' {
+                    esc = true;
+                } else if ch == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_str = true,
+                '{' | '[' => {
+                    stack.push(ch);
+                    last_cut = Some(i);
+                }
+                '}' | ']' => {
+                    stack.pop();
+                }
+                ',' => last_cut = Some(i),
+                _ => {}
+            }
+        }
+        let mut cand = cur.to_string();
+        if in_str {
+            if esc {
+                cand.pop();
+            }
+            cand.push('"');
+        }
+        let trimmed = cand.trim_end().trim_end_matches(',').to_string();
+        let mut closed = trimmed;
+        for open in stack.iter().rev() {
+            closed.push(if *open == '{' { '}' } else { ']' });
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(&closed) {
+            return Some(v);
+        }
+        // Cut back to the last element boundary and retry.
+        match last_cut {
+            Some(0) | None => return None,
+            Some(i) => {
+                let c = &cur[i..i + 1];
+                cur = if c == "," { &cur[..i] } else { &cur[..=i] };
+                cur = cur.trim_end();
+            }
+        }
+    }
+    None
+}
+
+/// Removes what must never be shown before a draft is validated: for quizzes only the
+/// question stems and options survive (no answers, explanations, rubrics or citations).
+fn sanitize_preview(ty: ArtifactType, v: &mut Value) {
+    if ty != ArtifactType::Quiz {
+        return;
+    }
+    if let Some(qs) = v.get_mut("questions").and_then(Value::as_array_mut) {
+        for q in qs.iter_mut() {
+            if let Some(obj) = q.as_object_mut() {
+                obj.retain(|k, _| matches!(k.as_str(), "id" | "type" | "prompt" | "options"));
+            }
+        }
+    }
 }
 
 fn add_usage(sum: &mut Usage, u: &Usage) {
@@ -5506,6 +6157,463 @@ fn merge_mindmap_subtree(payload: &mut Value, anchor_id: &str, new_nodes: Vec<Va
     added
 }
 
+/// Replaces the subtree under `bid` in `main` (and the branch node itself) with the one from
+/// `local`, which was grown from the same skeleton.
+fn mm_adopt_branch(main: &mut Value, local: &Value, bid: &str) {
+    let local_nodes = mm_nodes(local);
+    let mut subtree: HashSet<String> = HashSet::new();
+    subtree.insert(bid.to_string());
+    for _ in 0..local_nodes.len() + 1 {
+        let before = subtree.len();
+        for n in &local_nodes {
+            if let Some(p) = mm_parent(n) {
+                if subtree.contains(&p) {
+                    subtree.insert(mm_str(n, "id"));
+                }
+            }
+        }
+        if subtree.len() == before {
+            break;
+        }
+    }
+    let Some(arr) = main.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return;
+    };
+    arr.retain(|n| !subtree.contains(&mm_str(n, "id")));
+    for n in local_nodes {
+        if subtree.contains(&mm_str(&n, "id")) {
+            arr.push(n);
+        }
+    }
+}
+
+/// Stable order: root first, then each top-level branch (in skeleton order) with its subtree.
+fn mm_sort_by_branch_order(payload: &mut Value, order: &[String]) {
+    let all = mm_nodes(payload);
+    let Some(root) = mm_root_id(&all) else {
+        return;
+    };
+    let mut keyed: Vec<(usize, Value)> = all
+        .iter()
+        .map(|n| {
+            let id = mm_str(n, "id");
+            let key = if id == root {
+                0
+            } else {
+                mm_top_branch(&all, &id, &root)
+                    .and_then(|b| order.iter().position(|o| *o == b))
+                    .map(|i| i + 1)
+                    .unwrap_or(usize::MAX)
+            };
+            (key, n.clone())
+        })
+        .collect();
+    keyed.sort_by_key(|(k, _)| *k);
+    payload["nodes"] = Value::Array(keyed.into_iter().map(|(_, n)| n).collect());
+}
+
+fn mm_norm_label(label: &str) -> String {
+    label
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Merges nodes whose normalized labels are identical anywhere in the graph below the
+/// top-level branches: children and facets move to the first occurrence. Returns merged count.
+fn mm_dedup_labels(payload: &mut Value) -> usize {
+    let nodes = mm_nodes(payload);
+    let Some(root) = mm_root_id(&nodes) else {
+        return 0;
+    };
+    let by_id: HashMap<String, Value> =
+        nodes.iter().map(|n| (mm_str(n, "id"), n.clone())).collect();
+    let is_ancestor = |anc: &str, of: &str| -> bool {
+        let mut cur = by_id.get(of).and_then(mm_parent);
+        for _ in 0..nodes.len() {
+            match cur {
+                Some(p) if p == anc => return true,
+                Some(p) => cur = by_id.get(&p).and_then(mm_parent),
+                None => return false,
+            }
+        }
+        false
+    };
+    let mut first: HashMap<String, String> = HashMap::new();
+    let mut remap: Vec<(String, String)> = Vec::new();
+    for n in &nodes {
+        let id = mm_str(n, "id");
+        let parent = mm_parent(n);
+        if id == root || parent.as_deref() == Some(root.as_str()) {
+            continue;
+        }
+        let key = mm_norm_label(&mm_str(n, "label"));
+        if key.chars().count() < 2 {
+            continue;
+        }
+        match first.get(&key) {
+            Some(keep) if !is_ancestor(keep, &id) && !is_ancestor(&id, keep) => {
+                remap.push((id, keep.clone()));
+            }
+            Some(_) => {}
+            None => {
+                first.insert(key, id);
+            }
+        }
+    }
+    if remap.is_empty() {
+        return 0;
+    }
+    let drop_ids: HashSet<String> = remap.iter().map(|(d, _)| d.clone()).collect();
+    let target: HashMap<String, String> = remap.iter().cloned().collect();
+    let Some(arr) = payload.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    // Facets of dropped duplicates go to the node that is kept.
+    let dropped_facets: Vec<(String, Vec<String>)> = arr
+        .iter()
+        .filter(|n| drop_ids.contains(&mm_str(n, "id")))
+        .map(|n| {
+            (
+                target[&mm_str(n, "id")].clone(),
+                n.get("facets")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    for (keep, facets) in dropped_facets {
+        if let Some(k) = arr.iter_mut().find(|n| mm_str(n, "id") == keep) {
+            for f in facets {
+                mm_push_facet(k, &f);
+            }
+        }
+    }
+    arr.retain(|n| !drop_ids.contains(&mm_str(n, "id")));
+    for n in arr.iter_mut() {
+        if let Some(p) = mm_parent(n) {
+            if let Some(t) = target.get(&p) {
+                n["parent_id"] = Value::String(t.clone());
+            }
+        }
+    }
+    remap.len()
+}
+
+/// Marks leaves below the top-level branches as `expandable` (they can be refined on demand)
+/// unless they are known to be atomic; clears the flag on parents.
+fn mm_mark_expandable(payload: &mut Value) {
+    let nodes = mm_nodes(payload);
+    let Some(root) = mm_root_id(&nodes) else {
+        return;
+    };
+    let parents: HashSet<String> = nodes.iter().filter_map(mm_parent).collect();
+    let Some(arr) = payload.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for n in arr.iter_mut() {
+        let id = mm_str(n, "id");
+        let leaf = !parents.contains(&id) && id != root;
+        let atomic = n.get("atomic").and_then(Value::as_bool) == Some(true);
+        if let Some(obj) = n.as_object_mut() {
+            if leaf && !atomic {
+                obj.insert("expandable".into(), Value::Bool(true));
+            } else {
+                obj.remove("expandable");
+            }
+        }
+    }
+}
+
+/// Applies review suggestions: a topic (child of a top-level branch) may move to another
+/// top-level branch; a topic may be merged into another topic (children and facets move).
+fn mm_apply_review(
+    payload: &mut Value,
+    moves: &[(String, String)],
+    merges: &[(String, String)],
+) -> usize {
+    let nodes = mm_nodes(payload);
+    let Some(root) = mm_root_id(&nodes) else {
+        return 0;
+    };
+    let is_branch = |id: &str| {
+        nodes
+            .iter()
+            .any(|n| mm_str(n, "id") == id && mm_parent(n).as_deref() == Some(root.as_str()))
+    };
+    let is_topic = |id: &str| {
+        nodes
+            .iter()
+            .any(|n| mm_str(n, "id") == id && mm_parent(n).is_some_and(|p| is_branch(&p)))
+    };
+    let mut applied = 0;
+    let mut dropped: HashSet<String> = HashSet::new();
+    for (keep, drop) in merges.iter().take(6) {
+        if keep == drop || !is_topic(keep) || !is_topic(drop) || dropped.contains(keep) {
+            continue;
+        }
+        let facets: Vec<String> = nodes
+            .iter()
+            .find(|n| mm_str(n, "id") == *drop)
+            .map(|n| {
+                let mut f: Vec<String> = n
+                    .get("facets")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                f.insert(0, mm_str(n, "label"));
+                f
+            })
+            .unwrap_or_default();
+        let Some(arr) = payload.get_mut("nodes").and_then(Value::as_array_mut) else {
+            return applied;
+        };
+        for n in arr.iter_mut() {
+            if mm_parent(n).as_deref() == Some(drop.as_str()) {
+                n["parent_id"] = Value::String(keep.clone());
+            }
+            if mm_str(n, "id") == *keep {
+                for f in &facets {
+                    mm_push_facet(n, f);
+                }
+            }
+        }
+        arr.retain(|n| mm_str(n, "id") != *drop);
+        dropped.insert(drop.clone());
+        applied += 1;
+    }
+    for (topic, branch) in moves.iter().take(6) {
+        if dropped.contains(topic) || !is_topic(topic) || !is_branch(branch) {
+            continue;
+        }
+        if let Some(arr) = payload.get_mut("nodes").and_then(Value::as_array_mut) {
+            if let Some(n) = arr.iter_mut().find(|n| mm_str(n, "id") == *topic) {
+                if mm_parent(n).as_deref() != Some(branch.as_str()) {
+                    n["parent_id"] = Value::String(branch.clone());
+                    applied += 1;
+                }
+            }
+        }
+    }
+    applied
+}
+
+/// Most children a mind-map parent should have before they get grouped under topics.
+const MM_MAX_CHILDREN: usize = 7;
+
+fn mm_push_facet(node: &mut Value, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    if let Some(obj) = node.as_object_mut() {
+        let facets = obj
+            .entry("facets")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(arr) = facets.as_array_mut() {
+            if !arr.iter().any(|f| f.as_str() == Some(text)) {
+                arr.push(Value::String(text.to_string()));
+            }
+        }
+    }
+}
+
+/// Enforces the shape rules on the subtree under `anchor_id` without dropping content:
+/// nodes deeper than `max_below` levels are folded into their ancestor's facets, a parent
+/// with a single child absorbs it, and model-set `atomic` flags are cleared (leaves stay
+/// expandable on demand). Returns the parents that still have too many children.
+fn mm_enforce_shape(payload: &mut Value, anchor_id: &str, max_below: usize) -> Vec<String> {
+    let Some(arr) = payload.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return Vec::new();
+    };
+    for _ in 0..8 {
+        let mut changed = false;
+        // Depth of every node in the anchor's subtree, relative to the anchor.
+        let mut depth: HashMap<String, usize> = HashMap::new();
+        depth.insert(anchor_id.to_string(), 0);
+        loop {
+            let before = depth.len();
+            for n in arr.iter() {
+                if let Some(p) = mm_parent(n) {
+                    if let Some(d) = depth.get(&p).copied() {
+                        depth.entry(mm_str(n, "id")).or_insert(d + 1);
+                    }
+                }
+            }
+            if depth.len() == before {
+                break;
+            }
+        }
+        // Fold the deepest over-limit node into its parent's facets.
+        if let Some((deep_id, _)) = depth
+            .iter()
+            .filter(|(_, d)| **d > max_below)
+            .max_by_key(|(_, d)| **d)
+            .map(|(k, d)| (k.clone(), *d))
+        {
+            let idx = arr.iter().position(|n| mm_str(n, "id") == deep_id);
+            if let Some(i) = idx {
+                let n = arr.remove(i);
+                let label = mm_str(&n, "label");
+                let parent = mm_parent(&n).unwrap_or_default();
+                for c in arr.iter_mut() {
+                    if mm_parent(c).as_deref() == Some(deep_id.as_str()) {
+                        if let Some(o) = c.as_object_mut() {
+                            o.insert("parent_id".into(), Value::String(parent.clone()));
+                        }
+                    }
+                }
+                if let Some(p) = arr.iter_mut().find(|c| mm_str(c, "id") == parent) {
+                    mm_push_facet(p, &label);
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            continue;
+        }
+        // A parent with exactly one child absorbs it (the child's children move up).
+        let ids: Vec<String> = depth.keys().cloned().collect();
+        for pid in ids {
+            let kids: Vec<String> = arr
+                .iter()
+                .filter(|n| mm_parent(n).as_deref() == Some(pid.as_str()))
+                .map(|n| mm_str(n, "id"))
+                .collect();
+            if kids.len() != 1 {
+                continue;
+            }
+            let only = &kids[0];
+            let Some(i) = arr.iter().position(|n| &mm_str(n, "id") == only) else {
+                continue;
+            };
+            let n = arr.remove(i);
+            for c in arr.iter_mut() {
+                if mm_parent(c).as_deref() == Some(only.as_str()) {
+                    if let Some(o) = c.as_object_mut() {
+                        o.insert("parent_id".into(), Value::String(pid.clone()));
+                    }
+                }
+            }
+            if let Some(p) = arr.iter_mut().find(|c| mm_str(c, "id") == pid) {
+                mm_push_facet(p, &mm_str(&n, "label"));
+                for f in n
+                    .get("facets")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    mm_push_facet(p, f);
+                }
+            }
+            changed = true;
+            break;
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut subtree: std::collections::HashSet<String> = std::collections::HashSet::new();
+    subtree.insert(anchor_id.to_string());
+    loop {
+        let before = subtree.len();
+        for n in arr.iter() {
+            if mm_parent(n).is_some_and(|p| subtree.contains(&p)) {
+                subtree.insert(mm_str(n, "id"));
+            }
+        }
+        if subtree.len() == before {
+            break;
+        }
+    }
+    for n in arr.iter_mut() {
+        if subtree.contains(&mm_str(n, "id")) {
+            if let Some(o) = n.as_object_mut() {
+                o.remove("atomic");
+            }
+        }
+    }
+    let mut crowded: Vec<String> = subtree
+        .iter()
+        .filter(|id| {
+            arr.iter()
+                .filter(|n| mm_parent(n).as_deref() == Some(id.as_str()))
+                .count()
+                > MM_MAX_CHILDREN
+        })
+        .cloned()
+        .collect();
+    crowded.sort();
+    crowded
+}
+
+/// Applies a model-proposed grouping: each group with 2+ members becomes a new topic node
+/// under `parent_id` and its members move under it. Returns the number of groups created.
+fn mm_apply_groups(payload: &mut Value, parent_id: &str, groups: &[Value]) -> usize {
+    let Some(arr) = payload.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let children: std::collections::HashSet<String> = arr
+        .iter()
+        .filter(|n| mm_parent(n).as_deref() == Some(parent_id))
+        .map(|n| mm_str(n, "id"))
+        .collect();
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut created = 0;
+    for (k, g) in groups.iter().enumerate() {
+        let label = mm_str(g, "label");
+        let members: Vec<String> = g
+            .get("members")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|m| children.contains(*m) && !taken.contains(*m))
+            .map(String::from)
+            .collect();
+        if label.trim().is_empty() || members.len() < 2 || members.len() == children.len() {
+            continue;
+        }
+        let mut gid = format!("{parent_id}.g{}", k + 1);
+        let mut j = 2;
+        while arr.iter().any(|n| mm_str(n, "id") == gid) {
+            gid = format!("{parent_id}.g{}_{j}", k + 1);
+            j += 1;
+        }
+        for n in arr.iter_mut() {
+            if members.contains(&mm_str(n, "id")) {
+                if let Some(o) = n.as_object_mut() {
+                    o.insert("parent_id".into(), Value::String(gid.clone()));
+                }
+            }
+        }
+        taken.extend(members);
+        arr.push(json!({
+            "id": gid,
+            "parent_id": parent_id,
+            "label": label,
+            "summary": mm_str(g, "summary"),
+            "importance": "key",
+            "citations": []
+        }));
+        created += 1;
+    }
+    created
+}
+
 fn truncate_str(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim();
     if trimmed.chars().count() <= max_chars {
@@ -5597,6 +6705,58 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<St
         // Node labels are drawn natively on every client; turn TeX into Unicode math here.
         if let Some(p) = payload.as_mut() {
             texfmt::convert_mindmap_payload(p);
+        }
+    }
+    if artifact_type == ArtifactType::Slides {
+        if let Some(p) = payload.as_mut() {
+            texfmt::convert_slides_payload(p);
+        }
+    }
+    if artifact_type == ArtifactType::Report {
+        if let Some(p) = payload.as_mut() {
+            texfmt::convert_report_headings(p);
+        }
+    }
+    if artifact_type == ArtifactType::Flashcards {
+        if let Some(p) = payload.as_mut() {
+            texfmt::convert_flashcards_payload(p);
+        }
+    }
+    if artifact_type == ArtifactType::Audio {
+        // Turns refer to speakers by id ("host"); every client shows the script, so give them
+        // the role names the script defines and keep the id for anything that needs it.
+        if let Some(p) = payload.as_mut() {
+            let roles: HashMap<String, String> = p
+                .get("speakers")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| {
+                            let id = s.get("id")?.as_str()?.to_string();
+                            let role = s.get("role")?.as_str()?.trim().to_string();
+                            (!role.is_empty()).then_some((id, role))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(Value::Array(turns)) = p.get_mut("turns") {
+                for t in turns {
+                    let id = t.get("speaker").and_then(Value::as_str).map(String::from);
+                    if let (Some(id), Some(obj)) = (id, t.as_object_mut()) {
+                        if let Some(role) = roles.get(&id) {
+                            obj.insert("speaker_id".into(), json!(id));
+                            obj.insert("speaker".into(), json!(role));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if artifact_type == ArtifactType::Lecture {
+        if let Some(Value::Array(slides)) = payload.as_mut().and_then(|p| p.get_mut("slides")) {
+            for s in slides {
+                lecture::texify_slide_text(s);
+            }
         }
     }
 
@@ -5718,6 +6878,34 @@ fn has_user_material(config: &Value) -> bool {
 }
 
 #[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn partial_json_is_closed_and_cut_back() {
+        let v = close_partial_json(
+            r#"{"title":"T","cards":[{"front":"a","back":"b"},{"front":"c","ba"#,
+        )
+        .unwrap();
+        assert_eq!(v["title"], "T");
+        assert_eq!(v["cards"].as_array().unwrap().len(), 2);
+        let v = close_partial_json(r#"noise {"q":[1,2,"#).unwrap();
+        assert_eq!(v["q"], json!([1, 2]));
+        assert!(close_partial_json("no json here").is_none());
+    }
+
+    #[test]
+    fn quiz_preview_hides_answers() {
+        let mut v = json!({"questions":[{"id":"1","type":"single","prompt":"p","options":["a"],
+            "answer_indices":[0],"explanation":"e","rubric":"r","citations":[1]}]});
+        sanitize_preview(ArtifactType::Quiz, &mut v);
+        let q = &v["questions"][0];
+        assert!(q.get("answer_indices").is_none() && q.get("explanation").is_none());
+        assert_eq!(q["prompt"], "p");
+    }
+}
+
+#[cfg(test)]
 mod mindmap_merge_tests {
     use super::*;
 
@@ -5728,6 +6916,128 @@ mod mindmap_merge_tests {
             {"id":"b1x","parent_id":"b1","label":"矩阵的逆","citations":[]},
             {"id":"b2","parent_id":"r","label":"向量空间","citations":[]}
         ]})
+    }
+
+    fn node<'a>(p: &'a Value, id: &str) -> Option<&'a Value> {
+        p["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == id)
+    }
+
+    fn mk(id: &str, parent: Option<&str>, label: &str) -> Value {
+        json!({"id": id, "parent_id": parent, "label": label, "citations": []})
+    }
+
+    #[test]
+    fn review_moves_and_merges_topics() {
+        let mut p = json!({"nodes":[
+            mk("r", None, "根"), mk("b1", Some("r"), "一"), mk("b2", Some("r"), "二"),
+            mk("t1", Some("b1"), "甲"), mk("t2", Some("b1"), "乙"), mk("t3", Some("b2"), "丙"),
+            mk("k1", Some("t2"), "子")]});
+        let n = mm_apply_review(
+            &mut p,
+            &[("t1".into(), "b2".into()), ("zz".into(), "b2".into())],
+            &[("t3".into(), "t2".into())],
+        );
+        assert_eq!(n, 2);
+        let nodes = mm_nodes(&p);
+        let by = |id: &str| nodes.iter().find(|n| mm_str(n, "id") == id).cloned();
+        assert_eq!(mm_parent(&by("t1").unwrap()).as_deref(), Some("b2"));
+        assert!(by("t2").is_none());
+        assert_eq!(mm_parent(&by("k1").unwrap()).as_deref(), Some("t3"));
+    }
+
+    #[test]
+    fn branches_adopt_dedup_and_expandable() {
+        let mut main = json!({"nodes":[mk("r", None, "根"), mk("b1", Some("r"), "一"), mk("b2", Some("r"), "二")]});
+        let mut l1 = main.clone();
+        merge_mindmap_subtree(
+            &mut l1,
+            "b1",
+            vec![mk("t", Some("b1"), "运算"), mk("k", Some("t"), "向量加法")],
+        );
+        let mut l2 = main.clone();
+        merge_mindmap_subtree(
+            &mut l2,
+            "b2",
+            vec![
+                mk("t", Some("b2"), "性质"),
+                mk("k", Some("t"), "向量 加法!"),
+            ],
+        );
+        mm_adopt_branch(&mut main, &l2, "b2");
+        mm_adopt_branch(&mut main, &l1, "b1");
+        mm_sort_by_branch_order(&mut main, &["b1".to_string(), "b2".to_string()]);
+        let ids: Vec<String> = mm_nodes(&main).iter().map(|n| mm_str(n, "id")).collect();
+        assert_eq!(ids.first().map(String::as_str), Some("r"));
+        assert_eq!(ids.len(), 7);
+        assert_eq!(mm_dedup_labels(&mut main), 1);
+        mm_mark_expandable(&mut main);
+        let nodes = mm_nodes(&main);
+        assert_eq!(nodes.len(), 6);
+        let leaves: Vec<&Value> = nodes
+            .iter()
+            .filter(|n| n["expandable"] == json!(true))
+            .collect();
+        assert_eq!(leaves.len(), 2);
+    }
+
+    #[test]
+    fn shape_folds_deep_nodes_and_single_children_into_facets() {
+        let mut p = json!({"title":"t","nodes":[
+            {"id":"r","parent_id":null,"label":"根","citations":[]},
+            {"id":"b","parent_id":"r","label":"向量","citations":[]},
+            {"id":"t1","parent_id":"b","label":"运算","citations":[]},
+            {"id":"t2","parent_id":"b","label":"长度","citations":[]},
+            {"id":"k1","parent_id":"t1","label":"加法","atomic":true,"citations":[]},
+            {"id":"k2","parent_id":"t1","label":"数乘","citations":[]},
+            {"id":"d1","parent_id":"k1","label":"交换律","citations":[]},
+            {"id":"d2","parent_id":"k1","label":"结合律","citations":[]},
+            {"id":"s1","parent_id":"t2","label":"单位向量","citations":[]}
+        ]});
+        let crowded = mm_enforce_shape(&mut p, "b", 2);
+        assert!(crowded.is_empty());
+        // level-3 details became facets of their knowledge point
+        assert!(node(&p, "d1").is_none() && node(&p, "d2").is_none());
+        let k1 = node(&p, "k1").unwrap();
+        let mut f: Vec<&str> = k1["facets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        f.sort();
+        assert_eq!(f, vec!["交换律", "结合律"]);
+        assert!(k1.get("atomic").is_none());
+        // a topic with a single child absorbed it
+        assert!(node(&p, "s1").is_none());
+        assert_eq!(node(&p, "t2").unwrap()["facets"], json!(["单位向量"]));
+    }
+
+    #[test]
+    fn crowded_parent_is_reported_and_groups_apply() {
+        let mut nodes = vec![
+            json!({"id":"r","parent_id":null,"label":"根","citations":[]}),
+            json!({"id":"b","parent_id":"r","label":"向量","citations":[]}),
+        ];
+        for i in 0..9 {
+            nodes.push(json!({"id":format!("c{i}"),"parent_id":"b","label":format!("点{i}"),"citations":[]}));
+        }
+        let mut p = json!({"title":"t","nodes":nodes});
+        assert_eq!(mm_enforce_shape(&mut p, "b", 2), vec!["b".to_string()]);
+        let groups = json!([
+            {"label":"基础运算","summary":"s","members":["c0","c1","c2","c3"]},
+            {"label":"度量","summary":"s","members":["c4","c5","nope"]},
+            {"label":"单个","summary":"s","members":["c6"]}
+        ]);
+        let made = mm_apply_groups(&mut p, "b", groups.as_array().unwrap());
+        assert_eq!(made, 2);
+        assert_eq!(node(&p, "c0").unwrap()["parent_id"], "b.g1");
+        assert_eq!(node(&p, "c5").unwrap()["parent_id"], "b.g2");
+        assert_eq!(node(&p, "c6").unwrap()["parent_id"], "b");
+        assert!(mm_enforce_shape(&mut p, "b", 3).is_empty());
     }
 
     #[test]

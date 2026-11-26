@@ -1104,6 +1104,10 @@ impl CoreRuntime {
                 let id = req_str(p, "artifact_id")?;
                 Ok(serde_json::to_value(self.studio.get(id)?).unwrap())
             }
+            "studio.preview.get" => {
+                let id = req_str(p, "artifact_id")?;
+                self.studio.preview_get(id)
+            }
             "studio.approve_draft" => {
                 let id = req_str(p, "artifact_id")?;
                 let draft = p.get("draft").cloned();

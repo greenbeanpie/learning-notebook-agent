@@ -20,6 +20,8 @@ public sealed partial class MainWindow : Window
     private bool _refreshAgain;
     private readonly HashSet<string> _autoTranslatedSummaries = new();
 
+    private readonly System.Threading.CancellationTokenSource _prewarmCts = new();
+
     public MainWindow()
     {
         InitializeComponent();
@@ -28,6 +30,7 @@ public sealed partial class MainWindow : Window
         App.Core.EventReceived += OnCoreEvent;
         Closed += (_, _) =>
         {
+            _prewarmCts.Cancel();
             _activeArtifactPane?.Dispose();
             _math.Dispose();
             App.Core.Dispose();
@@ -306,7 +309,29 @@ public sealed partial class MainWindow : Window
             ShowNoNotebookState();
             await ShowCreateNotebookDialogAsync();
         }
+        StartMathPrewarm();
+        // Otherwise the first activation focuses the notebook title with its text selected.
+        ChatInputBox.Focus(FocusState.Programmatic);
         if (!await WarnIfNoModelAsync()) await ShowOnboardingIfFirstRunAsync();
+    }
+
+    /// <summary>
+    /// After the chat is displayed: if any displayed formula missed the disk cache, warm WebView2 up
+    /// in the background after an idle delay. If everything was cached, does nothing.
+    /// </summary>
+    private void StartMathPrewarm()
+    {
+        var ct = _prewarmCts.Token;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, async () =>
+        {
+            try
+            {
+                await Task.Delay(300, ct); // let Loaded events of the just-rendered messages run
+                if (ct.IsCancellationRequested || _math.UncachedSeen == 0 || _math.IsLoaded) return;
+                await _math.PrewarmAsync(MathRenderHost, ct);
+            }
+            catch { }
+        });
     }
 
     /// <summary>Returns true when a model is configured.</summary>

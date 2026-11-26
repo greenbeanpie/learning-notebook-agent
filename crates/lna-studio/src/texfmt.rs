@@ -112,6 +112,93 @@ pub fn convert_mindmap_payload(payload: &mut Value) {
     }
 }
 
+/// Flashcards are drawn as plain text on every client, so TeX in them becomes Unicode.
+pub fn convert_flashcards_payload(payload: &mut Value) {
+    if let Some(Value::String(t)) = payload.get_mut("title") {
+        *t = tex_to_unicode(t).replace('$', "");
+    }
+    let Some(cards) = payload.get_mut("cards").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for c in cards {
+        for k in ["front", "back", "hint"] {
+            if let Some(Value::String(t)) = c.get_mut(k) {
+                *t = tex_to_unicode(t).replace('$', "");
+            }
+        }
+    }
+}
+
+/// Report headings and the title are plain text (also the table of contents), so TeX in them
+/// becomes Unicode; section bodies keep `$...$` for the clients' formula renderers.
+pub fn convert_report_headings(payload: &mut Value) {
+    if let Some(Value::String(t)) = payload.get_mut("title") {
+        *t = tex_to_unicode(t).replace('$', "");
+    }
+    if let Some(Value::Array(sections)) = payload.get_mut("sections") {
+        for sec in sections {
+            if let Some(Value::String(h)) = sec.get_mut("heading") {
+                *h = tex_to_unicode(h).replace('$', "");
+            }
+        }
+    }
+}
+
+/// Slides are drawn natively (and exported to .pptx), so their visible text gets the same
+/// TeX → Unicode treatment as mind map labels. Figure specs and ids are left alone.
+pub fn convert_slides_payload(payload: &mut Value) {
+    fn text(v: &mut Value, keys: &[&str]) {
+        let Some(obj) = v.as_object_mut() else { return };
+        for k in keys {
+            if let Some(Value::String(t)) = obj.get_mut(*k) {
+                *t = tex_to_unicode(t);
+            }
+        }
+    }
+    fn list(v: &mut Value, key: &str) {
+        if let Some(Value::Array(items)) = v.get_mut(key) {
+            for it in items {
+                if let Value::String(t) = it {
+                    *t = tex_to_unicode(t);
+                }
+            }
+        }
+    }
+    text(payload, &["title", "subtitle"]);
+    let Some(slides) = payload.get_mut("slides").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for sl in slides {
+        text(sl, &["title", "subtitle", "callout", "speaker_notes"]);
+        list(sl, "bullets");
+        if let Some(Value::Array(cards)) = sl.get_mut("cards") {
+            for c in cards {
+                text(c, &["title", "body", "tag"]);
+            }
+        }
+        if let Some(Value::Array(cols)) = sl.get_mut("columns") {
+            for c in cols {
+                text(c, &["heading"]);
+                list(c, "items");
+            }
+        }
+        if let Some(table) = sl.get_mut("table") {
+            list(table, "headers");
+            if let Some(Value::Array(rows)) = table.get_mut("rows") {
+                for r in rows {
+                    if let Value::Array(cells) = r {
+                        for c in cells {
+                            if let Value::String(t) = c {
+                                *t = tex_to_unicode(t);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Single-backslash JSON escapes corrupt `\frac`, `\beta`, `\times`, `\rightarrow`, `\nabla`
 /// into control characters; restore them.
 fn repair_json_escapes(s: &str) -> String {
@@ -705,5 +792,49 @@ mod tests {
     fn repairs_json_escape_damage() {
         assert_eq!(t("\u{0c}rac{1}{2}"), "1/2");
         assert_eq!(t("A\times B"), "A×B");
+    }
+
+    #[test]
+    fn slides_payload_text_becomes_unicode() {
+        let mut p = serde_json::json!({
+            "title": "R^n 与 $A^T$",
+            "slides": [{
+                "title": "N(A)⊆R^n",
+                "bullets": ["dim $N(A)=n-r$"],
+                "cards": [{"title": "t", "body": "$x_1$"}],
+                "columns": [{"heading": "h", "items": ["C(A^T)"]}],
+                "table": {"headers": ["a"], "rows": [["R^m"]]},
+                "figure": {"expr": "x^2+y^2"}
+            }]
+        });
+        super::convert_slides_payload(&mut p);
+        assert_eq!(p["title"], "Rⁿ 与 Aᵀ");
+        assert_eq!(p["slides"][0]["title"], "N(A)⊆Rⁿ");
+        assert_eq!(p["slides"][0]["cards"][0]["body"], "x₁");
+        assert_eq!(p["slides"][0]["columns"][0]["items"][0], "C(Aᵀ)");
+        assert_eq!(p["slides"][0]["table"]["rows"][0][0], "Rᵐ");
+        // figure specs are not text and must stay untouched
+        assert_eq!(p["slides"][0]["figure"]["expr"], "x^2+y^2");
+    }
+
+    #[test]
+    fn report_headings_lose_dollars() {
+        let mut p = serde_json::json!({
+            "title": "$\\mathbb{R}^n$ 与 $N(A)$",
+            "sections": [{"heading": "零空间 $N(A)$ 与 $Ax=0$", "body_md": "$x_1$"}]
+        });
+        super::convert_report_headings(&mut p);
+        assert_eq!(p["title"], "ℝⁿ 与 N(A)");
+        assert_eq!(p["sections"][0]["heading"], "零空间 N(A) 与 Ax=0");
+        assert_eq!(p["sections"][0]["body_md"], "$x_1$");
+    }
+
+    #[test]
+    fn flashcards_become_plain_unicode() {
+        let mut p = serde_json::json!({"cards": [{"front": "什么是 $V$ 的子空间", "back": "$\\mathbb{R}^3$ 中的 $N(A)$", "hint": "x^2"}]});
+        super::convert_flashcards_payload(&mut p);
+        assert_eq!(p["cards"][0]["front"], "什么是 V 的子空间");
+        assert_eq!(p["cards"][0]["back"], "ℝ³ 中的 N(A)");
+        assert_eq!(p["cards"][0]["hint"], "x²");
     }
 }

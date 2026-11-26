@@ -20,7 +20,7 @@ pub(crate) const ELEMENT_IDS_GUIDE: &str = "ELEMENT IDS (laser targets and build
 
 pub(crate) const CUES_GUIDE: &str = "CUES (attached to the narration sentence during which they happen):\n- Laser pointer: {\"type\":\"laser\",\"target\":<element id>,\"shape\":\"circle\"|\"ellipse\",\"scale\":1.0-1.6 (ring size relative to the element),\"speed\":0.3-1.5 (revolutions per second),\"duration_ms\":800-6000, \"angle_deg\": -90..90 (optional ellipse tilt to align with a slanted element such as an incline, a slanted vector or a rotated block; omit for horizontal)}. Use it only for genuinely key points (about 1-3 per slide), never decoratively.\n- Step reveal: {\"type\":\"step\",\"n\":k} shows build step k of this slide.\nBUILDS (step-by-step animation): \"builds\": [{\"step\":1,\"targets\":[ids],\"effect\":\"appear\"|\"fade\"|\"fly_up\"|\"draw\"|\"emphasis\"|\"dim_others\"}]. Steps are numbered 1..K consecutively; elements not listed are visible from the start. Every step must be revealed by exactly one {\"type\":\"step\"} cue, in increasing order, on the sentence where that content is first explained. Use builds for derivations, procedures, comparisons and lists explained one item at a time; keep simple slides static. \"draw\" suits figure curves/arrows; \"emphasis\"/\"dim_others\" highlight something already visible.";
 
-pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: when a function graph, implicit curve, 3-D surface, geometric figure or physics diagram genuinely helps, add \"figure_request\": {\"kind\":\"plot\"|\"plot3d\"|\"diagram\",\"purpose\":\"what it must show\",\"details\":\"exact functions, ranges, points, forces, angles, labels AND the part ids you will reference\"} to the slide (normally with layout \"figure\"). A separate drawing step turns it into a precise figure. In details, name each part you reference with an explicit id (e.g. \"curve id f: y=x^2-2x on [-1,3]; point id V at (1,-1) labelled 顶点; vector id G downward labelled G\") and use exactly those ids as figure:<id> in cues and builds.";
+pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: when a function graph, implicit curve, 3-D surface, geometric figure or physics diagram genuinely helps, add \"figure_request\": {\"kind\":\"plot\"|\"plot3d\"|\"diagram\",\"purpose\":\"what it must show\",\"details\":\"exact functions, ranges, points, forces, angles, labels AND the part ids you will reference\"} to the slide (normally with layout \"figure\"). A separate drawing step turns it into a precise figure. In details, name each part you reference with an explicit id (e.g. \"curve id f: y=x^2-2x on [-1,3]; point id V at (1,-1) labelled 顶点; vector id G downward labelled G\") and use exactly those ids as figure:<id> in cues and builds. FIGURE + TEXT TOGETHER (important): a figure must never sit alone on a slide. The slide that shows a figure also carries the text that explains it — 2-3 very short (under ~16 Chinese characters or ~8 English words each) \"bullets\" and/or a \"formula\" stating the problem or claim and the key result, shown left of the figure — and the figure's labels use the same symbols as that text. Put the example's statement and its figure on the SAME slide; do not state an example on one slide and show its figure on the next, and do not use \"display_only\" for a figure slide. Narrate the text and the figure together: in each sentence point the laser at the figure part (figure:<id>) or bullet (b1..) being spoken about, and use builds so each bullet and its matching figure part appear in the same step.";
 
 /// Mode/detail rules for the lecture author.
 pub(crate) fn lecture_rules(mode: &str, detail: &str) -> String {
@@ -329,6 +329,25 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
             });
         }
         prev_display_only = spoken.is_empty() && display_only;
+
+        // a figure never stands alone: the text that explains it sits on the same slide
+        if (slide.get("figure_request").is_some_and(Value::is_object)
+            || slide.get("figure").is_some_and(Value::is_object))
+            && sv(slide, "formula").is_empty()
+            && !slide
+                .get("bullets")
+                .and_then(Value::as_array)
+                .is_some_and(|b| {
+                    b.iter()
+                        .any(|x| x.as_str().is_some_and(|t| !t.trim().is_empty()))
+                })
+        {
+            issues.push(Issue {
+                slide: si,
+                msg: "has a figure but no on-screen text beside it; add 2-3 very short \"bullets\" (and/or a \"formula\") that state the problem, the key result and what each labelled part of the figure means, so text and figure are read together".into(),
+                fix: Fix::None,
+            });
+        }
 
         // builds
         let builds = slide
@@ -1538,6 +1557,12 @@ impl StudioService {
                     ));
                 }
                 self.save_checkpoint(artifact_id, "lecture_passes", json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": {} }))?;
+                self.emit_preview(
+                    artifact_id,
+                    &art.notebook_id,
+                    "lecture_passes",
+                    &json!({ "outline": outline, "done": {} }),
+                );
                 (outline, BTreeMap::new())
             }
         };
@@ -1669,6 +1694,12 @@ impl StudioService {
                 }
             }
             self.save_checkpoint(artifact_id, "lecture_passes", json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": done }))?;
+            self.emit_preview(
+                artifact_id,
+                &art.notebook_id,
+                "lecture_passes",
+                &json!({ "outline": outline, "done": done }),
+            );
         }
 
         let mut slides: Vec<Value> = Vec::new();
@@ -2364,6 +2395,7 @@ mod tests {
         let out = render_figure(&spec, &HashSet::new());
         let mut s = json!({
             "id": "s1-2", "layout": "figure", "title": "抛物线",
+            "bullets": ["曲线 f：y = x²", "顶点 V 在原点"],
             "figure": {"spec": spec, "meta": out.meta_json()},
             "builds": [{"step": 1, "targets": ["figure:f"], "effect": "draw"}],
             "narration": [{"text": "画出曲线。", "cues": [{"type": "step", "n": 1}, {"type": "laser", "target": "figure:V", "shape": "circle", "speed": 1.0}]}]
@@ -2379,6 +2411,15 @@ mod tests {
                 && dir.join("figures/s1-2_1.png").is_file()
         );
         let _ = std::fs::remove_dir_all(&dir);
+        let mut alone = s.clone();
+        alone["bullets"] = json!([]);
+        let issues = check_lecture_slides(&[alone], "general");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.msg.contains("no on-screen text beside")),
+            "{issues:?}"
+        );
         s["narration"][0]["cues"][1]["target"] = json!("figure:Q");
         assert!(!check_lecture_slides(&[s], "general").is_empty());
     }
@@ -2402,7 +2443,7 @@ mod tests {
 pub fn texify_slide_text(slide: &mut Value) {
     fn conv(v: &mut Value) {
         match v {
-            Value::String(s) if s.contains('$') || s.contains('\\') => {
+            Value::String(s) if s.contains(['$', '\\', '^']) => {
                 *s = crate::texfmt::tex_to_unicode(s)
             }
             Value::Array(a) => a.iter_mut().for_each(conv),

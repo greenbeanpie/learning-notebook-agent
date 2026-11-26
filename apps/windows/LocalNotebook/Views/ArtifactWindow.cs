@@ -76,7 +76,24 @@ public sealed class ArtifactViewerPane : IDisposable
     private ScrollViewer? _thoughtScroll;
     private StackPanel? _thoughtPanel;
     private TextBlock? _thoughtEmptyHint;
-    private readonly Dictionary<int, TextBlock> _thoughtBodyBySeq = new();
+    private readonly Dictionary<int, ThoughtCard> _thoughtCardBySeq = new();
+
+    // Live preview (generation progress page)
+    private string _previewStage = "";
+    private JsonElement? _previewPayload;
+    private bool _previewTabActive;
+    private bool _previewDirty;
+    private DateTime _previewRenderedAt = DateTime.MinValue;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _previewTimer;
+    private Grid? _processGrid;
+    private ContentControl? _previewHost;
+    private StackPanel? _genTabBar;
+    private Button? _tabProcessBtn;
+    private Button? _tabPreviewBtn;
+    private MindmapTreeView? _previewMindmap;
+    private ScrollViewer? _previewScroll;
+    private readonly HashSet<string> _previewExpanded = new(StringComparer.Ordinal);
+    private bool _previewFetched;
     private bool _disposed;
 
     private static Geometry Geom(string path) =>
@@ -149,13 +166,14 @@ public sealed class ArtifactViewerPane : IDisposable
         App.Core.EventReceived -= OnEvent;
         _interactiveView?.Dispose();
         _interactiveView = null;
-        _thoughtBodyBySeq.Clear();
+        _thoughtCardBySeq.Clear();
         _thoughtPanel = null;
         _thoughtScroll = null;
         _thoughtEmptyHint = null;
         _genStageText = null;
         _genProgressBar = null;
         _genCancelBtn = null;
+        DiscardPreview();
         try { _body.Content = null; } catch { }
         try { Root.Children.Clear(); } catch { }
     }
@@ -178,6 +196,15 @@ public sealed class ArtifactViewerPane : IDisposable
             _hostWindow.DispatcherQueue.TryEnqueue(() =>
             {
                 if (!_disposed) HandleThoughtDelta(data);
+            });
+            return;
+        }
+        if (ev.Event == "studio.preview")
+        {
+            var data = ev.Data.Clone();
+            _hostWindow.DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!_disposed) HandlePreview(data);
             });
             return;
         }
@@ -290,13 +317,22 @@ public sealed class ArtifactViewerPane : IDisposable
     {
         _interactiveView?.Dispose();
         _interactiveView = null;
-        _thoughtBodyBySeq.Clear();
+        _thoughtCardBySeq.Clear();
         _thoughtPanel = null;
         _thoughtScroll = null;
         _thoughtEmptyHint = null;
         _genStageText = null;
         _genProgressBar = null;
         _genCancelBtn = null;
+        _processGrid = null;
+        _previewHost = null;
+        _genTabBar = null;
+        _tabProcessBtn = null;
+        _tabPreviewBtn = null;
+        _previewMindmap = null;
+        _previewScroll = null;
+        // The finished result view takes over; a preview only exists while generating.
+        if (status is not ("PENDING" or "RUNNING")) DiscardPreview();
 
         if (status == "READY")
         {
@@ -435,10 +471,205 @@ public sealed class ArtifactViewerPane : IDisposable
         };
         Grid.SetRow(_thoughtScroll, 1);
         processGrid.Children.Add(_thoughtScroll);
+        _processGrid = processGrid;
 
+        // Tabs: process / preview. The preview tab only shows once a preview exists.
+        _tabProcessBtn = MakeTabButton(L10n.T("art.tab_process"), () => SelectGenTab(false));
+        _tabPreviewBtn = MakeTabButton(L10n.T("art.tab_preview"), () => SelectGenTab(true));
+        _genTabBar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Visibility = Visibility.Collapsed,
+            Children = { _tabProcessBtn, _tabPreviewBtn },
+        };
+        _previewHost = new ContentControl
+        {
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch,
+            Visibility = Visibility.Collapsed,
+        };
+        var lower = new Grid { RowSpacing = 8 };
+        lower.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        lower.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        lower.Children.Add(_genTabBar);
         Grid.SetRow(processGrid, 1);
-        grid.Children.Add(processGrid);
+        Grid.SetRow(_previewHost, 1);
+        lower.Children.Add(processGrid);
+        lower.Children.Add(_previewHost);
+
+        Grid.SetRow(lower, 1);
+        grid.Children.Add(lower);
+
+        if (_previewPayload != null)
+        {
+            ApplyPreviewTabs();
+            if (_previewTabActive) RenderPreview();
+        }
+        else if (!_previewFetched)
+        {
+            _previewFetched = true;
+            _ = FetchPreviewAsync();
+        }
         return grid;
+    }
+
+    private Button MakeTabButton(string text, Action onClick)
+    {
+        var b = new Button
+        {
+            Content = text,
+            Style = (Style)Application.Current.Resources["PillButtonStyle"],
+            MinHeight = 28,
+            Padding = new Thickness(14, 3, 14, 3),
+            FontSize = 12,
+        };
+        b.Click += (_, _) => onClick();
+        return b;
+    }
+
+    private void SelectGenTab(bool preview)
+    {
+        _previewTabActive = preview && _previewPayload != null;
+        ApplyPreviewTabs();
+        if (_previewTabActive) RenderPreview();
+    }
+
+    private void ApplyPreviewTabs()
+    {
+        if (_genTabBar == null || _processGrid == null || _previewHost == null) return;
+        var has = _previewPayload != null;
+        _genTabBar.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+        var showPreview = has && _previewTabActive;
+        _processGrid.Visibility = showPreview ? Visibility.Collapsed : Visibility.Visible;
+        _previewHost.Visibility = showPreview ? Visibility.Visible : Visibility.Collapsed;
+        if (_tabProcessBtn != null)
+            _tabProcessBtn.Style = (Style)Application.Current.Resources[showPreview ? "PillButtonStyle" : "PrimaryPillButtonStyle"];
+        if (_tabPreviewBtn != null)
+            _tabPreviewBtn.Style = (Style)Application.Current.Resources[showPreview ? "PrimaryPillButtonStyle" : "PillButtonStyle"];
+    }
+
+    private async Task FetchPreviewAsync()
+    {
+        try
+        {
+            var (res, err) = await Api.CallAsync("studio.preview.get", Args(("artifact_id", _id)));
+            if (_disposed || err != null || res is not { ValueKind: JsonValueKind.Object } r) return;
+            if (_previewPayload != null) return; // an event already delivered something newer
+            if (!r.TryGetProperty("payload", out var payload) || payload.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return;
+            if (_builtStatus is not ("PENDING" or "RUNNING")) return;
+            _previewStage = Str(r, "stage");
+            _previewPayload = payload.Clone();
+            ApplyPreviewTabs();
+            if (_previewTabActive) RenderPreview();
+        }
+        catch
+        {
+            // Preview is optional.
+        }
+    }
+
+    private void HandlePreview(JsonElement data)
+    {
+        if (_builtStatus is not ("PENDING" or "RUNNING")) return;
+        if (!data.TryGetProperty("payload", out var payload) || payload.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) return;
+        _previewStage = Str(data, "stage");
+        _previewPayload = payload.Clone();
+        ApplyPreviewTabs();
+        if (!_previewTabActive || _previewHost == null) return;
+
+        // Throttle re-rendering to about once per second.
+        var since = (DateTime.UtcNow - _previewRenderedAt).TotalMilliseconds;
+        if (since >= 1000)
+        {
+            RenderPreview();
+            return;
+        }
+        _previewDirty = true;
+        if (_previewTimer == null)
+        {
+            _previewTimer = _hostWindow.DispatcherQueue.CreateTimer();
+            _previewTimer.IsRepeating = false;
+            _previewTimer.Tick += (_, _) =>
+            {
+                if (_disposed || !_previewDirty) return;
+                RenderPreview();
+            };
+        }
+        if (!_previewTimer.IsRunning)
+        {
+            _previewTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(50, 1000 - since));
+            _previewTimer.Start();
+        }
+    }
+
+    private void DiscardPreview()
+    {
+        try { _previewTimer?.Stop(); } catch { }
+        _previewTimer = null;
+        _previewPayload = null;
+        _previewStage = "";
+        _previewDirty = false;
+        _previewTabActive = false;
+        _previewMindmap = null;
+        _previewScroll = null;
+        _previewFetched = false;
+        _previewExpanded.Clear();
+        _previewRenderedAt = DateTime.MinValue;
+    }
+
+    private void RenderPreview()
+    {
+        if (_previewHost == null || _previewPayload is not { } payload) return;
+        _previewDirty = false;
+        _previewRenderedAt = DateTime.UtcNow;
+        var kind = Str(_art, "artifact_type");
+
+        FrameworkElement content;
+        if (_previewStage == "mindmap_passes" || (kind == "mindmap" && _previewStage != "stream"))
+        {
+            if (_previewMindmap != null && _previewHost.Content is Grid g && ReferenceEquals(g.Tag, _previewMindmap))
+            {
+                if (_previewMindmap.TryUpdate(payload)) return;
+            }
+            var isKg = Str(payload, "kind") == "knowledge_graph" || Str(Obj(_art, "config"), "mode") == "knowledge_graph";
+            _previewMindmap = new MindmapTreeView(payload, null, compact: false, isKnowledgeGraph: isKg, readOnly: true);
+            content = _previewMindmap.Root;
+        }
+        else
+        {
+            _previewMindmap = null;
+            var oldOffset = _previewScroll?.VerticalOffset ?? 0;
+            var view = ArtifactPreviewView.Build(_previewStage, kind, payload, _previewExpanded);
+            var sv = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Content = view,
+            };
+            _previewScroll = sv;
+            if (oldOffset > 0)
+            {
+                sv.Loaded += (_, _) =>
+                {
+                    sv.UpdateLayout();
+                    sv.ChangeView(null, oldOffset, null, disableAnimation: true);
+                };
+            }
+            content = sv;
+        }
+
+        var host = new Grid { RowSpacing = 6, Tag = _previewMindmap };
+        host.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        host.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        host.Children.Add(new TextBlock
+        {
+            Text = L10n.T("art.preview_unvalidated"),
+            FontSize = 11.5,
+            Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
+        });
+        Grid.SetRow(content, 1);
+        host.Children.Add(content);
+        _previewHost.Content = host;
     }
 
     private void HandleThoughtAdded(JsonElement data)
@@ -461,15 +692,12 @@ public sealed class ArtifactViewerPane : IDisposable
         var seq = (int)Int(data, "seq");
         var delta = Str(data, "delta");
         if (delta.Length == 0) return;
-        if (_thoughtBodyBySeq.TryGetValue(seq, out var tb))
+        if (_thoughtCardBySeq.TryGetValue(seq, out var tc))
         {
-            tb.Text += delta;
-            tb.Visibility = Visibility.Visible;
-            if (_thoughtScroll != null)
-            {
-                _thoughtScroll.UpdateLayout();
-                _thoughtScroll.ChangeView(null, _thoughtScroll.ScrollableHeight, null, disableAnimation: true);
-            }
+            // decide before the content grows: follow the output only if the reader is at the bottom
+            var follow = ThoughtScrollAtBottom();
+            tc.Append(delta);
+            if (follow) ScrollThoughtsToBottom();
             return;
         }
         if (_builtStatus is "PENDING" or "RUNNING")
@@ -484,27 +712,88 @@ public sealed class ArtifactViewerPane : IDisposable
             _thoughtPanel.Children.Remove(_thoughtEmptyHint);
             _thoughtEmptyHint = null;
         }
-        if (seq > 0 && _thoughtBodyBySeq.TryGetValue(seq, out var existingBody))
+        if (seq > 0 && _thoughtCardBySeq.TryGetValue(seq, out var existing))
         {
-            if (body.Length > existingBody.Text.Length)
-            {
-                existingBody.Text = body;
-                existingBody.Visibility = Visibility.Visible;
-            }
+            existing.SetFull(body);
             return;
         }
 
-        var (card, bodyTb) = BuildThoughtCard(kind, title, body);
-        if (seq > 0) _thoughtBodyBySeq[seq] = bodyTb;
-        _thoughtPanel.Children.Add(card);
-        if (scroll && _thoughtScroll != null)
+        var tcard = BuildThoughtCard(kind, title, body);
+        if (seq > 0) _thoughtCardBySeq[seq] = tcard;
+        var follow = scroll && ThoughtScrollAtBottom();
+        _thoughtPanel.Children.Add(tcard.Card);
+        if (follow) ScrollThoughtsToBottom();
+    }
+
+    /// <summary>True when the process list is scrolled to its end (or has nothing to scroll).</summary>
+    private bool ThoughtScrollAtBottom()
+    {
+        var sv = _thoughtScroll;
+        if (sv == null) return false;
+        return sv.ScrollableHeight - sv.VerticalOffset <= 24;
+    }
+
+    private void ScrollThoughtsToBottom()
+    {
+        var sv = _thoughtScroll;
+        if (sv == null) return;
+        sv.UpdateLayout();
+        sv.ChangeView(null, sv.ScrollableHeight, null, disableAnimation: true);
+    }
+
+    /// <summary>One card of the execution-process panel. Reasoning cards are collapsed by default and cap the displayed text.</summary>
+    private sealed class ThoughtCard
+    {
+        private const int DisplayCap = 8000;
+        public Border Card { get; init; } = null!;
+        public TextBlock Body { get; init; } = null!;
+        public Button OmittedBtn { get; init; } = null!;
+        public TextBlock Chevron { get; init; } = null!;
+        public bool Collapsible { get; init; }
+        public bool Expanded { get; set; }
+        public bool ShowFull { get; set; }
+        public StringBuilder Full { get; } = new();
+
+        public void SetFull(string body)
         {
-            _thoughtScroll.UpdateLayout();
-            _thoughtScroll.ChangeView(null, _thoughtScroll.ScrollableHeight, null, disableAnimation: true);
+            if (body.Length <= Full.Length) return;
+            Full.Clear();
+            Full.Append(body);
+            Refresh();
+        }
+
+        public void Append(string delta)
+        {
+            // O(1) while collapsed; only the visible tail is materialised while expanded.
+            Full.Append(delta);
+            if (!Collapsible || Expanded) Refresh();
+        }
+
+        public void Toggle()
+        {
+            if (!Collapsible) return;
+            Expanded = !Expanded;
+            Chevron.Text = Expanded ? "▾" : "▸";
+            Refresh();
+        }
+
+        public void Refresh()
+        {
+            if (Collapsible && !Expanded)
+            {
+                Body.Visibility = Visibility.Collapsed;
+                OmittedBtn.Visibility = Visibility.Collapsed;
+                return;
+            }
+            var len = Full.Length;
+            var truncated = !ShowFull && len > DisplayCap;
+            Body.Text = truncated ? Full.ToString(len - DisplayCap, DisplayCap) : Full.ToString();
+            Body.Visibility = len > 0 ? Visibility.Visible : Visibility.Collapsed;
+            OmittedBtn.Visibility = truncated ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 
-    private static (Border Card, TextBlock BodyBlock) BuildThoughtCard(string kind, string title, string body)
+    private static ThoughtCard BuildThoughtCard(string kind, string title, string body)
     {
         var accentColor = kind switch
         {
@@ -514,18 +803,35 @@ public sealed class ArtifactViewerPane : IDisposable
             "reasoning" => Windows.UI.Color.FromArgb(255, 168, 199, 250),
             _ => Windows.UI.Color.FromArgb(255, 129, 201, 149),
         };
+        var collapsible = kind == "reasoning";
         var bodyTb = new TextBlock
         {
-            Text = body,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = true,
             Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
-            Visibility = body.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
+            Visibility = Visibility.Collapsed,
+        };
+        var omittedBtn = new Button
+        {
+            Content = L10n.T("art.reasoning_omitted"),
+            Style = (Style)Application.Current.Resources["PillButtonStyle"],
+            MinHeight = 24,
+            Padding = new Thickness(10, 2, 10, 2),
+            FontSize = 11.5,
+            Visibility = Visibility.Collapsed,
+        };
+        var chevron = new TextBlock
+        {
+            Text = "▸",
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
+            Visibility = collapsible ? Visibility.Visible : Visibility.Collapsed,
         };
 
         var stack = new StackPanel { Spacing = 4 };
-        var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) };
         head.Children.Add(new Border
         {
             Width = 6,
@@ -541,8 +847,10 @@ public sealed class ArtifactViewerPane : IDisposable
             FontWeight = FontWeights.SemiBold,
             TextWrapping = TextWrapping.Wrap,
         });
+        head.Children.Add(chevron);
         stack.Children.Add(head);
         stack.Children.Add(bodyTb);
+        stack.Children.Add(omittedBtn);
 
         var card = new Border
         {
@@ -553,7 +861,36 @@ public sealed class ArtifactViewerPane : IDisposable
             Padding = new Thickness(12, 8, 12, 8),
             Child = stack,
         };
-        return (card, bodyTb);
+        var tc = new ThoughtCard
+        {
+            Card = card,
+            Body = bodyTb,
+            OmittedBtn = omittedBtn,
+            Chevron = chevron,
+            Collapsible = collapsible,
+            ShowFull = !collapsible,
+        };
+        tc.Full.Append(body);
+        if (collapsible) head.Tapped += (_, _) => tc.Toggle();
+        omittedBtn.Click += (_, _) =>
+        {
+            tc.ShowFull = true;
+            tc.Refresh();
+        };
+        tc.Refresh();
+        return tc;
+    }
+
+    /// <summary>One-line note for finished runs whose model produced no reasoning cards.</summary>
+    private static TextBlock? NoReasoningNote(List<JsonElement> thoughts)
+    {
+        if (thoughts.Any(t => Str(t, "kind") == "reasoning")) return null;
+        return new TextBlock
+        {
+            Text = L10n.T("art.no_reasoning_note"),
+            FontSize = 12,
+            Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
+        };
     }
 
     private FrameworkElement BuildRecordedThoughtsView(JsonElement art, string headerText)
@@ -567,6 +904,7 @@ public sealed class ArtifactViewerPane : IDisposable
             Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
         });
         var thoughts = Arr(art, "thoughts").ToList();
+        if (NoReasoningNote(thoughts) is { } noteA) root.Children.Add(noteA);
         if (thoughts.Count == 0)
         {
             root.Children.Add(new TextBlock
@@ -614,6 +952,7 @@ public sealed class ArtifactViewerPane : IDisposable
                 FontWeight = FontWeights.SemiBold,
                 Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
             });
+            if (NoReasoningNote(thoughts) is { } noteB) root.Children.Add(noteB);
             foreach (var t in thoughts)
             {
                 root.Children.Add(BuildThoughtCard(Str(t, "kind"), Str(t, "title"), Str(t, "body")).Card);
@@ -648,7 +987,9 @@ public sealed class ArtifactViewerPane : IDisposable
         retryBtn.Click += async (_, _) => await RetryAsync();
         root.Children.Add(retryBtn);
 
-        foreach (var t in Arr(art, "thoughts"))
+        var cancelledThoughts = Arr(art, "thoughts").ToList();
+        if (NoReasoningNote(cancelledThoughts) is { } noteC) root.Children.Add(noteC);
+        foreach (var t in cancelledThoughts)
         {
             root.Children.Add(BuildThoughtCard(Str(t, "kind"), Str(t, "title"), Str(t, "body")).Card);
         }
@@ -2458,14 +2799,20 @@ internal sealed class InteractiveArtifactView : IDisposable
 
         var dir = Str(_art, "output_dir");
         var svgPath = dir.Length > 0 ? Path.Combine(dir, "infographic.svg") : "";
+        Image? infoImage = null;
         if (svgPath.Length > 0 && File.Exists(svgPath))
         {
+            // WinUI's SvgImageSource draws no <text>, so show the core's PNG of the same layout when it exists.
+            var pngPath = Path.Combine(dir, "infographic.png");
             var img = new Image
             {
-                Source = new SvgImageSource(new Uri(svgPath)),
+                Source = File.Exists(pngPath)
+                    ? new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(pngPath))
+                    : new SvgImageSource(new Uri(svgPath)),
                 Stretch = Stretch.Uniform,
                 HorizontalAlignment = HorizontalAlignment.Center,
             };
+            infoImage = img;
             canvasHost.Children.Add(new Border
             {
                 CornerRadius = new CornerRadius(14),
@@ -2497,6 +2844,26 @@ internal sealed class InteractiveArtifactView : IDisposable
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
         if (_compact) NestedScrollHelper.AttachToOuterOnBoundary(scroll);
+        if (infoImage != null)
+        {
+            // Show the whole infographic fitted to the available width instead of its native 1200 px.
+            var natural = 1200.0;
+            try
+            {
+                var text = File.ReadAllText(svgPath);
+                var head = text.Substring(0, Math.Min(300, text.Length));
+                var m = System.Text.RegularExpressions.Regex.Match(head, @"width=""(\d+)""");
+                if (m.Success) natural = double.Parse(m.Groups[1].Value);
+            }
+            catch { }
+            var fitted = false;
+            scroll.SizeChanged += (_, e) =>
+            {
+                if (fitted || e.NewSize.Width < 100) return;
+                fitted = true;
+                infoImage.Width = Math.Max(240, Math.Min(natural, e.NewSize.Width - 32));
+            };
+        }
 
         Button MakeZoomBtn(string path, string tip, RoutedEventHandler onClick)
         {
@@ -2605,9 +2972,18 @@ internal sealed class InteractiveArtifactView : IDisposable
         {
             root.Children.Add(new TextBlock { Text = L10n.T("audio.missing_wav"), Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 200, 120)) });
         }
+        // turns carry speaker ids ("host"); show the role names the script defines for them
+        var roles = new Dictionary<string, string>();
+        foreach (var sp in Arr(payload, "speakers"))
+        {
+            var id = Str(sp, "id");
+            var role = Str(sp, "role");
+            if (id.Length > 0 && role.Length > 0) roles[id] = role;
+        }
         foreach (var t in turns)
         {
-            var tb = new TextBlock { Text = $"{Str(t, "speaker")}：{Str(t, "text")}", TextWrapping = TextWrapping.Wrap, FontSize = 14, IsTextSelectionEnabled = true, Opacity = 0.9 };
+            var who = Str(t, "speaker");
+            var tb = new TextBlock { Text = $"{(roles.TryGetValue(who, out var r) ? r : who)}：{Str(t, "text")}", TextWrapping = TextWrapping.Wrap, FontSize = 14, IsTextSelectionEnabled = true, Opacity = 0.9 };
             lines.Add(tb);
             root.Children.Add(tb);
         }

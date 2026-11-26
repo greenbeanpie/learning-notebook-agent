@@ -132,11 +132,8 @@ impl ProtocolAdapter for AnthropicAdapter {
         let use_legacy =
             profile.capabilities.anthropic_thinking.as_deref() == Some("budget_tokens");
         if use_legacy {
-            let desired: u32 = if req.reasoning.show_summary {
-                4096
-            } else {
-                1024
-            };
+            // The display switch only controls visibility, never reasoning strength or cost.
+            let desired: u32 = 4096;
             let budget = if capped_max_tokens > 1024 {
                 desired.min(capped_max_tokens.saturating_sub(1024).max(1024))
             } else {
@@ -148,15 +145,7 @@ impl ProtocolAdapter for AnthropicAdapter {
                 "type": "adaptive",
                 "display": if req.reasoning.show_summary { "summarized" } else { "omitted" }
             });
-            let effort = req
-                .reasoning
-                .effort
-                .as_deref()
-                .unwrap_or(if req.reasoning.show_summary {
-                    "medium"
-                } else {
-                    "low"
-                });
+            let effort = req.reasoning.effort.as_deref().unwrap_or("medium");
             body["output_config"] = json!({ "effort": effort });
         }
 

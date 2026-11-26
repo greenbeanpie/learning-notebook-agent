@@ -276,21 +276,45 @@ impl LlmClient {
         profile: &ResolvedProfile,
         req: &LlmRequest,
         cancel: CancellationToken,
-        mut on_thinking: F,
+        on_thinking: F,
     ) -> LnaResult<(String, Usage)>
     where
         F: FnMut(&str),
     {
+        let (text, usage, _) = self
+            .complete_text_with_stop(profile, req, cancel, on_thinking, |_| {})
+            .await?;
+        Ok((text, usage))
+    }
+
+    /// Like `complete_text_with_thinking`, but also reports why generation stopped, so a
+    /// length cut-off can be told apart from malformed output.
+    pub async fn complete_text_with_stop<F, T>(
+        &self,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        cancel: CancellationToken,
+        mut on_thinking: F,
+        mut on_text: T,
+    ) -> LnaResult<(String, Usage, StopReason)>
+    where
+        F: FnMut(&str),
+        T: FnMut(&str),
+    {
         let mut text = String::new();
         let mut usage = Usage::default();
-        self.stream(profile, req, cancel, |ev| match ev {
-            LlmEvent::ThoughtDelta(t) => on_thinking(&t),
-            LlmEvent::TextDelta(t) => text.push_str(&t),
-            LlmEvent::Usage(u) => usage = u,
-            _ => {}
-        })
-        .await?;
-        Ok((text, usage))
+        let stop = self
+            .stream(profile, req, cancel, |ev| match ev {
+                LlmEvent::ThoughtDelta(t) => on_thinking(&t),
+                LlmEvent::TextDelta(t) => {
+                    text.push_str(&t);
+                    on_text(&text);
+                }
+                LlmEvent::Usage(u) => usage = u,
+                _ => {}
+            })
+            .await?;
+        Ok((text, usage, stop))
     }
 
     /// Structured output: JSON schema when supported, else JSON mode with the schema in the prompt,
@@ -325,12 +349,50 @@ impl LlmClient {
         schema: &serde_json::Value,
         cancel: CancellationToken,
         max_repairs: usize,
-        mut on_thinking: F,
-        mut on_status: G,
+        on_thinking: F,
+        on_status: G,
     ) -> LnaResult<(serde_json::Value, Usage)>
     where
         F: FnMut(&str),
         G: FnMut(&str),
+    {
+        self.complete_structured_continuing(
+            profile,
+            base_req,
+            schema_name,
+            schema,
+            cancel,
+            max_repairs,
+            None,
+            on_thinking,
+            on_status,
+            |_| {},
+        )
+        .await
+    }
+
+    /// Structured output where the answer is an object whose `array_key` property is a flat
+    /// array of items. When generation is cut off by the output limit, the items that were
+    /// completed are kept and the model is asked to continue with the remaining ones (up to
+    /// three times) instead of rewriting everything.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn complete_structured_continuing<F, G, T>(
+        &self,
+        profile: &ResolvedProfile,
+        base_req: &LlmRequest,
+        schema_name: &str,
+        schema: &serde_json::Value,
+        cancel: CancellationToken,
+        max_repairs: usize,
+        array_key: Option<&str>,
+        mut on_thinking: F,
+        mut on_status: G,
+        mut on_text: T,
+    ) -> LnaResult<(serde_json::Value, Usage)>
+    where
+        F: FnMut(&str),
+        G: FnMut(&str),
+        T: FnMut(&str),
     {
         let validator = jsonschema::validator_for(schema)
             .map_err(|e| LnaError::invalid(format!("Invalid JSON schema: {e}")))?;
@@ -355,13 +417,82 @@ impl LlmClient {
         }
 
         let mut total_usage = Usage::default();
-        let (raw, u) = self
-            .complete_text_with_thinking(profile, &req, cancel.clone(), &mut on_thinking)
+        let (raw, u, mut stop) = self
+            .complete_text_with_stop(
+                profile,
+                &req,
+                cancel.clone(),
+                &mut on_thinking,
+                &mut on_text,
+            )
             .await?;
         add_usage(&mut total_usage, &u);
 
         let mut candidate = strip_code_fences(&raw);
         let mut last_reason = String::new();
+
+        // Length cut-off on an item array: keep the finished items and continue.
+        if let (Some(key), true) = (array_key, matches!(stop, StopReason::MaxTokens)) {
+            if serde_json::from_str::<serde_json::Value>(&candidate).is_err() {
+                let mut items = salvage_array_items(&candidate, key);
+                let mut rounds = 0;
+                while matches!(stop, StopReason::MaxTokens) && rounds < 3 && !items.is_empty() {
+                    rounds += 1;
+                    on_status(&format!(
+                        "输出达到长度上限被截断，已保留 {} 个完整条目，正在请求从此继续（第 {rounds}/3 次）…",
+                        items.len()
+                    ));
+                    let mut cont = req.clone();
+                    let done_list = items
+                        .iter()
+                        .map(|it| {
+                            let id = it.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                            let label = it.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                            format!("[{id}] {label}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    cont.messages.push(LlmMessage {
+                        role: Role::Assistant,
+                        parts: vec![Part::Text(serde_json::json!({ key: items }).to_string())],
+                    });
+                    cont.messages.push(LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text(format!(
+                            "Your previous output was cut off by the output length limit. These items are already complete and kept: {done_list}. Continue: output ONLY the REMAINING items (do not repeat any item above) as the same JSON object with the \"{key}\" array. Keep them concise; if everything is already covered, return an empty array."
+                        ))],
+                    });
+                    let (more_raw, mu, mstop) = self
+                        .complete_text_with_stop(
+                            profile,
+                            &cont,
+                            cancel.clone(),
+                            &mut on_thinking,
+                            |_| {},
+                        )
+                        .await?;
+                    add_usage(&mut total_usage, &mu);
+                    stop = mstop;
+                    let more_text = strip_code_fences(&more_raw);
+                    let more = match serde_json::from_str::<serde_json::Value>(&more_text) {
+                        Ok(v) => v
+                            .get(key)
+                            .and_then(|a| a.as_array())
+                            .cloned()
+                            .unwrap_or_default(),
+                        Err(_) => salvage_array_items(&more_text, key),
+                    };
+                    if more.is_empty() {
+                        break;
+                    }
+                    items.extend(more);
+                }
+                if !items.is_empty() {
+                    candidate = serde_json::json!({ key: items }).to_string();
+                }
+            }
+        }
+
         for repair_attempt in 0..=max_repairs {
             match serde_json::from_str::<serde_json::Value>(&candidate) {
                 Ok(val) => {
@@ -382,8 +513,15 @@ impl LlmClient {
             if repair_attempt == max_repairs {
                 break;
             }
+            let truncated = matches!(stop, StopReason::MaxTokens);
             on_status(&format!(
-                "结构化输出未通过 Schema 校验，正在进行第 {}/{} 次修复…",
+                "结构化输出未通过校验（{}{}），正在进行第 {}/{} 次修复…",
+                if truncated {
+                    "输出被长度上限截断；"
+                } else {
+                    ""
+                },
+                last_reason.chars().take(160).collect::<String>(),
                 repair_attempt + 1,
                 max_repairs
             ));
@@ -392,8 +530,10 @@ impl LlmClient {
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
-                        "The following JSON failed schema validation ({}). Fix it and output valid JSON only:\nSchema:\n{}\n\nOriginal output:\n{}",
-                        last_reason, schema, candidate
+                        "The following JSON failed schema validation ({}).{} Fix it and output valid JSON only:\nSchema:\n{}\n\nOriginal output:\n{}",
+                        last_reason,
+                        if truncated { " It was also cut off by the output length limit, so output a SHORTER but complete version." } else { "" },
+                        schema, candidate
                     ))],
                 }],
                 tools: vec![],
@@ -402,10 +542,17 @@ impl LlmClient {
                 max_output_tokens: base_req.max_output_tokens,
                 reasoning: ReasoningOptions::default(),
             };
-            let (repaired, ru) = self
-                .complete_text_with_thinking(profile, &repair_req, cancel.clone(), &mut on_thinking)
+            let (repaired, ru, rstop) = self
+                .complete_text_with_stop(
+                    profile,
+                    &repair_req,
+                    cancel.clone(),
+                    &mut on_thinking,
+                    |_| {},
+                )
                 .await?;
             add_usage(&mut total_usage, &ru);
+            stop = rstop;
             candidate = strip_code_fences(&repaired);
         }
 
@@ -712,5 +859,51 @@ async fn sleep_backoff(
     tokio::select! {
         _ = cancel.cancelled() => Err(LnaError::new(ErrorCode::Cancelled, "Cancelled during backoff")),
         _ = tokio::time::sleep(Duration::from_millis(base_ms)) => Ok(()),
+    }
+}
+
+/// Complete items of the flat array under `key` in possibly truncated JSON text: parses
+/// element by element and stops at the first incomplete one.
+pub(crate) fn salvage_array_items(text: &str, key: &str) -> Vec<serde_json::Value> {
+    let needle = format!("\"{key}\"");
+    let Some(kpos) = text.find(&needle) else {
+        return Vec::new();
+    };
+    let after = &text[kpos + needle.len()..];
+    let Some(bpos) = after.find('[') else {
+        return Vec::new();
+    };
+    let mut rest = &after[bpos + 1..];
+    let mut out = Vec::new();
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+        if rest.is_empty() || rest.starts_with(']') {
+            break;
+        }
+        let mut it = serde_json::Deserializer::from_str(rest).into_iter::<serde_json::Value>();
+        match it.next() {
+            Some(Ok(v)) => {
+                let used = it.byte_offset();
+                out.push(v);
+                rest = &rest[used..];
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod salvage_tests {
+    use super::salvage_array_items;
+
+    #[test]
+    fn keeps_complete_items_of_truncated_array() {
+        let t =
+            r#"{"title":"x","nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"},{"id":"c","lab"#;
+        let items = salvage_array_items(t, "nodes");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1]["id"], "b");
+        assert!(salvage_array_items("{}", "nodes").is_empty());
     }
 }

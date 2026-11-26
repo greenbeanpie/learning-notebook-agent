@@ -76,6 +76,7 @@ fun StudioScreen(
         ArtifactViewerScreen(
             artifact = openArt,
             thoughts = state.studioThoughts[openArt.id].orEmpty(),
+            preview = state.studioPreviews[openArt.id],
             isFullscreen = state.studioFullscreen,
             en = en,
             onClose = { onOpenArtifact(null) },
@@ -273,6 +274,7 @@ fun StudioScreen(
 private fun ArtifactViewerScreen(
     artifact: StudioArtifactItem,
     thoughts: List<ThoughtStepItem>,
+    preview: com.localnotebook.agent.core.PreviewState?,
     isFullscreen: Boolean,
     en: Boolean,
     onClose: () -> Unit,
@@ -318,7 +320,7 @@ private fun ArtifactViewerScreen(
                 }
             }
             TextButton(onClick = { showThoughts = !showThoughts }) {
-                Text(if (en) "Thoughts" else "思考过程", fontSize = 12.sp)
+                Text(L10n.t("studio.process", en), fontSize = 12.sp)
             }
             IconButton(onClick = onToggleFullscreen) {
                 Icon(if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, contentDescription = null)
@@ -333,45 +335,24 @@ private fun ArtifactViewerScreen(
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
                 artifact.status == "PENDING" || artifact.status == "RUNNING" || showThoughts -> {
-                    Column(
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (artifact.status == "PENDING" || artifact.status == "RUNNING") {
+                    val running = artifact.status == "PENDING" || artifact.status == "RUNNING"
+                    val hasPreview = running && preview != null
+                    var tab by remember { mutableStateOf(0) }
+                    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (running) {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Text(
-                                if (en) "AI workflow in progress..." else "AI 正在执行工具调用与思考…",
-                                style = MaterialTheme.typography.titleSmall,
-                            )
                         }
-                        if (thoughts.isEmpty()) {
-                            Text(
-                                if (en) "Waiting for AI workflow steps..." else "正在等待 AI 工作步骤与思考记录…",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        } else {
-                            thoughts.forEach { step ->
-                                val dotColor = when (step.kind) {
-                                    "tool" -> Color(0xFF78D9EC)
-                                    "reasoning" -> Color(0xFFA8C7FA)
-                                    else -> Color(0xFF81C995)
-                                }
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            Box(modifier = Modifier.size(7.dp).background(dotColor, RoundedCornerShape(4.dp)))
-                                            Text(step.title, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                                        }
-                                        if (step.body.isNotEmpty()) {
-                                            Text(step.body, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                    }
-                                }
+                        if (hasPreview) {
+                            TabRow(selectedTabIndex = if (tab == 1) 1 else 0) {
+                                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text(L10n.t("studio.process", en), fontSize = 12.sp) })
+                                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text(L10n.t("studio.preview_tab", en), fontSize = 12.sp) })
+                            }
+                        }
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            if (hasPreview && tab == 1 && preview != null) {
+                                ArtifactPreviewPanel(artifact, preview, en)
+                            } else {
+                                ThoughtsPanel(thoughts, running, en)
                             }
                         }
                     }

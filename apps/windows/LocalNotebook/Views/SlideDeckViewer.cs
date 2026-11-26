@@ -30,7 +30,7 @@ internal sealed class SlideDeckViewer
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
-            MinHeight = compact ? 380 : 540,
+            MinHeight = compact ? 380 : 420,
             DefaultBackgroundColor = Windows.UI.Color.FromArgb(255, 19, 20, 24),
         };
 

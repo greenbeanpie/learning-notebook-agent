@@ -1,7 +1,7 @@
 use crate::attach::{self, AttachBar};
 use crate::i18n::{tr, user_error_advice, UiPreferences};
 use crate::icons::{studio_icon_image, svg_image, SVG_BRAIN, SVG_CLOSE, SVG_FULLSCREEN, SVG_RING, SVG_SEARCH_DOC};
-use crate::mindmap_view::build_mindmap_widget;
+use crate::mindmap_view::{build_mindmap_widget, new_memory, ActionFn, SharedMemory};
 use gtk4::prelude::*;
 use gtk4::{
     Application, ApplicationWindow, Box as GtkBox, Button, CheckButton, DropDown, Entry, Expander, FlowBox, SelectionMode,
@@ -11,7 +11,7 @@ use gtk4::{
 use lna_api::CoreRuntime;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -84,6 +84,10 @@ struct UiState {
     drafts: RefCell<HashMap<String, (String, Vec<attach::Item>)>>,
     /// The notebook whose draft is in the chat box right now.
     draft_owner: RefCell<String>,
+    /// The generating artifact shown in the detail pane, updated by core events.
+    live: RefCell<Option<LiveView>>,
+    /// Every streamed thought delta received for the open generating artifact; survives re-fetches.
+    thought_streams: RefCell<StreamLog>,
 }
 
 impl UiState {
@@ -419,8 +423,11 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         en_cell: en_cell.clone(),
         drafts: RefCell::new(HashMap::new()),
         draft_owner: RefCell::new(String::new()),
+        live: RefCell::new(None),
+        thought_streams: RefCell::new(StreamLog::default()),
     });
     state.apply_preferences();
+    start_event_pump(&state);
 
     // Wire 7 Studio tiles
     for (idx, (kind, lbl)) in state.tile_labels.iter().enumerate() {
@@ -753,7 +760,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             pop.popdown();
             let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
             let out_path = out_dir.join("local-notebook-diagnostics.zip");
-            if let Ok(_) = call_core(&st.core, "diagnostics.export", json!({ "output_path": out_path.to_string_lossy() })) {
+            if call_core(&st.core, "diagnostics.export", json!({ "output_path": out_path.to_string_lossy() })).is_ok() {
                 let en = st.is_en();
                 st.status_label.set_text(&if en {
                     format!("Diagnostics exported to {}", out_path.display())
@@ -1419,50 +1426,385 @@ fn refresh_all(st: &Rc<UiState>) {
 }
 
 
-fn build_thoughts_panel(art: &Value, en: bool) -> GtkBox {
-    let box_w = GtkBox::new(Orientation::Vertical, 6);
-    if let Some(arr) = art.get("thoughts").and_then(Value::as_array) {
-        let items: Vec<&Value> = arr
-            .iter()
-            .filter(|t| t.get("kind").and_then(Value::as_str) != Some("retry"))
-            .collect();
-        if items.is_empty() {
-            let empty = Label::new(Some(if en {
-                "Waiting for AI workflow steps..."
-            } else {
-                "正在等待 AI 工作步骤与思考记录…"
-            }));
-            empty.set_xalign(0.0);
-            empty.add_css_class("lna-muted");
-            box_w.append(&empty);
-        } else {
-            for t in items {
-                let kind = t.get("kind").and_then(Value::as_str).unwrap_or("stage");
-                let title = t.get("title").and_then(Value::as_str).unwrap_or("");
-                let body = t.get("body").and_then(Value::as_str).unwrap_or("");
-                let card = GtkBox::new(Orientation::Vertical, 4);
-                card.add_css_class("lna-card");
-                let tag = match kind {
-                    "tool" => if en { "[Tool] " } else { "[工具调用] " },
-                    "reasoning" => if en { "[Thinking] " } else { "[思考总结] " },
-                    "error" => if en { "[Error] " } else { "[错误] " },
-                    _ => if en { "[Step] " } else { "[步骤] " },
-                };
-                let head = Label::new(Some(&format!("{tag}{title}")));
-                head.set_xalign(0.0);
-                head.set_wrap(true);
-                card.append(&head);
-                if !body.is_empty() {
-                    let b = Label::new(Some(body));
-                    b.set_xalign(0.0);
-                    b.set_wrap(true);
-                    b.set_selectable(true);
-                    b.add_css_class("lna-muted");
-                    card.append(&b);
+/// How often streamed thought text / previews are pushed to the widgets.
+const THOUGHT_FLUSH: Duration = Duration::from_millis(200);
+const PREVIEW_FLUSH: Duration = Duration::from_millis(1000);
+
+/// The generating artifact currently open in the detail pane.
+struct LiveView {
+    artifact_id: String,
+    kind: String,
+    en: bool,
+    stage_lbl: Label,
+    panel: GtkBox,
+    cards: LiveCards,
+    /// Cards whose streamed text changed since the last flush.
+    dirty: HashSet<i64>,
+    tabs: Stack,
+    switcher: gtk4::StackSwitcher,
+    preview_host: GtkBox,
+    preview_added: bool,
+    pending_preview: Option<Value>,
+    /// The preview that is on screen, to skip rebuilding an identical one.
+    last_preview: Option<Value>,
+    /// The user's expand / collapse state, zoom and scroll of the preview mind map.
+    preview_memory: SharedMemory,
+    last_thought_flush: Instant,
+    last_preview_flush: Instant,
+}
+
+impl LiveView {
+    fn add_thought(&mut self, d: &Value) {
+        let Some(seq) = d.get("seq").and_then(Value::as_i64) else { return };
+        if self.cards.cards.contains_key(&seq) || d.get("kind").and_then(Value::as_str) == Some("retry") {
+            return;
+        }
+        if let Some(p) = self.cards.placeholder.take() {
+            self.panel.remove(&p);
+        }
+        let (card, lc) = build_thought_card(d, self.en);
+        self.panel.append(&card);
+        self.cards.cards.insert(seq, lc);
+        // Deltas may have arrived before the card existed.
+        self.dirty.insert(seq);
+    }
+
+    /// Brings every card with new streamed text up to date. A card is always a function of the
+    /// stored body and the cumulative delta log, so flushing twice, or flushing right after a
+    /// re-fetch that already contains the text, never repeats anything.
+    fn flush_thoughts(&mut self, log: &StreamLog) {
+        self.last_thought_flush = Instant::now();
+        if self.dirty.is_empty() {
+            return;
+        }
+        let en = self.en;
+        let aid = self.artifact_id.as_str();
+        let cards = &mut self.cards.cards;
+        self.dirty.retain(|seq| match cards.get_mut(seq) {
+            Some(c) => {
+                if let Some(text) = log.get(aid, *seq) {
+                    sync_card(c, text, en);
                 }
-                box_w.append(&card);
+                false
+            }
+            None => true,
+        });
+    }
+
+    fn flush_preview(&mut self) {
+        let Some(pv) = self.pending_preview.take() else { return };
+        self.last_preview_flush = Instant::now();
+        if self.last_preview.as_ref() == Some(&pv) {
+            return;
+        }
+        // Build the new view before the old one goes away; the view state comes from the memory.
+        let widget = build_preview_widget(&pv, &self.kind, self.en, &self.preview_memory);
+        clear_box(&self.preview_host);
+        self.preview_host.append(&widget);
+        if !self.preview_added {
+            self.preview_added = true;
+            self.tabs.add_titled(&self.preview_host, Some("preview"), if self.en { "Preview" } else { "预览" });
+            self.switcher.set_visible(true);
+        }
+        self.last_preview = Some(pv);
+    }
+}
+
+/// Cumulative streamed thought text per card of one artifact (deltas carry no offsets, so the
+/// full text is kept and cards are reconciled against it).
+#[derive(Default)]
+struct StreamLog {
+    artifact_id: String,
+    text: HashMap<i64, String>,
+}
+
+impl StreamLog {
+    fn push(&mut self, artifact_id: &str, seq: i64, delta: &str) {
+        if self.artifact_id != artifact_id {
+            self.artifact_id = artifact_id.to_string();
+            self.text.clear();
+        }
+        self.text.entry(seq).or_default().push_str(delta);
+    }
+
+    fn get(&self, artifact_id: &str, seq: i64) -> Option<&str> {
+        if self.artifact_id == artifact_id {
+            self.text.get(&seq).map(String::as_str)
+        } else {
+            None
+        }
+    }
+
+    fn clear(&mut self) {
+        self.artifact_id.clear();
+        self.text.clear();
+    }
+}
+
+/// The text a card should show given what it holds (`current`, from the database or earlier
+/// flushes) and the cumulative streamed text: the streamed text wins only when it extends what
+/// the card already has. Text the card already contains is never appended again.
+fn stream_extension<'a>(current: &str, streamed: &'a str) -> Option<&'a str> {
+    if streamed.len() > current.len() && streamed.starts_with(current) {
+        Some(streamed)
+    } else {
+        None
+    }
+}
+
+fn sync_card(c: &mut LiveCard, streamed: &str, en: bool) {
+    let next = stream_extension(&c.full.borrow(), streamed);
+    if let Some(text) = next {
+        set_card_body(c, text, en);
+    }
+}
+
+/// Subscribes to the core's event stream on a worker thread and applies studio events to the
+/// open generating artifact on the GTK main thread (polled every 50 ms; thoughts are flushed to
+/// the widgets at most every 200 ms and previews every second).
+fn start_event_pump(st: &Rc<UiState>) {
+    let (tx, rx) = std::sync::mpsc::channel::<lna_types::ApiEvent>();
+    let mut sub = st.core.events.subscribe();
+    std::thread::spawn(move || loop {
+        match sub.blocking_recv() {
+            Ok(ev) => {
+                if ev.event.starts_with("studio.") && tx.send(ev).is_err() {
+                    break;
+                }
+            }
+            Err(e) => {
+                if format!("{e:?}").contains("Closed") {
+                    break;
+                }
+                // Lagged: events were dropped; the manual refresh button resyncs.
             }
         }
+    });
+    let st = st.clone();
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        let mut finished: Option<String> = None;
+        {
+            let mut guard = st.live.borrow_mut();
+            while let Ok(ev) = rx.try_recv() {
+                let Some(live) = guard.as_mut() else { continue };
+                let d = &ev.data;
+                if d.get("artifact_id").and_then(Value::as_str) != Some(live.artifact_id.as_str()) {
+                    continue;
+                }
+                match ev.event.as_str() {
+                    "studio.thought" => live.add_thought(d),
+                    "studio.thought_delta" => {
+                        if let (Some(seq), Some(delta)) =
+                            (d.get("seq").and_then(Value::as_i64), d.get("delta").and_then(Value::as_str))
+                        {
+                            st.thought_streams.borrow_mut().push(&live.artifact_id, seq, delta);
+                            live.dirty.insert(seq);
+                        }
+                    }
+                    "studio.preview" => {
+                        if d.get("payload").map(|p| p.is_object()).unwrap_or(false) {
+                            live.pending_preview = Some(d.clone());
+                        }
+                    }
+                    "studio.status" => {
+                        let status = d.get("status").and_then(Value::as_str).unwrap_or("");
+                        if matches!(status, "READY" | "FAILED" | "CANCELLED") {
+                            finished = Some(live.artifact_id.clone());
+                        } else {
+                            let stage = d.get("stage").and_then(Value::as_str).unwrap_or("PROCESSING");
+                            let pct = (d.get("progress").and_then(Value::as_f64).unwrap_or(0.0) * 100.0).round() as i32;
+                            live.stage_lbl.set_text(&format!(
+                                "{} · {} ({pct}%)",
+                                if live.en { "AI Workflow in Progress" } else { "AI 正在执行工作流" },
+                                stage
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if finished.is_none() {
+                if let Some(live) = guard.as_mut() {
+                    if live.last_thought_flush.elapsed() >= THOUGHT_FLUSH {
+                        live.flush_thoughts(&st.thought_streams.borrow());
+                    }
+                    if live.pending_preview.is_some() && live.last_preview_flush.elapsed() >= PREVIEW_FLUSH {
+                        live.flush_preview();
+                    }
+                }
+            }
+        }
+        if let Some(id) = finished {
+            // The result view replaces the progress view (open_artifact_inline drops the live state).
+            open_artifact_inline(&st, &id);
+            st.thought_streams.borrow_mut().clear();
+            refresh_all(&st);
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+/// Reasoning text longer than this is shown as its tail only, until the user asks for all of it.
+const REASONING_TAIL_CHARS: usize = 8000;
+
+fn tail_chars(text: &str, max: usize) -> Option<&str> {
+    let total = text.chars().count();
+    if total <= max {
+        return None;
+    }
+    let skip = total - max;
+    let byte = text.char_indices().nth(skip).map(|(i, _)| i).unwrap_or(0);
+    Some(&text[byte..])
+}
+
+/// One thought card of the process view, kept so live events can update it in place.
+struct LiveCard {
+    reasoning: bool,
+    body_box: GtkBox,
+    label: Option<Label>,
+    more: Option<Button>,
+    full: Rc<RefCell<String>>,
+    shown_full: Rc<Cell<bool>>,
+}
+
+/// Thought cards of a process view, keyed by thought seq.
+#[derive(Default)]
+struct LiveCards {
+    cards: HashMap<i64, LiveCard>,
+    placeholder: Option<Label>,
+}
+
+/// Puts `body` into a card's label (creating it on first use). Reasoning text is capped to its
+/// tail unless the user asked for everything.
+fn set_card_body(c: &mut LiveCard, body: &str, en: bool) {
+    *c.full.borrow_mut() = body.to_string();
+    if body.is_empty() {
+        return;
+    }
+    if c.label.is_none() {
+        let b = Label::new(None);
+        b.set_xalign(0.0);
+        b.set_wrap(true);
+        b.set_selectable(true);
+        b.add_css_class("lna-muted");
+        if c.reasoning {
+            let more = Button::with_label(if en {
+                "... earlier text omitted - click to load the full text"
+            } else {
+                "…前文已省略，点击查看完整内容"
+            });
+            more.add_css_class("lna-pill-btn");
+            more.set_halign(gtk4::Align::Start);
+            more.set_visible(false);
+            let full = c.full.clone();
+            let shown = c.shown_full.clone();
+            let b_c = b.clone();
+            more.connect_clicked(move |btn| {
+                shown.set(true);
+                b_c.set_text(&full.borrow());
+                btn.set_visible(false);
+            });
+            c.body_box.append(&more);
+            c.more = Some(more);
+        }
+        c.body_box.append(&b);
+        c.label = Some(b);
+    }
+    let tail = if c.reasoning && !c.shown_full.get() { tail_chars(body, REASONING_TAIL_CHARS) } else { None };
+    if let Some(l) = &c.label {
+        l.set_text(tail.unwrap_or(body));
+    }
+    if let Some(m) = &c.more {
+        m.set_visible(tail.is_some());
+    }
+}
+
+fn build_thought_card(t: &Value, en: bool) -> (GtkBox, LiveCard) {
+    let kind = t.get("kind").and_then(Value::as_str).unwrap_or("stage");
+    let title = t.get("title").and_then(Value::as_str).unwrap_or("");
+    let body = t.get("body").and_then(Value::as_str).unwrap_or("");
+    let card = GtkBox::new(Orientation::Vertical, 4);
+    card.add_css_class("lna-card");
+    let tag = match kind {
+        "tool" => if en { "[Tool] " } else { "[工具调用] " },
+        "reasoning" => if en { "[Thinking] " } else { "[思考总结] " },
+        "error" => if en { "[Error] " } else { "[错误] " },
+        _ => if en { "[Step] " } else { "[步骤] " },
+    };
+    let head_text = format!("{tag}{title}");
+    let body_box = GtkBox::new(Orientation::Vertical, 4);
+    let mut lc = LiveCard {
+        reasoning: kind == "reasoning",
+        body_box: body_box.clone(),
+        label: None,
+        more: None,
+        full: Rc::new(RefCell::new(String::new())),
+        shown_full: Rc::new(Cell::new(false)),
+    };
+    set_card_body(&mut lc, body, en);
+    if kind == "reasoning" {
+        let exp = Expander::new(Some(&head_text));
+        exp.set_expanded(false);
+        exp.set_child(Some(&body_box));
+        card.append(&exp);
+    } else {
+        let head = Label::new(Some(&head_text));
+        head.set_xalign(0.0);
+        head.set_wrap(true);
+        card.append(&head);
+        card.append(&body_box);
+    }
+    (card, lc)
+}
+
+/// Process view ("执行过程"). Reasoning cards start collapsed; `running` is false for finished runs,
+/// which get a note when the model produced no reasoning cards at all. `live` collects the cards
+/// so streaming events can update them.
+fn build_thoughts_panel(art: &Value, en: bool, running: bool, mut live: Option<&mut LiveCards>) -> GtkBox {
+    let box_w = GtkBox::new(Orientation::Vertical, 6);
+    let hdr = Label::new(Some(if en { "Execution Process" } else { "执行过程" }));
+    hdr.set_xalign(0.0);
+    hdr.add_css_class("lna-muted");
+    box_w.append(&hdr);
+    let items: Vec<&Value> = art
+        .get("thoughts")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter(|t| t.get("kind").and_then(Value::as_str) != Some("retry"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !running && !items.iter().any(|t| t.get("kind").and_then(Value::as_str) == Some("reasoning")) {
+        let note = Label::new(Some(if en {
+            "This model did not provide a chain of thought"
+        } else {
+            "该模型未提供思维链"
+        }));
+        note.set_xalign(0.0);
+        note.add_css_class("lna-muted");
+        box_w.append(&note);
+    }
+    if items.is_empty() {
+        let empty = Label::new(Some(if en {
+            "Waiting for AI workflow steps..."
+        } else {
+            "正在等待 AI 工作步骤与思考记录…"
+        }));
+        empty.set_xalign(0.0);
+        empty.add_css_class("lna-muted");
+        box_w.append(&empty);
+        if let Some(l) = live.as_deref_mut() {
+            l.placeholder = Some(empty);
+        }
+        return box_w;
+    }
+    for t in items {
+        let (card, lc) = build_thought_card(t, en);
+        if let (Some(l), Some(seq)) = (live.as_deref_mut(), t.get("seq").and_then(Value::as_i64)) {
+            l.cards.insert(seq, lc);
+        }
+        box_w.append(&card);
     }
     box_w
 }
@@ -1595,6 +1937,14 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
     };
     let en = st.is_en();
     clear_box(&st.studio_detail_box);
+    // Re-opening the same generating artifact keeps the user's preview view state.
+    let prev_memory = st
+        .live
+        .borrow()
+        .as_ref()
+        .filter(|l| l.artifact_id == artifact_id)
+        .map(|l| l.preview_memory.clone());
+    *st.live.borrow_mut() = None;
 
     // Header with title, prompt/sources pill, fullscreen & close buttons
     let hdr = GtkBox::new(Orientation::Horizontal, 8);
@@ -1640,13 +1990,11 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
     let status = art.get("status").and_then(Value::as_str).unwrap_or("");
     let kind = art.get("artifact_type").and_then(Value::as_str).unwrap_or("");
 
-    if status == "READY" {
-        if art.get("thoughts").and_then(Value::as_array).map(|a| !a.is_empty()).unwrap_or(false) {
-            let exp = Expander::new(Some(if en { "AI Workflow & Thoughts" } else { "查看 AI 工具调用与思考过程" }));
-            let list = build_thoughts_panel(&art, en);
-            exp.set_child(Some(&ScrolledWindow::builder().child(&list).min_content_height(160).max_content_height(280).build()));
-            st.studio_detail_box.append(&exp);
-        }
+    if status == "READY" && art.get("thoughts").and_then(Value::as_array).map(|a| !a.is_empty()).unwrap_or(false) {
+        let exp = Expander::new(Some(if en { "AI Workflow & Thoughts" } else { "查看 AI 工具调用与思考过程" }));
+        let list = build_thoughts_panel(&art, en, false, None);
+        exp.set_child(Some(&ScrolledWindow::builder().child(&list).min_content_height(160).max_content_height(280).build()));
+        st.studio_detail_box.append(&exp);
     }
 
     if status == "PENDING" || status == "RUNNING" {
@@ -1660,8 +2008,50 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         )));
         hdr_lbl.set_xalign(0.0);
         prog_box.append(&hdr_lbl);
-        let thoughts_list = build_thoughts_panel(&art, en);
-        prog_box.append(&ScrolledWindow::builder().child(&thoughts_list).vexpand(true).min_content_height(260).build());
+        let mut cards = LiveCards::default();
+        let thoughts_list = build_thoughts_panel(&art, en, true, Some(&mut cards));
+        let process_view = ScrolledWindow::builder().child(&thoughts_list).vexpand(true).min_content_height(260).build();
+        // Unvalidated preview of the in-progress artifact: a second tab, only once a preview exists.
+        let tabs = Stack::new();
+        tabs.set_vexpand(true);
+        tabs.add_titled(&process_view, Some("process"), if en { "Process" } else { "过程" });
+        let switcher = gtk4::StackSwitcher::new();
+        switcher.set_stack(Some(&tabs));
+        switcher.set_halign(gtk4::Align::Start);
+        switcher.set_visible(false);
+        let preview_host = GtkBox::new(Orientation::Vertical, 0);
+        preview_host.set_vexpand(true);
+        prog_box.append(&switcher);
+        prog_box.append(&tabs);
+        let cards_seqs: HashSet<i64> = cards.cards.keys().copied().collect();
+        let mut live = LiveView {
+            artifact_id: artifact_id.to_string(),
+            kind: kind.to_string(),
+            en,
+            stage_lbl: hdr_lbl.clone(),
+            panel: thoughts_list.clone(),
+            cards,
+            dirty: cards_seqs,
+            tabs,
+            switcher,
+            preview_host,
+            preview_added: false,
+            pending_preview: None,
+            last_preview: None,
+            preview_memory: prev_memory.unwrap_or_else(new_memory),
+            last_thought_flush: Instant::now(),
+            last_preview_flush: Instant::now() - Duration::from_secs(10),
+        };
+        let preview = call_core(&st.core, "studio.preview.get", json!({ "artifact_id": artifact_id }))
+            .ok()
+            .filter(|v| v.get("payload").map(|p| p.is_object()).unwrap_or(false));
+        if let Some(pv) = preview {
+            live.pending_preview = Some(pv);
+            live.flush_preview();
+        }
+        // Text streamed before this (re-)fetch that the stored bodies do not hold yet.
+        live.flush_thoughts(&st.thought_streams.borrow());
+        *st.live.borrow_mut() = Some(live);
         let refresh_btn = Button::with_label(if en { "Refresh Progress" } else { "刷新实时进度" });
         refresh_btn.add_css_class("lna-pill-btn");
         refresh_btn.set_halign(gtk4::Align::Start);
@@ -1804,7 +2194,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
             || payload.get("kind").and_then(Value::as_str) == Some("knowledge_graph");
         let st_link = st.clone();
         let aid_refine = artifact_id.to_string();
-        let on_action: Rc<dyn Fn(&str, &str)> = Rc::new(move |action, concept| {
+        let on_action: ActionFn = Rc::new(move |action, concept| {
             let nid2 = st_link.active_notebook_id.borrow().clone();
             if nid2.is_empty() { return; }
             if let Some(node_id) = action.strip_prefix("refine:") {
@@ -1878,7 +2268,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
             }
             refresh_all(&st_link);
         });
-        st.studio_detail_box.append(&build_mindmap_widget(payload, en, is_kg, on_action));
+        st.studio_detail_box.append(&build_mindmap_widget(payload, en, is_kg, false, None, on_action));
     } else if kind == "slides" {
         let payload = art.get("payload").unwrap_or(&Value::Null);
         st.studio_detail_box.append(&crate::slides_view::build_slides_widget(payload, en));
@@ -3080,4 +3470,235 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
 
     win.set_child(Some(&tabs));
     win.present();
+}
+
+/// Read-only rendering of an unvalidated in-progress payload (`studio.preview.get` result).
+/// Mind maps reuse the graph view; everything else is a plain list, falling back to truncated JSON.
+fn build_preview_widget(pv: &Value, artifact_type: &str, en: bool, memory: &SharedMemory) -> GtkBox {
+    let wrap = GtkBox::new(Orientation::Vertical, 6);
+    wrap.set_vexpand(true);
+    let note = Label::new(Some(if en { "Preview (unvalidated)" } else { "预览（未校验）" }));
+    note.set_xalign(0.0);
+    note.add_css_class("lna-muted");
+    wrap.append(&note);
+
+    let stage = pv.get("stage").and_then(Value::as_str).unwrap_or("");
+    let payload = pv.get("payload").unwrap_or(&Value::Null);
+
+    if stage == "mindmap_passes" || artifact_type == "mindmap" || artifact_type == "knowledge_graph" {
+        let noop: ActionFn = Rc::new(|_, _| {});
+        let w = build_mindmap_widget(payload, en, artifact_type == "knowledge_graph", true, Some(memory.clone()), noop);
+        w.set_size_request(-1, 320);
+        wrap.append(&w);
+        return wrap;
+    }
+
+    let list = GtkBox::new(Orientation::Vertical, 8);
+    let lines = preview_lines(stage, artifact_type, payload);
+    if lines.is_empty() {
+        let json = serde_json::to_string_pretty(payload).unwrap_or_default();
+        let shown: String = json.chars().take(4000).collect();
+        let l = Label::new(Some(&shown));
+        l.set_xalign(0.0);
+        l.set_wrap(true);
+        l.set_selectable(true);
+        l.add_css_class("lna-muted");
+        list.append(&l);
+    } else {
+        for (bold, text) in lines {
+            let l = Label::new(None);
+            if bold {
+                l.set_markup(&format!("<b>{}</b>", gtk4::glib::markup_escape_text(&text)));
+            } else {
+                l.set_text(&text);
+                l.add_css_class("lna-muted");
+            }
+            l.set_xalign(0.0);
+            l.set_wrap(true);
+            l.set_selectable(true);
+            list.append(&l);
+        }
+    }
+    wrap.append(&ScrolledWindow::builder().child(&list).vexpand(true).min_content_height(260).build());
+    wrap
+}
+
+fn preview_item_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Object(_) => ["text", "label", "title", "heading", "value", "content"]
+            .iter()
+            .find_map(|k| v.get(*k).and_then(Value::as_str).filter(|s| !s.is_empty()))
+            .unwrap_or("")
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Flattens a preview payload into (bold, text) lines. An empty result means "show raw JSON".
+fn preview_lines(stage: &str, artifact_type: &str, p: &Value) -> Vec<(bool, String)> {
+    const MAX_ITEMS: usize = 400;
+    const MAX_BODY: usize = 700;
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let arr = |v: &Value, k: &str| -> Vec<Value> {
+        v.get(k)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().take(MAX_ITEMS).cloned().collect())
+            .unwrap_or_default()
+    };
+    let clip = |t: String, max: usize| -> String {
+        if t.chars().count() <= max {
+            t
+        } else {
+            format!("{}…", t.chars().take(max).collect::<String>())
+        }
+    };
+    let mut out: Vec<(bool, String)> = Vec::new();
+
+    if stage == "lecture_passes" || artifact_type == "lecture" || p.get("outline").is_some() {
+        let outline = p.get("outline").cloned().unwrap_or(Value::Null);
+        let done = p.get("done").cloned().unwrap_or(Value::Null);
+        let t = s(&outline, "title");
+        if !t.is_empty() {
+            out.push((true, t));
+        }
+        for (i, sec) in arr(&outline, "sections").iter().enumerate() {
+            let key = format!("s{}", i + 1);
+            let st = s(sec, "title");
+            match done.get(&key).filter(|c| c.is_object()) {
+                Some(content) => {
+                    out.push((true, format!("✓ {}. {}", i + 1, st)));
+                    for (n, slide) in arr(content, "slides").iter().enumerate() {
+                        out.push((false, format!("   {}. {}", n + 1, s(slide, "title"))));
+                    }
+                }
+                None => out.push((false, format!("{}. {}", i + 1, st))),
+            }
+        }
+        return out;
+    }
+
+    let title = s(p, "title");
+    if !title.is_empty() {
+        out.push((true, title));
+    }
+    let subtitle = s(p, "subtitle");
+    if !subtitle.is_empty() {
+        out.push((false, subtitle));
+    }
+    let kind = if ["quiz", "slides", "report", "flashcards", "infographic", "audio"].contains(&artifact_type) {
+        artifact_type
+    } else if p.get("questions").is_some() {
+        "quiz"
+    } else if p.get("slides").is_some() {
+        "slides"
+    } else if p.get("cards").is_some() {
+        "flashcards"
+    } else if p.get("blocks").is_some() {
+        "infographic"
+    } else if p.get("turns").is_some() {
+        "audio"
+    } else if p.get("sections").is_some() {
+        "report"
+    } else {
+        ""
+    };
+    match kind {
+        "quiz" => {
+            for (n, q) in arr(p, "questions").iter().enumerate() {
+                out.push((true, format!("{}. {}", n + 1, s(q, "prompt"))));
+                for (i, o) in q.get("options").and_then(Value::as_array).into_iter().flatten().enumerate() {
+                    let letter = (b'A' + (i.min(25) as u8)) as char;
+                    out.push((false, format!("   {}. {}", letter, preview_item_text(o))));
+                }
+            }
+        }
+        "slides" => {
+            for (n, sl) in arr(p, "slides").iter().enumerate() {
+                let t = s(sl, "title");
+                out.push((true, format!("{}. {}", n + 1, if t.is_empty() { s(sl, "layout") } else { t })));
+                for b in sl.get("bullets").and_then(Value::as_array).into_iter().flatten() {
+                    let bt = preview_item_text(b);
+                    if !bt.is_empty() {
+                        out.push((false, format!("   • {bt}")));
+                    }
+                }
+            }
+        }
+        "report" => {
+            for sec in arr(p, "sections") {
+                out.push((true, s(&sec, "heading")));
+                let body = s(&sec, "body_md");
+                if !body.is_empty() {
+                    out.push((false, clip(body, MAX_BODY)));
+                }
+            }
+        }
+        "flashcards" => {
+            for (n, c) in arr(p, "cards").iter().enumerate() {
+                out.push((true, format!("{}. {}", n + 1, s(c, "front"))));
+                let back = s(c, "back");
+                if !back.is_empty() {
+                    out.push((false, format!("   {back}")));
+                }
+            }
+        }
+        "infographic" => {
+            for b in arr(p, "blocks") {
+                let head = s(&b, "heading");
+                let metric = s(&b, "metric");
+                out.push((true, if metric.is_empty() { head } else { format!("{head}  ·  {metric}") }));
+                let sum = s(&b, "summary");
+                if !sum.is_empty() {
+                    out.push((false, sum));
+                }
+            }
+        }
+        "audio" => {
+            for t in arr(p, "turns") {
+                let sp = s(&t, "speaker");
+                let tx = s(&t, "text");
+                out.push((false, if sp.is_empty() { tx } else { format!("{sp}: {tx}") }));
+            }
+        }
+        _ => return Vec::new(),
+    }
+    out
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    #[test]
+    fn streamed_text_extends_an_empty_or_shorter_body() {
+        assert_eq!(stream_extension("", "abcd"), Some("abcd"));
+        assert_eq!(stream_extension("ab", "abcd"), Some("abcd"));
+    }
+
+    #[test]
+    fn text_the_card_already_has_is_not_applied_again() {
+        // A re-fetch that already holds the finished body, then late deltas of that same text.
+        let mut log = StreamLog::default();
+        log.push("a1", 3, "ab");
+        log.push("a1", 3, "cd");
+        assert_eq!(stream_extension("abcd", log.get("a1", 3).unwrap()), None);
+        assert_eq!(stream_extension("abcdef", log.get("a1", 3).unwrap()), None);
+        // Repeated flushes of the same state change nothing either.
+        assert_eq!(stream_extension("abcd", "abcd"), None);
+    }
+
+    #[test]
+    fn log_is_per_artifact_and_cleared() {
+        let mut log = StreamLog::default();
+        log.push("a1", 1, "x");
+        assert_eq!(log.get("a1", 1), Some("x"));
+        assert_eq!(log.get("a2", 1), None);
+        log.push("a2", 1, "y");
+        assert_eq!(log.get("a1", 1), None);
+        assert_eq!(log.get("a2", 1), Some("y"));
+        log.clear();
+        assert_eq!(log.get("a2", 1), None);
+    }
 }

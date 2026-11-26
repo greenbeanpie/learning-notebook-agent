@@ -494,38 +494,160 @@ fn build_timing_xml(s: &Value, line_ids: &[Vec<String>], pic_ids: &[(i64, usize)
     )
 }
 
-/// Render a rich structured SVG Infographic from InfographicPayload JSON (image_c93c68 style).
+/// Font stack for SVG text: a CJK-capable face first, since the renderers fall back to
+/// whatever "sans-serif" maps to, which on some systems has no Chinese glyphs.
+const FONT: &str = "'Microsoft YaHei','PingFang SC','Noto Sans CJK SC','Segoe UI',sans-serif";
+
+/// Rough rendered width of `text` in em units (CJK is one em, Latin about half).
+fn text_em(text: &str) -> f32 {
+    text.chars()
+        .map(|c| match c {
+            ' ' => 0.32,
+            c if (c as u32) >= 0x2E80 => 1.0,
+            c if c.is_ascii_uppercase() || c.is_ascii_digit() => 0.62,
+            _ => 0.55,
+        })
+        .sum()
+}
+
+/// Greedy wrap of `text` into lines no wider than `max_w` pixels at `font_px`.
+fn wrap_lines(text: &str, font_px: f32, max_w: f32) -> Vec<String> {
+    let budget = (max_w / font_px).max(1.0);
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    let mut w = 0.0f32;
+    for c in text.chars() {
+        let cw = text_em(c.encode_utf8(&mut [0; 4]));
+        if w + cw > budget && !cur.is_empty() {
+            // inside a Latin run, prefer breaking at the last space
+            let split = if c == ' ' {
+                None
+            } else {
+                cur.rfind(' ').filter(|i| *i > cur.len() / 2)
+            };
+            if let Some(i) = split {
+                let rest = cur[i + 1..].to_string();
+                cur.truncate(i);
+                lines.push(std::mem::take(&mut cur));
+                w = text_em(&rest);
+                cur = rest;
+            } else {
+                lines.push(std::mem::take(&mut cur));
+                w = 0.0;
+            }
+            if c == ' ' {
+                continue;
+            }
+        }
+        cur.push(c);
+        w += cw;
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+/// Render the infographic as a self-contained SVG: header, then cards laid out in
+/// columns by orientation, each sized to its wrapped text.
 pub fn render_infographic_svg(payload: &Value, out_path: &Path) -> LnaResult<()> {
     if let Some(p) = out_path.parent() {
         std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;
     }
-    let title = xml_escape(
-        payload
-            .get("title")
-            .and_then(|x| x.as_str())
-            .unwrap_or("Infographic"),
-    );
-    let subtitle = xml_escape(
-        payload
-            .get("subtitle")
-            .and_then(|x| x.as_str())
-            .unwrap_or(""),
-    );
+    // the SVG cannot typeset TeX, so any `$...$` the model wrote becomes Unicode math
+    let get = |v: &Value, k: &str| -> String {
+        crate::texfmt::tex_to_unicode(v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim())
+            .replace('$', "")
+    };
+    let title_raw = {
+        let t = get(payload, "title");
+        if t.is_empty() {
+            "Infographic".to_string()
+        } else {
+            t
+        }
+    };
+    let subtitle_raw = get(payload, "subtitle");
     let blocks = payload
         .get("blocks")
         .and_then(|b| b.as_array())
         .cloned()
         .unwrap_or_default();
-    let cols = 2usize;
-    let rows = blocks.len().max(1).div_ceil(cols);
-    let table_h = 64 + blocks.len().min(6) * 34;
-    let height = 190 + rows * 168 + table_h + 48;
+    // portrait: one column; landscape/square: two columns
+    let cols = if get(payload, "orientation") == "portrait" {
+        1usize
+    } else {
+        2
+    };
+    let card_w = if cols == 1 { 720.0f32 } else { 552.0 };
+    let gap = 24.0f32;
+    let margin = 36.0f32;
+    let width = margin * 2.0 + cols as f32 * card_w + (cols as f32 - 1.0) * gap;
+    let inner = width - margin * 2.0;
     let accents = [
         "#1a73e8", "#0f9d58", "#673ab7", "#e37400", "#00838f", "#c5221f",
     ];
 
+    let title_lines = wrap_lines(&title_raw, 30.0, inner - 56.0);
+    let sub_lines = wrap_lines(&subtitle_raw, 16.0, inner - 56.0);
+    let header_h = 28.0 + title_lines.len() as f32 * 38.0 + sub_lines.len() as f32 * 24.0 + 20.0;
+
+    struct Card {
+        head: String,
+        metric: Vec<String>,
+        metric_px: f32,
+        body: Vec<String>,
+        h: f32,
+    }
+    let text_w = card_w - 40.0;
+    let cards: Vec<Card> = blocks
+        .iter()
+        .map(|b| {
+            let head = wrap_lines(&get(b, "heading"), 16.0, text_w)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let metric_raw = get(b, "metric");
+            // shrink the metric until it fits on one line, else wrap at the smallest size
+            let mut px = 26.0f32;
+            while px > 15.0 && text_em(&metric_raw) * px > text_w {
+                px -= 1.0;
+            }
+            let metric = if metric_raw.is_empty() {
+                vec![]
+            } else if text_em(&metric_raw) * px > text_w {
+                wrap_lines(&metric_raw, px, text_w)
+            } else {
+                vec![metric_raw]
+            };
+            let body = wrap_lines(&get(b, "summary"), 14.0, text_w);
+            let h = 40.0
+                + 14.0
+                + metric.len() as f32 * (px + 8.0)
+                + 8.0
+                + body.len() as f32 * 21.0
+                + 18.0;
+            Card {
+                head,
+                metric,
+                metric_px: px,
+                body,
+                h,
+            }
+        })
+        .collect();
+
+    let rows: Vec<&[Card]> = cards.chunks(cols).collect();
+    let row_h: Vec<f32> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| c.h).fold(0.0, f32::max))
+        .collect();
+    let body_h: f32 = row_h.iter().sum::<f32>() + gap * row_h.len() as f32;
+    let height = (32.0 + header_h + gap + body_h + 24.0).ceil() as i32;
+    let width_i = width as i32;
+
     let mut svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="{height}" viewBox="0 0 1200 {height}">
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width_i}" height="{height}" viewBox="0 0 {width_i} {height}">
   <defs>
     <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#f8fbff"/>
@@ -536,58 +658,67 @@ pub fn render_infographic_svg(payload: &Value, out_path: &Path) -> LnaResult<()>
       <stop offset="100%" stop-color="#2b59b5"/>
     </linearGradient>
   </defs>
-  <rect width="1200" height="{height}" fill="url(#bgGrad)" rx="18"/>
-  <rect x="36" y="32" width="1128" height="118" rx="14" fill="url(#hdrGrad)"/>
-  <text x="64" y="84" fill="#ffffff" font-size="30" font-weight="700" font-family="sans-serif">{title}</text>
-  <text x="64" y="120" fill="#dbe7ff" font-size="16" font-family="sans-serif">{subtitle}</text>
+  <rect width="{width_i}" height="{height}" fill="url(#bgGrad)" rx="18"/>
+  <rect x="{margin}" y="32" width="{inner}" height="{header_h}" rx="14" fill="url(#hdrGrad)"/>
 "##
     );
-
-    for (i, blk) in blocks.iter().enumerate() {
-        let col = i % cols;
-        let row = i / cols;
-        let x = 36 + col * 576;
-        let y = 174 + row * 168;
-        let accent = accents[i % accents.len()];
-        let h = xml_escape(blk.get("heading").and_then(|x| x.as_str()).unwrap_or(""));
-        let m = xml_escape(blk.get("metric").and_then(|x| x.as_str()).unwrap_or(""));
-        let s = xml_escape(blk.get("summary").and_then(|x| x.as_str()).unwrap_or(""));
+    let mut ty = 32.0 + 28.0 + 26.0;
+    for l in &title_lines {
         svg.push_str(&format!(
-            r##"  <rect x="{x}" y="{y}" width="552" height="148" rx="14" fill="#ffffff" stroke="#d8e1f0" stroke-width="1.5"/>
-  <rect x="{x}" y="{y}" width="552" height="40" rx="14" fill="{accent}"/>
-  <text x="{}" y="{}" fill="#ffffff" font-size="16" font-weight="700" font-family="sans-serif">{h}</text>
-  <text x="{}" y="{}" fill="{accent}" font-size="26" font-weight="700" font-family="sans-serif">{m}</text>
-  <text x="{}" y="{}" fill="#3c4043" font-size="14" font-family="sans-serif">{s}</text>
-"##,
-            x + 20, y + 26,
-            x + 20, y + 84,
-            x + 20, y + 120
+            "  <text x=\"{}\" y=\"{ty}\" fill=\"#ffffff\" font-size=\"30\" font-weight=\"700\" font-family=\"{FONT}\">{}</text>\n",
+            margin + 28.0,
+            xml_escape(l)
         ));
+        ty += 38.0;
+    }
+    ty -= 8.0;
+    for l in &sub_lines {
+        svg.push_str(&format!(
+            "  <text x=\"{}\" y=\"{ty}\" fill=\"#dbe7ff\" font-size=\"16\" font-family=\"{FONT}\">{}</text>\n",
+            margin + 28.0,
+            xml_escape(l)
+        ));
+        ty += 24.0;
     }
 
-    let table_y = 186 + rows * 168;
-    svg.push_str(&format!(
-        r##"  <rect x="36" y="{table_y}" width="1128" height="38" rx="8" fill="#173a7a"/>
-  <text x="56" y="{}" fill="#ffffff" font-size="14" font-weight="700" font-family="sans-serif">核心维度</text>
-  <text x="340" y="{}" fill="#ffffff" font-size="14" font-weight="700" font-family="sans-serif">关键指标</text>
-  <text x="580" y="{}" fill="#ffffff" font-size="14" font-weight="700" font-family="sans-serif">要点说明</text>
+    let mut y = 32.0 + header_h + gap;
+    for (ri, r) in rows.iter().enumerate() {
+        for (ci, card) in r.iter().enumerate() {
+            let x = margin + ci as f32 * (card_w + gap);
+            let accent = accents[(ri * cols + ci) % accents.len()];
+            let h = row_h[ri];
+            svg.push_str(&format!(
+                r##"  <rect x="{x}" y="{y}" width="{card_w}" height="{h}" rx="14" fill="#ffffff" stroke="#d8e1f0" stroke-width="1.5"/>
+  <rect x="{x}" y="{y}" width="{card_w}" height="40" rx="14" fill="{accent}"/>
+  <text x="{}" y="{}" fill="#ffffff" font-size="16" font-weight="700" font-family="{FONT}">{}</text>
 "##,
-        table_y + 24, table_y + 24, table_y + 24
-    ));
-    for (i, blk) in blocks.iter().take(6).enumerate() {
-        let ry = table_y + 40 + i * 34;
-        let row_bg = if i % 2 == 0 { "#ffffff" } else { "#f2f6fc" };
-        let h = xml_escape(blk.get("heading").and_then(|x| x.as_str()).unwrap_or(""));
-        let m = xml_escape(blk.get("metric").and_then(|x| x.as_str()).unwrap_or(""));
-        let s = xml_escape(blk.get("summary").and_then(|x| x.as_str()).unwrap_or(""));
-        svg.push_str(&format!(
-            r##"  <rect x="36" y="{ry}" width="1128" height="34" fill="{row_bg}" stroke="#e2e8f4"/>
-  <text x="56" y="{}" fill="#1f2937" font-size="13" font-weight="600" font-family="sans-serif">{h}</text>
-  <text x="340" y="{}" fill="#173a7a" font-size="13" font-weight="600" font-family="sans-serif">{m}</text>
-  <text x="580" y="{}" fill="#4b5563" font-size="13" font-family="sans-serif">{s}</text>
-"##,
-            ry + 22, ry + 22, ry + 22
-        ));
+                x + 20.0,
+                y + 26.0,
+                xml_escape(&card.head)
+            ));
+            let mut cy = y + 40.0 + 14.0;
+            for l in &card.metric {
+                cy += card.metric_px;
+                svg.push_str(&format!(
+                    "  <text x=\"{}\" y=\"{cy}\" fill=\"{accent}\" font-size=\"{}\" font-weight=\"700\" font-family=\"{FONT}\">{}</text>\n",
+                    x + 20.0,
+                    card.metric_px,
+                    xml_escape(l)
+                ));
+                cy += 8.0;
+            }
+            cy += 8.0;
+            for l in &card.body {
+                cy += 21.0;
+                svg.push_str(&format!(
+                    "  <text x=\"{}\" y=\"{}\" fill=\"#3c4043\" font-size=\"14\" font-family=\"{FONT}\">{}</text>\n",
+                    x + 20.0,
+                    cy - 5.0,
+                    xml_escape(l)
+                ));
+            }
+        }
+        y += row_h[ri] + gap;
     }
 
     svg.push_str("</svg>");
@@ -737,6 +868,17 @@ pub fn render_report_html(
     std::fs::write(out_path, html).map_err(|e| LnaError::internal(e.to_string()))
 }
 
+/// The infographic as a PNG with its real card layout (the SVG rasterized with system fonts).
+/// Windows' own SVG image source draws no `<text>`, so clients show this picture instead.
+pub fn render_infographic_png(payload: &Value, out_path: &Path) -> LnaResult<()> {
+    let tmp = out_path.with_extension("svg.tmp");
+    render_infographic_svg(payload, &tmp)?;
+    let svg = std::fs::read_to_string(&tmp).map_err(|e| LnaError::internal(e.to_string()));
+    let _ = std::fs::remove_file(&tmp);
+    let png = crate::figure::svg_to_png(&svg?, 1.5).map_err(LnaError::internal)?;
+    std::fs::write(out_path, png).map_err(|e| LnaError::internal(e.to_string()))
+}
+
 /// Render a PNG image for MindMap or Infographic (E4, E7).
 /// Uses System.Drawing on Windows for crisp text rendering, with a pure-Rust RGBA PNG fallback.
 pub fn render_artifact_png(
@@ -747,6 +889,10 @@ pub fn render_artifact_png(
 ) -> LnaResult<()> {
     if let Some(p) = out_path.parent() {
         std::fs::create_dir_all(p).map_err(|e| LnaError::internal(e.to_string()))?;
+    }
+
+    if artifact_type == "infographic" {
+        return render_infographic_png(payload, out_path);
     }
 
     #[cfg(target_os = "windows")]
@@ -1145,6 +1291,37 @@ mod tests {
         assert!(svg.contains("A &amp; B &lt;test&gt;"));
         assert!(svg.contains("&quot;quoted&quot;"));
         assert!(svg.contains("x &amp; y"));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn infographic_svg_wraps_long_text_inside_cards() {
+        let tmp = std::env::temp_dir().join("lna_wrap_test.svg");
+        let long = "向量空间由全体列向量组成，并对加法与数乘封闭；".repeat(6);
+        let payload = json!({
+            "title": "t", "subtitle": "s", "orientation": "landscape",
+            "blocks": [
+                { "heading": "h1", "metric": "行空间 r · 列空间 r · 零空间 n−r · 左零空间 m−r", "summary": long },
+                { "heading": "h2", "metric": "dim=r", "summary": "short" }
+            ]
+        });
+        render_infographic_svg(&payload, &tmp).unwrap();
+        let svg = std::fs::read_to_string(&tmp).unwrap();
+        let body: Vec<&str> = svg
+            .lines()
+            .filter(|l| l.contains("font-size=\"14\""))
+            .collect();
+        assert!(body.len() > 3, "summary should wrap");
+        for l in body {
+            let text = l
+                .split('>')
+                .nth(1)
+                .unwrap_or("")
+                .split('<')
+                .next()
+                .unwrap_or("");
+            assert!(text_em(text) * 14.0 <= 513.0, "line too wide: {text}");
+        }
         let _ = std::fs::remove_file(&tmp);
     }
 

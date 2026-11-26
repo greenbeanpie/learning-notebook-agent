@@ -650,8 +650,132 @@ public static class Md
             return container;
         }
 
-        _ = RenderMathIntoAsync(container, fallback, rawText, latex, displayMode, math, mathHost);
+        // Approximate placeholder size so layout does not jump badly when the image arrives.
+        if (displayMode)
+        {
+            container.MinHeight = 64;
+        }
+        else
+        {
+            container.MinHeight = Math.Round(fontSize * 1.4);
+            container.MinWidth = Math.Min(260, 10 + latex.Length * 6.0);
+        }
+        MathVisibilityGate.Defer(
+            container, math, mathHost, latex, displayMode,
+            () => _ = RenderMathIntoAsync(container, fallback, rawText, latex, displayMode, math, mathHost));
         return container;
+    }
+
+    /// <summary>
+    /// Defers formula rendering until the placeholder is near the visible viewport of its vertical ScrollViewer.
+    /// Formulas already cached are applied at once (no WebView2 needed).
+    /// </summary>
+    private static class MathVisibilityGate
+    {
+        private sealed class Entry
+        {
+            public required Border Container;
+            public required Action Start;
+            public required Func<bool> Dead;
+        }
+
+        private sealed class State
+        {
+            public readonly List<Entry> Pending = new();
+            public DispatcherTimer? Timer;
+        }
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ScrollViewer, State> States = new();
+
+        public static void Defer(
+            Border container, WebContentHost math, Panel mathHost, string latex, bool displayMode, Action start)
+        {
+            var started = false;
+            void Go()
+            {
+                if (started) return;
+                started = true;
+                start();
+            }
+
+            var unloaded = false;
+            container.Unloaded += (_, _) => unloaded = true;
+            container.Loaded += (_, _) =>
+            {
+                unloaded = false;
+                if (started) return;
+                var scale = container.XamlRoot?.RasterizationScale ?? 1.0;
+                if (math.IsCached(latex, displayMode, scale)) { Go(); return; }
+                math.NoteUncached();
+                var sv = FindVerticalScrollViewer(container);
+                if (sv == null) { Go(); return; }
+                var state = States.GetValue(sv, _ => new State());
+                if (state.Pending.Any(e => ReferenceEquals(e.Container, container))) return;
+                state.Pending.Add(new Entry { Container = container, Start = Go, Dead = () => unloaded });
+                if (Check(sv, state)) return;
+                EnsureTimer(sv, state);
+            };
+        }
+
+        private static ScrollViewer? FindVerticalScrollViewer(DependencyObject start)
+        {
+            var cur = VisualTreeHelper.GetParent(start);
+            while (cur != null)
+            {
+                if (cur is ScrollViewer sv && sv.VerticalScrollBarVisibility != ScrollBarVisibility.Disabled)
+                    return sv;
+                cur = VisualTreeHelper.GetParent(cur);
+            }
+            return null;
+        }
+
+        private static void EnsureTimer(ScrollViewer sv, State state)
+        {
+            if (state.Timer != null)
+            {
+                if (!state.Timer.IsEnabled) state.Timer.Start();
+                return;
+            }
+            state.Timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            state.Timer.Tick += (_, _) =>
+            {
+                if (Check(sv, state)) state.Timer!.Stop();
+            };
+            state.Timer.Start();
+        }
+
+        /// <summary>Starts visible entries; returns true when nothing is left pending.</summary>
+        private static bool Check(ScrollViewer sv, State state)
+        {
+            if (state.Pending.Count == 0) return true;
+            var vh = sv.ViewportHeight;
+            if (vh <= 0) return false;
+            var margin = vh; // render one extra screen above and below
+            for (var i = state.Pending.Count - 1; i >= 0; i--)
+            {
+                var e = state.Pending[i];
+                // Removed from the tree for good: forget it. (IsLoaded is also false while the Loaded
+                // handlers of a burst of siblings are still running, so that alone proves nothing.)
+                if (e.Dead()) { state.Pending.RemoveAt(i); continue; }
+                if (!e.Container.IsLoaded) continue;
+                try
+                {
+                    var p = e.Container.TransformToVisual(sv).TransformPoint(new Windows.Foundation.Point(0, 0));
+                    var h = Math.Max(e.Container.ActualHeight, 1);
+                    if (p.Y + h >= -margin && p.Y <= vh + margin)
+                    {
+                        state.Pending.RemoveAt(i);
+                        e.Start();
+                    }
+                }
+                catch
+                {
+                    state.Pending.RemoveAt(i);
+                    e.Start();
+                }
+            }
+            return state.Pending.Count == 0;
+        }
     }
 
     private static async Task RenderMathIntoAsync(
@@ -726,6 +850,8 @@ public static class Md
         string latex,
         bool displayMode)
     {
+        container.MinWidth = 0;
+        container.MinHeight = 0;
         var img = new Image
         {
             Source = bmp,
@@ -771,6 +897,8 @@ public static class Md
 
     private static void ApplyErrorStyle(Border container, TextBlock fallback, string rawText, string reason)
     {
+        container.MinWidth = 0;
+        container.MinHeight = 0;
         container.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(160, 240, 120, 120));
         container.BorderThickness = new Thickness(1);
         container.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(40, 180, 60, 60));
