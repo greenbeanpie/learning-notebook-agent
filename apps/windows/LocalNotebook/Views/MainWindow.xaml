@@ -30,11 +30,20 @@
                          Foreground="{StaticResource TextPrimaryBrush}" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" Padding="8,4"
                          VerticalAlignment="Center" VerticalContentAlignment="Center" AcceptsReturn="False"
                          GotFocus="OnTitleBoxGotFocus" LostFocus="OnTitleBoxLostFocus" KeyDown="OnTitleBoxKeyDown" PointerEntered="OnTitleBoxPointerEntered" PointerExited="OnTitleBoxPointerExited" />
-                <ComboBox x:Name="NotebookPicker" MinWidth="190" MinHeight="38" Padding="12,8" VerticalAlignment="Center"
-                          SelectionChanged="OnNotebookPicked" />
+                <DropDownButton x:Name="NotebookPicker" Style="{StaticResource PillDropDownButtonStyle}" MinWidth="190" VerticalAlignment="Center" HorizontalContentAlignment="Left">
+                    <TextBlock x:Name="NotebookPickerText" TextTrimming="CharacterEllipsis" MaxWidth="320" />
+                    <DropDownButton.Flyout>
+                        <Flyout x:Name="NotebookFlyout" Placement="BottomEdgeAlignedLeft">
+                            <StackPanel Width="340" Spacing="8">
+                                <ListView x:Name="NotebookListView" SelectionMode="Single" IsItemClickEnabled="True" MaxHeight="360"
+                                          ItemContainerStyle="{StaticResource StretchListViewItemStyle}" ItemClick="OnNotebookItemClick" />
+                                <Button x:Name="NewNotebookBtn" Style="{StaticResource PillButtonStyle}" HorizontalAlignment="Stretch" Click="OnNewNotebookClick" />
+                            </StackPanel>
+                        </Flyout>
+                    </DropDownButton.Flyout>
+                </DropDownButton>
             </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right" VerticalAlignment="Center">
-                <Button x:Name="NewNotebookBtn" Style="{StaticResource PillButtonStyle}" Click="OnNewNotebookClick" />
                 <Button x:Name="SettingsBtn" Style="{StaticResource PillButtonStyle}" Click="OnOpenSettingsClick">
                     <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                         <Viewbox Width="16" Height="16" VerticalAlignment="Center">

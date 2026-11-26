@@ -175,6 +175,12 @@ struct MainView: View {
                         }
                     }
                 }
+                Divider()
+                Button {
+                    state.showCreateNotebookSheet = true
+                } label: {
+                    Label(state.t("nb.new"), systemImage: "plus")
+                }
             } label: {
                 HStack(spacing: 5) {
                     Text(activeNotebookTitle)
@@ -196,10 +202,6 @@ struct MainView: View {
             .accessibilityLabel(state.isEnglish ? "Switch notebook" : "切换笔记本")
 
             Spacer()
-
-            PillButton(title: state.t("nb.new"), palette: palette) {
-                state.showCreateNotebookSheet = true
-            }
 
             PillButton(title: state.t("settings.title"), systemImage: "gearshape", palette: palette) {
                 state.showSettingsSheet = true

@@ -15,7 +15,6 @@ public sealed partial class MainWindow : Window
 
     private string? _activeNotebookId;
     private string _activeNotebookTitle = "";
-    private bool _loadingPicker;
     private bool _refreshing;
     private bool _refreshAgain;
     private readonly HashSet<string> _autoTranslatedSummaries = new();
@@ -25,6 +24,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        try { AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico")); } catch { }
         ApplyLocalization();
         InitChatImages();
         App.Core.EventReceived += OnCoreEvent;
@@ -251,7 +251,7 @@ public sealed partial class MainWindow : Window
     {
         _chatImages?.ApplyLocalization();
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(NotebookPicker, L10n.T("nb.switch"));
-        NotebookPicker.PlaceholderText = L10n.T("nb.switch");
+        if (_activeNotebookId == null) NotebookPickerText.Text = L10n.T("nb.switch");
         NewNotebookBtn.Content = L10n.T("nb.new");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(SettingsBtn, L10n.T("settings.title"));
         SettingsBtnText.Text = L10n.T("settings.title");
@@ -357,10 +357,9 @@ public sealed partial class MainWindow : Window
     {
         var list = await CoreAsync("notebook.list", Args(), L10n.T("nb.op_load"));
         if (list is not { } res) return;
-        _loadingPicker = true;
-        try
         {
-            NotebookPicker.Items.Clear();
+            NotebookListView.Items.Clear();
+            NotebookPickerText.Text = _activeNotebookTitle.Length > 0 ? _activeNotebookTitle : L10n.T("nb.switch");
             foreach (var nb in Arr(res, "notebooks"))
             {
                 var id = Str(nb, "id");
@@ -379,21 +378,17 @@ public sealed partial class MainWindow : Window
                     },
                 });
                 row.Children.Add(new TextBlock { Text = Str(nb, "title"), VerticalAlignment = VerticalAlignment.Center });
-                var item = new ComboBoxItem { Content = row, Tag = id };
-                NotebookPicker.Items.Add(item);
-                if (id == _activeNotebookId) NotebookPicker.SelectedItem = item;
+                var item = new ListViewItem { Content = row, Tag = id };
+                NotebookListView.Items.Add(item);
+                if (id == _activeNotebookId) NotebookListView.SelectedItem = item;
             }
-        }
-        finally
-        {
-            _loadingPicker = false;
         }
     }
 
-    private async void OnNotebookPicked(object sender, SelectionChangedEventArgs e)
+    private async void OnNotebookItemClick(object sender, ItemClickEventArgs e)
     {
-        if (_loadingPicker || NotebookPicker.SelectedItem is not ComboBoxItem item || item.Tag is not string id) return;
-        if (id == _activeNotebookId) return;
+        NotebookFlyout.Hide();
+        if (e.ClickedItem is not ListViewItem { Tag: string id } || id == _activeNotebookId) return;
         await SwitchNotebookAsync(id);
     }
 
@@ -411,7 +406,11 @@ public sealed partial class MainWindow : Window
         await RefreshNotebookDataAsync();
     }
 
-    private async void OnNewNotebookClick(object sender, RoutedEventArgs e) => await ShowCreateNotebookDialogAsync();
+    private async void OnNewNotebookClick(object sender, RoutedEventArgs e)
+    {
+        NotebookFlyout.Hide();
+        await ShowCreateNotebookDialogAsync();
+    }
 
     private void OnRenameNotebookClick(object sender, RoutedEventArgs e)
     {
@@ -506,8 +505,8 @@ public sealed partial class MainWindow : Window
         CloseSourcePreview();
         CloseArtifactInline();
         SetTitleDisplay();
-        _loadingPicker = true;
-        try { NotebookPicker.Items.Clear(); } finally { _loadingPicker = false; }
+        NotebookListView.Items.Clear();
+        NotebookPickerText.Text = L10n.T("nb.switch");
         RenderSources(null, null);
         ChatList.Items.Clear();
         SummaryText.Text = "";

@@ -186,14 +186,19 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     let nb_switch_popover = Popover::new();
     nb_switch_popover.set_position(PositionType::Bottom);
     let nb_switch_popover_box = GtkBox::new(Orientation::Vertical, 4);
-    nb_switch_popover.set_child(Some(&nb_switch_popover_box));
+    // "New notebook" sits at the bottom of the notebook list as its own button.
+    let new_nb_btn = Button::with_label(tr(en, "nb.new"));
+    new_nb_btn.add_css_class("lna-pill-btn");
+    let nb_switch_outer = GtkBox::new(Orientation::Vertical, 6);
+    nb_switch_outer.append(&nb_switch_popover_box);
+    nb_switch_outer.append(&gtk4::Separator::new(Orientation::Horizontal));
+    nb_switch_outer.append(&new_nb_btn);
+    nb_switch_popover.set_child(Some(&nb_switch_outer));
     nb_switch_btn.set_popover(Some(&nb_switch_popover));
 
     let spacer = GtkBox::new(Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
 
-    let new_nb_btn = Button::with_label(tr(en, "nb.new"));
-    new_nb_btn.add_css_class("lna-pill-btn");
     let settings_btn = Button::with_label(tr(en, "settings.title"));
     settings_btn.add_css_class("lna-pill-btn");
 
@@ -230,7 +235,6 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     header.append(&title_lbl);
     header.append(&nb_switch_btn);
     header.append(&spacer);
-    header.append(&new_nb_btn);
     header.append(&settings_btn);
     header.append(&more_btn);
     root.append(&header);
@@ -666,7 +670,12 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     // Wire New Notebook (opens the create dialog)
     {
         let st = state.clone();
-        new_nb_btn.connect_clicked(move |_| open_create_notebook_dialog(&st));
+        new_nb_btn.connect_clicked(move |_| {
+            if let Some(pop) = st.nb_switch_btn.popover() {
+                pop.popdown();
+            }
+            open_create_notebook_dialog(&st);
+        });
     }
 
     // Wire inline title rename
