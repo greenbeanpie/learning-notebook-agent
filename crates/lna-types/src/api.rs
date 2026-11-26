@@ -73,6 +73,10 @@ pub struct ProfileUpsertParams {
     pub supports_video: Option<bool>,
     #[serde(default)]
     pub activate: bool,
+    /// Most requests of this profile in flight at once (1..=64). `None` keeps the stored value
+    /// (4 for a new profile).
+    #[serde(default)]
+    pub max_parallel: Option<u32>,
 }
 
 fn default_true() -> bool {

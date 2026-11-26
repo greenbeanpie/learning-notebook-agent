@@ -22,11 +22,24 @@ pub struct WireParams {
 
 type CapabilitySink = std::sync::Arc<dyn Fn(&str, &WireParams) + Send + Sync>;
 
+/// Default and bounds of the per-profile limit on requests in flight (the user sets it per profile).
+pub const DEFAULT_PARALLEL_REQUESTS: u32 = 4;
+pub const MAX_PARALLEL_REQUESTS: u32 = 64;
+
+/// How many requests of one profile may be in flight at once. Every request of the program goes
+/// through `LlmClient::stream`, so this one gate bounds all AI work of a profile (chat, indexing,
+/// Studio executors, ...) without any caller having to hold a permit across nested calls.
+struct Gate {
+    limit: usize,
+    sem: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
     /// Called when a request had to be rewritten for the endpoint's wire format, so the profile remembers it (D5).
     sink: std::sync::Arc<std::sync::Mutex<Option<CapabilitySink>>>,
+    gates: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Gate>>>,
 }
 
 impl Default for LlmClient {
@@ -68,6 +81,68 @@ impl LlmClient {
         Self {
             http,
             sink: Default::default(),
+            gates: Default::default(),
+        }
+    }
+
+    /// Sets how many requests the profile may have in flight at once (clamped to 1..=64). A
+    /// changed limit takes effect for requests that start afterwards; running ones finish normally.
+    pub fn set_parallel_limit(&self, profile_id: &str, limit: u32) {
+        let limit = limit.clamp(1, MAX_PARALLEL_REQUESTS) as usize;
+        if let Ok(mut g) = self.gates.lock() {
+            match g.get(profile_id) {
+                Some(gate) if gate.limit == limit => {}
+                _ => {
+                    g.insert(
+                        profile_id.to_string(),
+                        Gate {
+                            limit,
+                            sem: std::sync::Arc::new(tokio::sync::Semaphore::new(limit)),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// The limit currently applied to a profile.
+    pub fn parallel_limit(&self, profile_id: &str) -> usize {
+        self.gates
+            .lock()
+            .ok()
+            .and_then(|g| g.get(profile_id).map(|x| x.limit))
+            .unwrap_or(DEFAULT_PARALLEL_REQUESTS as usize)
+    }
+
+    /// Waits for a free request slot of the profile (None for profiles without an id, e.g. probes).
+    async fn acquire_slot(
+        &self,
+        profile_id: &str,
+        cancel: &CancellationToken,
+    ) -> LnaResult<Option<tokio::sync::OwnedSemaphorePermit>> {
+        if profile_id.is_empty() {
+            return Ok(None);
+        }
+        let sem = {
+            let mut g = self
+                .gates
+                .lock()
+                .map_err(|_| LnaError::internal("request gate poisoned"))?;
+            g.entry(profile_id.to_string())
+                .or_insert_with(|| Gate {
+                    limit: DEFAULT_PARALLEL_REQUESTS as usize,
+                    sem: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                        DEFAULT_PARALLEL_REQUESTS as usize,
+                    )),
+                })
+                .sem
+                .clone()
+        };
+        tokio::select! {
+            _ = cancel.cancelled() => Err(LnaError::new(ErrorCode::Cancelled, "Cancelled while waiting for a request slot")),
+            p = sem.acquire_owned() => p
+                .map(Some)
+                .map_err(|_| LnaError::internal("request gate closed")),
         }
     }
 
@@ -124,6 +199,7 @@ impl LlmClient {
     where
         F: FnMut(LlmEvent),
     {
+        let _slot = self.acquire_slot(&profile.id, &cancel).await?;
         let adapter = adapter_for(profile.protocol);
         let mut attempt = 0u32;
         let mut profile = profile.clone();

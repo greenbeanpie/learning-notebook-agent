@@ -11,6 +11,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.localnotebook.agent.core.L10n
@@ -41,6 +43,7 @@ fun UnifiedSettingsSheet(
         supportsVision: Boolean,
         supportsAudio: Boolean,
         supportsVideo: Boolean,
+        maxParallel: Int,
     ) -> Unit,
     onDeleteProfile: (String) -> Unit = {},
     onTestProfile: (String) -> Unit = {},
@@ -67,6 +70,7 @@ fun UnifiedSettingsSheet(
     var supportsVision by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsVision ?: false) }
     var supportsAudio by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsAudio ?: false) }
     var supportsVideo by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsVideo ?: false) }
+    var maxParallelText by remember(selectedProfileId) { mutableStateOf((activeOrFirst?.maxParallel ?: 4).toString()) }
     var extraHeaders by remember(selectedProfileId) {
         mutableStateOf<List<Pair<String, String>>>(activeOrFirst?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList())
     }
@@ -84,6 +88,7 @@ fun UnifiedSettingsSheet(
         supportsVision = p?.supportsVision ?: false
         supportsAudio = p?.supportsAudio ?: false
         supportsVideo = p?.supportsVideo ?: false
+        maxParallelText = (p?.maxParallel ?: 4).toString()
         extraHeaders = p?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList<Pair<String, String>>()
     }
 
@@ -255,6 +260,15 @@ fun UnifiedSettingsSheet(
                             value = modelId,
                             onValueChange = { modelId = it },
                             label = { Text(L10n.t("model.model_id", en)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = maxParallelText,
+                            onValueChange = { v -> maxParallelText = v.filter { it.isDigit() }.take(2) },
+                            label = { Text(L10n.t("model.max_parallel", en)) },
+                            supportingText = { Text(L10n.t("model.max_parallel_tip", en)) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -434,6 +448,7 @@ fun UnifiedSettingsSheet(
                                     supportsVision,
                                     supportsAudio,
                                     supportsVideo,
+                                    (maxParallelText.toIntOrNull() ?: 4).coerceIn(1, 64),
                                 )
                             },
                             enabled = baseUrl.isNotBlank() && modelId.isNotBlank(),

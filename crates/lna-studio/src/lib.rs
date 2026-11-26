@@ -7,6 +7,7 @@ pub mod texfmt;
 pub mod tts;
 pub mod validate;
 
+use futures_util::StreamExt as _;
 use lna_ingest::{attachments, context_files};
 use lna_jobs::JobQueue;
 use lna_llm::*;
@@ -20,7 +21,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{broadcast, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const SCHEMA_QUIZ: &str = include_str!("../../../schemas/quiz.schema.json");
@@ -68,14 +69,53 @@ pub struct StudioService {
     tts: Arc<dyn TtsProvider>,
     events: broadcast::Sender<ApiEvent>,
     seq: Arc<std::sync::atomic::AtomicU64>,
-    text_generation_slots: Arc<Semaphore>,
-    profile_generation_slots: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     audio_render_slot: Arc<Semaphore>,
     /// Latest unvalidated preview per artifact while it is generating: `(stage, payload)`.
     previews: Arc<std::sync::Mutex<HashMap<String, (String, Value)>>>,
 }
 
 /// Whether a UI language setting means English. "auto"/empty/unknown follows the operating system.
+/// Orchestrator side of the executor pattern: waits for the next finished executor, but stays
+/// awake for cancellation (the orchestrator is never passively blocked on its executors).
+/// `Ok(None)` means every executor has finished.
+pub(crate) async fn next_or_cancel<S>(
+    running: &mut S,
+    cancel: &CancellationToken,
+) -> LnaResult<Option<S::Item>>
+where
+    S: futures_util::Stream + Unpin,
+{
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(LnaError::new(ErrorCode::Cancelled, "Cancelled")),
+        item = futures_util::StreamExt::next(running) => Ok(item),
+    }
+}
+
+/// Copy of `req` whose user message is followed by `note` (the orchestrator's instruction to one
+/// executor: which part of the artifact it writes).
+pub(crate) fn with_part_note(req: &LlmRequest, note: &str) -> LlmRequest {
+    let mut r = req.clone();
+    if let Some(m) = r.messages.last_mut() {
+        m.parts.push(Part::Text(format!("\n\n{note}")));
+    }
+    r
+}
+
+/// Splits `total` items into `parts` contiguous 1-based inclusive ranges of near-equal size.
+pub(crate) fn split_ranges(total: usize, parts: usize) -> Vec<(usize, usize)> {
+    let parts = parts.clamp(1, total.max(1));
+    let (base, extra) = (total / parts, total % parts);
+    let mut out = Vec::new();
+    let mut next = 1;
+    for i in 0..parts {
+        let n = base + usize::from(i < extra);
+        out.push((next, next + n.saturating_sub(1)));
+        next += n;
+    }
+    out
+}
+
 fn ui_language_is_english(lang: &str) -> bool {
     let l = lang.trim().to_lowercase();
     if l.starts_with("en") {
@@ -180,8 +220,6 @@ impl StudioService {
             tts: Arc::new(SystemTtsProvider),
             events,
             seq,
-            text_generation_slots: Arc::new(Semaphore::new(6)),
-            profile_generation_slots: Arc::new(Mutex::new(HashMap::new())),
             audio_render_slot: Arc::new(Semaphore::new(1)),
             previews: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
@@ -930,7 +968,6 @@ User Revision Instruction:
             },
         };
 
-        let _permits = self.acquire_llm_slots(&profile.id).await?;
         let (revised_raw, usage) = self
             .run_text_with_thought(
                 id,
@@ -1653,7 +1690,6 @@ User Revision Instruction:
                 max_output_tokens: 1800,
                 reasoning: reasoning.clone(),
             };
-            let _permits = self.acquire_llm_slots(&profile.id).await?;
             let (draft_raw, _) = self
                 .run_text_with_thought(
                     artifact_id,
@@ -1973,82 +2009,82 @@ User Revision Instruction:
             let mut seen_prompts: Vec<String> = Vec::new();
             let mut title = art.title.clone();
             let mut usage_sum = Usage::default();
-            let mut remaining = total;
-            for bi in 0..batches {
-                if cancel.is_cancelled() {
-                    return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
-                }
-                let batch_cnt = remaining.min(QUIZ_BATCH_SIZE);
-                remaining -= batch_cnt;
-                self.append_thought(
-                    artifact_id,
-                    &art.notebook_id,
-                    "stage",
-                    &self.l(&format!("分批生成测验题目（{}/{batches}）", bi + 1), &format!("Generating quiz questions in batches ({}/{batches})", bi + 1)),
-                    &self.l(&format!("为保证稳定性并避免单次输出过长，本批生成 {batch_cnt} 道题（总目标 {total} 道）。"), &format!("For stability and to keep each output short, this batch generates {batch_cnt} questions (target {total} in total).")),
-                );
-                let avoid_txt = if seen_prompts.is_empty() {
-                    String::new()
-                } else {
-                    let recent: Vec<&str> = seen_prompts
-                        .iter()
-                        .rev()
-                        .take(20)
-                        .map(String::as_str)
-                        .collect();
-                    format!(
-                        "\n\n已生成题干（严禁重复相同考点或题干）：\n- {}",
-                        recent.join("\n- ")
-                    )
-                };
-                let mut batch_cfg = art.config.clone();
-                if let Some(obj) = batch_cfg.as_object_mut() {
-                    obj.insert("count".into(), json!(batch_cnt));
-                }
-                let batch_req = LlmRequest {
-                    system: format!(
-                        "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep every prompt, option, and explanation concise and accurate. Format all mathematical expressions and chemical formulas/equations in LaTeX wrapped in $...$ (e.g., $\\\\ce{{H2O}}$, $\\\\ce{{O2}}$, $\\\\ce{{CO2}}$, $\\\\ce{{2H2 + O2 -> 2H2O}}$, $x^2$, $\\\\frac{{a}}{{b}}$); never write bare ASCII formulas without subscripts/LaTeX, and double-escape all LaTeX backslashes in JSON strings so \\\\frac, \\\\times, \\\\text, \\\\ce are not corrupted.",
-                        art.artifact_type.as_str()
-                    ),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text(format!(
-                            "Batch {}/{}: generate exactly {} questions.\nParameters: {}\nReference outline: {}{}\n\nSources:\n{}",
-                            bi + 1,
-                            batches,
-                            batch_cnt,
-                            batch_cfg,
-                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
-                            avoid_txt,
-                            evidence_txt
-                        ))],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::Text,
-                    max_output_tokens: resolved.max_output_tokens,
-                    reasoning: reasoning.clone(),
-                };
-                let _permits = self.acquire_llm_slots(&profile.id).await?;
-                let (part, u) = self
-                    .run_structured_with_thought(
-                        artifact_id,
-                        &art.notebook_id,
-                        &self.l(
-                            &format!("第 {}/{} 批推理思考", bi + 1, batches),
-                            &format!("Batch {}/{} reasoning", bi + 1, batches),
+            // Orchestrator: split the target into batch sizes and give every executor its own
+            // portion of the material so the parallel batches do not overlap. Executors run at
+            // once (up to the profile's parallel-request limit); results merge in batch order.
+            let batch_sizes: Vec<usize> = (0..batches)
+                .map(|bi| (total - bi * QUIZ_BATCH_SIZE).min(QUIZ_BATCH_SIZE))
+                .collect();
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &self.l(&format!("并行分批生成测验题目（{batches} 批）"), &format!("Generating quiz questions in {batches} parallel batches")),
+                &self.l(&format!("总目标 {total} 道题，拆成 {batches} 批并行撰写，同时最多 {} 个请求。", self.parallelism(profile)), &format!("Target of {total} quiz questions split into {batches} batches written in parallel, at most {} requests at a time.", self.parallelism(profile))),
+            );
+            let limit = self.parallelism(profile).min(batches);
+            let schema_ref = &schema;
+            let mut running = futures_util::stream::iter(batch_sizes.iter().copied().enumerate().map(|(bi, batch_cnt)| {
+                let (reasoning_c, cancel_c) = (reasoning.clone(), cancel.clone());
+                async move {
+                    let mut batch_cfg = art.config.clone();
+                    if let Some(obj) = batch_cfg.as_object_mut() {
+                        obj.insert("count".into(), json!(batch_cnt));
+                    }
+                    let batch_req = LlmRequest {
+                        system: format!(
+                            "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep every prompt, option, and explanation concise and accurate. Format all mathematical expressions and chemical formulas/equations in LaTeX wrapped in $...$ (e.g., $\\\\ce{{H2O}}$, $\\\\ce{{O2}}$, $\\\\ce{{CO2}}$, $\\\\ce{{2H2 + O2 -> 2H2O}}$, $x^2$, $\\\\frac{{a}}{{b}}$); never write bare ASCII formulas without subscripts/LaTeX, and double-escape all LaTeX backslashes in JSON strings so \\\\frac, \\\\times, \\\\text, \\\\ce are not corrupted.",
+                            art.artifact_type.as_str()
                         ),
-                        resolved,
-                        &batch_req,
-                        schema_name,
-                        &schema,
-                        max_repairs,
-                        cancel.clone(),
-                    )
-                    .await?;
-                usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u.input_tokens);
-                usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u.output_tokens);
-                usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u.cached_tokens);
+                        messages: vec![LlmMessage {
+                            role: Role::User,
+                            parts: vec![Part::Text(format!(
+                                "Batch {}/{}: generate exactly {} quiz questions.\nParameters: {}\nReference outline: {}\n\nParallel generation: the other batches are written at the same time by other authors. Draw your quiz questions mainly from portion {} of {} (equal portions of the material, in the order given) and prefer topics the other portions would not cover, so the batches do not overlap.\n\nSources:\n{}",
+                                bi + 1,
+                                batches,
+                                batch_cnt,
+                                batch_cfg,
+                                art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
+                                bi + 1,
+                                batches,
+                                evidence_txt
+                            ))],
+                        }],
+                        tools: vec![],
+                        tool_mode: ToolMode::None,
+                        output: OutputMode::Text,
+                        max_output_tokens: resolved.max_output_tokens,
+                        reasoning: reasoning_c,
+                    };
+                    let res = self
+                        .run_structured_with_thought(
+                            artifact_id,
+                            &art.notebook_id,
+                            &self.l(
+                                &format!("第 {}/{} 批推理思考", bi + 1, batches),
+                                &format!("Batch {}/{} reasoning", bi + 1, batches),
+                            ),
+                            resolved,
+                            &batch_req,
+                            schema_name,
+                            schema_ref,
+                            max_repairs,
+                            cancel_c,
+                        )
+                        .await;
+                    (bi, res)
+                }
+            }))
+            .buffer_unordered(limit);
+            let mut parts: Vec<Option<Value>> = vec![None; batches];
+            while let Some((bi, res)) = next_or_cancel(&mut running, &cancel).await? {
+                let (part, u) = res?;
+                add_usage(&mut usage_sum, &u);
+                parts[bi] = Some(part);
+            }
+            drop(running);
+            for (bi, part) in parts.into_iter().enumerate() {
+                let Some(part) = part else { continue };
                 if bi == 0 {
                     if let Some(t) = part
                         .get("title")
@@ -2058,23 +2094,23 @@ User Revision Instruction:
                         title = t.to_string();
                     }
                 }
-                if let Some(qs) = part.get("questions").and_then(Value::as_array) {
-                    for mut q in qs.iter().cloned() {
-                        let prompt = q
+                if let Some(list) = part.get("questions").and_then(Value::as_array) {
+                    for mut it in list.iter().cloned() {
+                        let key = it
                             .get("prompt")
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .trim()
                             .to_string();
-                        if !prompt.is_empty() && !seen_prompts.contains(&prompt) {
-                            seen_prompts.push(prompt);
-                            if let Some(obj) = q.as_object_mut() {
+                        if !key.is_empty() && !seen_prompts.contains(&key) {
+                            seen_prompts.push(key);
+                            if let Some(obj) = it.as_object_mut() {
                                 obj.insert(
                                     "id".into(),
                                     json!(format!("q{}", all_questions.len() + 1)),
                                 );
                             }
-                            all_questions.push(q);
+                            all_questions.push(it);
                         }
                     }
                 }
@@ -2100,82 +2136,82 @@ User Revision Instruction:
             let mut seen_fronts: Vec<String> = Vec::new();
             let mut title = art.title.clone();
             let mut usage_sum = Usage::default();
-            let mut remaining = total;
-            for bi in 0..batches {
-                if cancel.is_cancelled() {
-                    return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
-                }
-                let batch_cnt = remaining.min(FLASHCARD_BATCH_SIZE);
-                remaining -= batch_cnt;
-                self.append_thought(
-                    artifact_id,
-                    &art.notebook_id,
-                    "stage",
-                    &self.l(&format!("分批生成学习闪卡（{}/{batches}）", bi + 1), &format!("Generating flashcards in batches ({}/{batches})", bi + 1)),
-                    &self.l(&format!("为保证稳定性并避免单次输出过长，本批生成 {batch_cnt} 张卡片（总目标 {total} 张）。"), &format!("For stability and to keep each output short, this batch generates {batch_cnt} cards (target {total} in total).")),
-                );
-                let avoid_txt = if seen_fronts.is_empty() {
-                    String::new()
-                } else {
-                    let recent: Vec<&str> = seen_fronts
-                        .iter()
-                        .rev()
-                        .take(24)
-                        .map(String::as_str)
-                        .collect();
-                    format!(
-                        "\n\n已生成卡片正面（请勿重复）：\n- {}",
-                        recent.join("\n- ")
-                    )
-                };
-                let mut batch_cfg = art.config.clone();
-                if let Some(obj) = batch_cfg.as_object_mut() {
-                    obj.insert("count".into(), json!(batch_cnt));
-                }
-                let batch_req = LlmRequest {
-                    system: format!(
-                        "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep each flashcard front and back crisp and focused on core definitions or takeaways. Flashcards are drawn as plain text: write mathematics as compact Unicode (e.g. ℝⁿ, Aᵀ, x₁, N(A), dim C(A)=r, n−r, Ax=0), never LaTeX or `$` delimiters.",
-                        art.artifact_type.as_str()
-                    ),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text(format!(
-                            "Batch {}/{}: generate exactly {} flashcards.\nParameters: {}\nReference outline: {}{}\n\nSources:\n{}",
-                            bi + 1,
-                            batches,
-                            batch_cnt,
-                            batch_cfg,
-                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
-                            avoid_txt,
-                            evidence_txt
-                        ))],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::Text,
-                    max_output_tokens: resolved.max_output_tokens,
-                    reasoning: reasoning.clone(),
-                };
-                let _permits = self.acquire_llm_slots(&profile.id).await?;
-                let (part, u) = self
-                    .run_structured_with_thought(
-                        artifact_id,
-                        &art.notebook_id,
-                        &self.l(
-                            &format!("第 {}/{} 批推理思考", bi + 1, batches),
-                            &format!("Batch {}/{} reasoning", bi + 1, batches),
+            // Orchestrator: split the target into batch sizes and give every executor its own
+            // portion of the material so the parallel batches do not overlap. Executors run at
+            // once (up to the profile's parallel-request limit); results merge in batch order.
+            let batch_sizes: Vec<usize> = (0..batches)
+                .map(|bi| (total - bi * FLASHCARD_BATCH_SIZE).min(FLASHCARD_BATCH_SIZE))
+                .collect();
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &self.l(&format!("并行分批生成学习闪卡（{batches} 批）"), &format!("Generating flashcards in {batches} parallel batches")),
+                &self.l(&format!("总目标 {total} 张卡片，拆成 {batches} 批并行撰写，同时最多 {} 个请求。", self.parallelism(profile)), &format!("Target of {total} flashcards split into {batches} batches written in parallel, at most {} requests at a time.", self.parallelism(profile))),
+            );
+            let limit = self.parallelism(profile).min(batches);
+            let schema_ref = &schema;
+            let mut running = futures_util::stream::iter(batch_sizes.iter().copied().enumerate().map(|(bi, batch_cnt)| {
+                let (reasoning_c, cancel_c) = (reasoning.clone(), cancel.clone());
+                async move {
+                    let mut batch_cfg = art.config.clone();
+                    if let Some(obj) = batch_cfg.as_object_mut() {
+                        obj.insert("count".into(), json!(batch_cnt));
+                    }
+                    let batch_req = LlmRequest {
+                        system: format!(
+                            "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep each flashcard front and back crisp and focused on core definitions or takeaways. Flashcards are drawn as plain text: write mathematics as compact Unicode (e.g. ℝⁿ, Aᵀ, x₁, N(A), dim C(A)=r, n−r, Ax=0), never LaTeX or `$` delimiters.",
+                            art.artifact_type.as_str()
                         ),
-                        resolved,
-                        &batch_req,
-                        schema_name,
-                        &schema,
-                        max_repairs,
-                        cancel.clone(),
-                    )
-                    .await?;
-                usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u.input_tokens);
-                usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u.output_tokens);
-                usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u.cached_tokens);
+                        messages: vec![LlmMessage {
+                            role: Role::User,
+                            parts: vec![Part::Text(format!(
+                                "Batch {}/{}: generate exactly {} flashcards.\nParameters: {}\nReference outline: {}\n\nParallel generation: the other batches are written at the same time by other authors. Draw your flashcards mainly from portion {} of {} (equal portions of the material, in the order given) and prefer topics the other portions would not cover, so the batches do not overlap.\n\nSources:\n{}",
+                                bi + 1,
+                                batches,
+                                batch_cnt,
+                                batch_cfg,
+                                art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
+                                bi + 1,
+                                batches,
+                                evidence_txt
+                            ))],
+                        }],
+                        tools: vec![],
+                        tool_mode: ToolMode::None,
+                        output: OutputMode::Text,
+                        max_output_tokens: resolved.max_output_tokens,
+                        reasoning: reasoning_c,
+                    };
+                    let res = self
+                        .run_structured_with_thought(
+                            artifact_id,
+                            &art.notebook_id,
+                            &self.l(
+                                &format!("第 {}/{} 批推理思考", bi + 1, batches),
+                                &format!("Batch {}/{} reasoning", bi + 1, batches),
+                            ),
+                            resolved,
+                            &batch_req,
+                            schema_name,
+                            schema_ref,
+                            max_repairs,
+                            cancel_c,
+                        )
+                        .await;
+                    (bi, res)
+                }
+            }))
+            .buffer_unordered(limit);
+            let mut parts: Vec<Option<Value>> = vec![None; batches];
+            while let Some((bi, res)) = next_or_cancel(&mut running, &cancel).await? {
+                let (part, u) = res?;
+                add_usage(&mut usage_sum, &u);
+                parts[bi] = Some(part);
+            }
+            drop(running);
+            for (bi, part) in parts.into_iter().enumerate() {
+                let Some(part) = part else { continue };
                 if bi == 0 {
                     if let Some(t) = part
                         .get("title")
@@ -2185,20 +2221,20 @@ User Revision Instruction:
                         title = t.to_string();
                     }
                 }
-                if let Some(cards) = part.get("cards").and_then(Value::as_array) {
-                    for mut c in cards.iter().cloned() {
-                        let front = c
+                if let Some(list) = part.get("cards").and_then(Value::as_array) {
+                    for mut it in list.iter().cloned() {
+                        let key = it
                             .get("front")
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .trim()
                             .to_string();
-                        if !front.is_empty() && !seen_fronts.contains(&front) {
-                            seen_fronts.push(front);
-                            if let Some(obj) = c.as_object_mut() {
+                        if !key.is_empty() && !seen_fronts.contains(&key) {
+                            seen_fronts.push(key);
+                            if let Some(obj) = it.as_object_mut() {
                                 obj.insert("id".into(), json!(format!("c{}", all_cards.len() + 1)));
                             }
-                            all_cards.push(c);
+                            all_cards.push(it);
                         }
                     }
                 }
@@ -2261,7 +2297,6 @@ User Revision Instruction:
             };
             let mut usage_sum = Usage::default();
             let storyboard = {
-                let _permits = self.acquire_llm_slots(&profile.id).await?;
                 match self
                     .run_text_with_thought(
                         artifact_id,
@@ -2297,7 +2332,7 @@ User Revision Instruction:
                 &self.l("撰写高颜值演示文稿内容与版式数据", "Writing slide content and layout data"),
                 &self.l("正在基于版式蓝图生成完整结构化幻灯片（含卡片、对比表、流程图、关键指标、核心公式与演讲备注）…", "Generating the full structured slides from the layout blueprint (cards, comparison tables, flow charts, key metrics, core formulas and speaker notes)…"),
             );
-            let author_req = LlmRequest {
+            let author_base = LlmRequest {
                 system: "You are a world-class presentation designer for Local Notebook Studio. Produce a publication-grade SlidesPayload JSON strictly grounded in the provided sources.\n\
 Design rules:\n\
 1. Set top-level `theme` (one of: executive_navy, editorial_slate, academic_sage, warm_terracotta, midnight_aurora) and `subtitle`.\n\
@@ -2323,27 +2358,73 @@ Design rules:\n\
                 max_output_tokens: resolved.max_output_tokens,
                 reasoning: reasoning.clone(),
             };
-            let _permits = self.acquire_llm_slots(&profile.id).await?;
-            let (mut deck, u2) = self
-                .run_structured_with_thought(
+            // Orchestrator: the storyboard is the plan; a longer deck is written by several
+            // executors at once, each owning a contiguous range of pages, then merged in order.
+            let deck_parts = if target_pages >= 8 {
+                (target_pages as usize).div_ceil(6)
+            } else {
+                1
+            };
+            let ranges = split_ranges(target_pages as usize, deck_parts);
+            if deck_parts > 1 {
+                self.append_thought(
                     artifact_id,
                     &art.notebook_id,
-                    &self.l(
-                        "演示文稿内容与排版生成",
-                        "Slide content and layout generation",
-                    ),
-                    resolved,
-                    &author_req,
-                    schema_name,
-                    &schema,
-                    max_repairs,
-                    cancel.clone(),
-                )
+                    "stage",
+                    &self.l(&format!("并行撰写演示文稿（{deck_parts} 段）"), &format!("Writing the deck in {deck_parts} parallel parts")),
+                    &self.l(&format!("按版式蓝图把约 {target_pages} 页拆成 {deck_parts} 段并行撰写，同时最多 {} 个请求。", self.parallelism(profile)), &format!("Splitting about {target_pages} slides into {deck_parts} parts written in parallel, at most {} requests at a time.", self.parallelism(profile))),
+                );
+            }
+            let results = self
+                .run_parts(deck_parts, self.parallelism(profile), &cancel, |k| {
+                    let (from, to) = ranges[k];
+                    let req = if deck_parts == 1 {
+                        author_base.clone()
+                    } else {
+                        with_part_note(
+                            &author_base,
+                            &format!(
+                                "PART {} OF {}: other parts are written at the same time by other designers. Write ONLY slides {from}-{to} of the ~{target_pages}-slide deck exactly as the storyboard lays them out{}{}. Keep the deck's theme and numbering consistent with the storyboard; do not repeat slides that belong to other ranges.",
+                                k + 1,
+                                deck_parts,
+                                if k == 0 { " (slide 1 is the title slide)" } else { "" },
+                                if k + 1 == deck_parts { " (the last slide is the summary)" } else { "" },
+                            ),
+                        )
+                    };
+                    let (schema_ref, cancel_c) = (&schema, cancel.clone());
+                    async move {
+                        self.run_structured_with_thought(
+                            artifact_id,
+                            &art.notebook_id,
+                            &if deck_parts == 1 {
+                                self.l("演示文稿内容与排版生成", "Slide content and layout generation")
+                            } else {
+                                self.l(&format!("演示文稿第 {}/{} 段生成", k + 1, deck_parts), &format!("Slide deck part {}/{}", k + 1, deck_parts))
+                            },
+                            resolved,
+                            &req,
+                            schema_name,
+                            schema_ref,
+                            max_repairs,
+                            cancel_c,
+                        )
+                        .await
+                    }
+                })
                 .await?;
-            drop(_permits);
-            usage_sum.input_tokens = usage_sum.input_tokens.saturating_add(u2.input_tokens);
-            usage_sum.output_tokens = usage_sum.output_tokens.saturating_add(u2.output_tokens);
-            usage_sum.cached_tokens = usage_sum.cached_tokens.saturating_add(u2.cached_tokens);
+            let mut deck = Value::Null;
+            for (k, (part, u2)) in results.into_iter().enumerate() {
+                add_usage(&mut usage_sum, &u2);
+                if k == 0 {
+                    deck = part;
+                } else if let (Some(all), Some(more)) = (
+                    deck.get_mut("slides").and_then(Value::as_array_mut),
+                    part.get("slides").and_then(Value::as_array),
+                ) {
+                    all.extend(more.iter().cloned());
+                }
+            }
 
             // Stage 3: Visual Diversity & Quality Self-Review Pass (only if too many plain bullets slides)
             let needs_polish = deck
@@ -2379,7 +2460,6 @@ Design rules:\n\
                     max_output_tokens: resolved.max_output_tokens,
                     reasoning: ReasoningOptions::default(),
                 };
-                let _permits = self.acquire_llm_slots(&profile.id).await?;
                 if let Ok((polished, u3)) = self
                     .run_structured_with_thought(
                         artifact_id,
@@ -2604,7 +2684,41 @@ Design rules:\n\
             max_output_tokens: resolved.max_output_tokens,
             reasoning,
         };
-        let _permits = self.acquire_llm_slots(&profile.id).await?;
+        // Long reports / long audio scripts: planner + parallel part writers.
+        let multi_kind = match art.artifact_type {
+            ArtifactType::Report
+                if art.config.get("depth").and_then(Value::as_str) == Some("deep") =>
+            {
+                Some("report")
+            }
+            ArtifactType::Audio
+                if matches!(
+                    art.config.get("length").and_then(Value::as_str),
+                    Some("long" | "detailed")
+                ) =>
+            {
+                Some("audio")
+            }
+            _ => None,
+        };
+        if let Some(kind) = multi_kind {
+            if self.parallelism(profile) > 1 {
+                return self
+                    .generate_in_parts(
+                        kind,
+                        art,
+                        profile,
+                        resolved,
+                        artifact_id,
+                        &gen_req,
+                        schema_name,
+                        &schema,
+                        max_repairs,
+                        cancel,
+                    )
+                    .await;
+            }
+        }
         self.run_structured_with_thought(
             artifact_id,
             &art.notebook_id,
@@ -2617,6 +2731,186 @@ Design rules:\n\
             cancel,
         )
         .await
+    }
+
+    /// Orchestrator/executor generation of a long report or audio script: one planner call splits
+    /// the work into independent parts, then every part is written by its own executor at once
+    /// (up to the profile's parallel-request limit) and the parts are merged in order.
+    #[allow(clippy::too_many_arguments)]
+    async fn generate_in_parts(
+        &self,
+        kind: &str,
+        art: &StudioArtifact,
+        profile: &ModelProfile,
+        resolved: &ResolvedProfile,
+        artifact_id: &str,
+        gen_req: &LlmRequest,
+        schema_name: &str,
+        schema: &Value,
+        max_repairs: usize,
+        cancel: CancellationToken,
+    ) -> LnaResult<(Value, Usage)> {
+        let (noun_zh, noun_en, what) = if kind == "report" {
+            ("章节", "sections", "report sections")
+        } else {
+            (
+                "对话段落",
+                "dialogue segments",
+                "dialogue segments of the audio script",
+            )
+        };
+        let mut usage_sum = Usage::default();
+        self.append_thought(
+            artifact_id,
+            &art.notebook_id,
+            "stage",
+            &self.l(
+                &format!("规划{noun_zh}"),
+                &format!("Planning the {noun_en}"),
+            ),
+            &self.l(
+                &format!("先规划彼此独立的{noun_zh}，再并行撰写。"),
+                &format!("Planning independent {noun_en} first, then writing them in parallel."),
+            ),
+        );
+        let plan_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["parts"],
+            "properties": { "parts": { "type": "array", "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["heading", "focus"],
+                "properties": { "heading": { "type": "string" }, "focus": { "type": "string" } }
+            }}}
+        });
+        let mut plan_req = gen_req.clone();
+        plan_req.system = format!(
+            "You are the planner of a Local Notebook Studio {kind}. Split the requested work into 3-6 {what} that can be written independently and in parallel, in reading order, covering the requested scope without overlap. For each give a short `heading` and a `focus` naming exactly which concepts / source parts it covers. Output structured JSON only. Match the language requested in config or the primary language of the sources."
+        );
+        plan_req.max_output_tokens = resolved.max_output_tokens.min(2000);
+        let (plan, u) = self
+            .run_structured_with_thought(
+                artifact_id,
+                &art.notebook_id,
+                &self.l(
+                    &format!("{noun_zh}规划思考"),
+                    &format!("{noun_en} planning reasoning"),
+                ),
+                resolved,
+                &plan_req,
+                "studio_parts_plan",
+                &plan_schema,
+                max_repairs,
+                cancel.clone(),
+            )
+            .await?;
+        add_usage(&mut usage_sum, &u);
+        let parts: Vec<(String, String)> = plan
+            .get("parts")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .map(|p| (mm_str(p, "heading"), mm_str(p, "focus")))
+                    .filter(|(h, _)| !h.trim().is_empty())
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if parts.len() < 2 {
+            // nothing worth splitting: write it in one piece
+            return self
+                .run_structured_with_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    &self.l("模型推理思考过程", "Model reasoning"),
+                    resolved,
+                    gen_req,
+                    schema_name,
+                    schema,
+                    max_repairs,
+                    cancel,
+                )
+                .await
+                .map(|(v, u)| {
+                    add_usage(&mut usage_sum, &u);
+                    (v, usage_sum)
+                });
+        }
+        let total = parts.len();
+        let outline = parts
+            .iter()
+            .enumerate()
+            .map(|(i, (h, f))| format!("{}. {h} — {f}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let results = self
+            .run_parts(total, self.parallelism(profile), &cancel, |k| {
+                let (heading, focus) = &parts[k];
+                let note = if kind == "report" {
+                    format!(
+                        "PART {} OF {total}: other sections are written at the same time by other authors. Write ONLY the section \"{heading}\" (focus: {focus}) as the single entry of `sections`; do not repeat the other sections of this outline:\n{outline}",
+                        k + 1
+                    )
+                } else {
+                    format!(
+                        "PART {} OF {total}: other segments are written at the same time by other authors. Write ONLY the dialogue turns of the segment \"{heading}\" (focus: {focus}); {}{}continue the same conversation naturally and do not repeat the other segments of this outline:\n{outline}",
+                        k + 1,
+                        if k == 0 { "open the conversation; " } else { "do not greet or re-introduce the topic; " },
+                        if k + 1 == total { "close the conversation at the end; " } else { "do not wrap up the conversation; " },
+                    )
+                };
+                let req = with_part_note(gen_req, &note);
+                let cancel_c = cancel.clone();
+                async move {
+                    self.run_structured_with_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        &self.l(&format!("第 {}/{total} 部分推理思考", k + 1), &format!("Part {}/{total} reasoning", k + 1)),
+                        resolved,
+                        &req,
+                        schema_name,
+                        schema,
+                        max_repairs,
+                        cancel_c,
+                    )
+                    .await
+                }
+            })
+            .await?;
+        let mut merged = Value::Null;
+        for (k, (part, u)) in results.into_iter().enumerate() {
+            add_usage(&mut usage_sum, &u);
+            if k == 0 {
+                merged = part;
+                continue;
+            }
+            let list_key = if kind == "report" {
+                "sections"
+            } else {
+                "turns"
+            };
+            if let Some(more) = part.get(list_key).and_then(Value::as_array).cloned() {
+                if let Some(all) = merged.get_mut(list_key).and_then(Value::as_array_mut) {
+                    all.extend(more);
+                }
+            }
+            if kind == "report" {
+                let extra: Vec<Value> = part
+                    .get("citations")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(all) = merged.get_mut("citations").and_then(Value::as_array_mut) {
+                    for c in extra {
+                        if !all.contains(&c) {
+                            all.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        Ok((merged, usage_sum))
     }
 
     pub fn mark_failed(&self, id: &str, err: &LnaError) -> LnaResult<()> {
@@ -3085,28 +3379,36 @@ Design rules:\n\
         }
     }
 
-    async fn acquire_llm_slots(
+    /// Executors of one artifact: runs `n` part writers with at most `limit` in flight and returns
+    /// their results in part order. The orchestrator awaits them as they finish and stays awake
+    /// for cancellation; the first failure ends the whole run.
+    async fn run_parts<F, Fut>(
         &self,
-        profile_id: &str,
-    ) -> LnaResult<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
-        let profile_slot = {
-            let mut slots = self.profile_generation_slots.lock().await;
-            slots
-                .entry(profile_id.to_string())
-                .or_insert_with(|| Arc::new(Semaphore::new(4)))
-                .clone()
-        };
-        let profile_permit = profile_slot
-            .acquire_owned()
-            .await
-            .map_err(|_| LnaError::internal("Profile generation semaphore closed"))?;
-        let global_permit = self
-            .text_generation_slots
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| LnaError::internal("Text generation semaphore closed"))?;
-        Ok((profile_permit, global_permit))
+        n: usize,
+        limit: usize,
+        cancel: &CancellationToken,
+        make: F,
+    ) -> LnaResult<Vec<(Value, Usage)>>
+    where
+        F: Fn(usize) -> Fut,
+        Fut: std::future::Future<Output = LnaResult<(Value, Usage)>>,
+    {
+        let mut running = futures_util::stream::iter((0..n).map(|i| {
+            let fut = make(i);
+            async move { (i, fut.await) }
+        }))
+        .buffer_unordered(limit.clamp(1, n.max(1)));
+        let mut out: Vec<Option<(Value, Usage)>> = (0..n).map(|_| None).collect();
+        while let Some((i, res)) = next_or_cancel(&mut running, cancel).await? {
+            out[i] = Some(res?);
+        }
+        Ok(out.into_iter().flatten().collect())
+    }
+
+    /// Requests in flight allowed for the profile: the number of executors the orchestrators of
+    /// the Studio types fan out to (the client gate enforces it for every request anyway).
+    fn parallelism(&self, profile: &ModelProfile) -> usize {
+        profile.max_parallel.clamp(1, 64) as usize
     }
 
     fn get_checkpoint(&self, artifact_id: &str, step_key: &str) -> LnaResult<Option<Value>> {
@@ -3614,7 +3916,6 @@ Design rules:\n\
                     max_output_tokens: resolved.max_output_tokens,
                     reasoning: reasoning.clone(),
                 };
-                let permits = self.acquire_llm_slots(&profile.id).await?;
                 let (mut skeleton, u) = self
                     .run_structured_with_thought(
                         artifact_id,
@@ -3628,7 +3929,6 @@ Design rules:\n\
                         cancel.clone(),
                     )
                     .await?;
-                drop(permits);
                 add_usage(&mut usage_sum, &u);
                 validate::normalize_mindmap(&mut skeleton);
                 // The skeleton is root + top-level themes only; anything deeper the model
@@ -3668,14 +3968,7 @@ Design rules:\n\
             .collect();
         // Branches are independent (own ids, same skeleton titles), so several are generated
         // at once. Each task works on a local copy; only this task merges and checkpoints.
-        let concurrency = art
-            .config
-            .get("branch_concurrency")
-            .and_then(Value::as_u64)
-            .map(|n| n as usize)
-            .unwrap_or(3)
-            .clamp(1, 6)
-            .min(pending.len().max(1));
+        let concurrency = self.parallelism(profile).min(pending.len().max(1));
         let base = payload.clone();
         let mut queue = pending.into_iter();
         let mut running = futures_util::stream::FuturesUnordered::new();
@@ -4145,7 +4438,6 @@ Design rules:\n\
             max_output_tokens: resolved.max_output_tokens,
             reasoning,
         };
-        let permits = self.acquire_llm_slots(&profile.id).await?;
         let (out, usage) = self
             .run_structured_with_thought_ex(
                 artifact_id,
@@ -4170,7 +4462,6 @@ Design rules:\n\
                 cancel,
             )
             .await?;
-        drop(permits);
         Ok((
             NodeExpansion {
                 atomic: out.get("atomic").and_then(Value::as_bool).unwrap_or(false),
@@ -4288,7 +4579,7 @@ Design rules:\n\
     async fn regroup_mindmap_children(
         &self,
         art: &StudioArtifact,
-        profile: &ModelProfile,
+        _profile: &ModelProfile,
         resolved: &ResolvedProfile,
         artifact_id: &str,
         payload: &mut Value,
@@ -4347,7 +4638,6 @@ Design rules:\n\
             max_output_tokens: resolved.max_output_tokens,
             reasoning,
         };
-        let permits = self.acquire_llm_slots(&profile.id).await?;
         let (out, usage) = self
             .run_structured_with_thought(
                 artifact_id,
@@ -4364,7 +4654,6 @@ Design rules:\n\
                 cancel,
             )
             .await?;
-        drop(permits);
         let groups = out
             .get("groups")
             .and_then(Value::as_array)
@@ -4811,7 +5100,6 @@ Design rules:\n\
                     effort: profile.effort.clone(),
                 },
             };
-            let _permits = self.acquire_llm_slots(&profile.id).await?;
             let mut calls: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
             let mut round_usage = Usage::default();
             let mut thought_seq: Option<i32> = None;
@@ -4880,7 +5168,6 @@ Design rules:\n\
                 }
                 self.update_thought_body(artifact_id, s, &full_thought);
             }
-            drop(_permits);
 
             if let Err(e) = stream_res {
                 if e.code == ErrorCode::Cancelled || cancel.is_cancelled() {
@@ -5701,7 +5988,6 @@ Core Topics: {}",
                     effort: profile.effort.clone(),
                 },
             };
-            let _permits = self.acquire_llm_slots(&profile.id).await?;
             let (batch_summary, batch_usage) = self
                 .run_text_with_thought(
                     artifact_id,
@@ -5743,7 +6029,6 @@ Core Topics: {}",
                 effort: profile.effort.clone(),
             },
         };
-        let _permits = self.acquire_llm_slots(&profile.id).await?;
         let (outline, reduce_usage) = self
             .run_text_with_thought(
                 artifact_id,
@@ -5889,12 +6174,19 @@ Core Topics: {}",
                 .push((chunk_id, content));
         }
         let total_groups = groups.len();
-        let mut out = Vec::new();
-        let mut uncached_done = 0usize;
-        for (idx, ((source_id, section_key), chunks)) in groups.into_iter().enumerate() {
-            if cancel.is_cancelled() {
-                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
-            }
+        // Map step of the digest: cached digests are read straight away, the missing ones are
+        // summarised by parallel executors (one per section group) and assembled in order.
+        struct Group {
+            title: String,
+            source_id: String,
+            section_key: String,
+            content_hash: String,
+            language: String,
+            chunks: Vec<(i64, String)>,
+            cached: Option<String>,
+        }
+        let mut entries: Vec<Group> = Vec::new();
+        for ((source_id, section_key), chunks) in groups.into_iter() {
             let Some((title, content_hash, language)) = source_meta.get(&source_id).cloned() else {
                 continue;
             };
@@ -5905,41 +6197,56 @@ Core Topics: {}",
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 ).optional().map_err(map_sql_err)
             })?;
-            let digest = if let Some((_, cached_digest)) =
-                cached.filter(|(hash, _)| hash == &content_hash)
-            {
-                cached_digest
-            } else {
-                uncached_done += 1;
-                if uncached_done == 1 || uncached_done.is_multiple_of(3) || idx + 1 == total_groups
-                {
-                    self.append_thought(
-                        artifact_id,
-                        notebook_id,
-                        "stage",
-                        &self.l("提取来源章节摘要", "Extracting chapter summaries"),
-                        &self.l(&format!(
-                            "来源较长，正在按章节分段提取摘要（第 {}/{} 段：{} / {}）…",
-                            idx + 1,
-                            total_groups,
-                            title,
-                            section_key
-                        ), &format!(
-                            "The source is long; extracting summaries section by section (part {}/{}: {} / {})…",
-                            idx + 1,
-                            total_groups,
-                            title,
-                            section_key
-                        )),
-                    );
-                }
-                let chunk_text = chunks
+            let cached = cached
+                .filter(|(hash, _)| hash == &content_hash)
+                .map(|(_, d)| d);
+            entries.push(Group {
+                title,
+                source_id,
+                section_key,
+                content_hash,
+                language,
+                chunks,
+                cached,
+            });
+        }
+        let missing: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.cached.is_none())
+            .map(|(i, _)| i)
+            .collect();
+        if !missing.is_empty() {
+            self.append_thought(
+                artifact_id,
+                notebook_id,
+                "stage",
+                &self.l("提取来源章节摘要", "Extracting chapter summaries"),
+                &self.l(&format!(
+                    "来源较长，正在把 {} 个章节段并行提取摘要（共 {} 段，其余已有缓存）…",
+                    missing.len(),
+                    total_groups
+                ), &format!(
+                    "The source is long; summarising {} section groups in parallel ({} in total, the rest are cached)…",
+                    missing.len(),
+                    total_groups
+                )),
+            );
+        }
+        let limit = self.llm.parallel_limit(profile_id).clamp(1, 64);
+        let entries_ref = &entries;
+        let mut running = futures_util::stream::iter(missing.iter().copied().map(|idx| {
+            let cancel_c = cancel.clone();
+            async move {
+                let g = &entries_ref[idx];
+                let chunk_text = g
+                    .chunks
                     .iter()
                     .map(|(id, content)| format!("[chunk {id}] {content}"))
                     .collect::<Vec<_>>()
                     .join("\n\n");
                 let req = LlmRequest {
-                    system: format!("You are a section summarization assistant. Summarize the following content from the same section in {}, preserving key concepts, equations, relationships, and conclusions without adding any facts not present in the source.", language),
+                    system: format!("You are a section summarization assistant. Summarize the following content from the same section in {}, preserving key concepts, equations, relationships, and conclusions without adding any facts not present in the source.", g.language),
                     messages: vec![LlmMessage { role: Role::User, parts: vec![Part::Text(chunk_text)] }],
                     tools: vec![], tool_mode: ToolMode::None, output: OutputMode::Text,
                     max_output_tokens: 700,
@@ -5948,52 +6255,66 @@ Core Topics: {}",
                         effort: profile.effort.clone(),
                     },
                 };
-                let _permits = self.acquire_llm_slots(profile_id).await?;
-                let (digest, usage) = self
+                let res = self
                     .run_text_with_thought(
                         artifact_id,
                         notebook_id,
                         &self.l(
-                            &format!("章节摘要思考：{title} / {section_key}"),
-                            &format!("Chapter summary reasoning: {title} / {section_key}"),
+                            &format!("章节摘要思考：{} / {}", g.title, g.section_key),
+                            &format!("Chapter summary reasoning: {} / {}", g.title, g.section_key),
                         ),
                         profile,
                         &req,
-                        cancel.clone(),
+                        cancel_c,
                     )
-                    .await?;
-                let digest = digest.trim().to_string();
-                let chunk_ids: Vec<i64> = chunks.iter().map(|(id, _)| *id).collect();
-                let chunk_ids_json =
-                    serde_json::to_string(&chunk_ids).unwrap_or_else(|_| "[]".into());
-                let token_count: i64 = chunks
-                    .iter()
-                    .map(|(_, text)| (text.chars().count() as i64 + 3) / 4)
-                    .sum();
-                self.db.write(|conn| {
-                    conn.execute(
-                        "INSERT INTO source_digests (source_id, section_key, content_hash, language, digest_md, chunk_ids_json, token_count, created_at)
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
-                         ON CONFLICT(source_id,section_key,language) DO UPDATE SET content_hash=excluded.content_hash,
-                         digest_md=excluded.digest_md, chunk_ids_json=excluded.chunk_ids_json, token_count=excluded.token_count, created_at=excluded.created_at",
-                        params![source_id, section_key, content_hash, language, digest, chunk_ids_json, token_count, now_ms()],
-                    ).map_err(map_sql_err)?;
-                    Ok(())
-                })?;
-                let _ = lna_storage::record_usage(
-                    &self.db,
-                    Some(notebook_id),
-                    Some(&profile.id),
-                    "studio_digest_map",
-                    Some(&source_id),
-                    usage.input_tokens as i64,
-                    usage.output_tokens as i64,
-                    usage.cached_tokens as i64,
-                    false,
-                );
-                digest
+                    .await;
+                (idx, res)
+            }
+        }))
+        .buffer_unordered(limit);
+        let mut fresh: HashMap<usize, String> = HashMap::new();
+        while let Some((idx, res)) = next_or_cancel(&mut running, &cancel).await? {
+            let (digest, usage) = res?;
+            let digest = digest.trim().to_string();
+            let g = &entries[idx];
+            let chunk_ids: Vec<i64> = g.chunks.iter().map(|(id, _)| *id).collect();
+            let chunk_ids_json = serde_json::to_string(&chunk_ids).unwrap_or_else(|_| "[]".into());
+            let token_count: i64 = g
+                .chunks
+                .iter()
+                .map(|(_, text)| (text.chars().count() as i64 + 3) / 4)
+                .sum();
+            self.db.write(|conn| {
+                conn.execute(
+                    "INSERT INTO source_digests (source_id, section_key, content_hash, language, digest_md, chunk_ids_json, token_count, created_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                     ON CONFLICT(source_id,section_key,language) DO UPDATE SET content_hash=excluded.content_hash,
+                     digest_md=excluded.digest_md, chunk_ids_json=excluded.chunk_ids_json, token_count=excluded.token_count, created_at=excluded.created_at",
+                    params![g.source_id, g.section_key, g.content_hash, g.language, digest, chunk_ids_json, token_count, now_ms()],
+                ).map_err(map_sql_err)?;
+                Ok(())
+            })?;
+            let _ = lna_storage::record_usage(
+                &self.db,
+                Some(notebook_id),
+                Some(&profile.id),
+                "studio_digest_map",
+                Some(&g.source_id),
+                usage.input_tokens as i64,
+                usage.output_tokens as i64,
+                usage.cached_tokens as i64,
+                false,
+            );
+            fresh.insert(idx, digest);
+        }
+        drop(running);
+        let mut out = Vec::with_capacity(entries.len());
+        for (idx, g) in entries.iter().enumerate() {
+            let digest = match &g.cached {
+                Some(d) => d.clone(),
+                None => fresh.remove(&idx).unwrap_or_default(),
             };
-            out.push((title, section_key, digest));
+            out.push((g.title.clone(), g.section_key.clone(), digest));
         }
         Ok(out)
     }

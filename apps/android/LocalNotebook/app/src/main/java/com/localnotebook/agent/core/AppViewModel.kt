@@ -535,6 +535,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Deleting is the only thing allowed for a source that is not fully parsed yet. */
+    fun removeSource(sourceId: String) {
+        viewModelScope.launch {
+            runCatching {
+                core.call("source.remove", JSONObject().put("source_id", sourceId))
+                refreshAll()
+            }
+        }
+    }
+
     fun sendChat(text: String, images: JSONArray? = null) {
         val clean = text.trim()
         if (clean.isEmpty() && images == null) return
@@ -803,6 +813,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 allowInsecureHttp = o.optBoolean("allow_insecure_http", false),
                                 contextWindow = o.optInt("context_window", 32000),
                                 maxOutputTokens = o.optInt("max_output_tokens", 8000),
+                                maxParallel = o.optInt("max_parallel", 4),
                                 supportsVision = caps?.optBoolean("supports_vision", false) ?: false,
                                 supportsAudio = caps?.optBoolean("supports_audio", false) ?: false,
                                 supportsVideo = caps?.optBoolean("supports_video", false) ?: false,
@@ -866,11 +877,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         supportsVision: Boolean = false,
         supportsAudio: Boolean = false,
         supportsVideo: Boolean = false,
+        maxParallel: Int = 4,
     ) {
         viewModelScope.launch {
             runCatching {
                 val body = JSONObject()
                     .put("display_name", "$protocol / $modelId")
+                    .put("max_parallel", maxParallel.coerceIn(1, 64))
                     .put("protocol", protocol)
                     .put("base_url", baseUrl.trim())
                     .put("model_id", modelId.trim())

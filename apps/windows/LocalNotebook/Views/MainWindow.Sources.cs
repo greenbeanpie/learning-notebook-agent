@@ -256,7 +256,9 @@ public sealed partial class MainWindow
                 MaxLines = 1,
             });
         }
-        ToolTipService.SetToolTip(titleStack, subtext != null ? $"{title}\n{subtext}" : $"{title} ({L10n.T("sources.click_to_view")})");
+        ToolTipService.SetToolTip(titleStack, status == "READY"
+            ? (subtext != null ? $"{title}\n{subtext}" : $"{title} ({L10n.T("sources.click_to_view")})")
+            : $"{title}\n{subtext}\n{L10n.T("sources.not_ready_hint")}");
 
         // 3. Actions (three dots: rename, retry, delete — preview is triggered by clicking the row)
         var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
@@ -266,7 +268,10 @@ public sealed partial class MainWindow
             item.Click += h;
             menu.Items.Add(item);
         }
-        Add(L10n.T("sources.rename"), OnRenameSourceClick);
+        // A source that is not fully parsed (index and guide included) cannot be opened or edited:
+        // only deleting it (or retrying a failed import) is possible.
+        var openable = status == "READY";
+        if (openable) Add(L10n.T("sources.rename"), OnRenameSourceClick);
         if (status == "FAILED") Add(L10n.T("sources.retry_import"), OnRetrySourceClick);
         Add(L10n.T("sources.delete"), OnDeleteSourceClick);
 
@@ -356,11 +361,20 @@ public sealed partial class MainWindow
             Margin = new Thickness(0, 2, 0, 2),
             Child = row,
         };
-        border.PointerEntered += (_, _) => border.Background = hoverBrush;
-        border.PointerExited += (_, _) => border.Background = transparentBrush;
-        border.PointerPressed += (_, _) => border.Background = pressedBrush;
-        border.PointerReleased += (_, _) => border.Background = hoverBrush;
-        border.Tapped += async (_, _) => await ShowSourcePreviewAsync(id, null, null, title);
+        if (status == "READY")
+        {
+            border.PointerEntered += (_, _) => border.Background = hoverBrush;
+            border.PointerExited += (_, _) => border.Background = transparentBrush;
+            border.PointerPressed += (_, _) => border.Background = pressedBrush;
+            border.PointerReleased += (_, _) => border.Background = hoverBrush;
+            border.Tapped += async (_, _) => await ShowSourcePreviewAsync(id, null, null, title);
+        }
+        else
+        {
+            // still being parsed (or failed): no hover/press feedback and no way in, only delete
+            row.Opacity = 0.7;
+            cb.IsEnabled = false;
+        }
         return border;
     }
 

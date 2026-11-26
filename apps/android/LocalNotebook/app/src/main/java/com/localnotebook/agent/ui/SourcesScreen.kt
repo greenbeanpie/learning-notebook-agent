@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -37,6 +38,7 @@ fun SourcesScreen(
     onAddText: (String, String) -> Unit,
     onCreateNote: (String, String) -> Unit,
     onToggleSource: (String, Boolean) -> Unit,
+    onRemoveSource: (String) -> Unit = {},
     onOpenSource: (SourceItem) -> Unit,
     onOpenPdf: (SourceItem, Int) -> Unit,
     onBuildKnowledgeGraph: (SourceItem) -> Unit,
@@ -126,7 +128,8 @@ fun SourcesScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
-                            .clickable { onOpenSource(src) },
+                            // a source that is still being parsed cannot be opened; only deleted
+                            .clickable(enabled = src.status == "READY") { onOpenSource(src) },
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -147,10 +150,17 @@ fun SourcesScreen(
                                     Text(src.status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
-                            Checkbox(
-                                checked = src.isSelected,
-                                onCheckedChange = { onToggleSource(src.id, it) },
-                            )
+                            if (src.status == "READY") {
+                                Checkbox(
+                                    checked = src.isSelected,
+                                    onCheckedChange = { onToggleSource(src.id, it) },
+                                )
+                            } else {
+                                // not fully parsed (index and source guide included): delete only
+                                IconButton(onClick = { onRemoveSource(src.id) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = L10n.t("sources.delete", en))
+                                }
+                            }
                         }
                     }
                 }

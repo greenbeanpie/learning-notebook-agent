@@ -132,6 +132,8 @@ data class ModelProfileItem(
     val allowInsecureHttp: Boolean,
     val contextWindow: Int,
     val maxOutputTokens: Int,
+    /** Most model requests of this profile in flight at once (parallel generation). */
+    val maxParallel: Int = 4,
     val supportsVision: Boolean,
     val supportsAudio: Boolean,
     val supportsVideo: Boolean,

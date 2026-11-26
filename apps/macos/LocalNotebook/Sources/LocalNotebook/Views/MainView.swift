@@ -1,10 +1,15 @@
 import SwiftUI
+import AppKit
 
 struct MainView: View {
     @EnvironmentObject var state: AppState
     @Environment(\.colorScheme) private var systemColorScheme
 
     @State private var chatInput = ""
+    // Chat follows the latest message until the user scrolls up (see chatScrollArea).
+    @State private var chatFollowing = true
+    @State private var chatHovered = false
+    @State private var chatScrollMonitor: Any? = nil
     @StateObject private var chatAttach = AttachmentStore()
     /// Unsent chat text and attachments of the notebooks that are not open.
     @State private var chatDrafts: [String: (text: String, items: [AttachedItem])] = [:]
@@ -484,14 +489,20 @@ struct MainView: View {
                     Text(sub.text).font(.system(size: 11)).foregroundColor(sub.color).lineLimit(1)
                 }
             }
-            .help(sub.map { "\(src.title)\n\($0.text)" } ?? "\(src.title) (\(state.t("sources.click_to_view")))")
+            .help(src.status != "READY"
+                ? "\(src.title)\n\(sub?.text ?? "")\n\(state.t("sources.not_ready_hint"))"
+                : (sub.map { "\(src.title)\n\($0.text)" } ?? "\(src.title) (\(state.t("sources.click_to_view")))"))
 
             Spacer(minLength: 4)
 
             Menu {
-                Button(state.t("sources.rename")) {
-                    renameSourceInput = src.title
-                    renamingSource = src
+                // A source that is not fully parsed (index and guide included) can only be deleted
+                // (or retried after a failed import).
+                if src.status == "READY" {
+                    Button(state.t("sources.rename")) {
+                        renameSourceInput = src.title
+                        renamingSource = src
+                    }
                 }
                 if src.status == "FAILED" {
                     Button(state.t("sources.retry_import")) {
@@ -523,6 +534,7 @@ struct MainView: View {
             ))
             .toggleStyle(.checkbox)
             .labelsHidden()
+            .disabled(src.status != "READY")
             .help(state.t("sources.cite_source_tip"))
             .accessibilityLabel(L10n.fmt("sources.cite_source", en: state.isEnglish, src.title))
         }
@@ -532,12 +544,43 @@ struct MainView: View {
         .background(hoveredSourceId == src.id ? palette.hoverBg : Color.clear)
         .cornerRadius(10)
         .contentShape(Rectangle())
-        .onTapGesture { state.openSourcePreview(SourcePreviewRequest(sourceId: src.id, title: src.title)) }
+        .opacity(src.status == "READY" ? 1 : 0.7)
+        .onTapGesture {
+            guard src.status == "READY" else { return }
+            state.openSourcePreview(SourcePreviewRequest(sourceId: src.id, title: src.title))
+        }
         .onHover { hovering in
+            guard src.status == "READY" else { return }
             withAnimation(.easeOut(duration: 0.12)) {
                 hoveredSourceId = hovering ? src.id : (hoveredSourceId == src.id ? nil : hoveredSourceId)
             }
         }
+    }
+
+    /// The NSScrollView under a mouse event (SwiftUI's ScrollView is one underneath).
+    private static func chatScrollView(at ev: NSEvent) -> NSScrollView? {
+        var v = ev.window?.contentView?.hitTest(ev.locationInWindow)
+        while let c = v {
+            if let sv = c as? NSScrollView { return sv }
+            v = c.superview
+        }
+        return nil
+    }
+
+    private static func isScroller(at ev: NSEvent) -> Bool {
+        var v = ev.window?.contentView?.hitTest(ev.locationInWindow)
+        while let c = v {
+            if c is NSScroller { return true }
+            v = c.superview
+        }
+        return false
+    }
+
+    private static func isAtBottom(_ sv: NSScrollView) -> Bool {
+        guard let doc = sv.documentView else { return true }
+        let visible = sv.contentView.bounds
+        let gap = doc.isFlipped ? doc.bounds.maxY - visible.maxY : visible.minY - doc.bounds.minY
+        return gap <= 36
     }
 
     private func deleteSource(_ src: SourceItem) {
@@ -637,13 +680,57 @@ struct MainView: View {
                             .id(msg.id)
                         }
                         Color.clear.frame(height: 1).id("chat-bottom")
+                            // back at the very bottom: following resumes
+                            .onAppear { chatFollowing = true }
                     }
                 }
+                .onHover { chatHovered = $0 }
+                .onAppear {
+                    // Only the user's own scrolling decides whether the chat follows: a wheel /
+                    // trackpad scroll up, grabbing the scroll bar, or a scrolling key (up arrow,
+                    // Page Up, Home) over the chat stops following. Content growth never does;
+                    // being back at the bottom resumes it.
+                    if chatScrollMonitor == nil {
+                        chatScrollMonitor = NSEvent.addLocalMonitorForEvents(
+                            matching: [.scrollWheel, .leftMouseDown, .leftMouseUp, .keyDown]
+                        ) { ev in
+                            switch ev.type {
+                            case .scrollWheel:
+                                if chatHovered && ev.scrollingDeltaY > 0.5 { chatFollowing = false }
+                            case .leftMouseDown:
+                                if chatHovered, Self.isScroller(at: ev) { chatFollowing = false }
+                            case .leftMouseUp:
+                                // a scroll bar drag that ended at the bottom resumes following
+                                if chatHovered, let sv = Self.chatScrollView(at: ev), Self.isAtBottom(sv) { chatFollowing = true }
+                            case .keyDown:
+                                let typing = NSApp.keyWindow?.firstResponder is NSTextView
+                                // 126 up arrow, 116 Page Up, 115 Home
+                                if chatHovered && !typing && [126, 116, 115].contains(Int(ev.keyCode)) {
+                                    chatFollowing = false
+                                }
+                            default:
+                                break
+                            }
+                            return ev
+                        }
+                    }
+                }
+                .onDisappear {
+                    if let m = chatScrollMonitor { NSEvent.removeMonitor(m); chatScrollMonitor = nil }
+                }
                 .onChange(of: state.messages.count) { _, _ in
-                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                    // a new message (sending, a reply starting, switching notebook) jumps to the end
+                    chatFollowing = true
+                    DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                 }
                 .onChange(of: state.messages.last?.content ?? "") { _, _ in
-                    if state.isGeneratingChat { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                    guard chatFollowing else { return }
+                    // after the layout pass that placed the new text
+                    DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                }
+                .onChange(of: state.messages.last?.thoughts.count ?? 0) { _, _ in
+                    guard chatFollowing else { return }
+                    DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                 }
             }
 

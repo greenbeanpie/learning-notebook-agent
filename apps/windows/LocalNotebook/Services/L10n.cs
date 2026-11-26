@@ -505,6 +505,7 @@ public static class L10n
         // Sources & Notes
         ["sources.status_queued"] = "排队中",
         ["sources.status_parsing"] = "解析中",
+        ["sources.not_ready_hint"] = "解析（含索引与来源指南）完成前无法查看，只能删除。",
         ["sources.status_chunking"] = "分块中",
         ["sources.status_embedding"] = "建立索引",
         ["sources.status_ready"] = "就绪",
@@ -825,6 +826,8 @@ public static class L10n
         ["model.reasoning_effort"] = "推理强度",
         ["settings.context_window_tokens"] = "上下文窗口 (tokens)",
         ["settings.max_output_tokens"] = "单次最大输出 (tokens)",
+        ["settings.max_parallel"] = "并行请求数上限",
+        ["settings.max_parallel_tip"] = "该配置同时进行的模型请求数上限（1–64）。Studio 产物、来源索引、讲解等流程会按此上限并行生成；服务商限流时请调小。",
         ["settings.input_price_1m_tokens_optional"] = "输入单价 ($ / 百万 tokens，可留空)",
         ["settings.output_price_1m_tokens_optional"] = "输出单价 ($ / 百万 tokens，可留空)",
         ["settings.header_name_e_g_x"] = "请求头名称（如 X-Api-Version）",
@@ -1254,6 +1257,7 @@ public static class L10n
         // Sources & Notes
         ["sources.status_queued"] = "Queued",
         ["sources.status_parsing"] = "Parsing",
+        ["sources.not_ready_hint"] = "Not available until parsing (index and source guide included) has finished; you can only delete it.",
         ["sources.status_chunking"] = "Chunking",
         ["sources.status_embedding"] = "Indexing",
         ["sources.status_ready"] = "Ready",
@@ -1574,6 +1578,8 @@ public static class L10n
         ["model.reasoning_effort"] = "Reasoning Effort",
         ["settings.context_window_tokens"] = "Context Window (tokens)",
         ["settings.max_output_tokens"] = "Max Output Tokens",
+        ["settings.max_parallel"] = "Max parallel requests",
+        ["settings.max_parallel_tip"] = "Most model requests this profile runs at once (1-64). Studio artifacts, source indexing, lectures and the like generate in parallel up to this limit; lower it if the provider rate-limits you.",
         ["settings.input_price_1m_tokens_optional"] = "Input price ($ / 1M tokens, optional)",
         ["settings.output_price_1m_tokens_optional"] = "Output price ($ / 1M tokens, optional)",
         ["settings.header_name_e_g_x"] = "Header name (e.g. X-Api-Version)",

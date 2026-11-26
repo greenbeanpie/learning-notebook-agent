@@ -306,8 +306,15 @@ pub struct ModelProfile {
     pub input_price_per_m: Option<f64>,
     pub output_price_per_m: Option<f64>,
     pub is_active: bool,
+    /// Most requests of this profile in flight at once (parallel Studio executors, indexing, ...).
+    #[serde(default = "default_max_parallel")]
+    pub max_parallel: u32,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+fn default_max_parallel() -> u32 {
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

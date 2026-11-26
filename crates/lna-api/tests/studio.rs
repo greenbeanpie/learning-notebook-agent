@@ -414,7 +414,7 @@ fn studio_calls_are_serialised_per_profile_and_ingest_is_not_blocked() {
     }
     assert!(
         mock.max_inflight_of(Kind::Studio) <= 4,
-        "Studio concurrency stays bounded by studio_slots (4)"
+        "Studio requests stay bounded by the profile's max_parallel (default 4)"
     );
 }
 
@@ -679,4 +679,51 @@ fn refine_node_route_runs_inside_dispatcher() {
     );
     assert!(r.get("refined").is_some(), "{r}");
     assert_eq!(r["artifact"]["id"], json!(id));
+}
+
+fn profile_with_limit(env: &Env, mock: &MockLlm, limit: u32) -> Value {
+    env.ok(
+        "profile.upsert",
+        json!({
+            "display_name": "mock", "protocol": "chat_completion",
+            "base_url": mock.base_url(), "model_id": "mock-model", "activate": true,
+            "context_window": 32000, "max_output_tokens": 1000, "max_parallel": limit
+        }),
+    )
+}
+
+/// The profile's `max_parallel` is the one limit on model requests in flight: a long quiz is
+/// written by parallel batch executors up to it, and never beyond it.
+#[test]
+fn max_parallel_setting_bounds_parallel_executors() {
+    let mock = MockLlm::start(|r| match r.kind {
+        Kind::Studio => {
+            let Reply::Text(t) = studio_reply(r) else {
+                unreachable!()
+            };
+            Reply::SlowText(t, 40)
+        }
+        _ => Reply::Text("OK".into()),
+    });
+    let env = Env::new("maxparallel");
+    let nid = small_notebook(&env);
+    let prof = profile_with_limit(&env, &mock, 2);
+    assert_eq!(prof["max_parallel"], json!(2), "{prof}");
+    let listed = env.ok("profile.list", json!({}));
+    assert_eq!(listed["profiles"][0]["max_parallel"], json!(2), "{listed}");
+
+    // 20 questions = 4 batches: they run in parallel, but only 2 at a time.
+    let id = create(&env, &nid, "quiz", json!({ "count": 20 }));
+    studio_wait(&env, &id, "READY", 60);
+    let inflight = mock.max_inflight_of(Kind::Studio);
+    assert_eq!(
+        inflight, 2,
+        "batches fan out up to the profile limit (saw {inflight})"
+    );
+
+    // Out-of-range values are clamped, and a raised limit is picked up at once.
+    let prof = profile_with_limit(&env, &mock, 500);
+    assert_eq!(prof["max_parallel"], json!(64), "{prof}");
+    let prof = profile_with_limit(&env, &mock, 0);
+    assert_eq!(prof["max_parallel"], json!(1), "{prof}");
 }

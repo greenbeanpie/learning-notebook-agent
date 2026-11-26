@@ -39,6 +39,18 @@ pub struct IngestService {
     seq: Option<Arc<AtomicU64>>,
 }
 
+/// A source can be opened (preview, guide, index) only once it has been parsed completely;
+/// until then the only thing a user can do with it is delete it.
+pub fn ensure_source_viewable(src: &Source) -> LnaResult<()> {
+    if src.status == lna_types::SourceStatus::Ready {
+        return Ok(());
+    }
+    Err(LnaError::new(
+        ErrorCode::Conflict,
+        "该来源尚未解析完成，暂时无法查看，等待完成或将其删除。",
+    ))
+}
+
 impl IngestService {
     pub fn new(
         db: Database,
@@ -587,49 +599,6 @@ impl IngestService {
 
         self.update_status(source_id, "CHUNKING", None, None)?;
 
-        // Stage 1: AI-driven structural indexing & Source Guide (1 low-token call)
-        let ai_index = match precomputed_ai_index {
-            Some(pre) => Some(pre),
-            None => {
-                let tid = format!("index:{}", src.id);
-                self.emit_ai_activity(
-                    &src.notebook_id,
-                    Some(&src.id),
-                    &tid,
-                    "source_index",
-                    "tool",
-                    &format!("AI 构建资料索引与来源指南：{}", src.title),
-                    "正在分析文档目录结构、提炼核心主题并生成来源指南…",
-                    true,
-                );
-                let idx_res = ai_indexer::run_ai_index_for_doc(
-                    &self.db,
-                    &self.secrets,
-                    &self.llm,
-                    &src,
-                    &doc,
-                )
-                .await;
-                self.emit_ai_activity(
-                    &src.notebook_id,
-                    Some(&src.id),
-                    &tid,
-                    "source_index",
-                    "done",
-                    &format!("资料索引构建完成：{}", src.title),
-                    "",
-                    false,
-                );
-                match idx_res {
-                    Ok(opt) => opt,
-                    Err(e) => {
-                        tracing::warn!(source_id, error = %e.message, "AI structural indexing failed; continuing with physical anchors");
-                        None
-                    }
-                }
-            }
-        };
-
         let mut drafts = chunker::chunk_document(&doc);
         if drafts.is_empty() {
             let e = LnaError::new(
@@ -641,7 +610,9 @@ impl IngestService {
             return Err(e);
         }
 
-        if let Some(ref ai) = ai_index {
+        // The scanned-PDF vision pass already produced index and guide in one go.
+        let precomputed = precomputed_ai_index.is_some();
+        if let Some(ref ai) = precomputed_ai_index {
             ai_indexer::align_chunks_to_nodes(&mut drafts, &ai.nodes);
             let _ = lna_storage::replace_source_index_nodes(&self.db, source_id, &ai.nodes);
             let guide_md = if ai.guide_summary_md.trim().is_empty() {
@@ -701,11 +672,21 @@ impl IngestService {
             Ok(())
         })?;
 
+        // The chunks are searchable now. Two independent branches finish the source side by
+        // side: the AI branch (index, then the source guide written from it) and the vector
+        // branch (embedding). The source is READY once both are done.
+        let ai_branch = async {
+            if !precomputed {
+                self.build_index_then_guide(&src, &doc).await;
+            }
+        };
+        let (_, embed_res) = tokio::join!(
+            ai_branch,
+            self.embed_source_chunks(source_id, &src.notebook_id, &src.title)
+        );
+
         // Embedding (failure does not fail the source — BM25 remains usable per Section 7.1)
-        if let Err(e) = self
-            .embed_source_chunks(source_id, &src.notebook_id, &src.title)
-            .await
-        {
+        if let Err(e) = embed_res {
             tracing::warn!(source_id, error = %e.message, "Embedding failed; source remains lexically searchable");
             let _ = self.update_status(
                 source_id,
@@ -726,6 +707,121 @@ impl IngestService {
         );
 
         Ok(())
+    }
+
+    /// The AI part of the source pipeline, run back to back: the hierarchical index first
+    /// (chunks are linked to its nodes), then the source guide written from that index. A failed
+    /// step is logged and leaves the source usable with its physical anchors.
+    async fn build_index_then_guide(&self, src: &Source, doc: &parser::ParsedDoc) {
+        let tid = format!("index:{}", src.id);
+        self.emit_ai_activity(
+            &src.notebook_id,
+            Some(&src.id),
+            &tid,
+            "source_index",
+            "tool",
+            &format!("AI 构建资料索引：{}", src.title),
+            "正在分析文档目录结构并建立分层索引…",
+            true,
+        );
+        let nodes = match ai_indexer::run_ai_index_nodes(
+            &self.db,
+            &self.secrets,
+            &self.llm,
+            src,
+            doc,
+        )
+        .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(source_id = %src.id, error = %e.message, "AI structural indexing failed; continuing with physical anchors");
+                None
+            }
+        };
+        self.emit_ai_activity(
+            &src.notebook_id,
+            Some(&src.id),
+            &tid,
+            "source_index",
+            "done",
+            &format!("资料索引构建完成：{}", src.title),
+            "",
+            false,
+        );
+        let Some(nodes) = nodes else { return };
+        let _ = lna_storage::replace_source_index_nodes(&self.db, &src.id, &nodes);
+        let _ = self.backfill_chunk_nodes(&src.id, &nodes);
+        // The index is usable already; the guide follows without a gap.
+        let _ = lna_storage::update_source_guide(&self.db, &src.id, None, &[], true);
+
+        let gid = format!("guide:{}", src.id);
+        self.emit_ai_activity(
+            &src.notebook_id,
+            Some(&src.id),
+            &gid,
+            "source_index",
+            "tool",
+            &format!("AI 撰写来源指南：{}", src.title),
+            "正在依据索引提炼核心主题并撰写来源指南…",
+            true,
+        );
+        match ai_indexer::run_ai_guide(&self.db, &self.secrets, &self.llm, src, doc, &nodes).await {
+            Ok(Some((summary, topics))) => {
+                let md = (!summary.trim().is_empty()).then_some(summary.as_str());
+                let _ = lna_storage::update_source_guide(&self.db, &src.id, md, &topics, true);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(source_id = %src.id, error = %e.message, "AI source guide failed; the index stays");
+            }
+        }
+        self.emit_ai_activity(
+            &src.notebook_id,
+            Some(&src.id),
+            &gid,
+            "source_index",
+            "done",
+            &format!("来源指南完成：{}", src.title),
+            "",
+            false,
+        );
+    }
+
+    /// Links the stored chunks of a source to the nodes of its index.
+    fn backfill_chunk_nodes(
+        &self,
+        source_id: &str,
+        nodes: &[lna_types::SourceIndexNode],
+    ) -> LnaResult<()> {
+        let chunks = self.source_preview(source_id, None)?;
+        let mut drafts: Vec<chunker::ChunkDraft> = chunks
+            .iter()
+            .map(|c| chunker::ChunkDraft {
+                chunk_index: c.chunk_index,
+                section_path: c.section_path.clone(),
+                node_id: None,
+                page_start: c.page_start,
+                page_end: c.page_end,
+                char_start: c.char_start,
+                char_end: c.char_end,
+                content: c.content.clone(),
+                token_count: c.token_count,
+            })
+            .collect();
+        ai_indexer::align_chunks_to_nodes(&mut drafts, nodes);
+        self.db.write(|conn| {
+            let tx = conn.transaction().map_err(map_sql_err)?;
+            for (c, d) in chunks.iter().zip(drafts.iter()) {
+                tx.execute(
+                    "UPDATE source_chunks SET node_id = ?1, section_path = COALESCE(?2, section_path) WHERE id = ?3",
+                    params![d.node_id, d.section_path, c.id],
+                )
+                .map_err(map_sql_err)?;
+            }
+            tx.commit().map_err(map_sql_err)?;
+            Ok(())
+        })
     }
 
     pub async fn embed_source_chunks(
@@ -827,6 +923,7 @@ impl IngestService {
     /// imported before an AI model was configured).
     pub async fn regenerate_source_guide(&self, source_id: &str) -> LnaResult<Source> {
         let src = lna_storage::get_source(&self.db, source_id)?;
+        ensure_source_viewable(&src)?;
         let chunks = self.source_preview(source_id, None)?;
         if chunks.is_empty() {
             return Err(LnaError::invalid("该来源暂无已索引内容，无法生成来源指南"));
@@ -863,7 +960,8 @@ impl IngestService {
             true,
         );
         let ai_res =
-            ai_indexer::run_ai_index_for_doc(&self.db, &self.secrets, &self.llm, &src, &doc).await;
+            ai_indexer::run_ai_index_and_guide(&self.db, &self.secrets, &self.llm, &src, &doc)
+                .await;
         self.emit_ai_activity(
             &src.notebook_id,
             Some(&src.id),
@@ -887,35 +985,7 @@ impl IngestService {
             Some(ai.guide_summary_md.as_str())
         };
         lna_storage::update_source_guide(&self.db, source_id, guide_md, &ai.guide_topics, true)?;
-
-        // Backfill node_id on existing chunks
-        let mut drafts: Vec<chunker::ChunkDraft> = chunks
-            .iter()
-            .map(|c| chunker::ChunkDraft {
-                chunk_index: c.chunk_index,
-                section_path: c.section_path.clone(),
-                node_id: None,
-                page_start: c.page_start,
-                page_end: c.page_end,
-                char_start: c.char_start,
-                char_end: c.char_end,
-                content: c.content.clone(),
-                token_count: c.token_count,
-            })
-            .collect();
-        ai_indexer::align_chunks_to_nodes(&mut drafts, &ai.nodes);
-        self.db.write(|conn| {
-            let tx = conn.transaction().map_err(map_sql_err)?;
-            for (c, d) in chunks.iter().zip(drafts.iter()) {
-                tx.execute(
-                    "UPDATE source_chunks SET node_id = ?1, section_path = COALESCE(?2, section_path) WHERE id = ?3",
-                    params![d.node_id, d.section_path, c.id],
-                )
-                .map_err(map_sql_err)?;
-            }
-            tx.commit().map_err(map_sql_err)?;
-            Ok(())
-        })?;
+        self.backfill_chunk_nodes(source_id, &ai.nodes)?;
 
         lna_storage::get_source(&self.db, source_id)
     }

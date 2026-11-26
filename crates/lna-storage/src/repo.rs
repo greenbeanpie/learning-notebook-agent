@@ -492,7 +492,8 @@ pub fn list_profiles(db: &Database) -> LnaResult<Vec<ModelProfile>> {
                 "SELECT id, display_name, protocol, base_url, model_id, keychain_ref,
                         show_thinking, effort, context_window, max_output_tokens,
                         capabilities_json, extra_headers_json, token_ratio,
-                        input_price_per_m, output_price_per_m, is_active, created_at, updated_at
+                        input_price_per_m, output_price_per_m, is_active, created_at, updated_at,
+                        max_parallel
                  FROM model_profiles ORDER BY updated_at DESC",
             )
             .map_err(map_sql_err)?;
@@ -526,7 +527,8 @@ pub fn get_active_profile_unchecked(db: &Database) -> LnaResult<Option<ModelProf
             "SELECT id, display_name, protocol, base_url, model_id, keychain_ref,
                     show_thinking, effort, context_window, max_output_tokens,
                     capabilities_json, extra_headers_json, token_ratio,
-                    input_price_per_m, output_price_per_m, is_active, created_at, updated_at
+                    input_price_per_m, output_price_per_m, is_active, created_at, updated_at,
+                        max_parallel
              FROM model_profiles WHERE is_active = 1 LIMIT 1",
             [],
             map_profile_row,
@@ -542,7 +544,8 @@ pub fn get_profile(db: &Database, id: &str) -> LnaResult<ModelProfile> {
             "SELECT id, display_name, protocol, base_url, model_id, keychain_ref,
                     show_thinking, effort, context_window, max_output_tokens,
                     capabilities_json, extra_headers_json, token_ratio,
-                    input_price_per_m, output_price_per_m, is_active, created_at, updated_at
+                    input_price_per_m, output_price_per_m, is_active, created_at, updated_at,
+                        max_parallel
              FROM model_profiles WHERE id = ?1",
             [id],
             map_profile_row,
@@ -585,6 +588,7 @@ fn map_profile_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelProfile> {
         is_active: r.get::<_, i64>(15)? == 1,
         created_at: r.get(16)?,
         updated_at: r.get(17)?,
+        max_parallel: r.get::<_, i64>(18)?.clamp(1, 64) as u32,
     })
 }
 
@@ -650,7 +654,8 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                 "UPDATE model_profiles SET display_name=?1, protocol=?2, base_url=?3, model_id=?4,
                  show_thinking=?5, effort=?6, context_window=?7, max_output_tokens=?8,
                  extra_headers_json=?9, input_price_per_m=?10, output_price_per_m=?11,
-                 capabilities_json=COALESCE(?15, capabilities_json), is_active=CASE WHEN ?12=1 THEN 1 ELSE is_active END, updated_at=?13
+                 capabilities_json=COALESCE(?15, capabilities_json), is_active=CASE WHEN ?12=1 THEN 1 ELSE is_active END, updated_at=?13,
+                 max_parallel=COALESCE(?16, max_parallel)
                  WHERE id=?14",
                 params![
                     params_in.display_name,
@@ -668,6 +673,7 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                     now,
                     id,
                     merged_caps_json,
+                    params_in.max_parallel.map(|n| n.clamp(1, 64) as i64),
                 ],
             )
             .map_err(map_sql_err)?;
@@ -677,8 +683,8 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                 "INSERT INTO model_profiles
                  (id, display_name, protocol, base_url, model_id, keychain_ref, show_thinking,
                   effort, context_window, max_output_tokens, capabilities_json, extra_headers_json,
-                  input_price_per_m, output_price_per_m, is_active, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                  input_price_per_m, output_price_per_m, is_active, created_at, updated_at, max_parallel)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
                 params![
                     id,
                     params_in.display_name,
@@ -697,6 +703,7 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                     if params_in.activate { 1 } else { 0 },
                     now,
                     now,
+                    params_in.max_parallel.unwrap_or(4).clamp(1, 64) as i64,
                 ],
             )
             .map_err(map_sql_err)?;

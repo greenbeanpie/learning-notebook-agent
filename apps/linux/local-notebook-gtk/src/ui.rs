@@ -1226,21 +1226,43 @@ fn refresh_all(st: &Rc<UiState>) {
                 let selected = s.get("is_selected").and_then(Value::as_bool).unwrap_or(true);
                 let row = GtkBox::new(Orientation::Horizontal, 8);
                 row.add_css_class("lna-source-row");
-                let lbl = Label::new(Some(title));
+                let status = s.get("status").and_then(Value::as_str).unwrap_or("READY");
+                let ready = status == "READY";
+                let lbl = Label::new(Some(&if ready {
+                    title.to_string()
+                } else {
+                    format!("{title} · {}", tr(en, &format!("sources.status_{}", status.to_lowercase())))
+                }));
                 lbl.set_hexpand(true);
                 lbl.set_xalign(0.0);
-                let cb = CheckButton::new();
-                cb.set_active(selected);
-                let st2 = st.clone();
-                cb.connect_toggled(move |c| {
-                    let _ = call_core(
-                        &st2.core,
-                        "source.set_selected",
-                        json!({ "source_id": sid, "selected": c.is_active() }),
-                    );
-                });
                 row.append(&lbl);
-                row.append(&cb);
+                if ready {
+                    let cb = CheckButton::new();
+                    cb.set_active(selected);
+                    let st2 = st.clone();
+                    let sid_sel = sid.clone();
+                    cb.connect_toggled(move |c| {
+                        let _ = call_core(
+                            &st2.core,
+                            "source.set_selected",
+                            json!({ "source_id": sid_sel, "selected": c.is_active() }),
+                        );
+                    });
+                    row.append(&cb);
+                } else {
+                    // Not fully parsed (index and source guide included): it cannot be used or
+                    // opened, the only action is deleting it.
+                    row.set_opacity(0.7);
+                    row.set_tooltip_text(Some(tr(en, "sources.not_ready_hint")));
+                    let del = Button::with_label(tr(en, "sources.delete"));
+                    let st_del = st.clone();
+                    let sid_del = sid.clone();
+                    del.connect_clicked(move |_| {
+                        let _ = call_core(&st_del.core, "source.remove", json!({ "source_id": sid_del }));
+                        refresh_all(&st_del);
+                    });
+                    row.append(&del);
+                }
                 st.sources_box.append(&row);
                 if s.get("recommend_knowledge_graph").and_then(Value::as_bool).unwrap_or(false) {
                     let kg_row = GtkBox::new(Orientation::Horizontal, 6);
@@ -2665,6 +2687,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let effort_dd = DropDown::from_strings(&[tr(en, "tts.default_voice"), "low", "medium", "high"]);
     let ctx_entry = Entry::builder().text("32000").placeholder_text("Context Window").build();
     let out_entry = Entry::builder().text("8000").placeholder_text("Max Output Tokens").build();
+    let par_entry = Entry::builder().text("4").placeholder_text(tr(en, "model.max_parallel")).tooltip_text(tr(en, "model.max_parallel_tip")).build();
     let price_in_entry = Entry::builder().placeholder_text("Input price ($/1M)").build();
     let price_out_entry = Entry::builder().placeholder_text("Output price ($/1M)").build();
 
@@ -2706,6 +2729,8 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     adv_box.append(&Label::new(Some(tr(en, "model.context_window_max_output_tokens"))));
     adv_box.append(&ctx_entry);
     adv_box.append(&out_entry);
+    adv_box.append(&Label::new(Some(tr(en, "model.max_parallel"))));
+    adv_box.append(&par_entry);
     adv_box.append(&price_in_entry);
     adv_box.append(&price_out_entry);
     adv_box.append(&headers_hdr);
@@ -2921,6 +2946,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let effort_dd = effort_dd.clone();
         let ctx_entry = ctx_entry.clone();
         let out_entry = out_entry.clone();
+        let par_entry = par_entry.clone();
         let price_in_entry = price_in_entry.clone();
         let price_out_entry = price_out_entry.clone();
         let rows_p = extra_headers_rows.clone();
@@ -2947,6 +2973,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 effort_dd.set_selected(effort_ids.iter().position(|&x| x == eff).unwrap_or(0) as u32);
                 ctx_entry.set_text(&p.get("context_window").and_then(Value::as_i64).unwrap_or(32000).to_string());
                 out_entry.set_text(&p.get("max_output_tokens").and_then(Value::as_i64).unwrap_or(8000).to_string());
+                par_entry.set_text(&p.get("max_parallel").and_then(Value::as_i64).unwrap_or(4).to_string());
                 price_in_entry.set_text(&p.get("input_price_per_m").and_then(Value::as_f64).map(|x| x.to_string()).unwrap_or_default());
                 price_out_entry.set_text(&p.get("output_price_per_m").and_then(Value::as_f64).map(|x| x.to_string()).unwrap_or_default());
                 if let Some(hdrs) = p.get("extra_headers").and_then(Value::as_object) {
@@ -2991,6 +3018,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 effort_dd.set_selected(0);
                 ctx_entry.set_text("32000");
                 out_entry.set_text("8000");
+                par_entry.set_text("4");
                 price_in_entry.set_text("");
                 price_out_entry.set_text("");
                 model_status_lbl.set_text(tr(en, "model.editing_new_profile_choose_a"));
@@ -3239,6 +3267,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let eff = effort_ids.get(effort_dd.selected() as usize).copied().unwrap_or("");
         let cw: i64 = ctx_entry.text().trim().parse().unwrap_or(32000);
         let mo: i64 = out_entry.text().trim().parse().unwrap_or(8000);
+        let mp: i64 = par_entry.text().trim().parse::<i64>().unwrap_or(4).clamp(1, 64);
         let en_now = st_m.is_en();
         let mut payload = json!({
             "display_name": format!("{proto} / {model}"),
@@ -3250,6 +3279,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
             "show_thinking": thinking_sw.is_active(),
             "context_window": cw,
             "max_output_tokens": mo,
+            "max_parallel": mp,
             "supports_vision": vision_chk.is_active(),
             "supports_audio": audio_chk.is_active(),
             "supports_video": video_chk.is_active(),

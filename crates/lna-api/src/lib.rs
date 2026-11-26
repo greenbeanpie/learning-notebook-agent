@@ -68,6 +68,10 @@ impl CoreRuntime {
                 );
             });
         }
+        // Per-profile limit on requests in flight (user setting in the AI settings).
+        for prof in lna_storage::list_profiles(&db).unwrap_or_default() {
+            llm.set_parallel_limit(&prof.id, prof.max_parallel);
+        }
         let embedding = EmbeddingService::new(db.clone(), secrets.clone());
         let retrieval = Arc::new(RetrievalEngine::new(db.clone(), embedding.clone()));
         let (events, _) = broadcast::channel(512);
@@ -330,7 +334,8 @@ impl CoreRuntime {
         self.rt.spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let mut tick = 0u64;
-            let bg_slots = Arc::new(tokio::sync::Semaphore::new(3));
+            // Imports run side by side; their model calls are bounded by the profile's own limit.
+            let bg_slots = Arc::new(tokio::sync::Semaphore::new(8));
             loop {
                 let Some(core) = weak1.upgrade() else { break };
                 if core.shutdown.is_cancelled() {
@@ -448,11 +453,13 @@ impl CoreRuntime {
             }
         });
 
-        // Worker 2: Dedicated Studio parallel dispatcher (runs up to 4 Studio artifacts concurrently)
+        // Worker 2: Dedicated Studio parallel dispatcher. Artifacts are not capped here any more:
+        // what is bounded is the number of model requests in flight per profile (AI settings), so
+        // the cap below only guards against runaway queues.
         let weak2 = Arc::downgrade(self);
         self.rt.spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let studio_slots = Arc::new(tokio::sync::Semaphore::new(4));
+            let studio_slots = Arc::new(tokio::sync::Semaphore::new(64));
             loop {
                 let Some(core) = weak2.upgrade() else { break };
                 if core.shutdown.is_cancelled() {
@@ -610,15 +617,20 @@ impl CoreRuntime {
             // --- Notebook ---
             "notebook.list" => Ok(json!({ "notebooks": lna_storage::list_notebooks(&self.db)? })),
             "notebook.create" => {
-                let title = p
+                // A title the user typed is theirs: the AI summary never renames it. Only a
+                // notebook created without a title gets a placeholder the AI may replace.
+                let typed = p
                     .get("title")
                     .and_then(|x| x.as_str())
-                    .unwrap_or("未命名笔记本");
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty());
                 let emoji = p.get("emoji").and_then(|x| x.as_str());
-                Ok(
-                    serde_json::to_value(lna_storage::create_notebook(&self.db, title, emoji)?)
-                        .unwrap(),
-                )
+                let nb =
+                    lna_storage::create_notebook(&self.db, typed.unwrap_or("未命名笔记本"), emoji)?;
+                if let Some(t) = typed {
+                    lna_storage::rename_notebook(&self.db, &nb.id, t, true)?;
+                }
+                Ok(serde_json::to_value(lna_storage::get_notebook(&self.db, &nb.id)?).unwrap())
             }
             "notebook.get" => {
                 let id = req_str(p, "notebook_id")?;
@@ -903,6 +915,7 @@ impl CoreRuntime {
                 };
                 params_in.capabilities = Some(caps);
                 let mut prof = lna_storage::upsert_profile(&self.db, &params_in)?;
+                self.llm.set_parallel_limit(&prof.id, prof.max_parallel);
                 if let (Some(k), Some(kref)) = (api_key, prof.keychain_ref.as_deref()) {
                     self.secrets.set(kref, SecretString::from(k))?;
                 }
@@ -1373,6 +1386,7 @@ impl CoreRuntime {
                 let sid = req_str(p, "source_id")?;
                 let page = p.get("page").and_then(|x| x.as_i64()).map(|n| n as i32);
                 let src = lna_storage::get_source(&self.db, sid)?;
+                lna_ingest::ensure_source_viewable(&src)?;
                 let chunks = self.ingest.source_preview(sid, page)?;
                 let index_nodes =
                     lna_storage::list_source_index_nodes(&self.db, sid).unwrap_or_default();

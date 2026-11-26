@@ -191,6 +191,8 @@ public sealed partial class MainWindow
             effortBox.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
         var ctxBox = new NumberBox { Header = L10n.T("settings.context_window_tokens"), Value = 32000, Minimum = 2000, Maximum = 2_000_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
         var outBox = new NumberBox { Header = L10n.T("settings.max_output_tokens"), Value = 8000, Minimum = 256, Maximum = 200_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var parBox = new NumberBox { Header = L10n.T("settings.max_parallel"), Value = 4, Minimum = 1, Maximum = 64, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        ToolTipService.SetToolTip(parBox, L10n.T("settings.max_parallel_tip"));
         var priceIn = new NumberBox { Header = L10n.T("settings.input_price_1m_tokens_optional"), Value = double.NaN, Minimum = 0 };
         var priceOut = new NumberBox { Header = L10n.T("settings.output_price_1m_tokens_optional"), Value = double.NaN, Minimum = 0 };
         var headersRows = new List<(Grid Row, TextBox KeyBox, TextBox ValBox)>();
@@ -344,7 +346,7 @@ public sealed partial class MainWindow
                 activateChatBox.IsChecked = !profiles.Any(x => Bool(x, "is_active"));
                 visionBox.IsChecked = false; audioBox.IsChecked = false; videoBox.IsChecked = false;
                 thinkingBox.IsOn = true; effortBox.SelectedIndex = 0;
-                ctxBox.Value = 32000; outBox.Value = 8000; priceIn.Value = double.NaN; priceOut.Value = double.NaN;
+                ctxBox.Value = 32000; outBox.Value = 8000; parBox.Value = 4; priceIn.Value = double.NaN; priceOut.Value = double.NaN;
                 LoadHeaderRows(default); caps.Text = "";
                 keyBox.Password = "";
                 keyBox.PlaceholderText = L10n.T("model.enter_api_key_optional_for");
@@ -367,6 +369,7 @@ public sealed partial class MainWindow
             effortBox.SelectedIndex = Math.Max(0, new[] { "", "low", "medium", "high" }.ToList().IndexOf(effort));
             ctxBox.Value = Int(prof, "context_window", 32000);
             outBox.Value = Int(prof, "max_output_tokens", 8000);
+            parBox.Value = Int(prof, "max_parallel", 4);
             priceIn.Value = prof.TryGetProperty("input_price_per_m", out var pi) && pi.ValueKind == JsonValueKind.Number ? pi.GetDouble() : double.NaN;
             priceOut.Value = prof.TryGetProperty("output_price_per_m", out var po) && po.ValueKind == JsonValueKind.Number ? po.GetDouble() : double.NaN;
             LoadHeaderRows(Obj(prof, "extra_headers"));
@@ -439,6 +442,7 @@ public sealed partial class MainWindow
             }
             ctxBox.Value = Int(prItem, "context_window", 32000);
             outBox.Value = Int(prItem, "max_output_tokens", 8000);
+            parBox.Value = 4;
             visionBox.IsChecked = Bool(prItem, "supports_vision");
             audioBox.IsChecked = Bool(prItem, "supports_audio");
             videoBox.IsChecked = Bool(prItem, "supports_video");
@@ -500,6 +504,7 @@ public sealed partial class MainWindow
                 ("show_thinking", thinkingBox.IsOn),
                 ("context_window", (int)ctxBox.Value),
                 ("max_output_tokens", (int)outBox.Value),
+                ("max_parallel", double.IsNaN(parBox.Value) ? 4 : (int)Math.Clamp(parBox.Value, 1, 64)),
                 ("extra_headers", BuildHeadersJson()),
                 ("supports_vision", visionBox.IsChecked == true),
                 ("supports_audio", audioBox.IsChecked == true),
@@ -602,6 +607,7 @@ public sealed partial class MainWindow
         advanced.Children.Add(effortBox);
         advanced.Children.Add(ctxBox);
         advanced.Children.Add(outBox);
+        advanced.Children.Add(parBox);
         advanced.Children.Add(priceIn);
         advanced.Children.Add(priceOut);
         advanced.Children.Add(headersBox);

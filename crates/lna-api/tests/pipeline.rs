@@ -877,3 +877,54 @@ fn studio_retries_three_times_and_records_error_log() {
     assert!(log.contains("synthetic studio failure"), "{log}");
     assert!(!log.contains("Authorization"), "{log}");
 }
+
+/// The AI summary only names notebooks the user has not named: a typed title at creation and a
+/// rename both stick, a title-less notebook gets the AI's suggestion.
+#[test]
+fn ai_summary_never_overwrites_a_user_set_title() {
+    let mock = MockLlm::start(|r| {
+        match r.kind {
+        Kind::NotebookSummary => Reply::Text(
+            r#"{"title_suggestion":"AI 标题","summary_md":"概览。","suggested_questions":["q1","q2","q3"]}"#.into(),
+        ),
+        _ => answer(),
+    }
+    });
+    let env = Env::new("nbtitle");
+    let typed = env.ok("notebook.create", json!({ "title": "我的线代" }))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let renamed = env.ok("notebook.create", json!({}))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    env.ok(
+        "notebook.rename",
+        json!({ "notebook_id": renamed, "title": "改过的名字" }),
+    );
+    let blank = env.ok("notebook.create", json!({ "title": "  " }))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for nid in [&typed, &renamed, &blank] {
+        env.add_text(nid, "讲义.md", "# 基\n\n向量空间的一组基。");
+    }
+    env.profile(&mock, 32000);
+    for nid in [&typed, &renamed, &blank] {
+        env.wait(20, || {
+            env.ok("notebook.get", json!({ "notebook_id": nid }))["summary_md"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+        });
+    }
+    let title = |nid: &str| {
+        env.ok("notebook.get", json!({ "notebook_id": nid }))["title"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(title(&typed), "我的线代");
+    assert_eq!(title(&renamed), "改过的名字");
+    assert_eq!(title(&blank), "AI 标题");
+}

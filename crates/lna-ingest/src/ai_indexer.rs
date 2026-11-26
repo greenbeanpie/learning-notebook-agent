@@ -265,24 +265,55 @@ Requirements:
 2. Build a clean hierarchical tree in nodes (8-30 major chapter/section nodes for long books, 2-8 topic nodes for short documents). Fill integer page_start and page_end when page numbers exist, otherwise null.
 3. Output strictly valid JSON and never fabricate nonexistent sections."#;
 
-/// Runs a single low-token AI indexing pass to generate Source Guide + Hierarchical Index Tree.
-pub async fn run_ai_index_for_doc(
+const AI_NODES_SYSTEM_PROMPT: &str = r#"You are a document structural indexing engine (step 1 of 2: the index; the source guide `guide_summary_md` is written in the following step, so do not write it here).
+Based on the provided document content (or structural probe), output a single strictly valid JSON object with no extra text outside the JSON.
+JSON schema:
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "parent_id": null,
+      "level": 1,
+      "title": "Section or chapter title",
+      "summary": "One concise sentence summarizing this section's core content",
+      "keywords": ["keyword1", "keyword2", "keyword3"],
+      "page_start": 1,
+      "page_end": 12
+    }
+  ]
+}
+Requirements:
+1. Build a clean hierarchical tree in nodes (8-30 major chapter/section nodes for long books, 2-8 topic nodes for short documents). Fill integer page_start and page_end when page numbers exist, otherwise null.
+2. Output strictly valid JSON and never fabricate nonexistent sections."#;
+
+const AI_GUIDE_SYSTEM_PROMPT: &str = r#"You are a knowledge guide engine (step 2 of 2: the source guide, written after the index).
+You get the document (or its structural probe) and the already built index outline. Output a single strictly valid JSON object with no extra text outside the JSON.
+JSON schema:
+{
+  "guide_summary_md": "A concise 120-220 character/word overview matching the document's primary language, highlighting 5-8 core concepts, themes, or methods in **bold** like a textbook study guide.",
+  "guide_topics": ["Topic 1", "Topic 2", "Topic 3", "Topic 4", "Topic 5"]
+}
+Requirements:
+1. Output 4-6 high-value topic phrases in guide_topics that users can click to ask follow-up questions.
+2. Stay consistent with the index outline and never fabricate content that is not in the document."#;
+
+/// Step 1 of the source pipeline: the hierarchical index (nodes only).
+pub async fn run_ai_index_nodes(
     db: &Database,
     secrets: &Arc<dyn SecretStore>,
     llm: &LlmClient,
     src: &Source,
     doc: &ParsedDoc,
-) -> LnaResult<Option<AiIndexOutput>> {
+) -> LnaResult<Option<Vec<SourceIndexNode>>> {
     let Some(resolved) = resolve_active_chat_profile(db, secrets)? else {
         return Ok(None);
     };
     if doc.blocks.is_empty() {
         return Ok(None);
     }
-
     let (probe, _is_small) = build_structural_probe(src, doc);
     let req = LlmRequest {
-        system: AI_INDEX_SYSTEM_PROMPT.to_string(),
+        system: AI_NODES_SYSTEM_PROMPT.to_string(),
         messages: vec![LlmMessage {
             role: Role::User,
             parts: vec![Part::Text(probe)],
@@ -293,13 +324,12 @@ pub async fn run_ai_index_for_doc(
         max_output_tokens: 2048.min(resolved.max_output_tokens.max(1024)),
         reasoning: ReasoningOptions::default(),
     };
-
     let (value, usage) = llm
         .complete_structured(
             &resolved,
             &req,
-            "source_index",
-            &index_schema(),
+            "source_index_nodes",
+            &nodes_schema(),
             CancellationToken::new(),
         )
         .await?;
@@ -314,8 +344,147 @@ pub async fn run_ai_index_for_doc(
         usage.cached_tokens as i64,
         false,
     );
+    Ok(parse_ai_index_response(&src.id, value)
+        .map(|o| o.nodes)
+        .filter(|n| !n.is_empty()))
+}
 
-    Ok(parse_ai_index_response(&src.id, value))
+/// Step 2 of the source pipeline: the source guide (summary + topics), written from the document
+/// and the index built in step 1.
+pub async fn run_ai_guide(
+    db: &Database,
+    secrets: &Arc<dyn SecretStore>,
+    llm: &LlmClient,
+    src: &Source,
+    doc: &ParsedDoc,
+    nodes: &[SourceIndexNode],
+) -> LnaResult<Option<(String, Vec<String>)>> {
+    let Some(resolved) = resolve_active_chat_profile(db, secrets)? else {
+        return Ok(None);
+    };
+    if doc.blocks.is_empty() && nodes.is_empty() {
+        return Ok(None);
+    }
+    let (probe, _is_small) = build_structural_probe(src, doc);
+    let mut outline = String::new();
+    for n in nodes.iter().take(60) {
+        outline.push_str(&format!(
+            "{}- {}: {}\n",
+            "  ".repeat((n.level.max(1) - 1) as usize),
+            n.title,
+            truncate_chars(&n.summary, 120)
+        ));
+    }
+    let text = format!(
+        "=== 已构建的目录索引 ===\n{outline}\n{}",
+        truncate_chars(&probe, 6_000)
+    );
+    let req = LlmRequest {
+        system: AI_GUIDE_SYSTEM_PROMPT.to_string(),
+        messages: vec![LlmMessage {
+            role: Role::User,
+            parts: vec![Part::Text(text)],
+        }],
+        tools: vec![],
+        tool_mode: ToolMode::None,
+        output: OutputMode::JsonObject,
+        max_output_tokens: 1024.min(resolved.max_output_tokens.max(512)),
+        reasoning: ReasoningOptions::default(),
+    };
+    let (value, usage) = llm
+        .complete_structured(
+            &resolved,
+            &req,
+            "source_guide",
+            &guide_schema(),
+            CancellationToken::new(),
+        )
+        .await?;
+    let _ = lna_storage::record_usage(
+        db,
+        Some(&src.notebook_id),
+        Some(&resolved.id),
+        "ingest_ai_guide",
+        Some(&src.id),
+        usage.input_tokens as i64,
+        usage.output_tokens as i64,
+        usage.cached_tokens as i64,
+        false,
+    );
+    #[derive(Deserialize)]
+    struct RawGuide {
+        #[serde(default)]
+        guide_summary_md: String,
+        #[serde(default)]
+        guide_topics: Vec<String>,
+    }
+    let g: RawGuide = serde_json::from_value(value).map_err(|e| {
+        LnaError::new(
+            lna_types::ErrorCode::OutputInvalid,
+            format!("Invalid source guide: {e}"),
+        )
+    })?;
+    let topics: Vec<String> = g
+        .guide_topics
+        .into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .take(6)
+        .collect();
+    let summary = g.guide_summary_md.trim().to_string();
+    if summary.is_empty() && topics.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((summary, topics)))
+}
+
+/// Index then guide, one after the other (the guide is written from the index).
+pub async fn run_ai_index_and_guide(
+    db: &Database,
+    secrets: &Arc<dyn SecretStore>,
+    llm: &LlmClient,
+    src: &Source,
+    doc: &ParsedDoc,
+) -> LnaResult<Option<AiIndexOutput>> {
+    let Some(nodes) = run_ai_index_nodes(db, secrets, llm, src, doc).await? else {
+        return Ok(None);
+    };
+    let (summary, topics) = run_ai_guide(db, secrets, llm, src, doc, &nodes)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    Ok(Some(AiIndexOutput {
+        guide_summary_md: summary,
+        guide_topics: topics,
+        nodes,
+        scanned_page_texts: Vec::new(),
+    }))
+}
+
+pub fn nodes_schema() -> serde_json::Value {
+    let mut v = index_schema();
+    if let Some(o) = v.as_object_mut() {
+        if let Some(p) = o.get_mut("properties").and_then(|p| p.as_object_mut()) {
+            p.remove("guide_summary_md");
+            p.remove("guide_topics");
+            p.remove("page_texts");
+        }
+        o.insert("required".into(), serde_json::json!(["nodes"]));
+    }
+    v
+}
+
+pub fn guide_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "guide_summary_md": { "type": "string" },
+            "guide_topics": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["guide_summary_md", "guide_topics"],
+        "additionalProperties": false
+    })
 }
 
 /// For pure-scanned PDFs (no text layer): inspect only front-matter/TOC pages (up to 8 pages)

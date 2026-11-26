@@ -384,15 +384,20 @@ fn b11_limits() {
 fn ai_source_guide_and_hierarchical_index_work_on_import_and_on_demand() {
     let ai_mock = MockLlm::start(|r| {
         match r.kind {
-        Kind::SourceIndex => Reply::Text(
+        // The pipeline writes the index first (step 1) and the guide from it afterwards (step 2).
+        Kind::SourceIndex if r.system.contains("step 2 of 2") => Reply::Text(
             r#"{
               "guide_summary_md": "本文系统讲解了**微积分基础**与**微分中值定理**，帮助读者建立严谨逻辑。",
-              "guide_topics": ["微积分基础", "微分中值定理", "积分计算"],
+              "guide_topics": ["微积分基础", "微分中值定理", "积分计算"]
+            }"#
+            .into(),
+        ),
+        Kind::SourceIndex => Reply::Text(
+            r#"{
               "nodes": [
                 {"id": "n1", "parent_id": null, "level": 1, "title": "第1章 实数与极限", "summary": "介绍实数完备性与函数极限", "keywords": ["实数", "极限"], "page_start": 1, "page_end": 20, "char_start": null, "char_end": null},
                 {"id": "n2", "parent_id": null, "level": 1, "title": "第2章 导数与微分中值定理", "summary": "罗尔定理与拉格朗日中值定理", "keywords": ["导数", "中值定理"], "page_start": 21, "page_end": 50, "char_start": null, "char_end": null}
-              ],
-              "page_texts": []
+              ]
             }"#
             .into(),
         ),
@@ -430,4 +435,45 @@ fn ai_source_guide_and_hierarchical_index_work_on_import_and_on_demand() {
     assert_eq!(preview_after["ai_indexed"], true);
     assert_eq!(preview_after["guide_topics"].as_array().unwrap().len(), 3);
     assert_eq!(preview_after["index_nodes"].as_array().unwrap().len(), 2);
+}
+
+/// A source that is still being parsed cannot be opened (preview or guide): only deleting it is
+/// possible. Once it is READY it opens again.
+#[test]
+fn unfinished_source_cannot_be_opened_only_deleted() {
+    let env = Env::new("not_viewable");
+    let nid = env.notebook();
+    let sid = env.add_text(&nid, "讲义.md", "# 第1章\n\n内容。");
+    env.wait_sources_ready(&nid, 1);
+    env.core
+        .db
+        .write(|c| {
+            c.execute("UPDATE sources SET status='PARSING' WHERE id=?1", [&sid])
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    for method in ["source.preview", "source.generate_guide"] {
+        let e = env.err(method, json!({ "source_id": sid }));
+        assert!(e.contains("CONFLICT"), "{method}: {e}");
+    }
+    env.core
+        .db
+        .write(|c| {
+            c.execute("UPDATE sources SET status='READY' WHERE id=?1", [&sid])
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    env.ok("source.preview", json!({ "source_id": sid }));
+    // deleting is always possible
+    env.core
+        .db
+        .write(|c| {
+            c.execute("UPDATE sources SET status='EMBEDDING' WHERE id=?1", [&sid])
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    env.ok("source.remove", json!({ "source_id": sid }));
 }

@@ -1283,6 +1283,34 @@ impl AgentService {
                     let only_stage_reports = pending_calls
                         .values()
                         .all(|(_, name, _)| name == "report_thought_stage");
+                    // Attachment tools may call a model themselves (parsing, extraction,
+                    // audio/video questions): the independent calls of one round run side by
+                    // side (bounded by the profile's request limit) instead of one after another.
+                    let mut attachment_outcomes: HashMap<String, context_files::ToolOutcome> =
+                        futures_util::future::join_all(pending_calls.values().map(
+                            |(cid, name, args_s)| {
+                                let ctx = context_files::ToolCtx {
+                                    db: &self.db,
+                                    secrets: &self.secrets,
+                                    llm: &self.llm,
+                                    notebook_id,
+                                    profile: &resolved,
+                                    atts: &ctx_items,
+                                };
+                                async move {
+                                    let args: serde_json::Value =
+                                        serde_json::from_str(args_s).unwrap_or_else(|_| json!({}));
+                                    (
+                                        cid.clone(),
+                                        context_files::run_tool(&ctx, name, &args).await,
+                                    )
+                                }
+                            },
+                        ))
+                        .await
+                        .into_iter()
+                        .filter_map(|(cid, o)| o.map(|o| (cid, o)))
+                        .collect();
                     for (_, (cid, name, args_s)) in pending_calls {
                         let args: serde_json::Value =
                             serde_json::from_str(&args_s).unwrap_or_else(|_| json!({}));
@@ -1293,15 +1321,7 @@ impl AgentService {
                         });
                         let mut is_error = false;
                         let mut custom_step_title: Option<String> = None;
-                        let ctx = context_files::ToolCtx {
-                            db: &self.db,
-                            secrets: &self.secrets,
-                            llm: &self.llm,
-                            notebook_id,
-                            profile: &resolved,
-                            atts: &ctx_items,
-                        };
-                        let attachment_outcome = context_files::run_tool(&ctx, &name, &args).await;
+                        let attachment_outcome = attachment_outcomes.remove(&cid);
                         let result_content = match name.as_str() {
                             _ if attachment_outcome.is_some() => {
                                 let o = attachment_outcome.unwrap();

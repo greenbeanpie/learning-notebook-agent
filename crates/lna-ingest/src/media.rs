@@ -517,94 +517,131 @@ pub async fn ocr_pdf_pages(
     }
 
     if let Some(resolved) = vision_prof {
-        for batch in ocr_pages.chunks(4) {
-            let rendered = parser::render_pdf_pages_to_jpeg(pdf_path, batch, 1400)?;
-            if rendered.is_empty() {
-                continue;
-            }
-            let page_list: Vec<String> = rendered.iter().map(|(p, _)| p.to_string()).collect();
-            let mut parts: Vec<Part> = Vec::with_capacity(rendered.len() * 2 + 1);
-            for (pno, jpg) in &rendered {
-                parts.push(Part::Text(format!("[第 {pno} 页图片]")));
-                parts.push(Part::Media {
-                    mime_type: "image/jpeg".into(),
-                    data_base64: Some(base64::engine::general_purpose::STANDARD.encode(jpg)),
-                    file_uri: None,
-                    audio_format: None,
+        // Orchestrator: split the pages into batches; every batch is an executor (render, model
+        // call, local-OCR fallback) and up to the profile's request limit of them run at once.
+        // Results are put back in page order.
+        let batches: Vec<Vec<u32>> = ocr_pages.chunks(4).map(|c| c.to_vec()).collect();
+        let limit = llm.parallel_limit(&resolved.id).clamp(1, 64);
+        let resolved_ref = &resolved;
+        let mut running = futures_util::StreamExt::buffer_unordered(
+            futures_util::stream::iter(batches.into_iter().enumerate().map(
+                |(i, batch)| async move {
+                    (
+                        i,
+                        ocr_pdf_batch(db, llm, resolved_ref, src, pdf_path, batch).await,
+                    )
+                },
+            )),
+            limit,
+        );
+        let mut by_batch: std::collections::BTreeMap<usize, Vec<(u32, String)>> =
+            std::collections::BTreeMap::new();
+        while let Some((i, pages)) = futures_util::StreamExt::next(&mut running).await {
+            by_batch.insert(i, pages);
+        }
+        for (_, pages) in by_batch {
+            for (pno, txt) in pages {
+                let start = cursor;
+                cursor += txt.len();
+                out_blocks.push(Block {
+                    kind: BlockKind::Paragraph,
+                    text: txt,
+                    page: Some(pno),
+                    section_path: sec_map.get(&pno).cloned().unwrap_or_default(),
+                    char_range: start..cursor,
                 });
-            }
-            parts.push(Part::Text(format!(
-                "请逐页准确识别以上 PDF 页面（页码：{}）中的文字、表格与公式（公式用 LaTeX，表格用 Markdown）。\n\
-                务必严格按如下分隔符输出每页内容，空白页可只输出分隔符不加正文：\n\
-                === PAGE <页码> ===",
-                page_list.join(", ")
-            )));
-
-            let req = LlmRequest {
-                system: "You are a professional document OCR assistant. Faithfully transcribe text, Markdown tables, LaTeX formulas, and brief figure annotations visible on each page without fabrication.".into(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts,
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::Text,
-                max_output_tokens: resolved.max_output_tokens.max(4096),
-                reasoning: ReasoningOptions::default(),
-            };
-
-            if let Ok((resp_text, usage)) = llm
-                .complete_text(&resolved, &req, CancellationToken::new())
-                .await
-            {
-                let _ = lna_storage::record_usage(
-                    db,
-                    Some(&src.notebook_id),
-                    Some(&resolved.id),
-                    "ingest_ocr",
-                    Some(&src.id),
-                    usage.input_tokens as i64,
-                    usage.output_tokens as i64,
-                    usage.cached_tokens as i64,
-                    false,
-                );
-                let parsed_pages = split_ocr_pages_response(&resp_text, &rendered);
-                for (pno, page_txt) in parsed_pages {
-                    let trimmed = page_txt.trim();
-                    if !trimmed.is_empty() {
-                        let start = cursor;
-                        cursor += trimmed.len();
-                        out_blocks.push(Block {
-                            kind: BlockKind::Paragraph,
-                            text: trimmed.to_string(),
-                            page: Some(pno),
-                            section_path: sec_map.get(&pno).cloned().unwrap_or_default(),
-                            char_range: start..cursor,
-                        });
-                    }
-                }
-            } else {
-                // Batch AI failed: try local WinRT OCR fallback for this batch
-                if let Ok(local) = run_local_win_ocr_on_pdf_pages(pdf_path, batch) {
-                    for (pno, txt_opt) in local {
-                        if let Some(txt) = txt_opt {
-                            let start = cursor;
-                            cursor += txt.len();
-                            out_blocks.push(Block {
-                                kind: BlockKind::Paragraph,
-                                text: txt,
-                                page: Some(pno),
-                                section_path: sec_map.get(&pno).cloned().unwrap_or_default(),
-                                char_range: start..cursor,
-                            });
-                        }
-                    }
-                }
             }
         }
     }
 
     Ok(out_blocks)
+}
+
+/// One OCR executor: renders up to four pages, asks the vision model and falls back to the local
+/// OCR when the model fails. Returns the recognised `(page, text)` pairs.
+async fn ocr_pdf_batch(
+    db: &Database,
+    llm: &LlmClient,
+    resolved: &ResolvedProfile,
+    src: &Source,
+    pdf_path: &Path,
+    batch: Vec<u32>,
+) -> Vec<(u32, String)> {
+    let (pdf, pages) = (pdf_path.to_path_buf(), batch.clone());
+    let rendered = match tokio::task::spawn_blocking(move || {
+        parser::render_pdf_pages_to_jpeg(&pdf, &pages, 1400)
+    })
+    .await
+    {
+        Ok(Ok(r)) if !r.is_empty() => r,
+        _ => return Vec::new(),
+    };
+    let page_list: Vec<String> = rendered.iter().map(|(p, _)| p.to_string()).collect();
+    let mut parts: Vec<Part> = Vec::with_capacity(rendered.len() * 2 + 1);
+    for (pno, jpg) in &rendered {
+        parts.push(Part::Text(format!("[第 {pno} 页图片]")));
+        parts.push(Part::Media {
+            mime_type: "image/jpeg".into(),
+            data_base64: Some(base64::engine::general_purpose::STANDARD.encode(jpg)),
+            file_uri: None,
+            audio_format: None,
+        });
+    }
+    parts.push(Part::Text(format!(
+        "请逐页准确识别以上 PDF 页面（页码：{}）中的文字、表格与公式（公式用 LaTeX，表格用 Markdown）。\n\
+        务必严格按如下分隔符输出每页内容，空白页可只输出分隔符不加正文：\n\
+        === PAGE <页码> ===",
+        page_list.join(", ")
+    )));
+    let req = LlmRequest {
+        system: "You are a professional document OCR assistant. Faithfully transcribe text, Markdown tables, LaTeX formulas, and brief figure annotations visible on each page without fabrication.".into(),
+        messages: vec![LlmMessage {
+            role: Role::User,
+            parts,
+        }],
+        tools: vec![],
+        tool_mode: ToolMode::None,
+        output: OutputMode::Text,
+        max_output_tokens: resolved.max_output_tokens.max(4096),
+        reasoning: ReasoningOptions::default(),
+    };
+    match llm
+        .complete_text(resolved, &req, CancellationToken::new())
+        .await
+    {
+        Ok((resp_text, usage)) => {
+            let _ = lna_storage::record_usage(
+                db,
+                Some(&src.notebook_id),
+                Some(&resolved.id),
+                "ingest_ocr",
+                Some(&src.id),
+                usage.input_tokens as i64,
+                usage.output_tokens as i64,
+                usage.cached_tokens as i64,
+                false,
+            );
+            split_ocr_pages_response(&resp_text, &rendered)
+                .into_iter()
+                .map(|(pno, t)| (pno, t.trim().to_string()))
+                .filter(|(_, t)| !t.is_empty())
+                .collect()
+        }
+        Err(_) => {
+            // Batch AI failed: try local WinRT OCR fallback for this batch
+            let (pdf, pages) = (pdf_path.to_path_buf(), batch);
+            tokio::task::spawn_blocking(move || run_local_win_ocr_on_pdf_pages(&pdf, &pages))
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .map(|v| {
+                    v.into_iter()
+                        .filter_map(|(pno, t)| t.map(|t| (pno, t)))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+    }
 }
 
 fn run_local_win_ocr_on_pdf_pages(

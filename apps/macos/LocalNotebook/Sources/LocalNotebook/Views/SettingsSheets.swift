@@ -39,6 +39,8 @@ struct ModelProfileItem: Identifiable {
     /// false: probed and lacking tool calling or structured output (cannot be used)
     var eligible: Bool = true
     var unsupportedReason: String? = nil
+    /// Most model requests of this profile in flight at once (parallel generation).
+    var maxParallel: Int = 4
 }
 
 struct UnifiedSettingsSheet: View {
@@ -73,6 +75,7 @@ struct UnifiedSettingsSheet: View {
     @State private var effort = ""
     @State private var contextWindowText = "32000"
     @State private var maxOutputTokensText = "8000"
+    @State private var maxParallelText = "4"
     @State private var priceInText = ""
     @State private var priceOutText = ""
     @State private var extraHeaders: [(id: UUID, key: String, value: String)] = []
@@ -406,6 +409,16 @@ struct UnifiedSettingsSheet: View {
                             }
                         }
 
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(L10n.t("model.max_parallel", en: state.isEnglish))
+                                .font(.caption).foregroundColor(palette.textSecondary)
+                            TextField("4", text: $maxParallelText)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 120, alignment: .leading)
+                            Text(L10n.t("model.max_parallel_tip", en: state.isEnglish))
+                                .font(.caption2).foregroundColor(palette.textMuted)
+                        }
+
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(L10n.t("model.input_price_1m", en: state.isEnglish))
@@ -709,7 +722,8 @@ struct UnifiedSettingsSheet: View {
             supportsVideo: caps["supports_video"] as? Bool ?? false,
             extraHeaders: hdrs,
             eligible: d["eligible"] as? Bool ?? true,
-            unsupportedReason: d["unsupported_reason"] as? String
+            unsupportedReason: d["unsupported_reason"] as? String,
+            maxParallel: d["max_parallel"] as? Int ?? 4
         )
     }
 
@@ -754,6 +768,7 @@ struct UnifiedSettingsSheet: View {
             effort = ""
             contextWindowText = "32000"
             maxOutputTokensText = "8000"
+            maxParallelText = "4"
             priceInText = ""
             priceOutText = ""
             extraHeaders = []
@@ -777,6 +792,7 @@ struct UnifiedSettingsSheet: View {
         effort = p.effort
         contextWindowText = String(p.contextWindow)
         maxOutputTokensText = String(p.maxOutputTokens)
+        maxParallelText = String(p.maxParallel)
         priceInText = p.inputPricePerM.map { String($0) } ?? ""
         priceOutText = p.outputPricePerM.map { String($0) } ?? ""
         extraHeaders = p.extraHeaders.sorted(by: { $0.key < $1.key }).map { (UUID(), $0.key, $0.value) }
@@ -849,6 +865,7 @@ struct UnifiedSettingsSheet: View {
             "show_thinking": showThinking,
             "context_window": Int(contextWindowText) ?? 32000,
             "max_output_tokens": Int(maxOutputTokensText) ?? 8000,
+            "max_parallel": min(64, max(1, Int(maxParallelText) ?? 4)),
             "extra_headers": hdrDict,
             "supports_vision": supportsVision,
             "supports_audio": supportsAudio,

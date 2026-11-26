@@ -11,6 +11,7 @@
 
 use super::*;
 use crate::figure::{render_figure, svg_to_png, FIGURE_DSL_GUIDE};
+use futures_util::StreamExt as _;
 use std::collections::HashSet;
 
 pub const LECTURE_REPAIR_ROUNDS: usize = 2;
@@ -895,7 +896,7 @@ impl StudioService {
     pub(crate) async fn generate_figure(
         &self,
         art: &StudioArtifact,
-        profile: &ModelProfile,
+        _profile: &ModelProfile,
         resolved: &ResolvedProfile,
         artifact_id: &str,
         slide_title: &str,
@@ -926,7 +927,6 @@ impl StudioService {
             reasoning: ReasoningOptions::default(),
         };
         let (mut spec, u) = {
-            let _p = self.acquire_llm_slots(&profile.id).await?;
             self.run_structured_with_thought(
                 artifact_id,
                 &art.notebook_id,
@@ -1003,7 +1003,6 @@ impl StudioService {
                 resolved.clone()
             };
             let res = {
-                let _p = self.acquire_llm_slots(&profile.id).await?;
                 self.run_structured_with_thought(
                     artifact_id,
                     &art.notebook_id,
@@ -1089,35 +1088,47 @@ impl StudioService {
         cancel: CancellationToken,
     ) -> LnaResult<Usage> {
         let mut usage = Usage::default();
-        for slide in slides.iter_mut() {
-            let Some(req) = slide
-                .get("figure_request")
-                .cloned()
-                .filter(|r| r.is_object())
-            else {
-                continue;
-            };
-            if slide.get("figure").is_some_and(|f| f.is_object()) {
-                continue;
+        // Each figure is an independent executor with its own clean context.
+        let jobs: Vec<(usize, String, Value)> = slides
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slide)| {
+                let req = slide
+                    .get("figure_request")
+                    .cloned()
+                    .filter(|r| r.is_object())?;
+                if slide.get("figure").is_some_and(|f| f.is_object()) {
+                    return None;
+                }
+                Some((i, sv(slide, "title"), req))
+            })
+            .collect();
+        let limit = self.parallelism(profile).min(jobs.len().max(1));
+        let mut running = futures_util::stream::iter(jobs.into_iter().map(|(i, title, req)| {
+            let cancel_c = cancel.clone();
+            async move {
+                let res = self
+                    .generate_figure(
+                        art,
+                        profile,
+                        resolved,
+                        artifact_id,
+                        &title,
+                        &req,
+                        excerpt,
+                        cancel_c,
+                    )
+                    .await;
+                (i, title, res)
             }
-            let title = sv(slide, "title");
-            match self
-                .generate_figure(
-                    art,
-                    profile,
-                    resolved,
-                    artifact_id,
-                    &title,
-                    &req,
-                    excerpt,
-                    cancel.clone(),
-                )
-                .await
-            {
+        }))
+        .buffer_unordered(limit);
+        while let Some((i, title, res)) = next_or_cancel(&mut running, &cancel).await? {
+            match res {
                 Ok((fig, u)) => {
                     add_usage(&mut usage, &u);
                     if let Some(fig) = fig {
-                        slide["figure"] = fig;
+                        slides[i]["figure"] = fig;
                     }
                 }
                 Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
@@ -1250,7 +1261,6 @@ impl StudioService {
         };
         let mut usage = Usage::default();
         let (out, u) = {
-            let _p = self.acquire_llm_slots(&profile.id).await?;
             self.run_structured_with_thought(
                 artifact_id,
                 &art.notebook_id,
@@ -1343,7 +1353,6 @@ impl StudioService {
                 issues_text(&issues, &slides)
             );
             let res = {
-                let _p = self.acquire_llm_slots(&profile.id).await?;
                 self.run_structured_with_thought(
                     artifact_id,
                     &art.notebook_id,
@@ -1535,7 +1544,6 @@ impl StudioService {
                     reasoning: reasoning.clone(),
                 };
                 let (outline, u) = {
-                    let _p = self.acquire_llm_slots(&profile.id).await?;
                     self.run_structured_with_thought(
                         artifact_id,
                         &art.notebook_id,
@@ -1597,84 +1605,102 @@ impl StudioService {
             .collect::<Vec<_>>()
             .join("\n");
         let total = sections.len();
-        for (i, sec) in sections.iter().enumerate() {
-            let sid = format!("s{}", i + 1);
-            if done.contains_key(&sid) {
-                continue;
-            }
-            if cancel.is_cancelled() {
-                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
-            }
-            let stitle = sv(sec, "title");
-            let focus = sv(sec, "focus");
+        // Orchestrator/executor: the outline above is the plan; every pending section is an
+        // independent executor (own evidence reading + authoring) and up to the profile's
+        // parallel-request limit of them run at once. Only this task merges and checkpoints.
+        let pending: Vec<(usize, Value)> = sections
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(i, _)| !done.contains_key(&format!("s{}", i + 1)))
+            .collect();
+        let limit = self.parallelism(profile).min(pending.len().max(1));
+        if pending.len() > 1 {
             self.append_thought(
                 artifact_id,
                 &art.notebook_id,
                 "stage",
-                &format!("撰写小节 {}/{}：{}", i + 1, total, stitle),
-                "正在查阅该小节对应的原文，并撰写幻灯片、讲稿与激光/分步动画提示…",
+                "并行撰写小节",
+                &format!(
+                    "共 {} 个小节待撰写，最多同时并行 {limit} 个（模型配置中的并行请求数上限）。",
+                    pending.len()
+                ),
             );
-            let evidence = self
-                .section_evidence(
-                    art,
-                    profile,
-                    resolved,
-                    artifact_id,
-                    &format!("{stitle} — {focus}"),
-                    full_text,
-                    cancel.clone(),
-                )
-                .await?;
-            let prev_titles: Vec<String> = done
-                .values()
-                .flat_map(|v| v.as_array().cloned().unwrap_or_default())
-                .map(|s| sv(&s, "title"))
-                .collect();
-            let sc = SectionCtx {
-                lecture_title: &title,
-                objectives: &objectives,
-                outline_txt: &outline_txt,
-                section_title: &stitle,
-                section_focus: &focus,
-                position: format!(
-                    "section {} of {}{}",
-                    i + 1,
-                    total,
-                    if i == 0 {
-                        "; open the lecture with a title slide"
-                    } else if i + 1 == total {
-                        "; close the lecture with a summary slide"
-                    } else {
-                        ""
+        }
+        let (title_ref, objectives_ref, outline_ref, kg_ref) =
+            (&title, &objectives, &outline_txt, &kg_hint);
+        let mut running = futures_util::stream::iter(pending.into_iter().map(|(i, sec)| {
+            let reasoning_c = reasoning.clone();
+            let cancel_c = cancel.clone();
+            async move {
+                let sid = format!("s{}", i + 1);
+                let stitle = sv(&sec, "title");
+                let focus = sv(&sec, "focus");
+                let res: LnaResult<(Vec<Value>, Usage)> = async {
+                    if cancel_c.is_cancelled() {
+                        return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
                     }
-                ),
-                extra: format!(
-                    "{}{}",
-                    if prev_titles.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            "Slides already covered in earlier sections: {}\n",
-                            prev_titles.join(" | ")
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        &format!("撰写小节 {}/{}：{}", i + 1, total, stitle),
+                        "正在查阅该小节对应的原文，并撰写幻灯片、讲稿与激光/分步动画提示…",
+                    );
+                    let evidence = self
+                        .section_evidence(
+                            art,
+                            profile,
+                            resolved,
+                            artifact_id,
+                            &format!("{stitle} — {focus}"),
+                            full_text,
+                            cancel_c.clone(),
                         )
-                    },
-                    kg_hint
-                ),
-            };
-            match self
-                .author_section(
-                    art,
-                    profile,
-                    resolved,
-                    artifact_id,
-                    &sc,
-                    &evidence,
-                    reasoning.clone(),
-                    max_repairs,
-                    cancel.clone(),
-                )
-                .await
-            {
+                        .await?;
+                    let sc = SectionCtx {
+                        lecture_title: title_ref,
+                        objectives: objectives_ref,
+                        outline_txt: outline_ref,
+                        section_title: &stitle,
+                        section_focus: &focus,
+                        position: format!(
+                            "section {} of {}{}",
+                            i + 1,
+                            total,
+                            if i == 0 {
+                                "; open the lecture with a title slide"
+                            } else if i + 1 == total {
+                                "; close the lecture with a summary slide"
+                            } else {
+                                ""
+                            }
+                        ),
+                        extra: format!(
+                            "Sections are written in parallel by separate authors: cover only this section's focus and leave the topics of the other outline entries to them.
+{kg_ref}"
+                        ),
+                    };
+                    self.author_section(
+                        art,
+                        profile,
+                        resolved,
+                        artifact_id,
+                        &sc,
+                        &evidence,
+                        reasoning_c,
+                        max_repairs,
+                        cancel_c.clone(),
+                    )
+                    .await
+                }
+                .await;
+                (sid, stitle, res)
+            }
+        }))
+        .buffer_unordered(limit);
+        while let Some((sid, stitle, res)) = next_or_cancel(&mut running, &cancel).await? {
+            match res {
                 Ok((mut slides, u)) => {
                     add_usage(&mut usage_sum, &u);
                     finalize_slides(&mut slides, &sid, &format!("{sid}-"));
@@ -1682,7 +1708,7 @@ impl StudioService {
                 }
                 Err(e) if e.code == ErrorCode::Cancelled || cancel.is_cancelled() => return Err(e),
                 Err(e) => {
-                    // keep going: a failed section must not discard the rest, but it is reported
+                    // a failed section is reported; finished ones stay in the checkpoint
                     self.append_thought(
                         artifact_id,
                         &art.notebook_id,
@@ -1690,6 +1716,7 @@ impl StudioService {
                         &format!("小节生成失败：{stitle}"),
                         &truncate_str(&e.message, 300),
                     );
+                    self.save_checkpoint(artifact_id, "lecture_passes", json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": done }))?;
                     return Err(e);
                 }
             }
@@ -1701,6 +1728,7 @@ impl StudioService {
                 &json!({ "outline": outline, "done": done }),
             );
         }
+        drop(running);
 
         let mut slides: Vec<Value> = Vec::new();
         for i in 0..total {
