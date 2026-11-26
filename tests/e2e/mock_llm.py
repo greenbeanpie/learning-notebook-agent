@@ -1,5 +1,5 @@
 """Minimal OpenAI-compatible streaming mock for smoke tests. Logs every request body."""
-import json, sys
+import json, re, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = sys.argv[2]
@@ -8,9 +8,13 @@ QUIZ = {"title": "基与维数测验", "questions": [
     {"id": "q1", "type": "single", "difficulty": "medium", "prompt": "n 维空间中 n+1 个向量必然？",
      "options": ["线性相关", "线性无关", "构成基", "无法确定"], "answer_indices": [0],
      "accepted_answers": [], "rubric": "", "explanation": "维数定理", "citations": [1]}]}
-MINDMAP_ROOT = {"title": "线性代数", "nodes": [
-    {"id": "n1", "parent_id": None, "label": "基与维数", "citations": [1]},
-    {"id": "n2", "parent_id": "n1", "label": "维数定理", "citations": [1]}]}
+# The mindmap generator runs in passes: PASS 1 builds root + top-level branches, then one
+# APPEND PASS per branch adds finer nodes under it (see generate_mindmap_multipass).
+MINDMAP_SKELETON = {"title": "线性代数", "nodes": [
+    {"id": "r", "parent_id": None, "label": "线性代数", "summary": "基与维数"},
+    {"id": "b1", "parent_id": "r", "label": "基", "summary": "线性无关且张成"},
+    {"id": "b2", "parent_id": "r", "label": "维数", "summary": "基中向量个数"},
+    {"id": "b3", "parent_id": "r", "label": "秩", "summary": "行秩等于列秩"}]}
 STUDIO_EXTRA = {
     "flashcards": {"title": "闪卡", "cards": [
         {"id": "c1", "front": "什么是基？", "back": "线性无关且张成整个空间的向量组", "hint": "两个条件", "citations": [1]},
@@ -31,11 +35,27 @@ SUMMARY = {"title_suggestion": "线性代数笔记", "summary_md": "本笔记本
            "suggested_questions": ["什么是基？", "维数如何定义？", "秩是什么？"]}
 
 
+def mindmap_reply(body, system):
+    """Answers the multi-pass mindmap prompts: skeleton first, then per-branch append passes."""
+    if "THIS IS PASS 1" in system:
+        return json.dumps(MINDMAP_SKELETON, ensure_ascii=False)
+    users = "".join(str(m.get("content")) for m in body.get("messages", []) if m.get("role") == "user")
+    m = re.search(r"Node: \[([^\]]+)\]", users)
+    anchor = m.group(1) if m else "b1"
+    return json.dumps({"nodes": [
+        {"id": f"{anchor}_t1", "parent_id": anchor, "label": "定义", "summary": "基本定义"},
+        {"id": f"{anchor}_t2", "parent_id": anchor, "label": "性质", "summary": "主要性质"},
+        {"id": f"{anchor}_t3", "parent_id": anchor, "label": "例子", "summary": "典型例子"}]}, ensure_ascii=False)
+
+
 def pick_reply(body):
     system = ""
     for m in body.get("messages", []):
         if m.get("role") == "system":
             system += str(m.get("content"))
+    # Must come before the "quiz" check: the mindmap prompts mention "quiz question".
+    if "Studio generator producing structured JSON for mindmap" in system:
+        return mindmap_reply(body, system)
     if '"standalone"' in system:
         return json.dumps({"standalone": "向量空间的基与维数有什么关系", "queries": ["基 维数", "basis dimension"]}, ensure_ascii=False)
     if '"questions"' in system and ("follow-up" in system or "追问" in system):
@@ -48,8 +68,6 @@ def pick_reply(body):
                 return json.dumps(payload, ensure_ascii=False)
     if "quiz" in system and not body.get("tools"):
         return json.dumps(QUIZ, ensure_ascii=False)
-    if "mindmap" in system and not body.get("tools"):
-        return json.dumps(MINDMAP_ROOT, ensure_ascii=False)
     if "summary_md" in system or "摘要" in system:
         return json.dumps(SUMMARY, ensure_ascii=False)
     if "JSON" in system:

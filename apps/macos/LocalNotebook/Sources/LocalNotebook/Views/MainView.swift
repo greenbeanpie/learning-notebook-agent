@@ -6,17 +6,12 @@ struct MainView: View {
 
     @State private var chatInput = ""
     @StateObject private var chatAttach = AttachmentStore()
-    @StateObject private var studioAttach = AttachmentStore()
     /// Unsent chat text and attachments of the notebooks that are not open.
     @State private var chatDrafts: [String: (text: String, items: [AttachedItem])] = [:]
     @State private var hoveredSourceId: String? = nil
     @State private var hoveredTileKind: String? = nil
     @State private var hoveredArtifactId: String? = nil
-    @State private var pendingStudioKind: String? = nil
-    @State private var studioPromptInput: String = ""
-    @State private var studioDetailLevel: String = "standard"
-    @State private var studioLectureMode: String = "general"
-    @State private var studioConfirmScope: Bool = true
+    @State private var studioConfig: StudioConfigRequest? = nil
 
     // Windows-synced helper dialogs
     @State private var titleDraft = ""
@@ -52,18 +47,22 @@ struct MainView: View {
                 HStack(spacing: 14) {
                     if !state.studioFullscreen {
                         sourcesPane
-                            .frame(width: state.activeArtifact != nil ? 250 : 320)
+                            .frame(width: sourcesWidth(geo.size.width))
                             .transition(.opacity.combined(with: .move(edge: .leading)))
-                        chatPane
-                            .frame(maxWidth: .infinity)
-                            .transition(.opacity)
+                        if !state.sourceFullscreen {
+                            chatPane
+                                .frame(maxWidth: .infinity)
+                                .transition(.opacity)
+                        }
                     }
-                    studioPane
-                        .frame(
-                            width: state.studioFullscreen
-                                ? geo.size.width
-                                : (state.activeArtifact != nil ? max(460, geo.size.width * 0.48) : 340)
-                        )
+                    if !state.sourceFullscreen {
+                        studioPane
+                            .frame(
+                                width: state.studioFullscreen
+                                    ? geo.size.width
+                                    : (state.activeArtifact != nil ? max(460, geo.size.width * 0.48) : 340)
+                            )
+                    }
                 }
                 .animation(state.prefs.fullscreenAnimation ? .spring(response: 0.22, dampingFraction: 0.86) : nil, value: state.studioFullscreen)
             }
@@ -92,8 +91,22 @@ struct MainView: View {
         .background(palette.canvasBg)
         .foregroundColor(palette.textPrimary)
         .preferredColorScheme(themeId.preferredColorScheme)
-        .sheet(isPresented: Binding(get: { pendingStudioKind != nil }, set: { if !$0 { pendingStudioKind = nil } })) {
-            studioConfigSheet
+        .sheet(item: $studioConfig) { req in
+            StudioConfigSheet(
+                request: req,
+                onSubmit: { cfg, extra in
+                    studioConfig = nil
+                    Task {
+                        if req.isUpdate, let art = state.artifacts.first(where: { $0.id == req.artifactId }) {
+                            await state.regenerateArtifact(art, config: cfg, extra: extra)
+                        } else {
+                            await state.createStudio(kind: req.kind, config: cfg, extra: extra)
+                        }
+                    }
+                },
+                onCancel: { studioConfig = nil }
+            )
+            .environmentObject(state)
         }
         .onChange(of: state.activeNotebookId) { oldId, newId in
             swapChatDraft(from: oldId, to: newId)
@@ -199,7 +212,7 @@ struct MainView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .accessibilityLabel(state.isEnglish ? "Switch notebook" : "切换笔记本")
+            .accessibilityLabel(L10n.t("nb.switch", en: state.isEnglish))
 
             Spacer()
 
@@ -216,12 +229,16 @@ struct MainView: View {
                 Button(state.t("nb.import_lna")) { importNotebook() }
                 Divider()
                 Button(state.t("nb.clear_chat")) {
+                    guard Confirm.ask(title: state.t("nb.clear_chat"), message: state.t("chat.clear_confirm"),
+                                      primary: state.t("chat.clear_btn"), cancel: state.t("common.cancel"), destructive: true) else { return }
                     Task {
-                        _ = try? await state.core.call(method: "chat.clear", params: ["notebook_id": state.activeNotebookId])
+                        _ = await state.run("chat.clear", ["notebook_id": state.activeNotebookId], what: state.t("nb.clear_chat"))
                         await state.refreshAll()
                     }
                 }
                 Button(state.t("nb.delete"), role: .destructive) {
+                    guard Confirm.ask(title: state.t("nb.delete"), message: L10n.fmt("nb.delete_confirm", en: state.isEnglish, activeNotebookTitle),
+                                      primary: state.t("common.delete"), cancel: state.t("common.cancel"), destructive: true) else { return }
                     Task { await state.deleteActiveNotebook() }
                 }
                 Divider()
@@ -247,7 +264,26 @@ struct MainView: View {
 
     // MARK: - Left: Sources Pane
 
+    private func sourcesWidth(_ total: CGFloat) -> CGFloat {
+        if state.sourceFullscreen { return total }
+        if state.previewSource != nil { return max(420, total * 0.4) }
+        return state.activeArtifact != nil ? 250 : 320
+    }
+
+    @ViewBuilder
     private var sourcesPane: some View {
+        if let req = state.previewSource {
+            SourcePreviewPane(request: req)
+                .padding(14)
+                .background(palette.panelBg)
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.subtleBorder, lineWidth: 1))
+                .cornerRadius(16)
+        } else {
+            sourcesListPane
+        }
+    }
+
+    private var sourcesListPane: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(state.t("sources.title"))
                 .font(.system(size: 15, weight: .semibold))
@@ -287,13 +323,13 @@ struct MainView: View {
 
                 PillButton(title: state.t("sources.create_note"), fillWidth: true, palette: palette) {
                     Task {
-                        if let res = try? await state.core.call(method: "note.save", params: [
+                        if let res = await state.run("note.save", [
                             "notebook_id": state.activeNotebookId,
-                            "title": state.isEnglish ? "Note" : "新笔记",
+                            "title": L10n.t("main.note", en: state.isEnglish),
                             "body_md": ""
                         ]), let id = res["id"] as? String {
                             await state.refreshAll()
-                            let title = state.isEnglish ? "Note" : "新笔记"
+                            let title = L10n.t("main.note", en: state.isEnglish)
                             editNoteTitle = title
                             editNoteBody = ""
                             editingNote = NoteItem(id: id, title: title, bodyMd: "")
@@ -314,11 +350,8 @@ struct MainView: View {
                     Toggle("", isOn: Binding(
                         get: { allSelected },
                         set: { newVal in
-                            let ids = state.sources.map { $0.id }
                             Task {
-                                for id in ids {
-                                    _ = try? await state.core.call(method: "source.set_selected", params: ["source_id": id, "selected": newVal])
-                                }
+                                _ = await state.run("source.set_all_selected", ["notebook_id": state.activeNotebookId, "selected": newVal], what: state.t("sources.op_select"))
                                 await state.refreshAll()
                             }
                         }
@@ -360,7 +393,7 @@ struct MainView: View {
                                             .font(.system(size: 14))
                                             .foregroundColor(Color(hex: 0xF5B942))
                                             .frame(width: 20)
-                                        Text(note.title.isEmpty ? (state.isEnglish ? "Untitled Note" : "未命名笔记") : note.title)
+                                        Text(note.title.isEmpty ? (L10n.t("main.untitled_note", en: state.isEnglish)) : note.title)
                                             .font(.system(size: 13))
                                             .foregroundColor(palette.textPrimary)
                                             .lineLimit(1)
@@ -375,13 +408,15 @@ struct MainView: View {
                                 .contextMenu {
                                     Button(state.t("notes.convert_to_source")) {
                                         Task {
-                                            _ = try? await state.core.call(method: "note.to_source", params: ["note_id": note.id])
+                                            _ = await state.run("note.to_source", ["note_id": note.id])
                                             await state.refreshAll()
                                         }
                                     }
                                     Button(state.t("notes.delete"), role: .destructive) {
+                                        guard Confirm.ask(title: state.t("note.delete_btn"), message: state.t("note.delete_confirm"),
+                                                          primary: state.t("common.delete"), cancel: state.t("common.cancel"), destructive: true) else { return }
                                         Task {
-                                            _ = try? await state.core.call(method: "note.delete", params: ["note_id": note.id])
+                                            _ = await state.run("note.delete", ["note_id": note.id])
                                             await state.refreshAll()
                                         }
                                     }
@@ -401,94 +436,97 @@ struct MainView: View {
     @ViewBuilder
     private func sourceRow(_ src: SourceItem) -> some View {
         let iconStyle = Color.sourceKindStyle(kind: src.kind, title: src.title)
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Image(systemName: iconStyle.symbol)
-                    .font(.system(size: 15))
-                    .foregroundColor(iconStyle.color)
-                    .frame(width: 20)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(src.title)
-                        .lineLimit(1)
-                        .font(.system(size: 13))
-                        .foregroundColor(palette.textPrimary)
-                    if state.indexingSourceIds.contains(src.id) {
-                        ProgressView().controlSize(.small)
-                    } else if src.status != "READY" {
-                        Text(sourceStatusLabel(src.status))
-                            .font(.system(size: 11))
-                            .foregroundColor(src.status == "FAILED" ? Color(hex: 0xFFA08C) : palette.textMuted)
-                    }
-                }
-
-                Spacer(minLength: 4)
-
-                Toggle("", isOn: Binding(
-                    get: { src.isSelected },
-                    set: { val in
-                        Task {
-                            _ = try? await state.core.call(method: "source.set_selected", params: ["source_id": src.id, "selected": val])
-                            await state.refreshAll()
-                        }
-                    }
-                ))
-                .toggleStyle(.checkbox)
-                .labelsHidden()
+        // Sub-line: why it failed, or that only keyword search works, or the import stage.
+        let sub: (text: String, color: Color)? = {
+            if src.status == "FAILED" {
+                let advice = L10n.advice(src.errorCode, en: state.isEnglish) ?? ""
+                let detail = advice.isEmpty ? src.errorDetail : advice
+                return (detail.isEmpty ? state.t("sources.status_failed") : L10n.fmt("sources.status_failed_detail", en: state.isEnglish, detail), Color(hex: 0xFFA08C))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(hoveredSourceId == src.id ? palette.hoverBg : Color.clear)
-            .cornerRadius(10)
-            .onHover { hovering in
-                withAnimation(.easeOut(duration: 0.12)) {
-                    hoveredSourceId = hovering ? src.id : (hoveredSourceId == src.id ? nil : hoveredSourceId)
+            if src.status != "READY" { return (sourceStatusLabel(src.status), palette.textMuted) }
+            if src.errorCode == "EMBEDDING_INCOMPLETE" { return (state.t("sources.keyword_only"), Color(hex: 0xFFC878)) }
+            return nil
+        }()
+        HStack(spacing: 8) {
+            Image(systemName: iconStyle.symbol)
+                .font(.system(size: 15))
+                .foregroundColor(iconStyle.color)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(src.title)
+                    .lineLimit(1)
+                    .font(.system(size: 13))
+                    .foregroundColor(palette.textPrimary)
+                if state.indexingSourceIds.contains(src.id) {
+                    ProgressView().controlSize(.small)
+                } else if let sub {
+                    Text(sub.text).font(.system(size: 11)).foregroundColor(sub.color).lineLimit(1)
                 }
             }
-            .contextMenu {
+            .help(sub.map { "\(src.title)\n\($0.text)" } ?? "\(src.title) (\(state.t("sources.click_to_view")))")
+
+            Spacer(minLength: 4)
+
+            Menu {
                 Button(state.t("sources.rename")) {
                     renameSourceInput = src.title
                     renamingSource = src
                 }
                 if src.status == "FAILED" {
-                    Button(state.t("sources.retry")) {
+                    Button(state.t("sources.retry_import")) {
                         Task {
-                            _ = try? await state.core.call(method: "source.retry", params: ["source_id": src.id])
+                            _ = await state.run("source.retry", ["source_id": src.id], what: state.t("sources.retry_import"))
                             await state.refreshAll()
                         }
                     }
                 }
-                Button(state.t("sources.remove"), role: .destructive) {
+                Button(state.t("sources.delete"), role: .destructive) { deleteSource(src) }
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 13)).foregroundColor(palette.textSecondary)
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(state.t("sources.more_actions_tip"))
+            .accessibilityLabel(L10n.fmt("sources.more_actions_for", en: state.isEnglish, src.title))
+
+            Toggle("", isOn: Binding(
+                get: { src.isSelected },
+                set: { val in
                     Task {
-                        _ = try? await state.core.call(method: "source.remove", params: ["source_id": src.id])
+                        _ = await state.run("source.set_selected", ["source_id": src.id, "selected": val], what: state.t("sources.op_select"))
                         await state.refreshAll()
                     }
                 }
+            ))
+            .toggleStyle(.checkbox)
+            .labelsHidden()
+            .help(state.t("sources.cite_source_tip"))
+            .accessibilityLabel(L10n.fmt("sources.cite_source", en: state.isEnglish, src.title))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(minHeight: 44)
+        .background(hoveredSourceId == src.id ? palette.hoverBg : Color.clear)
+        .cornerRadius(10)
+        .contentShape(Rectangle())
+        .onTapGesture { state.openSourcePreview(SourcePreviewRequest(sourceId: src.id, title: src.title)) }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                hoveredSourceId = hovering ? src.id : (hoveredSourceId == src.id ? nil : hoveredSourceId)
             }
+        }
+    }
 
-            if src.recommendKnowledgeGraph {
-                HStack(spacing: 6) {
-                    Text(state.t("kg.recommended"))
-                        .font(.caption2)
-                        .foregroundColor(palette.kgBannerText)
-                    Spacer()
-                    Button(state.t("kg.build_btn")) {
-                        Task { await state.createKnowledgeGraph(sourceTitle: src.title) }
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(palette.accentText)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(palette.accent)
-                    .clipShape(Capsule())
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(palette.kgBannerBg)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.kgBannerBorder, lineWidth: 1))
-                .cornerRadius(10)
-            }
+    private func deleteSource(_ src: SourceItem) {
+        guard Confirm.ask(title: state.t("sources.delete"), message: L10n.fmt("sources.delete_confirm", en: state.isEnglish, src.title),
+                          primary: state.t("common.delete"), cancel: state.t("common.cancel"), destructive: true) else { return }
+        Task {
+            _ = await state.run("source.remove", ["source_id": src.id], what: state.t("sources.delete"))
+            if state.previewSource?.sourceId == src.id { state.closeSourcePreview() }
+            await state.refreshAll()
         }
     }
 
@@ -540,35 +578,52 @@ struct MainView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.subtleBorder, lineWidth: 1))
             .cornerRadius(12)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(state.messages) { msg in
-                        ChatMessageRow(
-                            message: msg,
-                            defaultExpanded: state.prefs.expandThoughtsByDefault,
-                            en: state.isEnglish,
-                            fontSize: state.prefs.fontSize,
-                            palette: palette,
-                            onPromoteAttachment: { id in
-                                Task { await state.promoteAttachment(id) }
-                            },
-                            onSaveToNote: {
-                                Task {
-                                    _ = try? await state.core.call(method: "note.from_message", params: ["message_id": msg.id])
-                                    state.statusMessage = state.isEnglish ? "Saved response to Notes." : "已保存为笔记。"
-                                    await state.refreshAll()
-                                }
-                            },
-                            onRegenerate: {
-                                Task { await state.regenerateChat() }
-                            },
-                            onFeedback: { val in
-                                Task {
-                                    _ = try? await state.core.call(method: "chat.set_feedback", params: ["message_id": msg.id, "feedback": val])
-                                }
-                            }
-                        )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        if state.messages.isEmpty {
+                            ChatEmptyHint(state: state, palette: palette)
+                        }
+                        ForEach(Array(state.messages.enumerated()), id: \.element.id) { idx, msg in
+                            ChatMessageRow(
+                                message: msg,
+                                isLast: idx == state.messages.count - 1,
+                                defaultExpanded: state.prefs.expandThoughtsByDefault,
+                                en: state.isEnglish,
+                                fontSize: state.prefs.fontSize,
+                                palette: palette,
+                                onPromoteAttachment: { id in
+                                    Task { await state.promoteAttachment(id) }
+                                },
+                                onSaveToNote: {
+                                    Task {
+                                        if await state.run("note.from_message", ["message_id": msg.id], what: state.t("note.op_create")) != nil {
+                                            state.statusMessage = "\(state.t("chat.saved_title"))\(L10n.t("common.colon", en: state.isEnglish))\(state.t("chat.saved_msg"))"
+                                            await state.refreshAll()
+                                        }
+                                    }
+                                },
+                                onRegenerate: {
+                                    Task { await state.regenerateChat() }
+                                },
+                                onFeedback: { val in
+                                    Task { _ = await state.run("chat.set_feedback", ["message_id": msg.id, "feedback": val], what: state.t("chat.op_feedback")) }
+                                },
+                                onFollowup: { q in
+                                    Task { await state.sendChat(q) }
+                                },
+                                onOpenSource: { req in state.openSourcePreview(req) }
+                            )
+                            .id(msg.id)
+                        }
+                        Color.clear.frame(height: 1).id("chat-bottom")
                     }
+                }
+                .onChange(of: state.messages.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                }
+                .onChange(of: state.messages.last?.content ?? "") { _, _ in
+                    if state.isGeneratingChat { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                 }
             }
 
@@ -582,6 +637,7 @@ struct MainView: View {
                     .font(.system(size: state.prefs.fontSize))
                     .foregroundColor(palette.textPrimary)
                     .onSubmit { submitChat() }
+                    .disabled(state.isGeneratingChat)
 
                 if state.isGeneratingChat {
                     Button {
@@ -607,7 +663,7 @@ struct MainView: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Up")
+                    .accessibilityLabel(state.t("chat.send"))
                 }
             }
             .padding(.leading, 16)
@@ -633,7 +689,7 @@ struct MainView: View {
                 ArtifactViewerView(artifact: art)
                     .environmentObject(state)
             } else {
-                Text("Studio")
+                Text(state.t("studio.title"))
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(palette.textPrimary)
                     .padding(.leading, 2)
@@ -646,19 +702,13 @@ struct MainView: View {
                     ("flashcards", state.t("studio.flashcards"), "square.on.square"),
                     ("quiz", state.t("studio.quiz"), "checkmark.circle.fill"),
                     ("infographic", state.t("studio.infographic"), "chart.bar.xaxis"),
-                    ("knowledge_graph", state.t("studio.knowledge_graph"), "circle.hexagongrid.fill"),
                     ("lecture", state.t("studio.lecture"), "graduationcap.fill"),
                 ]
 
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
                     ForEach(tiles, id: \.0) { kind, label, icon in
                         Button {
-                            studioPromptInput = ""
-                            studioDetailLevel = kind == "lecture" ? "auto" : "standard"
-                            studioLectureMode = "general"
-                            studioConfirmScope = true
-                            studioAttach.clear()
-                            pendingStudioKind = kind
+                            studioConfig = StudioConfigRequest(kind: kind)
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: icon)
@@ -711,29 +761,87 @@ struct MainView: View {
         .cornerRadius(16)
     }
 
+    private func artifactStatusLabel(_ art: StudioArtifactItem) -> String {
+        switch art.status {
+        case "PENDING": return state.t("studio.status_pending")
+        case "RUNNING":
+            switch art.stage {
+            case "COLLECT": return state.t("studio.status_collect")
+            case "PLAN": return state.t("studio.status_plan")
+            case "GENERATE": return state.t("studio.status_generate")
+            case "RENDER": return state.t("studio.status_render")
+            default: return state.t("studio.status_processing")
+            }
+        case "DRAFT_REVIEW": return state.t("studio.status_draft")
+        case "READY": return state.t("studio.status_ready")
+        case "FAILED": return state.t("studio.status_failed")
+        case "CANCELLED": return state.t("studio.status_cancelled")
+        default: return art.status
+        }
+    }
+
+    /// "3 minutes ago" style age of a timestamp (unix ms).
+    private func timeAgo(_ ms: Int64) -> String {
+        guard ms > 0 else { return "" }
+        let secs = max(0, Int64(Date().timeIntervalSince1970) - ms / 1000)
+        if secs < 60 { return state.t("time.just_now") }
+        let mins = secs / 60
+        if mins < 60 { return L10n.fmt("time.minutes", en: state.isEnglish, mins) }
+        let hours = mins / 60
+        if hours < 24 { return L10n.fmt("time.hours", en: state.isEnglish, hours) }
+        let days = hours / 24
+        if days < 30 { return L10n.fmt("time.days", en: state.isEnglish, days) }
+        if days < 365 { return L10n.fmt("time.months", en: state.isEnglish, days / 30) }
+        return L10n.fmt("time.years", en: state.isEnglish, days / 365)
+    }
+
     @ViewBuilder
     private func artifactCard(_ art: StudioArtifactItem) -> some View {
         let iconName = studioSymbol(for: art.artifactType)
+        let running = art.status == "PENDING" || art.status == "RUNNING"
+        let hint = running ? state.t("studio.click_thoughts") : (art.status == "FAILED" ? state.t("studio.click_error_log") : "")
+        let age = timeAgo(art.createdAt)
         Button {
             state.activeArtifact = art
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: iconName)
-                    .font(.system(size: 16))
-                    .foregroundColor(Color.studioKindColor(art.artifactType))
-                    .frame(width: 20)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    Image(systemName: iconName)
+                        .font(.system(size: 16))
+                        .foregroundColor(Color.studioKindColor(art.artifactType))
+                        .frame(width: 20)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(art.title)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(palette.textPrimary)
-                        .lineLimit(2)
-                    Text("\(state.t("studio.\(art.artifactType)")) · \(art.status)")
-                        .font(.system(size: 11))
-                        .foregroundColor(palette.textMuted)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(art.title.isEmpty ? state.t("studio.\(art.artifactType)") : art.title)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(palette.textPrimary)
+                            .lineLimit(2)
+                        Text("\(state.t("studio.\(art.artifactType)")) · \(artifactStatusLabel(art))\(age.isEmpty ? "" : " · " + age)\(hint)")
+                            .font(.system(size: 11))
+                            .foregroundColor(palette.textMuted)
+                    }
+
+                    Spacer(minLength: 4)
                 }
-
-                Spacer(minLength: 4)
+                if running {
+                    ProgressView(value: min(1, art.progress))
+                    if let last = state.studioThoughts[art.id]?.last, !last.title.isEmpty {
+                        Text(last.title).font(.system(size: 11)).foregroundColor(palette.textSecondary).lineLimit(2)
+                    }
+                }
+                if art.status == "FAILED" {
+                    let advice = L10n.advice(art.errorCode, en: state.isEnglish) ?? ""
+                    Text(advice.isEmpty ? art.errorDetail : advice)
+                        .font(.system(size: 12)).foregroundColor(Color(hex: 0xFFA08C)).lineLimit(3)
+                }
+                if art.status == "DRAFT_REVIEW" {
+                    Text(state.t("studio.review_outline"))
+                        .font(.system(size: 12)).foregroundColor(palette.textPrimary)
+                        .padding(.horizontal, 14).padding(.vertical, 4)
+                        .background(palette.hoverBg)
+                        .overlay(Capsule().stroke(palette.strongBorder))
+                        .clipShape(Capsule())
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 12)
@@ -756,7 +864,7 @@ struct MainView: View {
             if art.status == "PENDING" || art.status == "RUNNING" {
                 Button(state.t("studio.cancel")) {
                     Task {
-                        _ = try? await state.core.call(method: "studio.cancel", params: ["artifact_id": art.id])
+                        _ = await state.run("studio.cancel", ["artifact_id": art.id])
                         await state.refreshAll()
                     }
                 }
@@ -764,19 +872,21 @@ struct MainView: View {
             if art.status == "FAILED" || art.status == "CANCELLED" {
                 Button(state.t("studio.retry")) {
                     Task {
-                        _ = try? await state.core.call(method: "studio.retry", params: ["artifact_id": art.id])
+                        _ = await state.run("studio.retry", ["artifact_id": art.id])
                         await state.refreshAll()
                     }
                 }
             } else if art.status == "READY" {
-                Button(state.t("studio.regenerate")) {
-                    Task { await state.regenerateArtifact(art) }
+                Button(state.t("studio.update_from_sources")) {
+                    studioConfig = StudioConfigRequest(kind: art.artifactType, initial: art.config, isUpdate: true, artifactId: art.id)
                 }
             }
             Divider()
-            Button(state.t("studio.delete"), role: .destructive) {
+            Button(state.t("common.delete"), role: .destructive) {
+                guard Confirm.ask(title: state.t("studio.delete_title"), message: L10n.fmt("studio.delete_confirm", en: state.isEnglish, art.title),
+                                  primary: state.t("common.delete"), cancel: state.t("common.cancel"), destructive: true) else { return }
                 Task {
-                    _ = try? await state.core.call(method: "studio.delete", params: ["artifact_id": art.id])
+                    _ = await state.run("studio.delete", ["artifact_id": art.id])
                     await state.refreshAll()
                 }
             }
@@ -800,106 +910,28 @@ struct MainView: View {
 
     // MARK: - Sheets
 
-    private var studioConfigSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(state.isEnglish ? "Configure Studio Artifact" : "生成配置")
-                .font(.headline)
-                .foregroundColor(palette.textPrimary)
-            Text(pendingStudioKind == "lecture"
-                 ? L10n.t("studio.cfg.lecture_topic_header", en: state.isEnglish)
-                 : (state.isEnglish ? "Prompt / Focus & Scope (Optional)" : "生成提示与范围要求（可选）"))
-                .font(.subheadline)
-                .foregroundColor(palette.textSecondary)
-            TextEditor(text: $studioPromptInput)
-                .frame(minHeight: 110, maxHeight: 180)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.strongBorder))
-            if pendingStudioKind == "mindmap" || pendingStudioKind == "knowledge_graph" {
-                Picker(state.isEnglish ? "Detail Level" : "详尽程度", selection: $studioDetailLevel) {
-                    Text(state.isEnglish ? "Concise (2-3 levels)" : "简洁（2~3 层概览）").tag("concise")
-                    Text(state.isEnglish ? "Standard (3-4 levels)" : "标准（3~4 层均衡）").tag("standard")
-                    Text(state.isEnglish ? "Detailed (4-5 levels)" : "详尽（4~5 层细分）").tag("detailed")
-                }
-                .pickerStyle(.segmented)
-            } else if pendingStudioKind == "lecture" {
-                Picker(L10n.t("studio.cfg.lecture_mode_header", en: state.isEnglish), selection: $studioLectureMode) {
-                    ForEach(["general", "preview", "review", "practice"], id: \.self) { code in
-                        Text(L10n.t("studio.cfg.lecture_mode_\(code)", en: state.isEnglish)).tag(code)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Picker(state.isEnglish ? "Detail" : "详细程度", selection: $studioDetailLevel) {
-                    Text(L10n.t("studio.cfg.level_auto", en: state.isEnglish)).tag("auto")
-                    Text(state.isEnglish ? "Brief" : "简要").tag("brief")
-                    Text(state.isEnglish ? "Standard" : "标准").tag("standard")
-                    Text(state.isEnglish ? "Detailed" : "详细").tag("detailed")
-                }
-                .pickerStyle(.segmented)
-                Toggle(L10n.t("studio.cfg.btn_lecture_confirm_scope", en: state.isEnglish), isOn: $studioConfirmScope)
-                Text(L10n.t("studio.cfg.lecture_hint", en: state.isEnglish))
-                    .font(.caption)
-                    .foregroundColor(palette.textMuted)
-            } else if pendingStudioKind == "report" {
-                Picker(state.isEnglish ? "Depth" : "报告深度", selection: $studioDetailLevel) {
-                    Text(state.isEnglish ? "Brief" : "简明摘要").tag("brief")
-                    Text(state.isEnglish ? "Standard" : "标准报告").tag("standard")
-                    Text(state.isEnglish ? "Deep" : "深度解析").tag("deep")
-                }
-                .pickerStyle(.segmented)
-            }
-            HStack(spacing: 8) {
-                AttachMenuButton(store: studioAttach, en: state.isEnglish, tint: palette.textSecondary)
-                Text(L10n.t("ctx.cfg_hint", en: state.isEnglish))
-                    .font(.caption)
-                    .foregroundColor(palette.textMuted)
-            }
-            AttachChips(store: studioAttach, en: state.isEnglish)
-            HStack {
-                Spacer()
-                Button(state.isEnglish ? "Cancel" : "取消") {
-                    pendingStudioKind = nil
-                    studioAttach.clear()
-                }
-                Button(state.isEnglish ? "Generate" : "开始生成") {
-                    let k = pendingStudioKind ?? "mindmap"
-                    let p = studioPromptInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let d = studioDetailLevel
-                    var extra: [String: Any] = [:]
-                    studioAttach.merge(into: &extra)
-                    studioAttach.clear()
-                    pendingStudioKind = nil
-                    let lectureCfg: [String: Any] = k == "lecture"
-                        ? Lecture.config(mode: studioLectureMode, detail: d, confirmScope: studioConfirmScope)
-                        : [:]
-                    Task { await state.createStudio(kind: k, topic: p, detail: d, extra: extra, config: lectureCfg) }
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(20)
-        .frame(width: 460)
-        .background(palette.panelBg)
-        .preferredColorScheme(themeId.preferredColorScheme)
-        .attachDrop(studioAttach, en: state.isEnglish)
-    }
-
     private var addUrlSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(state.t("sources.add_url"))
+            Text(state.t("sources.add_url_title"))
                 .font(.headline)
-            TextField("https://example.com/article", text: $addUrlInput)
+            Text(state.t("sources.add_url_label")).font(.caption).foregroundColor(palette.textMuted)
+            TextField("https://", text: $addUrlInput)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
-                Button(state.isEnglish ? "Cancel" : "取消") { showAddUrlSheet = false }
-                Button(state.isEnglish ? "Add" : "添加") {
+                Button(L10n.t("common.cancel", en: state.isEnglish)) { showAddUrlSheet = false }
+                Button(L10n.t("common.add", en: state.isEnglish)) {
                     let url = addUrlInput.trimmingCharacters(in: .whitespacesAndNewlines)
                     showAddUrlSheet = false
                     guard !url.isEmpty else { return }
                     Task {
-                        _ = try? await state.core.call(method: "source.add_url", params: [
+                        state.statusMessage = "\(state.t("sources.fetching_url"))\(L10n.t("common.colon", en: state.isEnglish))\(url)"
+                        if await state.run("source.add_url", [
                             "notebook_id": state.activeNotebookId,
                             "url": url
-                        ])
+                        ], what: state.t("sources.add_url_title")) != nil {
+                            state.statusMessage = ""
+                        }
                         await state.refreshAll()
                     }
                 }
@@ -914,27 +946,30 @@ struct MainView: View {
 
     private var pasteTextSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(state.t("sources.add_paste"))
+            Text(state.t("sources.paste_dialog_title"))
                 .font(.headline)
-            TextField(state.isEnglish ? "Title (optional)" : "标题（可选）", text: $pasteTitleInput)
+            TextField(state.t("common.title"), text: $pasteTitleInput)
                 .textFieldStyle(.roundedBorder)
             TextEditor(text: $pasteBodyInput)
                 .frame(minHeight: 140, maxHeight: 220)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.strongBorder))
             HStack {
                 Spacer()
-                Button(state.isEnglish ? "Cancel" : "取消") { showPasteTextSheet = false }
-                Button(state.isEnglish ? "Add" : "添加") {
+                Button(L10n.t("common.cancel", en: state.isEnglish)) { showPasteTextSheet = false }
+                Button(L10n.t("common.add", en: state.isEnglish)) {
                     let body = pasteBodyInput.trimmingCharacters(in: .whitespacesAndNewlines)
                     let title = pasteTitleInput.trimmingCharacters(in: .whitespacesAndNewlines)
                     showPasteTextSheet = false
                     guard !body.isEmpty else { return }
                     Task {
-                        _ = try? await state.core.call(method: "source.add_text", params: [
+                        let res = await state.run("source.add_text", [
                             "notebook_id": state.activeNotebookId,
-                            "title": title.isEmpty ? "pasted-note.txt" : title,
+                            "title": title.isEmpty ? state.t("sources.paste_title_default") : title,
                             "text": body
-                        ])
+                        ], what: state.t("sources.op_add_text"))
+                        if res?["duplicate"] as? Bool == true {
+                            state.statusMessage = "\(state.t("sources.dup_title"))\(L10n.t("common.colon", en: state.isEnglish))\(state.t("sources.dup_msg"))"
+                        }
                         await state.refreshAll()
                     }
                 }
@@ -951,17 +986,17 @@ struct MainView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(state.t("sources.rename"))
                 .font(.headline)
-            TextField(state.isEnglish ? "Source title" : "来源标题", text: $renameSourceInput)
+            TextField(L10n.t("main.source_title", en: state.isEnglish), text: $renameSourceInput)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
-                Button(state.isEnglish ? "Cancel" : "取消") { renamingSource = nil }
+                Button(L10n.t("common.cancel", en: state.isEnglish)) { renamingSource = nil }
                 Button(state.t("settings.save")) {
                     let trimmed = renameSourceInput.trimmingCharacters(in: .whitespacesAndNewlines)
                     renamingSource = nil
                     guard !trimmed.isEmpty else { return }
                     Task {
-                        _ = try? await state.core.call(method: "source.rename", params: [
+                        _ = await state.run("source.rename", [
                             "source_id": src.id,
                             "title": trimmed
                         ])
@@ -981,17 +1016,17 @@ struct MainView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(state.t("studio.rename"))
                 .font(.headline)
-            TextField(state.isEnglish ? "Artifact title" : "产物标题", text: $renameArtifactInput)
+            TextField(L10n.t("main.artifact_title", en: state.isEnglish), text: $renameArtifactInput)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
-                Button(state.isEnglish ? "Cancel" : "取消") { renamingArtifact = nil }
+                Button(L10n.t("common.cancel", en: state.isEnglish)) { renamingArtifact = nil }
                 Button(state.t("settings.save")) {
                     let trimmed = renameArtifactInput.trimmingCharacters(in: .whitespacesAndNewlines)
                     renamingArtifact = nil
                     guard !trimmed.isEmpty else { return }
                     Task {
-                        _ = try? await state.core.call(method: "studio.rename", params: [
+                        _ = await state.run("studio.rename", [
                             "artifact_id": art.id,
                             "title": trimmed
                         ])
@@ -1011,7 +1046,7 @@ struct MainView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(state.t("sources.notes_header"))
                 .font(.headline)
-            TextField(state.isEnglish ? "Note title" : "笔记标题", text: $editNoteTitle)
+            TextField(L10n.t("main.note_title", en: state.isEnglish), text: $editNoteTitle)
                 .textFieldStyle(.roundedBorder)
             TextEditor(text: $editNoteBody)
                 .frame(minHeight: 200, maxHeight: 320)
@@ -1023,23 +1058,25 @@ struct MainView: View {
                     let b = editNoteBody
                     editingNote = nil
                     Task {
-                        _ = try? await state.core.call(method: "note.save", params: [
+                        _ = await state.run("note.save", [
                             "notebook_id": state.activeNotebookId,
                             "note_id": nid,
                             "title": t.isEmpty ? "Note" : t,
                             "body_md": b
                         ])
-                        _ = try? await state.core.call(method: "note.to_source", params: ["note_id": nid])
+                        _ = await state.run("note.to_source", ["note_id": nid])
                         await state.refreshAll()
                     }
                 }
                 .buttonStyle(.bordered)
 
                 Button(state.t("notes.delete"), role: .destructive) {
+                    guard Confirm.ask(title: state.t("note.delete_btn"), message: state.t("note.delete_confirm"),
+                                      primary: state.t("common.delete"), cancel: state.t("common.cancel"), destructive: true) else { return }
                     let nid = note.id
                     editingNote = nil
                     Task {
-                        _ = try? await state.core.call(method: "note.delete", params: ["note_id": nid])
+                        _ = await state.run("note.delete", ["note_id": nid])
                         await state.refreshAll()
                     }
                 }
@@ -1047,14 +1084,14 @@ struct MainView: View {
 
                 Spacer()
 
-                Button(state.isEnglish ? "Cancel" : "取消") { editingNote = nil }
+                Button(L10n.t("common.cancel", en: state.isEnglish)) { editingNote = nil }
                 Button(state.t("settings.save")) {
                     let nid = note.id
                     let t = editNoteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                     let b = editNoteBody
                     editingNote = nil
                     Task {
-                        _ = try? await state.core.call(method: "note.save", params: [
+                        _ = await state.run("note.save", [
                             "notebook_id": state.activeNotebookId,
                             "note_id": nid,
                             "title": t.isEmpty ? "Note" : t,
@@ -1114,7 +1151,7 @@ struct MainView: View {
         if panel.runModal() == .OK, !panel.urls.isEmpty {
             let paths = panel.urls.map(\.path)
             Task {
-                _ = try? await state.core.call(method: "source.add_files", params: [
+                _ = await state.run("source.add_files", [
                     "notebook_id": state.activeNotebookId,
                     "paths": paths
                 ])
@@ -1134,7 +1171,7 @@ struct MainView: View {
                         "format": format,
                         "out_path": url.path
                     ])
-                    state.statusMessage = state.isEnglish ? "Exported: \(url.lastPathComponent)" : "已导出：\(url.lastPathComponent)"
+                    state.statusMessage = L10n.fmt("main.exported", en: state.isEnglish, url.lastPathComponent)
                 } catch {
                     state.statusMessage = error.localizedDescription
                 }
@@ -1153,7 +1190,7 @@ struct MainView: View {
                     if let newId = res["notebook_id"] as? String {
                         state.activeNotebookId = newId
                     }
-                    state.statusMessage = state.isEnglish ? "Notebook imported." : "笔记本已导入。"
+                    state.statusMessage = "\(state.t("nb.imported"))\(L10n.t("common.colon", en: state.isEnglish))\(state.t("nb.imported_msg"))"
                     await state.refreshAll()
                 } catch {
                     state.statusMessage = error.localizedDescription
@@ -1205,7 +1242,9 @@ private struct PillButton: View {
 // MARK: - Chat Message Row
 
 struct ChatMessageRow: View {
+    @EnvironmentObject var state: AppState
     let message: ChatMessageItem
+    var isLast: Bool = false
     let defaultExpanded: Bool
     let en: Bool
     let fontSize: Double
@@ -1214,9 +1253,12 @@ struct ChatMessageRow: View {
     var onSaveToNote: (() -> Void)? = nil
     var onRegenerate: (() -> Void)? = nil
     var onFeedback: ((Int) -> Void)? = nil
+    var onFollowup: ((String) -> Void)? = nil
+    var onOpenSource: ((SourcePreviewRequest) -> Void)? = nil
     @State private var expanded: Bool = false
     @State private var feedbackVal: Int = 0
     @State private var copied: Bool = false
+    @State private var citation: CitationDetail? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1231,7 +1273,7 @@ struct ChatMessageRow: View {
                     HStack(spacing: 6) {
                         Image(systemName: "circle")
                             .font(.system(size: 11, weight: .bold))
-                        Text("Thoughts")
+                        Text(L10n.t("studio.thoughts", en: en))
                             .font(.callout)
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")
                             .font(.caption)
@@ -1280,25 +1322,52 @@ struct ChatMessageRow: View {
                     .foregroundColor(palette.textPrimary)
                     .lineSpacing(6)
             } else {
+                if message.isStreaming && message.content.isEmpty {
+                    ProgressView().controlSize(.small)
+                }
                 MarkdownView(
                     markdown: message.content,
                     fontSize: fontSize,
                     color: palette.textPrimary,
                     mutedColor: palette.textSecondary,
                     accent: palette.accent,
-                    lineSpacing: 6
+                    lineSpacing: 6,
+                    citations: Set(message.citations.keys)
                 )
                 .textSelection(.enabled)
+                .environment(\.openURL, OpenURLAction { url in
+                    guard url.scheme == "lnacite", let no = Int(url.host ?? "") else { return .systemAction }
+                    Task { await showCitation(no) }
+                    return .handled
+                })
+                .popover(item: $citation, arrowEdge: .bottom) { d in
+                    CitationPopover(detail: d) { req in
+                        citation = nil
+                        onOpenSource?(req)
+                    }
+                    .environmentObject(state)
+                }
+
+                ForEach(Array(message.artifacts.enumerated()), id: \.offset) { _, art in
+                    ChatArtifactCardView(raw: art)
+                }
+
+                if message.status == "INCOMPLETE" || message.status == "FAILED" || message.status == "CANCELLED" {
+                    let why = message.status == "CANCELLED"
+                        ? L10n.t("studio.cancelled", en: en)
+                        : (L10n.advice(message.errorCode, en: en) ?? L10n.t("chat.incomplete", en: en))
+                    Text(why).font(.callout).foregroundColor(Color(hex: 0xFFB478))
+                }
             }
 
-            if message.role == "assistant" && !message.content.isEmpty {
+            if message.role == "assistant" && !message.content.isEmpty && !message.isStreaming {
                 HStack(spacing: 10) {
                     Button {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(message.content, forType: .string)
                         copied = true
                     } label: {
-                        Label(copied ? (en ? "Copied" : "已复制") : L10n.t("chat.copy", en: en), systemImage: copied ? "checkmark" : "doc.on.doc")
+                        Label(copied ? (L10n.t("chat.copied_title", en: en)) : L10n.t("chat.copy", en: en), systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(.caption)
                             .foregroundColor(palette.textMuted)
                     }
@@ -1313,7 +1382,7 @@ struct ChatMessageRow: View {
                         .buttonStyle(.plain)
                     }
 
-                    if let onRegenerate {
+                    if isLast, let onRegenerate {
                         Button(action: onRegenerate) {
                             Label(L10n.t("chat.regenerate", en: en), systemImage: "arrow.clockwise")
                                 .font(.caption)
@@ -1346,8 +1415,38 @@ struct ChatMessageRow: View {
                 }
                 .padding(.top, 2)
             }
+
+            if isLast, message.role == "assistant", !message.isStreaming, !message.followups.isEmpty {
+                WrapFlowLayout(spacing: 8) {
+                    ForEach(message.followups, id: \.self) { q in
+                        Button { onFollowup?(q) } label: {
+                            Text(q)
+                                .font(.system(size: 13))
+                                .foregroundColor(palette.textSecondary)
+                                .multilineTextAlignment(.leading)
+                                .padding(.horizontal, 14).padding(.vertical, 9)
+                                .background(palette.panelBg)
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.strongBorder, lineWidth: 1))
+                                .cornerRadius(12)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
-        .onAppear { expanded = defaultExpanded }
+        .onAppear { expanded = defaultExpanded; feedbackVal = message.feedback }
+    }
+
+    private func showCitation(_ no: Int) async {
+        guard let res = await state.run("chat.citation_detail", ["message_id": message.id, "citation_no": no], what: state.t("cite.header")) else { return }
+        let d = CitationDetail(no: no, res)
+        // A figure-only or garbled PDF excerpt is useless: go straight to the page.
+        if d.isUnclear, d.sourceTitle.lowercased().hasSuffix(".pdf"), !d.removed, d.page > 0,
+           let src = state.sources.first(where: { $0.title == d.sourceTitle }) {
+            onOpenSource?(SourcePreviewRequest(sourceId: src.id, page: d.page, focusText: nil, title: d.sourceTitle))
+        }
+        citation = d
     }
 }
 

@@ -6,7 +6,11 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Runs Windows built-in WinRT OCR (`Windows.Media.Ocr.OcrEngine`) across one or more image files
 /// in a single headless PowerShell invocation. Returns recognized UTF-8 text per input file.
 pub fn windows_ocr_image_files(paths: &[&Path]) -> Vec<Option<String>> {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_ocr_image_files(paths)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         vec![None; paths.len()]
     }
@@ -156,7 +160,11 @@ pub fn windows_ocr_image_bytes(image_bytes: &[u8], ext: &str) -> Option<String> 
 /// Uses Windows Imaging Component (WinRT BitmapDecoder/BitmapEncoder) to transcode exotic formats
 /// (`avif`, `heic`, `heif`, `jp2`) into PNG bytes when OS codecs are present.
 pub fn windows_wic_to_png(input_path: &Path) -> Option<Vec<u8>> {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_sips_to_png(input_path)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = input_path;
         None
@@ -232,5 +240,104 @@ $fsIn.Dispose()
         };
         let _ = std::fs::remove_file(&out_path);
         bytes
+    }
+}
+
+/// macOS Vision text recognition, driven through a JavaScript-for-Automation script (`osascript`),
+/// so no extra native bindings are needed. One run recognizes all files; a failed file is `None`.
+#[cfg(target_os = "macos")]
+fn macos_ocr_image_files(paths: &[&Path]) -> Vec<Option<String>> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let temp_id = format!("{}_{}", std::process::id(), lna_types::now_ms());
+    let script_path = std::env::temp_dir().join(format!("lna_ocr_{temp_id}.js"));
+    let list_path = std::env::temp_dir().join(format!("lna_ocr_in_{temp_id}.txt"));
+    let out_path = std::env::temp_dir().join(format!("lna_ocr_out_{temp_id}.json"));
+    let lines: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let cleanup = || {
+        let _ = std::fs::remove_file(&script_path);
+        let _ = std::fs::remove_file(&list_path);
+        let _ = std::fs::remove_file(&out_path);
+    };
+    if std::fs::write(&script_path, include_str!("macos_ocr.js")).is_err()
+        || std::fs::write(&list_path, lines.join("\n")).is_err()
+    {
+        cleanup();
+        return vec![None; paths.len()];
+    }
+    let ran = std::process::Command::new("osascript")
+        .args(["-l", "JavaScript"])
+        .arg(&script_path)
+        .arg(&list_path)
+        .arg(&out_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let mut out = vec![None; paths.len()];
+    if matches!(ran, Ok(st) if st.success()) {
+        if let Some(arr) = std::fs::read_to_string(&out_path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Vec<Option<String>>>(&t).ok())
+        {
+            for (slot, v) in out.iter_mut().zip(arr) {
+                *slot = v.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+            }
+        }
+    }
+    cleanup();
+    out
+}
+
+/// Decodes HEIC / AVIF / JP2 (and anything else ImageIO reads) to PNG with the system `sips`.
+#[cfg(target_os = "macos")]
+fn macos_sips_to_png(input_path: &Path) -> Option<Vec<u8>> {
+    let out = std::env::temp_dir().join(format!(
+        "lna_sips_{}_{}.png",
+        std::process::id(),
+        lna_types::now_ms()
+    ));
+    let ok = std::process::Command::new("sips")
+        .args(["-s", "format", "png"])
+        .arg(input_path)
+        .arg("--out")
+        .arg(&out)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let bytes = if ok { std::fs::read(&out).ok() } else { None };
+    let _ = std::fs::remove_file(&out);
+    bytes
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    /// Runs only with `LNA_TEST_OCR_IMAGE=/path/to/image.png` (needs a picture with text).
+    #[test]
+    fn vision_ocr_reads_text_from_an_image() {
+        let Some(img) = std::env::var_os("LNA_TEST_OCR_IMAGE") else {
+            return;
+        };
+        let img = std::path::PathBuf::from(img);
+        let res = windows_ocr_image_files(&[img.as_path(), Path::new("/nonexistent.png")]);
+        assert_eq!(res.len(), 2);
+        let text = res[0].clone().expect("text recognized");
+        assert!(text.to_lowercase().contains("linear algebra"), "got: {text}");
+        assert!(res[1].is_none());
+    }
+
+    #[test]
+    fn sips_transcodes_png_to_png_and_rejects_garbage() {
+        let tmp = std::env::temp_dir().join(format!("lna_sips_garbage_{}.heic", std::process::id()));
+        std::fs::write(&tmp, b"not an image").unwrap();
+        assert!(windows_wic_to_png(&tmp).is_none());
+        let _ = std::fs::remove_file(&tmp);
     }
 }

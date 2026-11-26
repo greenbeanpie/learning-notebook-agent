@@ -12,6 +12,10 @@
 ```powershell
 pwsh tests/e2e/run-smoke.ps1        # 主流程 22 项检查
 pwsh tests/e2e/run-smoke.ps1 -Pdf   # 额外检查 PDF 导入
+
+# macOS / Linux
+bash scripts/fetch-pdfium.sh target/debug   # 仅 --pdf 需要
+bash tests/e2e/run-smoke.sh [--pdf]
 ```
 
 ## 文件

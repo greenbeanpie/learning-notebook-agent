@@ -10,6 +10,8 @@ struct MarkdownView: View {
     var mutedColor: Color = .secondary
     var accent: Color = .accentColor
     var lineSpacing: CGFloat = 4
+    /// `[n]` markers that are clickable (the answer's known citations); they open `lnacite://n`.
+    var citations: Set<Int> = []
 
     private var blocks: [MdParser.Block] { MdBlockCache.blocks(for: markdown) }
 
@@ -23,7 +25,7 @@ struct MarkdownView: View {
     }
 
     private var style: MdInlineStyle {
-        MdInlineStyle(fontSize: fontSize, color: color, accent: accent)
+        MdInlineStyle(fontSize: fontSize, color: color, accent: accent, citations: citations)
     }
 
     @ViewBuilder
@@ -122,6 +124,7 @@ struct MdInlineStyle {
     var color: Color
     var accent: Color
     var weight: Font.Weight = .regular
+    var citations: Set<Int> = []
 
     func with(size: CGFloat? = nil, weight: Font.Weight? = nil, color: Color? = nil) -> MdInlineStyle {
         var s = self
@@ -165,6 +168,10 @@ enum MdAttributed {
                 a.font = .system(size: st.fontSize * 0.72, weight: .semibold)
                 a.foregroundColor = st.accent
                 a.baselineOffset = st.fontSize * 0.38
+                if st.citations.contains(n), let u = URL(string: "lnacite://\(n)") {
+                    a.link = u
+                    a.underlineStyle = .single
+                }
                 result.append(a)
             }
         }

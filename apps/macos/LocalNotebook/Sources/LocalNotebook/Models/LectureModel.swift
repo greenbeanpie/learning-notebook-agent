@@ -125,8 +125,8 @@ enum Lecture {
         html = html
             .replacingOccurrences(of: "__LANG__", with: en ? "en" : "zh-CN")
             .replacingOccurrences(of: "__LECTURE__", with: "true")
-            .replacingOccurrences(of: "__T_PLAY_JSON__", with: jsString(en ? "Play" : "自动放映"))
-            .replacingOccurrences(of: "__T_PAUSE_JSON__", with: jsString(en ? "Pause" : "暂停放映"))
+            .replacingOccurrences(of: "__T_PLAY_JSON__", with: jsString(L10n.t("slides.play", en: en)))
+            .replacingOccurrences(of: "__T_PAUSE_JSON__", with: jsString(L10n.t("slides.pause", en: en)))
             .replacingOccurrences(of: "__T_NONOTES_JSON__", with: jsString(""))
         // the remaining plain-text labels belong to the stand-alone slide viewer
         html = html.replacingOccurrences(of: "__T_[A-Z]+__", with: "", options: .regularExpression)

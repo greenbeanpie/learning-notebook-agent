@@ -35,6 +35,11 @@ chmod +x "$OUT_APP/Contents/MacOS/LocalNotebook"
 cp "$DYLIB_PATH" "$OUT_APP/Contents/Frameworks/liblna_ffi.dylib"
 chmod +x "$OUT_APP/Contents/Frameworks/liblna_ffi.dylib"
 
+# PDF import needs PDFium; it is looked up next to the executable (Contents/MacOS).
+echo "Fetching PDFium for PDF import..."
+bash "$ROOT_DIR/scripts/fetch-pdfium.sh" "$OUT_APP/Contents/MacOS"
+chmod +x "$OUT_APP/Contents/MacOS/libpdfium.dylib"
+
 LOGO_SVG="$ROOT_DIR/assets/logo.svg"
 if [[ -f "$LOGO_SVG" ]]; then
   cp "$LOGO_SVG" "$OUT_APP/Contents/Resources/logo.svg"

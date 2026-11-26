@@ -342,7 +342,7 @@ fn bind_pdfium(
     tracing::warn!(error = ?last_err, "PDFium library could not be loaded");
     Err(LnaError::new(
         ErrorCode::CapabilityMissing,
-        "PDFium library not found: place pdfium.dll (libpdfium.so on Linux) next to the application",
+        "PDFium library not found: place pdfium.dll (libpdfium.dylib on macOS, libpdfium.so on Linux) next to the application",
     ))
 }
 

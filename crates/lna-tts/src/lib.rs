@@ -154,6 +154,14 @@ impl TtsProvider for SystemTtsProvider {
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(r) =
+                    macos_say(&text_owned, &voice_id, &lang_prefix, &out_owned, &cancel_bg)
+                {
+                    return r;
+                }
+            }
             let _ = (&text_owned, &voice_id, &lang_prefix, &out_owned, &cancel_bg);
             Err(false)
         })
@@ -181,6 +189,119 @@ impl TtsProvider for SystemTtsProvider {
             duration_ms: est_ms,
             sample_rate,
         })
+    }
+}
+
+/// Parses `say -v '?'` output into `(voice name, locale)` pairs, e.g. `("Tingting", "zh_CN")`.
+/// A line looks like `Tingting            zh_CN    # 你好！我叫Tingting。`; names may contain spaces.
+pub fn parse_say_voices(listing: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in listing.lines() {
+        let head = line.split('#').next().unwrap_or("").trim_end();
+        let Some(split) = head.rfind(|c: char| c.is_whitespace()) else {
+            continue;
+        };
+        let (name, locale) = (head[..split].trim(), head[split..].trim());
+        let valid_locale = locale.len() >= 5
+            && locale.contains('_')
+            && locale
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !name.is_empty() && valid_locale {
+            out.push((name.to_string(), locale.to_string()));
+        }
+    }
+    out
+}
+
+/// Picks the voice for a host: the first (A) or second (B) installed voice of the language.
+pub fn pick_say_voice(voices: &[(String, String)], lang_prefix: &str, host_b: bool) -> Option<String> {
+    let wanted = if lang_prefix == "zh" { "zh_" } else { "en_" };
+    let matching: Vec<&(String, String)> =
+        voices.iter().filter(|(_, l)| l.starts_with(wanted)).collect();
+    // Prefer one voice per region so A and B sound different without being a different dialect.
+    let idx = if host_b && matching.len() > 1 { 1 } else { 0 };
+    matching.get(idx).map(|(n, _)| n.clone())
+}
+
+/// macOS system voice: `say` to AIFF, then `afconvert` to 16-bit mono WAV. `None` = not available
+/// (the caller falls back to a silent placeholder); `Some(Err(true))` = cancelled.
+#[cfg(target_os = "macos")]
+fn macos_say(
+    text: &str,
+    voice_id: &str,
+    lang_prefix: &str,
+    out: &Path,
+    cancel: &CancellationToken,
+) -> Option<Result<(), bool>> {
+    use std::process::{Command, Stdio};
+
+    let listing = Command::new("say")
+        .args(["-v", "?"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let voices = parse_say_voices(&String::from_utf8_lossy(&listing.stdout));
+    let voice = pick_say_voice(&voices, lang_prefix, voice_id == "host_b");
+
+    let tmp_base = out.with_extension("say");
+    let txt = tmp_base.with_extension("txt");
+    let aiff = tmp_base.with_extension("aiff");
+    std::fs::write(&txt, text).ok()?;
+
+    let wait = |mut child: std::process::Child| -> Option<Result<bool, bool>> {
+        loop {
+            if cancel.is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some(Err(true));
+            }
+            match child.try_wait() {
+                Ok(Some(st)) => return Some(Ok(st.success())),
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                Err(_) => return None,
+            }
+        }
+    };
+    let cleanup = || {
+        let _ = std::fs::remove_file(&txt);
+        let _ = std::fs::remove_file(&aiff);
+    };
+
+    let mut say = Command::new("say");
+    if let Some(v) = &voice {
+        say.args(["-v", v]);
+    }
+    say.arg("-o").arg(&aiff).arg("-f").arg(&txt);
+    let ok = match say.spawn().ok().and_then(wait) {
+        Some(Ok(ok)) => ok,
+        Some(Err(c)) => {
+            cleanup();
+            let _ = std::fs::remove_file(out);
+            return Some(Err(c));
+        }
+        None => false,
+    };
+    if !ok {
+        cleanup();
+        return None;
+    }
+    let conv = Command::new("afconvert")
+        .args(["-f", "WAVE", "-d", "LEI16@22050", "-c", "1"])
+        .arg(&aiff)
+        .arg(out)
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()
+        .and_then(wait);
+    cleanup();
+    match conv {
+        Some(Ok(true)) if out.exists() => Some(Ok(())),
+        Some(Err(c)) => {
+            let _ = std::fs::remove_file(out);
+            Some(Err(c))
+        }
+        _ => None,
     }
 }
 
@@ -356,6 +477,46 @@ mod tests {
         let merged = parse_wav_pcm16(&out).unwrap();
         assert_eq!(merged.sample_rate, 22_050);
         assert!((merged.samples.len() as i64 - 44_100).abs() <= 4);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parses_say_voice_listing_and_picks_per_host() {
+        let listing = "Eddy (Chinese (China mainland)) zh_CN    # 你好！我叫Eddy。\n\
+Samantha            en_US    # Hello! My name is Samantha.\n\
+Daniel              en_GB    # Hello! My name is Daniel.\n\
+Tingting            zh_CN    # 你好！我叫Tingting。\n\
+garbage line without locale\n";
+        let v = parse_say_voices(listing);
+        assert_eq!(v.len(), 4);
+        assert_eq!(v[0].0, "Eddy (Chinese (China mainland))");
+        assert_eq!(pick_say_voice(&v, "en", false).as_deref(), Some("Samantha"));
+        assert_eq!(pick_say_voice(&v, "en", true).as_deref(), Some("Daniel"));
+        assert_eq!(pick_say_voice(&v, "zh", true).as_deref(), Some("Tingting"));
+        assert_eq!(pick_say_voice(&[], "en", false), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_system_tts_writes_audible_wav_and_cancels() {
+        let tmp = std::env::temp_dir().join("lna_tts_macos_real_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tts = SystemTtsProvider;
+        let v = Voice { id: "host_a".into(), name: "Host A".into(), lang: "auto".into() };
+        let out = tmp.join("turn.wav");
+        let info = tts
+            .synthesize("Hello from the notebook.", &v, &out, CancellationToken::new())
+            .await
+            .unwrap();
+        let wav = parse_wav_pcm16(&out).unwrap();
+        assert!(info.duration_ms > 0);
+        assert!(wav.samples.iter().any(|s| s.abs() > 200), "synthesized audio is silent");
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = tts.synthesize("cancelled", &v, &tmp.join("c.wav"), cancel).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::Cancelled);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

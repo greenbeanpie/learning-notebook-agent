@@ -54,7 +54,7 @@ struct AttachMenuButton: View {
                 }
                 HStack {
                     Spacer()
-                    Button(en ? "Cancel" : "取消") { askingLink = false }
+                    Button(L10n.t("common.cancel", en: en)) { askingLink = false }
                     Button(L10n.t("ctx.link_add", en: en)) { addLink() }
                         .buttonStyle(.borderedProminent)
                 }

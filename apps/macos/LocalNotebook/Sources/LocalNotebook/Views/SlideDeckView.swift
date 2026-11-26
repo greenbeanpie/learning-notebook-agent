@@ -16,12 +16,12 @@ struct SlideDeckView: View {
     }
 
     private var deckTitle: String {
-        payload["title"] as? String ?? (en ? "Presentation" : "演示文稿")
+        payload["title"] as? String ?? (L10n.t("slides.presentation", en: en))
     }
 
     var body: some View {
         if slides.isEmpty {
-            Text(en ? "No slides available." : "暂无幻灯片内容。")
+            Text(L10n.t("slides.no_slides_available", en: en))
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -54,7 +54,7 @@ struct SlideDeckView: View {
                         isPlaying = false
                         step(-1)
                     } label: {
-                        Label(en ? "Previous" : "上一页", systemImage: "chevron.left")
+                        Label(L10n.t("slides.prev", en: en), systemImage: "chevron.left")
                     }
                     .disabled(safeIdx == 0)
 
@@ -66,7 +66,7 @@ struct SlideDeckView: View {
                         isPlaying = false
                         step(1)
                     } label: {
-                        Label(en ? "Next" : "下一页", systemImage: "chevron.right")
+                        Label(L10n.t("slides.next", en: en), systemImage: "chevron.right")
                     }
                     .disabled(safeIdx >= slides.count - 1)
 
@@ -76,7 +76,7 @@ struct SlideDeckView: View {
                         isPlaying.toggle()
                     } label: {
                         Label(
-                            isPlaying ? (en ? "Pause" : "暂停放映") : (en ? "Play" : "自动放映"),
+                            isPlaying ? (L10n.t("slides.pause", en: en)) : (L10n.t("slides.play", en: en)),
                             systemImage: isPlaying ? "pause.fill" : "play.fill"
                         )
                     }
@@ -85,7 +85,7 @@ struct SlideDeckView: View {
                     Button {
                         withAnimation { showNotes.toggle() }
                     } label: {
-                        Label(en ? "Notes" : "备注", systemImage: "note.text")
+                        Label(L10n.t("slides.notes", en: en), systemImage: "note.text")
                     }
                     .buttonStyle(.bordered)
                 }
@@ -119,7 +119,7 @@ struct SlideDeckView: View {
                 if showNotes {
                     let notes = slide["speaker_notes"] as? String ?? ""
                     ScrollView {
-                        Text(notes.isEmpty ? (en ? "No speaker notes for this slide." : "本页暂无演讲备注。") : notes)
+                        Text(notes.isEmpty ? (L10n.t("slides.no_speaker_notes_for_this", en: en)) : notes)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
