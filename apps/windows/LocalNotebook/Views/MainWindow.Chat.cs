@@ -83,43 +83,70 @@ public sealed partial class MainWindow
     private bool _hintShown;
     private ScrollViewer? _chatScrollViewer;
     private bool _chatStickToBottom = true;
-    private bool _programmaticChatScroll;
     private bool _scrollPending;
     private double _lastScrollableHeight;
     private double _lastVerticalOffset;
+    private bool _chatScrollHooked;
 
+    /// The ListView's inner ScrollViewer. It is looked up again when the cached one has left the
+    /// visual tree (the template is re-applied, e.g. after the list is rebuilt for another notebook),
+    /// otherwise following the latest message silently stops working.
     private ScrollViewer? EnsureChatScrollViewer()
     {
+        if (_chatScrollViewer is { XamlRoot: null })
+        {
+            _chatScrollViewer = null;
+        }
         if (_chatScrollViewer != null) return _chatScrollViewer;
         _chatScrollViewer = FindDescendant<ScrollViewer>(ChatList);
         if (_chatScrollViewer != null)
         {
             _lastScrollableHeight = _chatScrollViewer.ScrollableHeight;
             _lastVerticalOffset = _chatScrollViewer.VerticalOffset;
-            _chatScrollViewer.ViewChanged += (_, _) =>
+            _chatScrollViewer.ViewChanged += OnChatViewChanged;
+        }
+        if (!_chatScrollHooked)
+        {
+            // New content (a streamed delta, an item that is measured late) grows the extent
+            // without moving the offset, and ViewChanged is not raised for that: follow it here.
+            _chatScrollHooked = true;
+            ChatList.LayoutUpdated += (_, _) =>
             {
-                if (_chatScrollViewer == null) return;
-                if (_programmaticChatScroll)
-                {
-                    _lastScrollableHeight = _chatScrollViewer.ScrollableHeight;
-                    _lastVerticalOffset = _chatScrollViewer.VerticalOffset;
-                    return;
-                }
-                var sh = _chatScrollViewer.ScrollableHeight;
-                var vo = _chatScrollViewer.VerticalOffset;
-                if (sh > _lastScrollableHeight + 0.5 && vo >= _lastVerticalOffset - 1.0)
-                {
-                    if (_chatStickToBottom) ScrollChatToBottomIfSticky();
-                }
-                else
-                {
-                    _chatStickToBottom = (sh - vo) <= 36.0;
-                }
-                _lastScrollableHeight = sh;
-                _lastVerticalOffset = vo;
+                if (!_chatStickToBottom || _scrollPending) return;
+                var sv = _chatScrollViewer;
+                if (sv != null && sv.ScrollableHeight - sv.VerticalOffset > 0.5) ScrollChatToBottomIfSticky();
             };
         }
         return _chatScrollViewer;
+    }
+
+    /// "Following" is decided only by what the user does: scrolling up (the offset moves up while
+    /// the extent did not shrink) stops it, reaching the bottom again resumes it. Our own scrolls
+    /// only go down and growing/shrinking content never moves the offset up by itself, so neither
+    /// can switch following off (the old code treated the late ViewChanged of its own scroll as a
+    /// user scroll, which made following drop out at random).
+    private void OnChatViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+    {
+        var sv = _chatScrollViewer;
+        if (sv == null) return;
+        var sh = sv.ScrollableHeight;
+        var vo = sv.VerticalOffset;
+        var movedUp = vo < _lastVerticalOffset - 1.0;
+        var extentShrank = sh < _lastScrollableHeight - 0.5;
+        if (sh - vo <= 36.0)
+        {
+            _chatStickToBottom = true;
+        }
+        else if (movedUp && !extentShrank)
+        {
+            _chatStickToBottom = false;
+        }
+        else if (_chatStickToBottom && sh - vo > 0.5)
+        {
+            ScrollChatToBottomIfSticky();
+        }
+        _lastScrollableHeight = sh;
+        _lastVerticalOffset = vo;
     }
 
     private static T? FindDescendant<T>(DependencyObject parent) where T : DependencyObject
@@ -149,18 +176,15 @@ public sealed partial class MainWindow
                 if (ChatList.Items.Count > 0) ChatList.ScrollIntoView(ChatList.Items[^1]);
                 return;
             }
+            // The items added just before this call may not be measured yet: measure first so the
+            // bottom we scroll to is the real one.
+            try { sv.UpdateLayout(); } catch { }
             if (sv.ScrollableHeight - sv.VerticalOffset <= 0.5) return;
-            _programmaticChatScroll = true;
-            try
-            {
-                sv.ChangeView(null, sv.ScrollableHeight, null, true);
-                _lastScrollableHeight = sv.ScrollableHeight;
-                _lastVerticalOffset = sv.ScrollableHeight;
-            }
-            finally
-            {
-                _programmaticChatScroll = false;
-            }
+            sv.ChangeView(null, sv.ScrollableHeight, null, true);
+            _lastScrollableHeight = sv.ScrollableHeight;
+            _lastVerticalOffset = sv.ScrollableHeight;
+            // Content that lays out after this (images, markdown blocks) is caught by the
+            // LayoutUpdated / ViewChanged follow-ups while following is on.
         });
     }
 

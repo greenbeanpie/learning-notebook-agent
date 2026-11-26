@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -76,8 +77,27 @@ fun ChatScreen(
             }
         }
 
-        // Chat message list
+        // Chat message list. It follows the latest message (also while an answer streams in)
+        // until the user scrolls up; reaching the bottom again resumes following. Only the
+        // user's own scrolling decides this, never a content change.
+        val listState = rememberLazyListState()
+        var following by remember { mutableStateOf(true) }
+        LaunchedEffect(listState) {
+            snapshotFlow { Triple(listState.canScrollForward, listState.lastScrolledBackward, listState.isScrollInProgress) }
+                .collect { (canForward, backward, _) ->
+                    if (!canForward) following = true else if (backward) following = false
+                }
+        }
+        val lastMsg = state.messages.lastOrNull()
+        // sending (a new message) always jumps to the end
+        LaunchedEffect(state.messages.size) { following = true }
+        LaunchedEffect(state.messages.size, lastMsg?.content?.length, lastMsg?.thoughts?.size) {
+            if (following && state.messages.isNotEmpty()) {
+                listState.scrollToItem(state.messages.lastIndex, Int.MAX_VALUE)
+            }
+        }
         LazyColumn(
+            state = listState,
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
