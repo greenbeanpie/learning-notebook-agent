@@ -1,0 +1,28 @@
+Local Notebook for macOS - install notes / 安装说明
+=====================================================
+
+English
+-------
+1. Drag LocalNotebook.app into the Applications folder.
+2. This build is not notarized by Apple, so the first launch is blocked. Approve it once, either way:
+   a) Terminal:  xattr -dr com.apple.quarantine /Applications/LocalNotebook.app
+      then double-click the app.
+   b) Double-click the app once (it is blocked), then open System Settings > Privacy & Security,
+      scroll down and click "Open Anyway" next to LocalNotebook.
+3. After that it opens normally. Your API keys are kept in the macOS Keychain.
+   If macOS asks whether LocalNotebook may use the Keychain item, choose "Always Allow".
+
+Requirements: Apple silicon (arm64), macOS 14 or later.
+
+中文
+----
+1. 把 LocalNotebook.app 拖到"应用程序"文件夹。
+2. 此版本没有经过 Apple 公证，第一次打开会被拦截。任选一种方式放行一次：
+   a) 终端执行：xattr -dr com.apple.quarantine /Applications/LocalNotebook.app
+      然后双击打开应用。
+   b) 先双击打开一次（会被拦截），再到"系统设置 > 隐私与安全性"，向下滚动，
+      点击 LocalNotebook 旁边的"仍要打开"。
+3. 之后可以正常打开。API Key 保存在 macOS 钥匙串中。
+   如果系统询问是否允许 LocalNotebook 使用钥匙串项目，请选择"始终允许"。
+
+系统要求：Apple 芯片（arm64），macOS 14 及以上。

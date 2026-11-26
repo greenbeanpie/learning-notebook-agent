@@ -145,6 +145,9 @@ adb install -r apps\android\LocalNotebook\app\build\outputs\apk\debug\app-debug.
   cargo build -p lna-ffi --release
   swift build --package-path apps/macos/LocalNotebook -c release
   ```
+  **签名与钥匙串弹窗**：默认是 ad-hoc 签名，应用身份就是代码哈希，每次重新编译都会变，macOS 会再次要求输入登录密码才允许读取钥匙串里的 API Key。先运行一次 `bash scripts/setup-macos-signing.sh` 创建本地自签名证书 "Local Notebook Signing"，之后 `package-macos-app.sh` 会自动用它签名，应用身份固定为 `identifier "com.localnotebook.agent" and certificate leaf = <证书哈希>`，"始终允许"在重编译和升级后依然有效。**请备份生成的 `~/LocalNotebookSigning.p12` 和密码**：换证书等于换身份，所有用户升级时会再弹一次。没有证书时脚本自动退回 ad-hoc 签名。
+
+  **分发给他人（免费）**：`LNA_MAKE_ZIP=1 bash scripts/package-macos-app.sh` 会额外生成 `dist/LocalNotebook-macos-<arch>.zip`（内含 `INSTALL.txt`）。没有 Apple 付费的 Developer ID 就无法公证，用户首次打开需要放行一次：`xattr -dr com.apple.quarantine /Applications/LocalNotebook.app`，或在"系统设置 → 隐私与安全性"点"仍要打开"。
 
 ---
 
