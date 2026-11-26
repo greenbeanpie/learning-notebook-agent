@@ -646,8 +646,7 @@ impl RetrievalEngine {
         if selected_source_ids.is_empty() || max_groups == 0 {
             return Ok(Vec::new());
         }
-        let per_source = ((max_groups + selected_source_ids.len() - 1) / selected_source_ids.len())
-            .clamp(1, 8) as i32;
+        let per_source = max_groups.div_ceil(selected_source_ids.len()).clamp(1, 8) as i32;
         let mut buckets: Vec<Vec<RetrievedEvidence>> =
             Vec::with_capacity(selected_source_ids.len());
         for sid in selected_source_ids {

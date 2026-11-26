@@ -207,8 +207,8 @@ fun SourcesScreen(
             title = { Text(L10n.t("sources.add_paste", en)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") }, singleLine = true)
-                    OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text("Text") }, minLines = 4)
+                    OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text(L10n.t("sources.field_title", en)) }, singleLine = true)
+                    OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text(L10n.t("sources.field_text", en)) }, minLines = 4)
                 }
             },
             confirmButton = {
@@ -228,7 +228,7 @@ fun SourcesScreen(
             title = { Text(L10n.t("sources.create_note", en)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") }, singleLine = true)
+                    OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text(L10n.t("sources.field_title", en)) }, singleLine = true)
                     OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text("Markdown") }, minLines = 4)
                 }
             },

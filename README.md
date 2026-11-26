@@ -16,7 +16,7 @@
 | `migrations/`、`schemas/`、`prompts/` | SQLite 数据库迁移脚本、Studio 产物 JSON Schema、版本化提示词模板 |
 | `scripts/` | 打包与辅助脚本（如 `package-windows-client.ps1`、`fetch-pdfium.ps1`、`configure-model.ps1`） |
 | `frontend-demo/` | 配合 `lna-devtools` 使用的浏览器联调页 |
-| `tests/e2e/` | 端到端冒烟测试套件（`mock_llm.py` + `smoke.mjs` + `extended.mjs` + `run-smoke.ps1`） |
+| `tests/e2e/` | 端到端冒烟测试套件（`mock_llm.py` + `smoke.mjs` + `extended.mjs` + `run-smoke.ps1` / `run-smoke.sh`） |
 
 ---
 
@@ -165,7 +165,8 @@ adb install -r apps\android\LocalNotebook\app\build\outputs\apk\debug\app-debug.
 - **端到端冒烟测试**（需 Python 3.10+ 与 Node 22+）：
   ```powershell
   cargo build --workspace --all-targets
-  pwsh tests/e2e/run-smoke.ps1 -Pdf
+  pwsh tests/e2e/run-smoke.ps1 -Pdf      # Windows
+  bash tests/e2e/run-smoke.sh --pdf      # macOS / Linux
   ```
 - **DevTools 网页联调**：
   ```powershell

@@ -614,10 +614,7 @@ public sealed partial class MainWindow
         card.Children.Add(bodyTb);
         _kgStepsPanel.Children.Add(card);
         if (_kgStageLabel != null && title.Length > 0) _kgStageLabel.Text = title;
-        if (title == "成品生成完成")
-        {
-            SetKgBuildingCompletedUi(succeeded: true);
-        }
+        // Completion is driven by the terminal status event (OnKgStatusEvent), not by matching a localized title.
     }
 
     private void SetKgBuildingCompletedUi(bool succeeded)

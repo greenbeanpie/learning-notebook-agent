@@ -5,6 +5,7 @@ private final class MindNodeItem: Identifiable {
     let label: String
     var summary: String = ""
     var facets: [String] = []
+    var prerequisites: [String] = []
     var atomic: Bool = false
     var expandable: Bool = false
     var depth: Int = 0
@@ -31,11 +32,19 @@ private final class MindNodeItem: Identifiable {
 struct MindmapTreeView: View {
     let payload: [String: Any]
     let en: Bool
+    var artifactId: String = ""
+    /// A knowledge graph tracks how well each concept is understood (mastery).
+    var isKnowledgeGraph: Bool = false
+    var progressState: [String: Any] = [:]
+    /// Receives the whole progress state to persist (`studio.save_progress`).
+    var onSaveProgress: (([String: Any]) -> Void)? = nil
     var onQuizConcept: ((String) -> Void)? = nil
     var onExpandMindmap: ((String) -> Void)? = nil
     var onAskConcept: ((String) -> Void)? = nil
     /// (nodeId, label): split the node into finer knowledge points.
     var onRefineNode: ((String, String) -> Void)? = nil
+    /// Shows a round download button under the zoom buttons (exports the mind map as SVG).
+    var onDownloadSvg: (() -> Void)? = nil
     /// Read-only (preview) mode: no node menu, a tap only expands / collapses locally.
     var readOnly: Bool = false
 
@@ -44,6 +53,9 @@ struct MindmapTreeView: View {
     @State private var collapseOverrides: [String: Bool] = [:]
     @State private var scale: CGFloat = 1.0
     @State private var allExpanded: Bool = false
+    /// node id -> (status, score, attempts, correct); status: unstarted | learning | weak | mastered
+    @State private var mastery: [String: (status: String, score: Double, attempts: Int, correct: Int)] = [:]
+    @State private var masteryLoaded = false
     @State private var panOffset: CGSize = .zero
     @GestureState private var dragDelta: CGSize = .zero
 
@@ -72,6 +84,7 @@ struct MindmapTreeView: View {
                 atomic: n["atomic"] as? Bool ?? false
             )
             node.expandable = n["expandable"] as? Bool ?? false
+            node.prerequisites = (n["prerequisites"] as? [Any] ?? []).compactMap { $0 as? String }
             map[id] = node
             parentById[id] = n["parent_id"] as? String ?? ""
             order.append(node)
@@ -134,6 +147,65 @@ struct MindmapTreeView: View {
     }
 
     var body: some View {
+        VStack(spacing: 8) {
+            if isKnowledgeGraph { progressBanner }
+            treeBody
+        }
+        .onAppear { loadMastery() }
+    }
+
+    private var conceptIds: [String] {
+        let nodes = payload["nodes"] as? [[String: Any]] ?? []
+        let ids = nodes.compactMap { $0["id"] as? String }
+        let roots = Set(nodes.filter { ($0["parent_id"] as? String ?? "").isEmpty }.compactMap { $0["id"] as? String })
+        return nodes.count > 1 ? ids.filter { !roots.contains($0) } : ids
+    }
+
+    private func status(of id: String) -> String { mastery[id]?.status ?? "unstarted" }
+
+    private var progressBanner: some View {
+        let ids = conceptIds
+        let total = ids.count
+        let mastered = ids.filter { status(of: $0) == "mastered" }.count
+        let learning = ids.filter { status(of: $0) == "learning" }.count
+        let weak = ids.filter { status(of: $0) == "weak" }.count
+        let pct = total > 0 ? Int((Double(mastered) * 100 / Double(total)).rounded()) : 0
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(L10n.fmt("kg.progress_detail_fmt", en: en, mastered, total, pct, learning, weak))
+                .font(.system(size: 12)).foregroundColor(.secondary)
+            ProgressView(value: Double(mastered), total: Double(max(total, 1)))
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func loadMastery() {
+        guard !masteryLoaded else { return }
+        masteryLoaded = true
+        guard let m = progressState["mastery"] as? [String: Any] else { return }
+        for (k, v) in m {
+            guard let d = v as? [String: Any] else { continue }
+            mastery[k] = (
+                d["status"] as? String ?? "unstarted",
+                (d["score"] as? NSNumber)?.doubleValue ?? 0,
+                (d["attempts"] as? NSNumber)?.intValue ?? 0,
+                (d["correct"] as? NSNumber)?.intValue ?? 0
+            )
+        }
+    }
+
+    private func setMastery(_ id: String, _ status: String) {
+        let prev = mastery[id]
+        let score: Double = status == "mastered" ? 1.0 : (status == "learning" ? 0.65 : (status == "weak" ? 0.25 : 0.0))
+        mastery[id] = (status, score, prev?.attempts ?? 0, prev?.correct ?? 0)
+        let now = Int(Date().timeIntervalSince1970 * 1000)
+        var dict: [String: Any] = [:]
+        for (k, v) in mastery {
+            dict[k] = ["status": v.status, "score": v.score, "attempts": v.attempts, "correct": v.correct, "last_updated": now]
+        }
+        onSaveProgress?(["mastery": dict, "updated_at": now])
+    }
+
+    private var treeBody: some View {
         let laid = treeLayout
         return ZStack(alignment: .topLeading) {
             ScrollView([.horizontal, .vertical]) {
@@ -163,7 +235,7 @@ struct MindmapTreeView: View {
                     }
 
                     ForEach(laid.visible) { node in
-                        let colors = nodeColors(node.depth)
+                        let colors = nodeColors(node.depth, id: node.id)
                         nodeView(node, colors: colors, collapsed: laid.collapsed.contains(node.id))
                         .frame(width: node.width, height: node.height)
                         .position(x: node.x + node.width / 2, y: node.y + node.height / 2)
@@ -236,7 +308,7 @@ struct MindmapTreeView: View {
                 .buttonStyle(.plain)
                 .background(Color(red: 38/255, green: 41/255, blue: 48/255).opacity(0.92))
                 .clipShape(Circle())
-                .help(en ? "Expand / Collapse all" : "全部展开 / 收起")
+                .help(L10n.t("mindmap.toggle_all", en: en))
 
                 VStack(spacing: 2) {
                     Button { scale = min(2.2, scale + 0.15) } label: {
@@ -248,6 +320,16 @@ struct MindmapTreeView: View {
                 }
                 .background(Color(red: 38/255, green: 41/255, blue: 48/255).opacity(0.92))
                 .cornerRadius(17)
+
+                if let download = onDownloadSvg {
+                    Button(action: download) {
+                        Image(systemName: "arrow.down.to.line").frame(width: 34, height: 34)
+                    }
+                    .buttonStyle(.plain)
+                    .background(Color(red: 38/255, green: 41/255, blue: 48/255).opacity(0.92))
+                    .clipShape(Circle())
+                    .help(L10n.t("mindmap.download", en: en))
+                }
             }
             .padding(.leading, 14)
             .padding(.top, 16)
@@ -293,6 +375,17 @@ struct MindmapTreeView: View {
         if !node.summary.isEmpty {
             Text(node.summary)
         }
+        if !node.prerequisites.isEmpty {
+            Text("\(L10n.t("kg.prereq", en: en)): \(node.prerequisites.joined(separator: ", "))")
+        }
+        if isKnowledgeGraph && node.depth > 0 {
+            Menu("\(L10n.t("kg.status_label", en: en)): \(L10n.t("kg.status_" + status(of: node.id), en: en))") {
+                Button(L10n.t("kg.mark_mastered", en: en)) { setMastery(node.id, "mastered") }
+                Button(L10n.t("kg.mark_learning", en: en)) { setMastery(node.id, "learning") }
+                Button(L10n.t("kg.mark_weak", en: en)) { setMastery(node.id, "weak") }
+                Button(L10n.t("kg.mark_unstarted", en: en)) { setMastery(node.id, "unstarted") }
+            }
+        }
         if !node.facets.isEmpty {
             Menu("\(L10n.t("kg.facets", en: en)) (\(node.facets.count))") {
                 ForEach(node.facets, id: \.self) { facet in
@@ -337,7 +430,15 @@ struct MindmapTreeView: View {
         }
     }
 
-    private func nodeColors(_ depth: Int) -> (bg: Color, border: Color) {
+    private func nodeColors(_ depth: Int, id: String) -> (bg: Color, border: Color) {
+        if isKnowledgeGraph && depth > 0 {
+            switch status(of: id) {
+            case "mastered": return (Color(red: 30/255, green: 76/255, blue: 48/255), Color(red: 70/255, green: 170/255, blue: 100/255))
+            case "learning": return (Color(red: 82/255, green: 70/255, blue: 28/255), Color(red: 200/255, green: 170/255, blue: 70/255))
+            case "weak": return (Color(red: 88/255, green: 40/255, blue: 38/255), Color(red: 210/255, green: 110/255, blue: 100/255))
+            default: break
+            }
+        }
         switch depth {
         case 0: return (Color(red: 67/255, green: 70/255, blue: 99/255), Color(red: 102/255, green: 108/255, blue: 152/255))
         case 1: return (Color(red: 43/255, green: 50/255, blue: 69/255), Color(red: 68/255, green: 80/255, blue: 108/255))

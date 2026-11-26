@@ -54,7 +54,7 @@ struct AttachMenuButton: View {
                 }
                 HStack {
                     Spacer()
-                    Button(en ? "Cancel" : "取消") { askingLink = false }
+                    Button(L10n.t("common.cancel", en: en)) { askingLink = false }
                     Button(L10n.t("ctx.link_add", en: en)) { addLink() }
                         .buttonStyle(.borderedProminent)
                 }
@@ -142,7 +142,7 @@ struct AttachChips: View {
 extension View {
     /// Lets files dropped on the view be attached.
     func attachDrop(_ store: AttachmentStore, en: Bool) -> some View {
-        onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
+        attachPaste(store, en: en).onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
             var accepted = false
             for p in providers where p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 accepted = true

@@ -1,5 +1,6 @@
 package com.localnotebook.agent.ui
 
+import com.localnotebook.agent.core.L10n
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -48,14 +49,14 @@ fun SlideDeckView(
 
     if (slides.isEmpty()) {
         Text(
-            if (en) "No slides available." else "暂无幻灯片内容。",
+            L10n.t("slides.no_slides_available", en),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = modifier.padding(16.dp),
         )
         return
     }
 
-    val deckTitle = payload.optString("title", if (en) "Presentation" else "演示文稿")
+    val deckTitle = payload.optString("title", L10n.t("slides.presentation", en))
     var index by remember { mutableIntStateOf(0) }
     var isPlaying by remember { mutableStateOf(false) }
     var showNotes by remember { mutableStateOf(false) }
@@ -145,10 +146,10 @@ fun SlideDeckView(
                     modifier = Modifier.size(16.dp),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (isPlaying) (if (en) "Pause" else "暂停") else (if (en) "Play" else "放映"), fontSize = 12.sp)
+                Text(if (isPlaying) (L10n.t("lec.pause", en)) else (L10n.t("slides.play_2", en)), fontSize = 12.sp)
             }
             TextButton(onClick = { showNotes = !showNotes }) {
-                Text(if (en) "Notes" else "备注", fontSize = 12.sp)
+                Text(L10n.t("slides.notes", en), fontSize = 12.sp)
             }
         }
 
@@ -182,7 +183,7 @@ fun SlideDeckView(
 
         if (showNotes) {
             val notes = slides[index].optString("speaker_notes").ifBlank {
-                if (en) "No speaker notes for this slide." else "本页暂无演讲备注。"
+                L10n.t("slides.no_speaker_notes_for_this", en)
             }
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,

@@ -80,7 +80,7 @@ fun MindmapTreeView(
 
     if (roots.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(if (en) "No mind map nodes." else "没有导图节点。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(L10n.t("mindmap.empty", en), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         return
     }

@@ -3,6 +3,7 @@
 //! Parsing is shared with the core (`lna_studio::mdlite`), TeX goes through
 //! `lna_studio::texfmt` (Unicode math; unmappable scripts use Pango `<sup>` / `<sub>`).
 
+use crate::i18n::tr;
 use gtk4::prelude::*;
 use gtk4::{pango, Box as GtkBox, Button, Grid, Label, Orientation, ScrolledWindow, Separator};
 use lna_studio::mdlite::{self, Block, Span};
@@ -179,7 +180,7 @@ pub fn report_section_widget(section: &Value, en: bool) -> GtkBox {
     let takeaways = strs(section.get("key_takeaways"));
     if !takeaways.is_empty() {
         let c = card();
-        c.append(&markup_label(&format!("<b>{}</b>", if en { "Key points" } else { "核心要点" })));
+        c.append(&markup_label(&format!("<b>{}</b>", tr(en, "readable.key_points"))));
         let md: Vec<String> = takeaways.iter().map(|t| format!("- {t}")).collect();
         c.append(&markdown_widget(&md.join("\n")));
         root.append(&c);
@@ -219,7 +220,7 @@ pub fn readable_artifact_widget(kind: &str, payload: &Value, en: bool) -> Option
                 let mut accepted = strs(q.get("accepted_answers"));
                 accepted.extend(correct);
                 if !accepted.is_empty() {
-                    let label = if en { "**Answer:** " } else { "**参考答案：**" };
+                    let label = tr(en, "readable.answer");
                     answer.append(&markdown_widget(&format!("{label}{}", accepted.join(" / "))));
                 }
                 for key in ["rubric", "explanation"] {
@@ -229,19 +230,14 @@ pub fn readable_artifact_widget(kind: &str, payload: &Value, en: bool) -> Option
                         answer.append(&w);
                     }
                 }
-                let btn = Button::with_label(if en { "Show answer" } else { "显示答案" });
+                let btn = Button::with_label(tr(en, "readable.show_answer"));
                 btn.add_css_class("lna-pill-btn");
                 btn.set_halign(gtk4::Align::Start);
                 let ans = answer.clone();
                 btn.connect_clicked(move |b| {
                     let show = !ans.is_visible();
                     ans.set_visible(show);
-                    b.set_label(match (show, en) {
-                        (true, true) => "Hide answer",
-                        (true, false) => "隐藏答案",
-                        (false, true) => "Show answer",
-                        (false, false) => "显示答案",
-                    });
+                    b.set_label(tr(en, if show { "readable.hide_answer" } else { "readable.show_answer" }));
                 });
                 c.append(&btn);
                 c.append(&answer);
@@ -262,12 +258,12 @@ pub fn readable_artifact_widget(kind: &str, payload: &Value, en: bool) -> Option
                 c.append(&head);
                 c.append(&front);
                 if let Some(h) = cd.get("hint").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
-                    let hint = inline_label(&format!("{}{h}", if en { "Hint: " } else { "提示：" }));
+                    let hint = inline_label(&format!("{}{h}", tr(en, "readable.hint")));
                     hint.add_css_class("lna-muted");
                     c.append(&hint);
                 }
                 c.append(&back);
-                let btn = Button::with_label(if en { "Flip" } else { "翻面" });
+                let btn = Button::with_label(tr(en, "readable.flip"));
                 btn.add_css_class("lna-pill-btn");
                 btn.set_halign(gtk4::Align::Start);
                 let (f, b) = (front.clone(), back.clone());

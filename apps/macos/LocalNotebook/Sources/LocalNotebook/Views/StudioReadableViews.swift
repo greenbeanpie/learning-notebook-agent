@@ -12,7 +12,7 @@ struct ReportSectionView: View {
             let takeaways = (section["key_takeaways"] as? [String] ?? []).filter { !$0.isEmpty }
             if !takeaways.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(en ? "Key points" : "核心要点").font(.callout.weight(.semibold))
+                    Text(L10n.t("readable.key_points", en: en)).font(.callout.weight(.semibold))
                     MarkdownView(markdown: takeaways.map { "- \($0)" }.joined(separator: "\n"), fontSize: 13)
                 }
                 .padding(12)
@@ -61,14 +61,14 @@ struct QuizReadableView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(right ? Color.green : Color.secondary.opacity(0.3), lineWidth: 1))
                 .cornerRadius(8)
             }
-            Button(isRevealed ? (en ? "Hide answer" : "隐藏答案") : (en ? "Show answer" : "显示答案")) {
+            Button(isRevealed ? (L10n.t("readable.hide_answer", en: en)) : (L10n.t("readable.show_answer", en: en))) {
                 if isRevealed { revealed.remove(qi) } else { revealed.insert(qi) }
             }
             .buttonStyle(.borderless)
             if isRevealed {
                 let accepted = (q["accepted_answers"] as? [String] ?? []).filter { !$0.isEmpty }
                 if !accepted.isEmpty {
-                    MarkdownView(markdown: (en ? "**Answer:** " : "**参考答案：**") + accepted.joined(separator: " / "))
+                    MarkdownView(markdown: (L10n.t("readable.answer", en: en)) + accepted.joined(separator: " / "))
                 }
                 if let rubric = q["rubric"] as? String, !rubric.isEmpty {
                     MarkdownView(markdown: rubric, fontSize: 13)
@@ -95,16 +95,16 @@ struct FlashcardsReadableView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                Text(en ? "Click a card to flip it." : "点击卡片翻面。").font(.caption).foregroundColor(.secondary)
+                Text(L10n.t("readable.click_a_card_to_flip", en: en)).font(.caption).foregroundColor(.secondary)
                 ForEach(Array(cards.enumerated()), id: \.offset) { i, card in
                     let isFlipped = flipped.contains(i)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(i + 1) / \(cards.count) · " + (isFlipped ? (en ? "Back" : "背面") : (en ? "Front" : "正面")))
+                        Text("\(i + 1) / \(cards.count) · " + (isFlipped ? (L10n.t("readable.back", en: en)) : (L10n.t("readable.front", en: en))))
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         MarkdownView(markdown: card[isFlipped ? "back" : "front"] as? String ?? "")
                         if !isFlipped, let hint = card["hint"] as? String, !hint.isEmpty {
-                            MarkdownView(markdown: (en ? "Hint: " : "提示：") + hint, fontSize: 12, color: .secondary)
+                            MarkdownView(markdown: (L10n.t("readable.hint", en: en)) + hint, fontSize: 12, color: .secondary)
                         }
                     }
                     .padding(14)

@@ -90,7 +90,8 @@ fn every_modality_generates_and_exports() {
             json!({ "artifact_id": id, "format": fmt, "out_path": out.display().to_string() }),
         );
         let bytes = std::fs::read(&out).unwrap();
-        assert!(bytes.len() > 20, "{ty}/{fmt} export is empty");
+        // The default title follows the OS language, so keep the threshold below the shortest English export.
+        assert!(bytes.len() > 10, "{ty}/{fmt} export is empty");
         match fmt {
             "pptx" => assert_eq!(&bytes[..2], b"PK", "pptx is a zip"),
             "svg" => {

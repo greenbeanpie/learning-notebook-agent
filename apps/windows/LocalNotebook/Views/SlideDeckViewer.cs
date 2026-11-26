@@ -138,18 +138,18 @@ internal sealed class SlideDeckViewer
             .Replace("</", "<\\/")
             .Replace("\u2028", "\\u2028")
             .Replace("\u2029", "\\u2029");
-        var tSteps = en ? "Steps" : "\u5206\u6b65\u52a8\u753b";
+        var tSteps = L10n.T("deck.steps", en);
 
-        var tPrev = en ? "Previous" : "上一页";
-        var tNext = en ? "Next" : "下一页";
-        var tPlay = en ? "Play" : "自动放映";
-        var tPause = en ? "Pause" : "暂停放映";
-        var tNotes = en ? "Speaker Notes" : "演讲备注";
-        var tNoNotes = en ? "No speaker notes for this slide." : "本页暂无演讲备注。";
-        var tAnimSlide = en ? "Slide" : "滑动切换";
-        var tAnimFade = en ? "Fade" : "淡入淡出";
-        var tAnimZoom = en ? "Zoom" : "缩放切换";
-        var tFullscreen = en ? "Present" : "全屏放映";
+        var tPrev = L10n.T("slides.prev", en);
+        var tNext = L10n.T("slides.next", en);
+        var tPlay = L10n.T("slides.play", en);
+        var tPause = L10n.T("slides.pause", en);
+        var tNotes = L10n.T("deck.speaker_notes", en);
+        var tNoNotes = L10n.T("slides.no_speaker_notes_for_this", en);
+        var tAnimSlide = L10n.T("deck.slide", en);
+        var tAnimFade = L10n.T("deck.fade", en);
+        var tAnimZoom = L10n.T("deck.zoom", en);
+        var tFullscreen = L10n.T("deck.present", en);
 
         var tpl = DeckTemplate.Value;
         string J(string v) => "\"" + JsonEncodedText.Encode(v).ToString() + "\"";

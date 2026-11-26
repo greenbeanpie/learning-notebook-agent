@@ -35,6 +35,29 @@ impl Default for LlmClient {
     }
 }
 
+/// Separator between the Chinese and English text of a status message (see `bilingual_status`).
+pub const STATUS_LANG_SEP: char = '\u{1f}';
+
+/// Status callbacks receive one string carrying both languages; the caller shows the one for the UI language
+/// with `pick_status_lang`.
+fn bilingual_status(zh: &str, en: &str) -> String {
+    format!("{zh}{STATUS_LANG_SEP}{en}")
+}
+
+/// Picks one language out of a status message made by the LLM client (plain messages pass through unchanged).
+pub fn pick_status_lang(msg: &str, en: bool) -> &str {
+    match msg.split_once(STATUS_LANG_SEP) {
+        Some((zh, e)) => {
+            if en {
+                e
+            } else {
+                zh
+            }
+        }
+        None => msg,
+    }
+}
+
 impl LlmClient {
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
@@ -438,9 +461,15 @@ impl LlmClient {
                 let mut rounds = 0;
                 while matches!(stop, StopReason::MaxTokens) && rounds < 3 && !items.is_empty() {
                     rounds += 1;
-                    on_status(&format!(
-                        "输出达到长度上限被截断，已保留 {} 个完整条目，正在请求从此继续（第 {rounds}/3 次）…",
-                        items.len()
+                    on_status(&bilingual_status(
+                        &format!(
+                            "输出达到长度上限被截断，已保留 {} 个完整条目，正在请求从此继续（第 {rounds}/3 次）…",
+                            items.len()
+                        ),
+                        &format!(
+                            "Output was cut off at the length limit; kept {} complete item(s) and asking the model to continue (attempt {rounds}/3)…",
+                            items.len()
+                        ),
                     ));
                     let mut cont = req.clone();
                     let done_list = items
@@ -514,16 +543,30 @@ impl LlmClient {
                 break;
             }
             let truncated = matches!(stop, StopReason::MaxTokens);
-            on_status(&format!(
-                "结构化输出未通过校验（{}{}），正在进行第 {}/{} 次修复…",
-                if truncated {
-                    "输出被长度上限截断；"
-                } else {
-                    ""
-                },
-                last_reason.chars().take(160).collect::<String>(),
-                repair_attempt + 1,
-                max_repairs
+            let reason_txt = last_reason.chars().take(160).collect::<String>();
+            on_status(&bilingual_status(
+                &format!(
+                    "结构化输出未通过校验（{}{}），正在进行第 {}/{} 次修复…",
+                    if truncated {
+                        "输出被长度上限截断；"
+                    } else {
+                        ""
+                    },
+                    reason_txt,
+                    repair_attempt + 1,
+                    max_repairs
+                ),
+                &format!(
+                    "Structured output failed validation ({}{}); repair attempt {}/{}…",
+                    if truncated {
+                        "output was cut off at the length limit; "
+                    } else {
+                        ""
+                    },
+                    reason_txt,
+                    repair_attempt + 1,
+                    max_repairs
+                ),
             ));
             let repair_req = LlmRequest {
                 system: "You are a strict JSON repairer. Output only valid JSON that strictly conforms to the provided JSON Schema, with no commentary or code fences.".into(),

@@ -17,25 +17,25 @@ enum AppThemeId: String, CaseIterable, Identifiable {
 
     func displayName(en: Bool) -> String {
         switch self {
-        case .dark: return en ? "Obsidian Dark (Default)" : "黑曜深色（默认）"
-        case .light: return en ? "Paper Light" : "纸感浅色"
-        case .system: return en ? "Follow System" : "跟随系统"
-        case .midnight: return en ? "Midnight Indigo" : "午夜靛蓝"
-        case .forest: return en ? "Nordic Forest" : "北欧森绿"
-        case .warmPaper: return en ? "Warm Parchment" : "暖纸羊皮"
-        case .roseDusk: return en ? "Rose Dusk" : "暮色蔷薇"
+        case .dark: return L10n.t("settings.theme_dark", en: en)
+        case .light: return L10n.t("settings.theme_light", en: en)
+        case .system: return L10n.t("settings.theme_system", en: en)
+        case .midnight: return L10n.t("settings.theme_midnight", en: en)
+        case .forest: return L10n.t("settings.theme_forest", en: en)
+        case .warmPaper: return L10n.t("settings.theme_warm_paper", en: en)
+        case .roseDusk: return L10n.t("settings.theme_rose_dusk", en: en)
         }
     }
 
     func subtitle(en: Bool) -> String {
         switch self {
-        case .dark: return en ? "Classic neutral dark" : "经典中性深色"
-        case .light: return en ? "Crisp daylight surfaces" : "清爽明亮日间界面"
-        case .system: return en ? "Matches macOS appearance" : "自动匹配系统外观"
-        case .midnight: return en ? "Deep navy & indigo glow" : "深海蓝与靛紫点缀"
-        case .forest: return en ? "Calm pine & mint accent" : "静谧松林与薄荷绿"
-        case .warmPaper: return en ? "Soft cream study paper" : "护眼暖米色阅读纸"
-        case .roseDusk: return en ? "Plum charcoal & rose" : "深梅炭黑与蔷薇粉"
+        case .dark: return L10n.t("theme.classic_neutral_dark", en: en)
+        case .light: return L10n.t("theme.crisp_daylight_surfaces", en: en)
+        case .system: return L10n.t("theme.matches_macos_appearance", en: en)
+        case .midnight: return L10n.t("theme.deep_navy_indigo_glow", en: en)
+        case .forest: return L10n.t("theme.calm_pine_mint_accent", en: en)
+        case .warmPaper: return L10n.t("theme.soft_cream_study_paper", en: en)
+        case .roseDusk: return L10n.t("theme.plum_charcoal_rose", en: en)
         }
     }
 

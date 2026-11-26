@@ -377,7 +377,7 @@ public sealed partial class MainWindow
         });
         row.Children.Add(new TextBlock
         {
-            Text = "Thoughts",
+            Text = L10n.T("studio.thoughts"),
             FontSize = 13,
             Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextSecondaryBrush"],
             VerticalAlignment = VerticalAlignment.Center,

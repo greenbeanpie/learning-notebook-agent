@@ -160,11 +160,11 @@ public sealed partial class MainWindow
         var keychainRef = "";
         var hasSecret = false;
 
-        var picker = new ComboBox { Header = L10n.IsEnglish ? "Saved Profiles" : "已保存的配置", HorizontalAlignment = HorizontalAlignment.Stretch };
+        var picker = new ComboBox { Header = L10n.T("model.saved_profiles"), HorizontalAlignment = HorizontalAlignment.Stretch };
         var presetBox = new ComboBox
         {
-            Header = L10n.IsEnglish ? "Provider Preset (Quick Fill)" : "AI 提供商预设（快速填充）",
-            PlaceholderText = L10n.IsEnglish ? "Choose a preset to auto-fill..." : "选择预设以自动填充协议、地址与请求头…",
+            Header = L10n.T("settings.provider_preset_quick_fill"),
+            PlaceholderText = L10n.T("settings.choose_a_preset_to_auto"),
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         foreach (var prItem in presets)
@@ -172,27 +172,27 @@ public sealed partial class MainWindow
             var pname = L10n.IsEnglish ? Str(prItem, "name_en") : Str(prItem, "name");
             presetBox.Items.Add(new ComboBoxItem { Content = pname, Tag = Str(prItem, "id") });
         }
-        var protocolBox = new ComboBox { Header = L10n.IsEnglish ? "Protocol" : "协议", HorizontalAlignment = HorizontalAlignment.Stretch };
+        var protocolBox = new ComboBox { Header = L10n.T("model.protocol"), HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var name in Protocols) protocolBox.Items.Add(new ComboBoxItem { Content = name, Tag = name });
-        var urlBox = new TextBox { Header = L10n.IsEnglish ? "Base URL" : "接口地址 (Base URL)", PlaceholderText = "https://api.example.com/v1" };
-        var modelBox = new ComboBox { Header = L10n.IsEnglish ? "Model ID" : "模型 ID", IsEditable = true, HorizontalAlignment = HorizontalAlignment.Stretch };
-        var discoverBtn = new Button { Content = L10n.IsEnglish ? "Fetch Models" : "获取模型列表" };
+        var urlBox = new TextBox { Header = L10n.T("model.base_url"), PlaceholderText = "https://api.example.com/v1" };
+        var modelBox = new ComboBox { Header = L10n.T("model.model_id"), IsEditable = true, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var discoverBtn = new Button { Content = L10n.T("model.fetch_models") };
         var keyBox = new PasswordBox { Header = "API Key" };
-        var allowInsecureHttpBox = new CheckBox { Content = L10n.IsEnglish ? "Allow non-loopback plaintext HTTP (trusted local network only)" : "确认允许非回环 HTTP 明文传输（仅用于可信本地网络）" };
-        var activateChatBox = new CheckBox { Content = L10n.IsEnglish ? "Set as default chat model" : "设为当前默认对话模型", IsChecked = true };
-        var visionBox = new CheckBox { Content = L10n.IsEnglish ? "Use for vision (images / scanned PDFs)" : "用于处理图文（图片 / 扫描 PDF / 图文混合视觉读取）" };
-        var audioBox = new CheckBox { Content = L10n.IsEnglish ? "Use for audio" : "用于处理音频" };
-        var videoBox = new CheckBox { Content = L10n.IsEnglish ? "Use for video" : "用于处理视频" };
-        var audioVideoToggle = new ToggleSwitch { Header = L10n.IsEnglish ? "Enable native audio/video processing" : "允许处理音视频文件（直接交给原生支持音视频的 AI 处理）", IsOn = avEnabled };
+        var allowInsecureHttpBox = new CheckBox { Content = L10n.T("settings.allow_non_loopback_plaintext_http") };
+        var activateChatBox = new CheckBox { Content = L10n.T("model.set_as_default_chat_model"), IsChecked = true };
+        var visionBox = new CheckBox { Content = L10n.T("settings.use_for_vision_images_scanned") };
+        var audioBox = new CheckBox { Content = L10n.T("settings.use_for_audio") };
+        var videoBox = new CheckBox { Content = L10n.T("settings.use_for_video") };
+        var audioVideoToggle = new ToggleSwitch { Header = L10n.T("route.enable_native_audio_video_processing"), IsOn = avEnabled };
         var mediaRoutingSummary = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.8 };
-        var thinkingBox = new ToggleSwitch { Header = L10n.IsEnglish ? "Show model thinking process" : "显示模型的思考过程（如果模型提供）", IsOn = true };
-        var effortBox = new ComboBox { Header = L10n.IsEnglish ? "Reasoning Effort" : "推理强度", HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var (label, tag) in new[] { (L10n.IsEnglish ? "Default" : "默认", ""), ("low", "low"), ("medium", "medium"), ("high", "high") })
+        var thinkingBox = new ToggleSwitch { Header = L10n.T("model.show_model_thinking_process"), IsOn = true };
+        var effortBox = new ComboBox { Header = L10n.T("model.reasoning_effort"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var (label, tag) in new[] { (L10n.T("tts.default_voice"), ""), ("low", "low"), ("medium", "medium"), ("high", "high") })
             effortBox.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
-        var ctxBox = new NumberBox { Header = L10n.IsEnglish ? "Context Window (tokens)" : "上下文窗口 (tokens)", Value = 32000, Minimum = 2000, Maximum = 2_000_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-        var outBox = new NumberBox { Header = L10n.IsEnglish ? "Max Output Tokens" : "单次最大输出 (tokens)", Value = 8000, Minimum = 256, Maximum = 200_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-        var priceIn = new NumberBox { Header = L10n.IsEnglish ? "Input price ($ / 1M tokens, optional)" : "输入单价 ($ / 百万 tokens，可留空)", Value = double.NaN, Minimum = 0 };
-        var priceOut = new NumberBox { Header = L10n.IsEnglish ? "Output price ($ / 1M tokens, optional)" : "输出单价 ($ / 百万 tokens，可留空)", Value = double.NaN, Minimum = 0 };
+        var ctxBox = new NumberBox { Header = L10n.T("settings.context_window_tokens"), Value = 32000, Minimum = 2000, Maximum = 2_000_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var outBox = new NumberBox { Header = L10n.T("settings.max_output_tokens"), Value = 8000, Minimum = 256, Maximum = 200_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var priceIn = new NumberBox { Header = L10n.T("settings.input_price_1m_tokens_optional"), Value = double.NaN, Minimum = 0 };
+        var priceOut = new NumberBox { Header = L10n.T("settings.output_price_1m_tokens_optional"), Value = double.NaN, Minimum = 0 };
         var headersRows = new List<(Grid Row, TextBox KeyBox, TextBox ValBox)>();
         var headersListPanel = new StackPanel { Spacing = 6 };
         void AddHeaderRow(string initKey = "", string initVal = "")
@@ -204,12 +204,12 @@ public sealed partial class MainWindow
             var kBox = new TextBox
             {
                 Text = initKey,
-                PlaceholderText = L10n.IsEnglish ? "Header name (e.g. X-Api-Version)" : "请求头名称（如 X-Api-Version）",
+                PlaceholderText = L10n.T("settings.header_name_e_g_x"),
             };
             var vBox = new TextBox
             {
                 Text = initVal,
-                PlaceholderText = L10n.IsEnglish ? "Value" : "请求头值",
+                PlaceholderText = L10n.T("model.value"),
             };
             var delBtn = new Button
             {
@@ -255,7 +255,7 @@ public sealed partial class MainWindow
         }
         var addHeaderBtn = new Button
         {
-            Content = L10n.IsEnglish ? "+ Add Header" : "+ 添加请求头",
+            Content = L10n.T("model.add_header"),
             Style = (Style)Application.Current.Resources["PillButtonStyle"],
             Padding = new Thickness(10, 4, 10, 4),
             FontSize = 12,
@@ -266,7 +266,7 @@ public sealed partial class MainWindow
         headersHead.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         headersHead.Children.Add(new TextBlock
         {
-            Text = L10n.IsEnglish ? "Extra headers" : "额外请求头",
+            Text = L10n.T("settings.extra_headers"),
             FontSize = 13,
             VerticalAlignment = VerticalAlignment.Center,
         });
@@ -277,8 +277,8 @@ public sealed partial class MainWindow
         headersBox.Children.Add(headersListPanel);
         var caps = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.8 };
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap };
-        var newBtn = new Button { Content = L10n.IsEnglish ? "New" : "新建配置" };
-        var deleteBtn = new Button { Content = L10n.IsEnglish ? "Delete" : "删除此配置" };
+        var newBtn = new Button { Content = L10n.T("settings.new") };
+        var deleteBtn = new Button { Content = L10n.T("settings.delete") };
 
         void UpdateMediaSummary()
         {
@@ -295,10 +295,13 @@ public sealed partial class MainWindow
                 var m = profiles.FirstOrDefault(p => Bool(Obj(p, "capabilities"), capKey));
                 return m.ValueKind == JsonValueKind.Object ? Str(m, "display_name") : emptyLabel;
             }
-            var chatName = chatModel.ValueKind == JsonValueKind.Object ? Str(chatModel, "display_name") : (L10n.IsEnglish ? "Not configured" : "未配置");
-            mediaRoutingSummary.Text = L10n.IsEnglish
-                ? $"Current model routing:\n• Chat: {chatName}\n• Vision: {PickMod(visionProfileId, "supports_vision", "None (local OCR fallback)")}\n• Audio: {(audioVideoToggle.IsOn ? PickMod(audioProfileId, "supports_audio", "Not assigned") : "Disabled")}\n• Video: {(audioVideoToggle.IsOn ? PickMod(videoProfileId, "supports_video", "Not assigned") : "Disabled")}"
-                : $"当前多模型分配：\n• 默认对话：{chatName}\n• 图文处理：{PickMod(visionProfileId, "supports_vision", "未指定（将尝试本地 OCR）")}\n• 音频处理：{(audioVideoToggle.IsOn ? PickMod(audioProfileId, "supports_audio", "未指定") : "已关闭")}\n• 视频处理：{(audioVideoToggle.IsOn ? PickMod(videoProfileId, "supports_video", "未指定") : "已关闭")}";
+            var chatName = chatModel.ValueKind == JsonValueKind.Object ? Str(chatModel, "display_name") : (L10n.T("route.not_configured"));
+            var routeOff = L10n.T("route.disabled");
+            mediaRoutingSummary.Text = L10n.Fmt("route.summary",
+                chatName,
+                PickMod(visionProfileId, "supports_vision", L10n.T("route.vision_none")),
+                audioVideoToggle.IsOn ? PickMod(audioProfileId, "supports_audio", L10n.T("route.unassigned")) : routeOff,
+                audioVideoToggle.IsOn ? PickMod(videoProfileId, "supports_video", L10n.T("route.unassigned")) : routeOff);
         }
 
         async Task SaveMediaSettingsAsync()
@@ -325,9 +328,9 @@ public sealed partial class MainWindow
                 L10n.T("model.cap_tools") + (Bool(c, "tools") ? " ✓" : " ✗"),
                 L10n.T("model.cap_structured") + (Bool(c, "json_schema") || Bool(c, "json_mode") ? " ✓" : " ✗"),
             };
-            if (Bool(c, "supports_vision")) parts.Add(L10n.IsEnglish ? "Vision" : "识图");
-            if (Bool(c, "supports_audio")) parts.Add(L10n.IsEnglish ? "Audio" : "音频");
-            if (Bool(c, "supports_video")) parts.Add(L10n.IsEnglish ? "Video" : "视频");
+            if (Bool(c, "supports_vision")) parts.Add(L10n.T("settings.vision"));
+            if (Bool(c, "supports_audio")) parts.Add(L10n.T("model.audio"));
+            if (Bool(c, "supports_video")) parts.Add(L10n.T("model.video"));
             return string.Join(" · ", parts);
         }
 
@@ -344,8 +347,8 @@ public sealed partial class MainWindow
                 ctxBox.Value = 32000; outBox.Value = 8000; priceIn.Value = double.NaN; priceOut.Value = double.NaN;
                 LoadHeaderRows(default); caps.Text = "";
                 keyBox.Password = "";
-                keyBox.PlaceholderText = L10n.IsEnglish ? "Enter API Key (optional for local models)" : "输入 API Key（本地模型可留空）";
-                status.Text = L10n.IsEnglish ? "Editing new profile. Fill in details and save." : "正在编辑新配置，填写并保存即可启用。";
+                keyBox.PlaceholderText = L10n.T("model.enter_api_key_optional_for");
+                status.Text = L10n.T("settings.editing_new_profile_fill_in");
                 return;
             }
             profileId = Str(prof, "id");
@@ -369,16 +372,16 @@ public sealed partial class MainWindow
             LoadHeaderRows(Obj(prof, "extra_headers"));
             keyBox.Password = "";
             keyBox.PlaceholderText = hasSecret
-                ? (L10n.IsEnglish ? "Saved (leave blank to keep)" : "已保存，留空则保持不变")
-                : (L10n.IsEnglish ? "Enter API Key (optional for local models)" : "输入 API Key（本地模型可留空）");
+                ? (L10n.T("settings.saved_leave_blank_to_keep"))
+                : (L10n.T("model.enter_api_key_optional_for"));
             var c = Obj(prof, "capabilities");
             visionBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_vision");
             audioBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_audio");
             videoBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_video");
             caps.Text = CapsLine(prof);
             status.Text = hasSecret
-                ? (L10n.IsEnglish ? "Key status: saved in Windows Credential Manager." : "密钥状态：已保存在 Windows 凭据管理器。")
-                : (L10n.IsEnglish ? "Key status: not saved." : "密钥状态：未保存。");
+                ? (L10n.T("settings.key_status_saved_in_windows"))
+                : (L10n.T("model.key_status_not_saved"));
         }
 
         void LoadPicker(string? select)
@@ -388,11 +391,11 @@ public sealed partial class MainWindow
             {
                 var c = Obj(p, "capabilities");
                 var mods = new List<string>();
-                if (Bool(c, "supports_vision")) mods.Add(L10n.IsEnglish ? "Vision" : "图文");
-                if (Bool(c, "supports_audio")) mods.Add(L10n.IsEnglish ? "Audio" : "音频");
-                if (Bool(c, "supports_video")) mods.Add(L10n.IsEnglish ? "Video" : "视频");
+                if (Bool(c, "supports_vision")) mods.Add(L10n.T("model.vision"));
+                if (Bool(c, "supports_audio")) mods.Add(L10n.T("model.audio"));
+                if (Bool(c, "supports_video")) mods.Add(L10n.T("model.video"));
                 var modTag = mods.Count > 0 ? $" [{string.Join("/", mods)}]" : "";
-                var defTag = Bool(p, "is_active") ? (L10n.IsEnglish ? " (Default)" : "（默认对话）") : "";
+                var defTag = Bool(p, "is_active") ? (L10n.T("model.default")) : "";
                 if (p.TryGetProperty("eligible", out var el) && el.ValueKind == JsonValueKind.False)
                     defTag += L10n.T("model.disabled_tag");
                 var item = new ComboBoxItem { Content = $"{Str(p, "display_name")}{defTag}{modTag}", Tag = Str(p, "id") };
@@ -441,9 +444,7 @@ public sealed partial class MainWindow
             videoBox.IsChecked = Bool(prItem, "supports_video");
             LoadHeaderRows(Obj(prItem, "extra_headers"));
             var pname = L10n.IsEnglish ? Str(prItem, "name_en") : Str(prItem, "name");
-            status.Text = L10n.IsEnglish
-                ? $"Applied preset: {pname}. Enter API Key and save."
-                : $"已应用预设：{pname}，请填写 API Key 后保存。";
+            status.Text = L10n.Fmt("model.applied_preset_enter_api_key", pname);
         };
         deleteBtn.Click += async (_, _) =>
         {
@@ -452,14 +453,14 @@ public sealed partial class MainWindow
             profiles.RemoveAll(x => Str(x, "id") == profileId);
             LoadPicker(null);
             Fill(null);
-            status.Text = L10n.IsEnglish ? "Profile deleted." : "配置已删除。";
+            status.Text = L10n.T("model.profile_deleted");
         };
         discoverBtn.Click += async (_, _) =>
         {
             var baseUrl = urlBox.Text.Trim();
             if (string.IsNullOrEmpty(baseUrl))
             {
-                status.Text = L10n.IsEnglish ? "Please enter Base URL first." : "请先填写接口地址 (Base URL)。";
+                status.Text = L10n.T("model.please_enter_base_url_first");
                 return;
             }
             var protocol = (protocolBox.SelectedItem as ComboBoxItem)?.Tag as string ?? Protocols[0];
@@ -470,12 +471,12 @@ public sealed partial class MainWindow
             modelBox.Items.Clear();
             foreach (var m in Arr(r, "models")) modelBox.Items.Add(Str(m, "id"));
             modelBox.Text = current;
-            status.Text = L10n.IsEnglish ? $"Found {modelBox.Items.Count} models." : $"找到 {modelBox.Items.Count} 个模型，可在“模型 ID”下拉框中选择。";
+            status.Text = L10n.Fmt("settings.found_models", modelBox.Items.Count);
         };
 
         var saveModelBtn = new Button { Content = L10n.T("common.save"), Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"] };
-        var clearKeyBtn = new Button { Content = L10n.IsEnglish ? "Clear Key" : "清除密钥", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        var testBtn = new Button { Content = L10n.IsEnglish ? "Test Connection" : "测试连接", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var clearKeyBtn = new Button { Content = L10n.T("model.clear_key"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var testBtn = new Button { Content = L10n.T("model.test_connection"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
 
         saveModelBtn.Click += async (_, _) =>
         {
@@ -483,7 +484,7 @@ public sealed partial class MainWindow
             var modelId = (string.IsNullOrWhiteSpace(modelBox.Text) ? modelBox.SelectedItem as string : modelBox.Text)?.Trim() ?? "";
             if (url.Length == 0 || modelId.Length == 0)
             {
-                status.Text = L10n.IsEnglish ? "Please fill in Base URL and Model ID." : "请填写接口地址和模型 ID。";
+                status.Text = L10n.T("model.please_fill_in_base_url");
                 return;
             }
             var proto = (protocolBox.SelectedItem as ComboBoxItem)?.Tag as string ?? Protocols[0];
@@ -529,8 +530,8 @@ public sealed partial class MainWindow
             var ex = await CoreAsync("secret.exists", Args(("keychain_ref", keychainRef)), "API Key");
             hasSecret = ex is { } er && Bool(er, "exists");
             keyBox.PlaceholderText = hasSecret
-                ? (L10n.IsEnglish ? "Saved (leave blank to keep)" : "已保存，留空则保持不变")
-                : (L10n.IsEnglish ? "Enter API Key (optional for local models)" : "输入 API Key（本地模型可留空）");
+                ? (L10n.T("settings.saved_leave_blank_to_keep"))
+                : (L10n.T("model.enter_api_key_optional_for"));
             if (makeActive) await CoreAsync("profile.activate", Args(("profile_id", profileId)), L10n.T("common.save"));
             await SaveMediaSettingsAsync();
             status.Text = L10n.T("model.saved_checked");
@@ -544,28 +545,28 @@ public sealed partial class MainWindow
 
         clearKeyBtn.Click += async (_, _) =>
         {
-            if (profileId == null || keychainRef.Length == 0) { status.Text = L10n.IsEnglish ? "No key to clear." : "没有可清除的密钥。"; return; }
+            if (profileId == null || keychainRef.Length == 0) { status.Text = L10n.T("settings.no_key_to_clear"); return; }
             if (await CoreAsync("secret.clear", Args(("keychain_ref", keychainRef)), "Clear Key") == null) return;
             hasSecret = false;
-            keyBox.PlaceholderText = L10n.IsEnglish ? "Enter API Key (optional for local models)" : "输入 API Key（本地模型可留空）";
-            status.Text = L10n.IsEnglish ? "API key cleared." : "密钥已清除。";
+            keyBox.PlaceholderText = L10n.T("model.enter_api_key_optional_for");
+            status.Text = L10n.T("model.api_key_cleared");
         };
 
         testBtn.Click += async (_, _) =>
         {
-            if (profileId == null) { status.Text = L10n.IsEnglish ? "Save the profile before testing." : "请先保存配置，再测试连接。"; return; }
-            status.Text = L10n.IsEnglish ? "Testing connection..." : "正在测试连接…";
+            if (profileId == null) { status.Text = L10n.T("settings.save_the_profile_before_testing"); return; }
+            status.Text = L10n.T("model.testing_connection");
             var (test, testErr) = await Api.CallAsync("profile.test", Args(("profile_id", profileId)));
             if (test is { } tr)
             {
-                status.Text = L10n.IsEnglish ? $"Connected: {Str(tr, "reply")}" : $"连接成功：{Str(tr, "reply")}";
+                status.Text = L10n.Fmt("model.connected", Str(tr, "reply"));
                 caps.Text = CapsLine(tr);
             }
             else
             {
                 status.Text = testErr is { Code: "CAPABILITY_MISSING" } ce
                     ? L10n.Fmt("model.refused", ce.Message)
-                    : (L10n.IsEnglish ? $"Connection test failed: {testErr?.Message}" : $"连接测试失败：{testErr?.Message}");
+                    : (L10n.Fmt("model.connection_test_failed", testErr?.Message));
             }
             var relistT = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
             if (relistT is { } rt) { profiles = Arr(rt, "profiles").ToList(); LoadPicker(profileId); }
@@ -630,7 +631,7 @@ public sealed partial class MainWindow
         modelsPanel.Children.Add(allowInsecureHttpBox);
         modelsPanel.Children.Add(activateChatBox);
         modelsPanel.Children.Add(modalityBox);
-        modelsPanel.Children.Add(new Expander { Header = L10n.IsEnglish ? "Advanced Options" : "高级选项", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+        modelsPanel.Children.Add(new Expander { Header = L10n.T("model.advanced_options"), Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         modelsPanel.Children.Add(mediaSettingsBox);
         modelsPanel.Children.Add(modelActions);
         modelsPanel.Children.Add(status);
@@ -638,9 +639,9 @@ public sealed partial class MainWindow
         // ---- Tab 4: Semantic Search (Embeddings) ----
         var embStatus = new TextBlock { TextWrapping = TextWrapping.Wrap };
         var embProgress = new ProgressBar { Maximum = 100, Visibility = Visibility.Collapsed };
-        var embDownload = new Button { Content = L10n.IsEnglish ? "Download & Enable" : "下载并启用", Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"] };
+        var embDownload = new Button { Content = L10n.T("emb.download_enable"), Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"] };
         var embCancel = new Button { Content = L10n.T("common.cancel"), Visibility = Visibility.Collapsed };
-        var embRebuild = new Button { Content = L10n.IsEnglish ? "Rebuild Index" : "重建索引", Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var embRebuild = new Button { Content = L10n.T("emb.rebuild_index"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
         _embProgress = embProgress; _embStatus = embStatus; _embDownload = embDownload; _embCancel = embCancel;
 
         async Task RefreshEmbAsync()
@@ -655,16 +656,14 @@ public sealed partial class MainWindow
             var done = Int(s, "embedded_chunks");
             var mb = Int(d, "total_bytes") / 1_000_000;
             if (activeModel.ValueKind == JsonValueKind.Object)
-                embStatus.Text = L10n.IsEnglish
-                    ? $"Active model: {Str(activeModel, "model_name")}. Indexed chunks: {done}/{total}."
-                    : $"当前模型：{Str(activeModel, "model_name")}。已建立索引的片段：{done}/{total}。";
+                embStatus.Text = L10n.Fmt("emb.active_model_indexed_chunks", Str(activeModel, "model_name"), done, total);
             else
                 embStatus.Text = Bool(d, "installed")
-                    ? (L10n.IsEnglish ? "Model downloaded but not enabled." : "模型文件已下载，尚未启用。")
-                    : (L10n.IsEnglish ? $"Semantic search not enabled. Default model is ~{mb} MB." : $"尚未启用语义检索。默认模型约 {mb} MB。");
+                    ? (L10n.T("emb.model_downloaded_but_not_enabled"))
+                    : (L10n.Fmt("emb.status_not_enabled", mb));
             embDownload.Content = Bool(d, "installed")
-                ? (L10n.IsEnglish ? "Enable Downloaded Model" : "启用已下载的模型")
-                : (L10n.IsEnglish ? $"Download & Enable (~{mb} MB)" : $"下载并启用（约 {mb} MB）");
+                ? (L10n.T("emb.enable_downloaded_model"))
+                : (L10n.Fmt("emb.download_size", mb));
             embDownload.IsEnabled = !running;
             embCancel.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
             embProgress.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
@@ -682,7 +681,7 @@ public sealed partial class MainWindow
         embRebuild.Click += async (_, _) =>
         {
             var r = await CoreAsync("embedding.rebuild", Args(("force", true)), L10n.T("settings.tab_embedding"));
-            if (r is { } rr) embStatus.Text = L10n.IsEnglish ? $"Queued {Int(rr, "sources_queued")} sources for rebuild." : $"已排队重建 {Int(rr, "sources_queued")} 个来源。";
+            if (r is { } rr) embStatus.Text = L10n.Fmt("emb.queued_rebuild", Int(rr, "sources_queued"));
         };
         await RefreshEmbAsync();
         _embRefresh = RefreshEmbAsync;
@@ -693,9 +692,7 @@ public sealed partial class MainWindow
         embRow.Children.Add(embRebuild);
 
         var embPanel = new StackPanel { Spacing = 10, Padding = new Thickness(4, 8, 4, 8) };
-        embPanel.Children.Add(Line(L10n.IsEnglish
-            ? "Semantic search finds relevant passages across different phrasings or languages using a local embedding model."
-            : "语义检索让提问和来源语言不同、或措辞不同时也能找到相关内容。它使用本地嵌入模型，不会上传你的内容。"));
+        embPanel.Children.Add(Line(L10n.T("settings.semantic_search_finds_relevant_passages")));
         embPanel.Children.Add(embStatus);
         embPanel.Children.Add(embProgress);
         embPanel.Children.Add(embRow);
@@ -764,7 +761,7 @@ public sealed partial class MainWindow
         };
         if (needConfirm)
         {
-            dlg.PrimaryButtonText = L10n.IsEnglish ? "Got it, continue" : "我知道了，继续";
+            dlg.PrimaryButtonText = L10n.T("dlg.got_it_continue");
             dlg.DefaultButton = ContentDialogButton.Primary;
         }
         return await dlg.ShowAsync() == ContentDialogResult.Primary;
@@ -793,10 +790,10 @@ public sealed partial class MainWindow
         }
         var dlg = new ContentDialog
         {
-            Title = L10n.IsEnglish ? "Quick Start" : "快速开始",
+            Title = L10n.T("dlg.quick_start"),
             Content = panel,
-            PrimaryButtonText = L10n.IsEnglish ? "Open Settings" : "打开设置",
-            CloseButtonText = L10n.IsEnglish ? "Later" : "稍后",
+            PrimaryButtonText = L10n.T("dlg.open_settings"),
+            CloseButtonText = L10n.T("dlg.later"),
             DefaultButton = ContentDialogButton.Primary,
             XamlRoot = Content.XamlRoot,
         };

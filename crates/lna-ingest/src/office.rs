@@ -188,7 +188,9 @@ fn attr_value<'a>(
 ) -> Option<String> {
     for attr in e.attributes().flatten() {
         if local_name_str(attr.key.as_ref()).eq_ignore_ascii_case(local_target) {
-            if let Ok(v) = attr.decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, reader.decoder()) {
+            if let Ok(v) = attr
+                .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, reader.decoder())
+            {
                 return Some(v.into_owned());
             }
         }
@@ -919,7 +921,10 @@ fn find_epub_opf_path(archive: &mut zip::ZipArchive<std::fs::File>) -> Option<St
     }
     for i in 0..archive.len() {
         if let Ok(entry) = archive.by_index(i) {
-            if entry.name().is_ok_and(|n| n.to_ascii_lowercase().ends_with(".opf")) {
+            if entry
+                .name()
+                .is_ok_and(|n| n.to_ascii_lowercase().ends_with(".opf"))
+            {
                 return Some(entry.name().map(|n| n.into_owned()).unwrap_or_default());
             }
         }

@@ -1,3 +1,4 @@
+use crate::i18n::{tr, trf};
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Button, DrawingArea, GestureClick, GestureDrag, Orientation, Overlay, Popover, ScrolledWindow};
 use serde_json::Value;
@@ -628,7 +629,7 @@ pub fn build_mindmap_widget(
                 menu.append(&s);
             }
             if !node.facets.is_empty() {
-                let head = gtk4::Label::new(Some(if en { "Sub-points" } else { "细分要点" }));
+                let head = gtk4::Label::new(Some(tr(en, "kg.facets")));
                 head.set_xalign(0.0);
                 head.add_css_class("lna-muted");
                 menu.append(&head);
@@ -650,12 +651,7 @@ pub fn build_mindmap_widget(
                 }
             }
             if node.depth > 0 {
-                let rb = Button::with_label(match (node.atomic, en) {
-                    (true, true) => "Already a minimal concept",
-                    (true, false) => "已是最小知识点，无需细化",
-                    (false, true) => "Refine into finer points",
-                    (false, false) => "细化为更小的知识点",
-                });
+                let rb = Button::with_label(tr(en, if node.atomic { "mm.already_minimal" } else { "mm.refine" }));
                 rb.add_css_class("lna-pill-btn");
                 rb.set_sensitive(!node.atomic);
                 let cb = on_action.clone();
@@ -668,12 +664,12 @@ pub fn build_mindmap_widget(
                 });
                 menu.append(&rb);
             }
-            for (act, key_en, key_zh) in [
-                ("quiz", "Quiz on this concept", "针对此知识点生成测验"),
-                ("mindmap", "Expand as Mind Map", "展开为详细思维导图"),
-                ("chat", "Explain in Chat", "在对话中深入讲解"),
+            for (act, label_key) in [
+                ("quiz", "kg.action_quiz"),
+                ("mindmap", "kg.action_mindmap"),
+                ("chat", "kg.action_chat"),
             ] {
-                let b = Button::with_label(if en { key_en } else { key_zh });
+                let b = Button::with_label(tr(en, label_key));
                 b.add_css_class("lna-pill-btn");
                 let cb = on_action.clone();
                 let concept = lbl.clone();
@@ -722,7 +718,7 @@ pub fn build_mindmap_widget(
 
     let toggle_all = Button::with_label("↕");
     toggle_all.add_css_class("lna-pill-btn");
-    toggle_all.set_tooltip_text(Some(if en { "Expand / Collapse all" } else { "全部展开 / 收起" }));
+    toggle_all.set_tooltip_text(Some(tr(en, "mindmap.expand_collapse_all")));
     let st_ta = state.clone();
     let area_ta = area.clone();
     toggle_all.connect_clicked(move |_| {
@@ -786,11 +782,7 @@ pub fn build_mindmap_widget(
     overlay.set_child(Some(&scroll));
     overlay.add_overlay(&ctrl_box);
     if total_nodes > 400 {
-        let hint = gtk4::Label::new(Some(&if en {
-            format!("Large graph ({total_nodes} nodes): collapsed to the first two levels. Click a node marked + to expand.")
-        } else {
-            format!("节点较多（{total_nodes} 个），已折叠到前两层；点击节点上的 + 可展开。")
-        }));
+        let hint = gtk4::Label::new(Some(&trf(en, "mindmap.large_hint_fmt", &[&total_nodes])));
         hint.add_css_class("lna-muted");
         hint.set_halign(gtk4::Align::Center);
         hint.set_valign(gtk4::Align::End);

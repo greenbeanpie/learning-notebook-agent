@@ -8,6 +8,13 @@ public struct ApiEvent: Sendable {
     public let data: [String: Any]
 }
 
+/// An error answered by the core: a stable `code` (for localized advice) plus the raw message.
+public struct CoreError: LocalizedError {
+    public let code: String
+    public let message: String
+    public var errorDescription: String? { message }
+}
+
 public final class CoreClient {
     private var core: OpaquePointer?
     private let lock = NSLock()
@@ -52,7 +59,7 @@ public final class CoreClient {
 
     public func call(method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
         guard let core else {
-            throw NSError(domain: "LocalNotebook", code: -1, userInfo: [NSLocalizedDescriptionKey: "Core not initialized"])
+            throw CoreError(code: "NOT_READY", message: "Core not initialized")
         }
         let reqId = UUID().uuidString
         let reqObj: [String: Any] = ["id": reqId, "method": method, "params": params]
@@ -79,7 +86,7 @@ public final class CoreClient {
 
                     if let err = obj["error"] as? [String: Any] {
                         let msg = err["message"] as? String ?? "Unknown error"
-                        continuation?.resume(throwing: NSError(domain: "LocalNotebook", code: 1, userInfo: [NSLocalizedDescriptionKey: msg]))
+                        continuation?.resume(throwing: CoreError(code: err["code"] as? String ?? "", message: msg))
                     } else {
                         continuation?.resume(returning: obj["result"] as? [String: Any] ?? [:])
                     }

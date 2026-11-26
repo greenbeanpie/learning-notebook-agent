@@ -62,11 +62,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (!ok) {
                 _ui.update {
                     it.copy(
-                        statusBanner = if (it.prefs.isEnglish) {
-                            "Native core (liblna_ffi.so) not bundled yet. Run build-android-rust.sh."
-                        } else {
-                            "尚未打包 Rust 原生库 (liblna_ffi.so)，请先执行 build-android-rust.sh。"
-                        },
+                        statusBanner = L10n.t("app.native_core_missing", it.prefs.isEnglish),
                     )
                 }
                 return@launch
@@ -622,7 +618,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     .put("artifact_type", actualType)
                     .put("config", cfg)
                 if (kind == "knowledge_graph" && topic.isNotBlank()) {
-                    params.put("title", if (en) "$topic - Knowledge Graph" else "$topic · 知识点图谱")
+                    params.put("title", L10n.t("app.knowledge_graph", en).format(topic))
                 }
                 params.putAttachments(images)
                 core.call("studio.create", params)
@@ -634,9 +630,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun createConceptLink(kind: String, concept: String) {
         val en = _ui.value.prefs.isEnglish
         val prompt = if (kind == "quiz") {
-            if (en) "Focused quiz on concept: $concept" else "针对知识点「$concept」的专项测验"
+            L10n.t("app.focused_quiz_on_concept", en).format(concept)
         } else {
-            if (en) "Detailed mind map expanding concept: $concept" else "深入展开知识点「$concept」的详细思维导图"
+            L10n.t("app.detailed_mind_map_expanding_concept", en).format(concept)
         }
         createStudio(kind, topic = prompt)
     }
@@ -922,7 +918,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val reply = res.optString("reply", "OK")
                 _ui.update {
                     it.copy(
-                        statusBanner = if (it.prefs.isEnglish) "Connected: $reply" else "连接成功：$reply"
+                        statusBanner = L10n.t("app.connected", it.prefs.isEnglish).format(reply)
                     )
                 }
             }.onFailure { reportError(it) }
@@ -937,7 +933,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 loadModelProfiles()
                 _ui.update {
                     it.copy(
-                        statusBanner = if (it.prefs.isEnglish) "API key cleared." else "密钥已清除。"
+                        statusBanner = L10n.t("model.api_key_cleared", it.prefs.isEnglish)
                     )
                 }
             }.onFailure { reportError(it) }
@@ -974,9 +970,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 L10n.t("model.cap_structured", en) +
                     if (caps.optBoolean("json_schema") || caps.optBoolean("json_mode")) " ✓" else " ✗",
             )
-            if (caps.optBoolean("supports_vision")) parts += if (en) "Vision" else "识图"
-            if (caps.optBoolean("supports_audio")) parts += if (en) "Audio" else "音频"
-            if (caps.optBoolean("supports_video")) parts += if (en) "Video" else "视频"
+            if (caps.optBoolean("supports_vision")) parts += L10n.t("app.vision", en)
+            if (caps.optBoolean("supports_audio")) parts += L10n.t("model.audio", en)
+            if (caps.optBoolean("supports_video")) parts += L10n.t("model.video", en)
             return parts.joinToString(" · ")
         }
 

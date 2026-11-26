@@ -1,5 +1,6 @@
 //! Pure helpers of the lecture player (no GTK): the narration sequence, figure inlining and the
 //! shared player page. Kept apart from the UI so they can be unit-tested alone.
+use crate::i18n::tr;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -128,10 +129,10 @@ pub fn js_string(text: &str) -> String {
 pub fn deck_html(template: &str, payload: &Value, en: bool, bridge: &str) -> String {
     let mut html = template.replacen("<head>", &format!("<head>{bridge}"), 1);
     html = html
-        .replace("__LANG__", if en { "en" } else { "zh-CN" })
+        .replace("__LANG__", tr(en, "slides.en"))
         .replace("__LECTURE__", "true")
-        .replace("__T_PLAY_JSON__", &js_string(if en { "Play" } else { "自动放映" }))
-        .replace("__T_PAUSE_JSON__", &js_string(if en { "Pause" } else { "暂停放映" }))
+        .replace("__T_PLAY_JSON__", &js_string(tr(en, "slides.play")))
+        .replace("__T_PAUSE_JSON__", &js_string(tr(en, "slides.pause")))
         .replace("__T_NONOTES_JSON__", &js_string(""));
     // the remaining plain-text labels belong to the stand-alone slide viewer
     let mut cleaned = String::with_capacity(html.len());

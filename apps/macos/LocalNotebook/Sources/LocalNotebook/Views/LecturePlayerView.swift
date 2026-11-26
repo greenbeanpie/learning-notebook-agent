@@ -49,6 +49,8 @@ final class LectureController: ObservableObject {
     @Published var captions = true
     @Published var rate: Double = 1.0
     @Published var engine = "system"
+    /// `AVSpeechSynthesisVoice` identifier chosen in the voice settings ("" = default for the language).
+    @Published var systemVoice = ""
     @Published var policy = "auto"
     @Published var checkpoint: LecSentence?
     @Published var showAsk = false
@@ -105,14 +107,16 @@ final class LectureController: ObservableObject {
     // MARK: page
 
     /// Loads the settings and the page; called once when the player appears.
-    func start() async {
+    func start(settingsOnly: Bool = false) async {
         if let s = try? await core.call(method: "tts.get_settings") {
             engine = (s["engine"] as? String) == "cloud" ? "cloud" : "system"
+            systemVoice = s["system_voice"] as? String ?? ""
         }
         if let r = try? await core.call(method: "settings.get", params: ["key": "lecture.prefs"]),
            let v = r["value"] as? [String: Any], let p = v["adapt_policy"] as? String, !p.isEmpty {
             policy = p
         }
+        if settingsOnly { return }
         guard let url = Bundle.module.url(forResource: "deck_player", withExtension: "html"),
               let template = try? String(contentsOf: url, encoding: .utf8) else {
             status = "deck_player.html is missing"
@@ -193,7 +197,7 @@ final class LectureController: ObservableObject {
             speechCont = cont
             let u = AVSpeechUtterance(string: text)
             currentUtterance = u
-            u.voice = AVSpeechSynthesisVoice(language: en ? "en-US" : "zh-CN")
+            u.voice = AVSpeechSynthesisVoice(identifier: systemVoice) ?? AVSpeechSynthesisVoice(language: en ? "en-US" : "zh-CN")
             let base = Double(AVSpeechUtteranceDefaultSpeechRate)
             let wanted = base * rate
             u.rate = Float(min(max(wanted, Double(AVSpeechUtteranceMinimumSpeechRate)), Double(AVSpeechUtteranceMaximumSpeechRate)))
@@ -344,6 +348,18 @@ final class LectureController: ObservableObject {
 
     // MARK: questions and adaptations
 
+    /// Voice settings changed: cached cloud audio is stale, the engine and voice are re-read.
+    func reloadVoiceSettings() {
+        cloudCache.removeAll()
+        Task { await start(settingsOnly: true) }
+    }
+
+    /// Speaks `text` now with the current settings (voice preview).
+    func preview(_ text: String) {
+        pause()
+        playTask = Task { [weak self] in _ = await self?.speak(text) }
+    }
+
     func setPolicy(_ p: String) {
         policy = p
         let c = core
@@ -466,6 +482,8 @@ struct LecturePlayerView: View {
     @State private var question = ""
     @State private var attemptAnswer = ""
     @State private var showAdaptDetails = false
+    @State private var showVoiceSettings = false
+    @EnvironmentObject private var appState: AppState
 
     @MainActor
     init(artifact: StudioArtifactItem, core: CoreClient, en: Bool) {
@@ -493,6 +511,10 @@ struct LecturePlayerView: View {
         .task { await lc.start() }
         .onDisappear { lc.shutdown() }
         .sheet(isPresented: $showAdaptDetails) { adaptDetails }
+        .sheet(isPresented: $showVoiceSettings) {
+            VoiceSettingsSheet(en: en, onSaved: { lc.reloadVoiceSettings() }, onPreview: { lc.preview($0) }, onClose: { showVoiceSettings = false })
+                .environmentObject(appState)
+        }
     }
 
     // MARK: controls
@@ -534,11 +556,18 @@ struct LecturePlayerView: View {
                 lc.showAsk = true
             }
             .buttonStyle(.borderedProminent)
-            Menu(t("lec.adapt_policy")) {
-                ForEach([("auto", "lec.policy_auto"), ("ask", "lec.policy_ask"), ("never", "lec.policy_never")], id: \.0) { code, key in
-                    Button((lc.policy == code ? "✓ " : "") + t(key)) { lc.setPolicy(code) }
+            Menu {
+                Button(t("lec.voice_settings")) { showVoiceSettings = true }
+                Menu(t("lec.adapt_policy")) {
+                    ForEach([("auto", "lec.policy_auto"), ("ask", "lec.policy_ask"), ("never", "lec.policy_never")], id: \.0) { code, key in
+                        Button((lc.policy == code ? "✓ " : "") + t(key)) { lc.setPolicy(code) }
+                    }
                 }
+                Button(t("lec.restore_original")) { lc.undo(all: true) }
+            } label: {
+                Image(systemName: "ellipsis")
             }
+            .menuStyle(.borderlessButton)
             .fixedSize()
             if lc.adapting {
                 ProgressView().controlSize(.small)
@@ -657,7 +686,7 @@ struct LecturePlayerView: View {
                     .buttonStyle(.link)
                     .font(.caption)
                 if !e.suggestKind.isEmpty {
-                    Text("\(t("lec.adapt_suggest"))：\(t("lec.kind_\(e.suggestKind)"))")
+                    Text("\(t("lec.adapt_suggest"))\(L10n.t("common.colon", en: en))\(t("lec.kind_\(e.suggestKind)"))")
                         .font(.subheadline.weight(.semibold))
                     if !e.suggestReason.isEmpty { Text(e.suggestReason).font(.caption) }
                     HStack {
@@ -688,7 +717,7 @@ struct LecturePlayerView: View {
         return VStack(alignment: .leading, spacing: 10) {
             Text(t("lec.kind_\(kind)")).font(.headline)
             if let reason = a["reason"] as? String, !reason.isEmpty {
-                Text("\(t("lec.reason"))：\(reason)")
+                Text("\(t("lec.reason"))\(L10n.t("common.colon", en: en))\(reason)")
             }
             if !inserted.isEmpty {
                 Text(t("lec.inserted")).font(.subheadline.weight(.semibold))

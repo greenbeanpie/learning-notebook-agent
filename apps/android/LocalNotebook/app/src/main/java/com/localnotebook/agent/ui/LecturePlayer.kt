@@ -108,10 +108,10 @@ private fun deckHtml(context: Context, payload: JSONObject, en: Boolean): String
     val bridge = "<script>window.chrome={webview:{postMessage:function(m){LnaBridge.post(m)}}};</script>"
     return tpl
         .replaceFirst("<head>", "<head>$bridge")
-        .replace("__LANG__", if (en) "en" else "zh-CN")
+        .replace("__LANG__", L10n.t("slides.en", en))
         .replace("__LECTURE__", "true")
-        .replace("__T_PLAY_JSON__", q(if (en) "Play" else "自动放映"))
-        .replace("__T_PAUSE_JSON__", q(if (en) "Pause" else "暂停放映"))
+        .replace("__T_PLAY_JSON__", q(L10n.t("slides.play", en)))
+        .replace("__T_PAUSE_JSON__", q(L10n.t("slides.pause", en)))
         .replace("__T_NONOTES_JSON__", q(""))
         .replace(Regex("__T_[A-Z]+__"), "")
         .replace("__PAYLOAD__", payload.toString().replace("</", "<\\/"))

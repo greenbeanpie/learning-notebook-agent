@@ -167,7 +167,7 @@ struct UnifiedSettingsSheet: View {
 
                 Form {
                     Picker(state.t("settings.language"), selection: $state.prefs.language) {
-                        Text(state.isEnglish ? "Follow system" : "跟随系统").tag("auto")
+                        Text(L10n.t("settings.lang_auto", en: state.isEnglish)).tag("auto")
                         Text("简体中文").tag("zh-CN")
                         Text("English").tag("en-US")
                     }
@@ -176,9 +176,9 @@ struct UnifiedSettingsSheet: View {
                     }
 
                     Picker(state.t("settings.font_size"), selection: $state.prefs.fontSize) {
-                        Text(state.isEnglish ? "Compact (14px)" : "紧凑 (14px)").tag(14.0)
-                        Text(state.isEnglish ? "Normal (15px)" : "标准 (15px)").tag(15.0)
-                        Text(state.isEnglish ? "Large (17px)" : "大号 (17px)").tag(17.0)
+                        Text(L10n.t("appearance.compact_14px", en: state.isEnglish)).tag(14.0)
+                        Text(L10n.t("appearance.normal_15px", en: state.isEnglish)).tag(15.0)
+                        Text(L10n.t("appearance.large_17px", en: state.isEnglish)).tag(17.0)
                     }
                     .onChange(of: state.prefs.fontSize) { _, _ in
                         Task { await state.savePreferences() }
@@ -212,7 +212,7 @@ struct UnifiedSettingsSheet: View {
                             Task { await state.savePreferences() }
                         }
                     Picker(state.t("settings.default_studio_lang"), selection: $state.prefs.defaultStudioLang) {
-                        Text(state.isEnglish ? "Follow sources" : "跟随来源").tag("")
+                        Text(L10n.t("settings.studio_lang_source", en: state.isEnglish)).tag("")
                         Text("简体中文").tag("zh-CN")
                         Text("English").tag("en")
                     }
@@ -264,8 +264,8 @@ struct UnifiedSettingsSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 // Saved Profiles row + New / Delete
                 HStack(spacing: 8) {
-                    Picker(state.isEnglish ? "Saved Profiles" : "已保存的配置", selection: $selectedProfileId) {
-                        Text(state.isEnglish ? "— New Profile —" : "— 新建配置 —").tag("")
+                    Picker(L10n.t("model.saved_profiles", en: state.isEnglish), selection: $selectedProfileId) {
+                        Text(L10n.t("model.new_profile", en: state.isEnglish)).tag("")
                         ForEach(profiles) { p in
                             Text(profileDisplayLabel(p)).tag(p.id)
                         }
@@ -278,14 +278,14 @@ struct UnifiedSettingsSheet: View {
                         }
                     }
 
-                    Button(state.isEnglish ? "New" : "新建") {
+                    Button(L10n.t("model.new", en: state.isEnglish)) {
                         selectedProfileId = ""
                         selectedPresetId = ""
                         fillProfile(nil)
                     }
                     .buttonStyle(.bordered)
 
-                    Button(state.isEnglish ? "Delete" : "删除", role: .destructive) {
+                    Button(L10n.t("common.delete", en: state.isEnglish), role: .destructive) {
                         Task { await deleteCurrentProfile() }
                     }
                     .buttonStyle(.bordered)
@@ -294,8 +294,8 @@ struct UnifiedSettingsSheet: View {
 
                 // Provider Preset (Quick Fill)
                 if !presets.isEmpty {
-                    Picker(state.isEnglish ? "Provider Preset" : "AI 提供商预设", selection: $selectedPresetId) {
-                        Text(state.isEnglish ? "Choose a preset to auto-fill..." : "选择预设以自动填充协议、地址与模型…").tag("")
+                    Picker(L10n.t("model.provider_preset", en: state.isEnglish), selection: $selectedPresetId) {
+                        Text(L10n.t("model.choose_a_preset_to_auto", en: state.isEnglish)).tag("")
                         ForEach(presets) { pr in
                             Text(state.isEnglish ? pr.nameEn : pr.name).tag(pr.id)
                         }
@@ -310,7 +310,7 @@ struct UnifiedSettingsSheet: View {
                 Divider().opacity(0.35)
 
                 // Protocol + Base URL
-                Picker(state.isEnglish ? "Protocol" : "协议", selection: $proto) {
+                Picker(L10n.t("model.protocol", en: state.isEnglish), selection: $proto) {
                     Text("chat_completion (OpenAI Compatible)").tag("chat_completion")
                     Text("responses (OpenAI Responses)").tag("responses")
                     Text("anthropic (Anthropic Messages)").tag("anthropic")
@@ -318,7 +318,7 @@ struct UnifiedSettingsSheet: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(state.isEnglish ? "Base URL" : "接口地址 (Base URL)")
+                    Text(L10n.t("model.base_url", en: state.isEnglish))
                         .font(.caption).foregroundColor(palette.textSecondary)
                     TextField("https://api.example.com/v1", text: $baseUrl)
                         .textFieldStyle(.roundedBorder)
@@ -326,7 +326,7 @@ struct UnifiedSettingsSheet: View {
 
                 // Model ID + Candidates menu + Fetch Models
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(state.isEnglish ? "Model ID" : "模型 ID")
+                    Text(L10n.t("model.model_id", en: state.isEnglish))
                         .font(.caption).foregroundColor(palette.textSecondary)
                     HStack(spacing: 8) {
                         TextField("gpt-4o / claude-sonnet-4 / gemini-2.5-flash", text: $modelId)
@@ -343,10 +343,10 @@ struct UnifiedSettingsSheet: View {
                             }
                             .menuStyle(.borderlessButton)
                             .fixedSize()
-                            .help(state.isEnglish ? "Choose model" : "选择模型")
+                            .help(L10n.t("model.choose_model", en: state.isEnglish))
                         }
 
-                        Button(isDiscovering ? (state.isEnglish ? "Fetching..." : "获取中…") : (state.isEnglish ? "Fetch Models" : "获取模型列表")) {
+                        Button(isDiscovering ? (L10n.t("model.fetching", en: state.isEnglish)) : (L10n.t("model.fetch_models", en: state.isEnglish))) {
                             Task { await discoverModels() }
                         }
                         .buttonStyle(.bordered)
@@ -356,12 +356,12 @@ struct UnifiedSettingsSheet: View {
 
                 // API Key
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("API Key")
+                    Text(L10n.t("model.api_key", en: state.isEnglish))
                         .font(.caption).foregroundColor(palette.textSecondary)
                     SecureField(
                         hasSecret
-                            ? (state.isEnglish ? "Saved in Keychain (leave blank to keep)" : "已存入 Keychain，留空则保持不变")
-                            : (state.isEnglish ? "Enter API Key (optional for local models)" : "输入 API Key（本地模型可留空）"),
+                            ? (L10n.t("model.saved_in_keychain_leave_blank", en: state.isEnglish))
+                            : (L10n.t("model.enter_api_key_optional_for", en: state.isEnglish)),
                         text: $apiKey
                     )
                     .textFieldStyle(.roundedBorder)
@@ -369,37 +369,37 @@ struct UnifiedSettingsSheet: View {
 
                 // Toggles
                 VStack(alignment: .leading, spacing: 6) {
-                    Toggle(state.isEnglish ? "Allow non-loopback plaintext HTTP (trusted local network only)" : "允许非回环 HTTP 明文传输（仅用于可信本地网络）", isOn: $allowInsecureHttp)
-                    Toggle(state.isEnglish ? "Set as default chat model" : "设为当前默认对话模型", isOn: $activateChat)
+                    Toggle(L10n.t("model.allow_non_loopback_plaintext_http", en: state.isEnglish), isOn: $allowInsecureHttp)
+                    Toggle(L10n.t("model.set_as_default_chat_model", en: state.isEnglish), isOn: $activateChat)
                     HStack(spacing: 16) {
-                        Toggle(state.isEnglish ? "Vision (images/PDF)" : "图文视觉", isOn: $supportsVision)
-                        Toggle(state.isEnglish ? "Audio" : "音频", isOn: $supportsAudio)
-                        Toggle(state.isEnglish ? "Video" : "视频", isOn: $supportsVideo)
+                        Toggle(L10n.t("model.vision_images_pdf", en: state.isEnglish), isOn: $supportsVision)
+                        Toggle(L10n.t("model.audio", en: state.isEnglish), isOn: $supportsAudio)
+                        Toggle(L10n.t("model.video", en: state.isEnglish), isOn: $supportsVideo)
                     }
                 }
                 .font(.callout)
 
                 // Advanced Options
-                DisclosureGroup(state.isEnglish ? "Advanced Options" : "高级选项", isExpanded: $showAdvanced) {
+                DisclosureGroup(L10n.t("model.advanced_options", en: state.isEnglish), isExpanded: $showAdvanced) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Toggle(state.isEnglish ? "Show model thinking process" : "显示模型的思考过程（如果模型提供）", isOn: $showThinking)
+                        Toggle(L10n.t("model.show_model_thinking_process", en: state.isEnglish), isOn: $showThinking)
 
-                        Picker(state.isEnglish ? "Reasoning Effort" : "推理强度", selection: $effort) {
-                            Text(state.isEnglish ? "Default" : "默认").tag("")
-                            Text("low").tag("low")
-                            Text("medium").tag("medium")
-                            Text("high").tag("high")
+                        Picker(L10n.t("model.reasoning_effort", en: state.isEnglish), selection: $effort) {
+                            Text(L10n.t("model.effort_default", en: state.isEnglish)).tag("")
+                            Text(L10n.t("model.effort_low", en: state.isEnglish)).tag("low")
+                            Text(L10n.t("model.effort_medium", en: state.isEnglish)).tag("medium")
+                            Text(L10n.t("model.effort_high", en: state.isEnglish)).tag("high")
                         }
 
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(state.isEnglish ? "Context Window" : "上下文窗口 (tokens)")
+                                Text(L10n.t("model.context_window", en: state.isEnglish))
                                     .font(.caption).foregroundColor(palette.textSecondary)
                                 TextField("32000", text: $contextWindowText)
                                     .textFieldStyle(.roundedBorder)
                             }
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(state.isEnglish ? "Max Output Tokens" : "单次最大输出")
+                                Text(L10n.t("model.max_output_tokens", en: state.isEnglish))
                                     .font(.caption).foregroundColor(palette.textSecondary)
                                 TextField("8000", text: $maxOutputTokensText)
                                     .textFieldStyle(.roundedBorder)
@@ -408,25 +408,25 @@ struct UnifiedSettingsSheet: View {
 
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(state.isEnglish ? "Input price ($/1M)" : "输入单价 ($/百万)")
+                                Text(L10n.t("model.input_price_1m", en: state.isEnglish))
                                     .font(.caption).foregroundColor(palette.textSecondary)
-                                TextField(state.isEnglish ? "Optional" : "可留空", text: $priceInText)
+                                TextField(L10n.t("model.optional", en: state.isEnglish), text: $priceInText)
                                     .textFieldStyle(.roundedBorder)
                             }
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(state.isEnglish ? "Output price ($/1M)" : "输出单价 ($/百万)")
+                                Text(L10n.t("model.output_price_1m", en: state.isEnglish))
                                     .font(.caption).foregroundColor(palette.textSecondary)
-                                TextField(state.isEnglish ? "Optional" : "可留空", text: $priceOutText)
+                                TextField(L10n.t("model.optional", en: state.isEnglish), text: $priceOutText)
                                     .textFieldStyle(.roundedBorder)
                             }
                         }
 
                         // Extra headers
                         HStack {
-                            Text(state.isEnglish ? "Extra Headers" : "额外请求头")
+                            Text(L10n.t("model.extra_headers", en: state.isEnglish))
                                 .font(.caption).foregroundColor(palette.textSecondary)
                             Spacer()
-                            Button(state.isEnglish ? "+ Add Header" : "+ 添加请求头") {
+                            Button(L10n.t("model.add_header", en: state.isEnglish)) {
                                 extraHeaders.append((id: UUID(), key: "", value: ""))
                             }
                             .font(.caption)
@@ -434,9 +434,9 @@ struct UnifiedSettingsSheet: View {
                         }
                         ForEach($extraHeaders, id: \.id) { $hdr in
                             HStack(spacing: 6) {
-                                TextField(state.isEnglish ? "Header name" : "请求头名称", text: $hdr.key)
+                                TextField(L10n.t("model.header_name", en: state.isEnglish), text: $hdr.key)
                                     .textFieldStyle(.roundedBorder)
-                                TextField(state.isEnglish ? "Value" : "请求头值", text: $hdr.value)
+                                TextField(L10n.t("model.value", en: state.isEnglish), text: $hdr.value)
                                     .textFieldStyle(.roundedBorder)
                                 Button {
                                     extraHeaders.removeAll { $0.id == hdr.id }
@@ -453,9 +453,7 @@ struct UnifiedSettingsSheet: View {
                 // Media Processing & Routing Summary
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle(
-                        state.isEnglish
-                            ? "Enable native audio/video processing"
-                            : "允许处理音视频文件（直接交给原生支持音视频的 AI 处理）",
+                        L10n.t("route.enable_native_audio_video_processing", en: state.isEnglish),
                         isOn: $audioVideoEnabled
                     )
                     .font(.callout)
@@ -465,13 +463,13 @@ struct UnifiedSettingsSheet: View {
 
                     Divider().opacity(0.35)
 
-                    Text(state.isEnglish ? "Per-Modality Model Assignment" : "分模态模型指定（图文 / 音频 / 视频可使用不同模型）")
+                    Text(L10n.t("route.per_modality_model_assignment", en: state.isEnglish))
                         .font(.caption.weight(.semibold))
                         .foregroundColor(palette.textPrimary)
 
                     let visionProfiles = profiles.filter { $0.supportsVision }
-                    Picker(state.isEnglish ? "Vision (Image/PDF)" : "图文处理模型", selection: $visionProfileId) {
-                        Text(state.isEnglish ? "Auto (prefer default chat)" : "自动（优先默认对话模型）").tag("")
+                    Picker(L10n.t("route.vision_image_pdf", en: state.isEnglish), selection: $visionProfileId) {
+                        Text(L10n.t("route.auto_prefer_default_chat", en: state.isEnglish)).tag("")
                         ForEach(visionProfiles) { p in
                             Text(p.displayName).tag(p.id)
                         }
@@ -481,8 +479,8 @@ struct UnifiedSettingsSheet: View {
                     }
 
                     let audioProfiles = profiles.filter { $0.supportsAudio }
-                    Picker(state.isEnglish ? "Audio" : "音频处理模型", selection: $audioProfileId) {
-                        Text(state.isEnglish ? "Auto (prefer default chat)" : "自动（优先默认对话模型）").tag("")
+                    Picker(L10n.t("route.audio_2", en: state.isEnglish), selection: $audioProfileId) {
+                        Text(L10n.t("route.auto_prefer_default_chat", en: state.isEnglish)).tag("")
                         ForEach(audioProfiles) { p in
                             Text(p.displayName).tag(p.id)
                         }
@@ -493,8 +491,8 @@ struct UnifiedSettingsSheet: View {
                     }
 
                     let videoProfiles = profiles.filter { $0.supportsVideo }
-                    Picker(state.isEnglish ? "Video" : "视频处理模型", selection: $videoProfileId) {
-                        Text(state.isEnglish ? "Auto (prefer default chat)" : "自动（优先默认对话模型）").tag("")
+                    Picker(L10n.t("route.video_2", en: state.isEnglish), selection: $videoProfileId) {
+                        Text(L10n.t("route.auto_prefer_default_chat", en: state.isEnglish)).tag("")
                         ForEach(videoProfiles) { p in
                             Text(p.displayName).tag(p.id)
                         }
@@ -521,13 +519,13 @@ struct UnifiedSettingsSheet: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button(isTesting ? (state.isEnglish ? "Testing..." : "测试中…") : (state.isEnglish ? "Test Connection" : "测试连接")) {
+                    Button(isTesting ? (L10n.t("model.testing", en: state.isEnglish)) : (L10n.t("model.test_connection", en: state.isEnglish))) {
                         Task { await testCurrentProfile() }
                     }
                     .buttonStyle(.bordered)
                     .disabled(isTesting || profileId == nil)
 
-                    Button(state.isEnglish ? "Clear Key" : "清除密钥") {
+                    Button(L10n.t("model.clear_key", en: state.isEnglish)) {
                         Task { await clearCurrentKey() }
                     }
                     .buttonStyle(.bordered)
@@ -551,9 +549,7 @@ struct UnifiedSettingsSheet: View {
 
     private var embeddingTab: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(state.isEnglish
-                 ? "Semantic search finds relevant passages across different phrasings or languages using a local multilingual embedding model. Nothing is uploaded."
-                 : "语义检索让提问和来源语言不同、或措辞不同时也能找到相关内容。它使用本地多语言嵌入模型，不会上传你的内容。")
+            Text(L10n.t("emb.semantic_search_finds_relevant_passages", en: state.isEnglish))
                 .font(.callout)
                 .foregroundColor(palette.textSecondary)
 
@@ -568,10 +564,10 @@ struct UnifiedSettingsSheet: View {
 
             HStack(spacing: 10) {
                 Button(embInstalled
-                       ? (state.isEnglish ? "Enable Downloaded Model" : "启用已下载的模型")
-                       : (state.isEnglish ? "Download & Enable (~\(embSizeMb) MB)" : "下载并启用（约 \(embSizeMb) MB）")) {
+                       ? (L10n.t("emb.enable_downloaded_model", en: state.isEnglish))
+                       : (L10n.fmt("emb.download_size", en: state.isEnglish, embSizeMb))) {
                     Task {
-                        _ = try? await state.core.call(method: "embedding.download")
+                        _ = await state.run("embedding.download")
                         state.embeddingDownloadRunning = true
                         state.embeddingDownloadProgress = 0
                         await refreshEmbeddingStatus()
@@ -581,22 +577,20 @@ struct UnifiedSettingsSheet: View {
                 .disabled(embRunning || state.embeddingDownloadRunning)
 
                 if embRunning || state.embeddingDownloadRunning {
-                    Button(state.isEnglish ? "Cancel" : "取消") {
+                    Button(L10n.t("common.cancel", en: state.isEnglish)) {
                         Task {
-                            _ = try? await state.core.call(method: "embedding.download_cancel")
+                            _ = await state.run("embedding.download_cancel")
                             await refreshEmbeddingStatus()
                         }
                     }
                     .buttonStyle(.bordered)
                 }
 
-                Button(state.isEnglish ? "Rebuild Index" : "重建索引") {
+                Button(L10n.t("emb.rebuild_index", en: state.isEnglish)) {
                     Task {
-                        if let r = try? await state.core.call(method: "embedding.rebuild", params: ["force": true]) {
+                        if let r = await state.run("embedding.rebuild", ["force": true]) {
                             let q = r["sources_queued"] as? Int ?? 0
-                            embStatusText = state.isEnglish
-                                ? "Queued \(q) sources for rebuild."
-                                : "已排队重建 \(q) 个来源。"
+                            embStatusText = L10n.fmt("emb.queued_rebuild", en: state.isEnglish, q)
                         }
                     }
                 }
@@ -613,12 +607,12 @@ struct UnifiedSettingsSheet: View {
 
     private func profileDisplayLabel(_ p: ModelProfileItem) -> String {
         var mods: [String] = []
-        if p.supportsVision { mods.append(state.isEnglish ? "Vision" : "图文") }
-        if p.supportsAudio { mods.append(state.isEnglish ? "Audio" : "音频") }
-        if p.supportsVideo { mods.append(state.isEnglish ? "Video" : "视频") }
+        if p.supportsVision { mods.append(L10n.t("model.vision", en: state.isEnglish)) }
+        if p.supportsAudio { mods.append(L10n.t("model.audio", en: state.isEnglish)) }
+        if p.supportsVideo { mods.append(L10n.t("model.video", en: state.isEnglish)) }
         let modTag = mods.isEmpty ? "" : " [\(mods.joined(separator: "/"))]"
-        var defTag = p.isActive ? (state.isEnglish ? " (Default)" : "（默认对话）") : ""
-        if !p.eligible { defTag += state.isEnglish ? " (unsupported, disabled)" : "（不支持，已停用）" }
+        var defTag = p.isActive ? (L10n.t("model.default", en: state.isEnglish)) : ""
+        if !p.eligible { defTag += L10n.t("model.disabled_tag", en: state.isEnglish) }
         return "\(p.displayName)\(defTag)\(modTag)"
     }
 
@@ -632,18 +626,12 @@ struct UnifiedSettingsSheet: View {
             if let m = profiles.first(where: check) { return m.displayName }
             return empty
         }
-        let chatName = chatModel?.displayName ?? (state.isEnglish ? "Not configured" : "未配置")
-        if state.isEnglish {
-            let v = pickMod(explicitId: visionProfileId, { $0.supportsVision }, empty: "None (local OCR fallback)")
-            let a = audioVideoEnabled ? pickMod(explicitId: audioProfileId, { $0.supportsAudio }, empty: "Not assigned") : "Disabled"
-            let vid = audioVideoEnabled ? pickMod(explicitId: videoProfileId, { $0.supportsVideo }, empty: "Not assigned") : "Disabled"
-            return "Current model routing:\n• Chat: \(chatName)\n• Vision: \(v)\n• Audio: \(a)\n• Video: \(vid)"
-        } else {
-            let v = pickMod(explicitId: visionProfileId, { $0.supportsVision }, empty: "未指定（将尝试本地 OCR）")
-            let a = audioVideoEnabled ? pickMod(explicitId: audioProfileId, { $0.supportsAudio }, empty: "未指定") : "已关闭"
-            let vid = audioVideoEnabled ? pickMod(explicitId: videoProfileId, { $0.supportsVideo }, empty: "未指定") : "已关闭"
-            return "当前多模型分配：\n• 默认对话：\(chatName)\n• 图文处理：\(v)\n• 音频处理：\(a)\n• 视频处理：\(vid)"
-        }
+        let chatName = chatModel?.displayName ?? (L10n.t("route.not_configured", en: state.isEnglish))
+        let en = state.isEnglish
+        let v = pickMod(explicitId: visionProfileId, { $0.supportsVision }, empty: L10n.t("route.vision_none", en: en))
+        let a = audioVideoEnabled ? pickMod(explicitId: audioProfileId, { $0.supportsAudio }, empty: L10n.t("route.unassigned", en: en)) : L10n.t("route.disabled", en: en)
+        let vid = audioVideoEnabled ? pickMod(explicitId: videoProfileId, { $0.supportsVideo }, empty: L10n.t("route.unassigned", en: en)) : L10n.t("route.disabled", en: en)
+        return L10n.fmt("route.summary", en: en, chatName, v, a, vid)
     }
 
     private func saveMediaProcessingSettings() async {
@@ -651,22 +639,22 @@ struct UnifiedSettingsSheet: View {
         if !visionProfileId.isEmpty { val["vision_profile_id"] = visionProfileId }
         if !audioProfileId.isEmpty { val["audio_profile_id"] = audioProfileId }
         if !videoProfileId.isEmpty { val["video_profile_id"] = videoProfileId }
-        _ = try? await state.core.call(method: "settings.set", params: [
+        _ = await state.run("settings.set", [
             "key": "media_processing",
             "value": val
         ])
     }
 
     private func loadModelsData(selectId: String? = nil) async {
-        if let listRes = try? await state.core.call(method: "profile.list"),
+        if let listRes = await state.run("profile.list"),
            let rawProfiles = listRes["profiles"] as? [[String: Any]] {
             profiles = rawProfiles.map(parseProfile)
         }
-        if let presetRes = try? await state.core.call(method: "profile.presets"),
+        if let presetRes = await state.run("profile.presets"),
            let rawPresets = presetRes["presets"] as? [[String: Any]] {
             presets = rawPresets.map(parsePreset)
         }
-        if let mediaRes = try? await state.core.call(method: "settings.get", params: ["key": "media_processing"]),
+        if let mediaRes = await state.run("settings.get", ["key": "media_processing"]),
            let mv = mediaRes["value"] as? [String: Any] {
             if let av = mv["audio_video_enabled"] as? Bool {
                 audioVideoEnabled = av
@@ -769,7 +757,7 @@ struct UnifiedSettingsSheet: View {
             priceInText = ""
             priceOutText = ""
             extraHeaders = []
-            statusMsg = state.isEnglish ? "Editing new profile. Choose a preset or fill in details and save." : "正在编辑新配置，可选择预设或手动填写后保存。"
+            statusMsg = L10n.t("model.editing_new_profile_choose_a", en: state.isEnglish)
             return
         }
         profileId = p.id
@@ -793,8 +781,8 @@ struct UnifiedSettingsSheet: View {
         priceOutText = p.outputPricePerM.map { String($0) } ?? ""
         extraHeaders = p.extraHeaders.sorted(by: { $0.key < $1.key }).map { (UUID(), $0.key, $0.value) }
         statusMsg = p.hasSecret
-            ? (state.isEnglish ? "Key status: saved in macOS Keychain." : "密钥状态：已保存在 macOS Keychain。")
-            : (state.isEnglish ? "Key status: not saved." : "密钥状态：未保存。")
+            ? (L10n.t("model.key_status_saved_in_macos", en: state.isEnglish))
+            : (L10n.t("model.key_status_not_saved", en: state.isEnglish))
     }
 
     private func applyPreset(_ pr: ProviderPresetItem) {
@@ -813,15 +801,13 @@ struct UnifiedSettingsSheet: View {
         supportsVideo = pr.supportsVideo
         extraHeaders = pr.extraHeaders.sorted(by: { $0.key < $1.key }).map { (UUID(), $0.key, $0.value) }
         let pname = state.isEnglish ? pr.nameEn : pr.name
-        statusMsg = state.isEnglish
-            ? "Applied preset: \(pname). Enter API Key and save."
-            : "已应用预设：\(pname)，请填写 API Key 后保存。"
+        statusMsg = L10n.fmt("model.applied_preset_enter_api_key", en: state.isEnglish, pname)
     }
 
     private func discoverModels() async {
         let url = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else {
-            statusMsg = state.isEnglish ? "Please enter Base URL first." : "请先填写接口地址 (Base URL)。"
+            statusMsg = L10n.t("model.please_enter_base_url_first", en: state.isEnglish)
             return
         }
         isDiscovering = true
@@ -835,9 +821,7 @@ struct UnifiedSettingsSheet: View {
             ])
             let rawModels = res["models"] as? [[String: Any]] ?? []
             modelCandidates = rawModels.compactMap { $0["id"] as? String }
-            statusMsg = state.isEnglish
-                ? "Found \(modelCandidates.count) models. Click the dropdown next to Model ID to choose."
-                : "找到 \(modelCandidates.count) 个模型，可点击模型 ID 右侧下拉选择。"
+            statusMsg = L10n.fmt("model.found_models_click_the_dropdown", en: state.isEnglish, modelCandidates.count)
         } catch {
             statusMsg = error.localizedDescription
         }
@@ -847,7 +831,7 @@ struct UnifiedSettingsSheet: View {
         let url = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         let mid = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty, !mid.isEmpty else {
-            statusMsg = state.isEnglish ? "Please fill in Base URL and Model ID." : "请填写接口地址和模型 ID。"
+            statusMsg = L10n.t("model.please_fill_in_base_url", en: state.isEnglish)
             return
         }
         var hdrDict: [String: String] = [:]
@@ -876,9 +860,7 @@ struct UnifiedSettingsSheet: View {
         if let pid = profileId { params["id"] = pid }
         // the core probes tool calling and structured output with this key before saving
         if !apiKey.isEmpty { params["api_key"] = apiKey }
-        statusMsg = state.isEnglish
-            ? "Checking that the model supports tool calling and structured output…"
-            : "正在检测模型是否支持工具调用和结构化输出…"
+        statusMsg = L10n.t("model.probing", en: state.isEnglish)
 
         do {
             let sv = try await state.core.call(method: "profile.upsert", params: params)
@@ -888,29 +870,31 @@ struct UnifiedSettingsSheet: View {
             keychainRef = newKref
             apiKey = ""
             if activateChat, let nid = newId {
-                _ = try? await state.core.call(method: "profile.activate", params: ["profile_id": nid])
+                _ = await state.run("profile.activate", ["profile_id": nid])
             }
             await saveMediaProcessingSettings()
             await loadModelsData(selectId: newId)
-            statusMsg = state.isEnglish ? "Capabilities verified; profile saved." : "已通过能力检测并保存。"
+            statusMsg = L10n.t("model.saved_checked", en: state.isEnglish)
         } catch {
-            statusMsg = state.isEnglish
-                ? "Not saved: \(error.localizedDescription) This app only works with models that support tool calling and structured output."
-                : "未保存：\(error.localizedDescription) 本应用只支持具备工具调用和结构化输出的模型。"
+            if let ce = error as? CoreError, ce.code == "CAPABILITY_MISSING" {
+                statusMsg = L10n.fmt("model.refused", en: state.isEnglish, ce.message)
+            } else {
+                statusMsg = L10n.fmt("model.save_failed", en: state.isEnglish, state.describe(error))
+            }
         }
     }
 
     private func testCurrentProfile() async {
         guard let pid = profileId else { return }
         isTesting = true
-        statusMsg = state.isEnglish ? "Testing connection..." : "正在测试连接…"
+        statusMsg = L10n.t("model.testing_connection", en: state.isEnglish)
         defer { isTesting = false }
         do {
             let res = try await state.core.call(method: "profile.test", params: ["profile_id": pid])
             let reply = res["reply"] as? String ?? "OK"
-            statusMsg = state.isEnglish ? "Connected: \(reply)" : "连接成功：\(reply)"
+            statusMsg = L10n.fmt("model.connected", en: state.isEnglish, reply)
         } catch {
-            statusMsg = state.isEnglish ? "Connection test failed: \(error.localizedDescription)" : "连接测试失败：\(error.localizedDescription)"
+            statusMsg = L10n.fmt("model.connection_test_failed", en: state.isEnglish, error.localizedDescription)
         }
     }
 
@@ -919,7 +903,7 @@ struct UnifiedSettingsSheet: View {
         do {
             _ = try await state.core.call(method: "secret.clear", params: ["keychain_ref": keychainRef])
             hasSecret = false
-            statusMsg = state.isEnglish ? "API key cleared." : "密钥已清除。"
+            statusMsg = L10n.t("model.api_key_cleared", en: state.isEnglish)
         } catch {
             statusMsg = error.localizedDescription
         }
@@ -930,16 +914,16 @@ struct UnifiedSettingsSheet: View {
         do {
             _ = try await state.core.call(method: "profile.delete", params: ["profile_id": pid])
             await loadModelsData()
-            statusMsg = state.isEnglish ? "Profile deleted." : "配置已删除。"
+            statusMsg = L10n.t("model.profile_deleted", en: state.isEnglish)
         } catch {
             statusMsg = error.localizedDescription
         }
     }
 
     private func refreshEmbeddingStatus() async {
-        guard let es = try? await state.core.call(method: "embedding.status"),
-              let dm = try? await state.core.call(method: "embedding.default_model") else { return }
-        let dl = try? await state.core.call(method: "embedding.download_status")
+        guard let es = await state.run("embedding.status"),
+              let dm = await state.run("embedding.default_model") else { return }
+        let dl = await state.run("embedding.download_status")
         let running = (dl?["running"] as? Bool) ?? false
         let installed = (dm["installed"] as? Bool) ?? false
         let totalBytes = (dm["total_bytes"] as? Int) ?? 0
@@ -954,15 +938,11 @@ struct UnifiedSettingsSheet: View {
         embActive = activeModel != nil
 
         if let am = activeModel, let name = am["model_name"] as? String {
-            embStatusText = state.isEnglish
-                ? "Active model: \(name). Indexed chunks: \(doneChunks)/\(totalChunks)."
-                : "当前模型：\(name)。已建立索引的片段：\(doneChunks)/\(totalChunks)。"
+            embStatusText = L10n.fmt("emb.active_model_indexed_chunks", en: state.isEnglish, name, doneChunks, totalChunks)
         } else if installed {
-            embStatusText = state.isEnglish ? "Model downloaded but not enabled." : "模型文件已下载，尚未启用。"
+            embStatusText = L10n.t("emb.model_downloaded_but_not_enabled", en: state.isEnglish)
         } else {
-            embStatusText = state.isEnglish
-                ? "Semantic search not enabled. Default model is ~\(mb) MB."
-                : "尚未启用语义检索。默认模型约 \(mb) MB。"
+            embStatusText = L10n.fmt("emb.status_not_enabled", en: state.isEnglish, mb)
         }
     }
 }
@@ -988,16 +968,8 @@ struct PrivacyInfoSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                if state.isEnglish {
-                    Text("• Your sources, notes, and conversations are stored locally on this Mac.")
-                    Text("• When asking questions or generating Studio artifacts, selected excerpts and prompts are sent to your configured model provider.")
-                    Text("• API keys are stored securely in macOS Keychain and never written to plain files.")
-                    Text("• Diagnostic exports contain only counts, statuses, and error codes—never document contents or keys.")
-                } else {
-                    Text("• 你的来源、笔记和对话均保存在这台 Mac 本地。")
-                    Text("• 提问或生成产物时，被选中的来源片段、问题和相关对话会发送给你配置的模型服务商（接口地址不在本机时）。")
-                    Text("• API Key 仅保存在 macOS Keychain 中，不会写入明文文件或日志。")
-                    Text("• 诊断包只含数量、状态和错误码，不含文档内容、提示词、回答或密钥。")
+                ForEach(["privacy.line_local", "privacy.line_send", "privacy.line_keys", "privacy.line_diag"], id: \.self) { k in
+                    Text(L10n.t(k, en: state.isEnglish))
                 }
             }
             .font(.callout)
