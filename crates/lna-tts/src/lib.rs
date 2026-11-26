@@ -584,7 +584,9 @@ garbage line without locale\n";
         // A machine without a Chinese voice (a CI runner, say) reads Chinese text as silence, so the Chinese
         // clip is only required to have content when such a voice exists.
         if info_zh.duration_ms <= 300 {
-            eprintln!("note: no Chinese system voice available; skipping the Chinese duration check");
+            eprintln!(
+                "note: no Chinese system voice available; skipping the Chinese duration check"
+            );
         }
         assert!(info_en.duration_ms > 300);
 
