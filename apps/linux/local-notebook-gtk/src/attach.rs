@@ -358,6 +358,81 @@ impl AttachBar {
         widget.add_controller(target);
     }
 
+    /// Ctrl+V inside `widget`: copied files (a file manager puts the path next to the file, which a text field
+    /// would paste) and pictures (screenshots, "Copy Image") are attached; plain text pastes as usual.
+    pub fn accept_paste(&self, widget: &impl IsA<gtk4::Widget>) {
+        let keys = gtk4::EventControllerKey::new();
+        keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let me = self.clone();
+        let host = widget.clone().upcast::<gtk4::Widget>();
+        keys.connect_key_pressed(move |_, key, _, state| {
+            let ctrl_v = state.contains(gdk::ModifierType::CONTROL_MASK) && (key == gdk::Key::v || key == gdk::Key::V);
+            if !ctrl_v {
+                return gtk4::glib::Propagation::Proceed;
+            }
+            let clipboard = host.clipboard();
+            let formats = clipboard.formats();
+            if formats.contain_type(gdk::FileList::static_type()) {
+                let me = me.clone();
+                clipboard.read_value_async(
+                    gdk::FileList::static_type(),
+                    gtk4::glib::Priority::DEFAULT,
+                    gio::Cancellable::NONE,
+                    move |res| {
+                        if let Ok(value) = res {
+                            if let Ok(list) = value.get::<gdk::FileList>() {
+                                let paths: Vec<_> = list.files().iter().filter_map(|f| f.path()).collect();
+                                me.add_paths(&paths);
+                            }
+                        }
+                    },
+                );
+                return gtk4::glib::Propagation::Stop;
+            }
+            // A picture, unless the clipboard also carries text (copying spreadsheet cells puts both on it).
+            if formats.contain_type(gdk::Texture::static_type()) && !formats.contain_type(String::static_type()) {
+                let me = me.clone();
+                clipboard.read_texture_async(gio::Cancellable::NONE, move |res| {
+                    if let Ok(Some(texture)) = res {
+                        me.add_texture(&texture);
+                    }
+                });
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        widget.add_controller(keys);
+    }
+
+    /// Attaches a picture that came from the clipboard as a PNG.
+    fn add_texture(&self, texture: &gdk::Texture) {
+        if self.items.borrow().len() >= MAX_ITEMS {
+            self.too_many();
+            return;
+        }
+        let png = texture.save_to_png_bytes();
+        let bytes: &[u8] = png.as_ref();
+        let stamp = gtk4::glib::DateTime::now_local()
+            .ok()
+            .and_then(|d| d.format("%Y%m%d-%H%M%S").ok())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let name = format!("{} {}.png", tr(self.en(), "img.pasted"), stamp);
+        if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE_BYTES {
+            (self.notice)(&fmt(tr(self.en(), "ctx.too_large"), &[&name, &(MAX_IMAGE_BYTES / 1024 / 1024).to_string()]));
+            return;
+        }
+        self.items.borrow_mut().push(Item {
+            kind: "image",
+            name,
+            b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+            url: None,
+            size: bytes.len() as u64,
+            thumb: Some(texture.clone()),
+        });
+        self.refresh();
+    }
+
     fn refresh(&self) {
         while let Some(c) = self.chips.first_child() {
             self.chips.remove(&c);

@@ -983,6 +983,7 @@ pub fn build_lecture_player(core: &Arc<CoreRuntime>, window: &gtk4::Window, art:
     ask_panel.append(attach.chips());
     ask_panel.append(&row);
     attach.accept_drops(&row);
+    attach.accept_paste(&row);
     {
         let submit = {
             let (p2, entry2, attach2) = (p.clone(), entry.clone(), attach.clone());

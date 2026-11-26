@@ -323,6 +323,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     input_col.append(attach_bar.chips());
     input_col.append(&input_row);
     attach_bar.accept_drops(&input_col);
+    attach_bar.accept_paste(&input_col);
     center_panel.append(&input_col);
 
     // Right panel: Studio
@@ -545,6 +546,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             vbox.append(&ctx_row);
             vbox.append(ctx_bar.chips());
             ctx_bar.accept_drops(&vbox);
+            ctx_bar.accept_paste(&vbox);
 
             let actions = GtkBox::new(Orientation::Horizontal, 8);
             actions.set_halign(gtk4::Align::End);
@@ -2147,6 +2149,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         rev_row.append(&rev_entry);
         rev_row.append(&rev_btn);
         rev_bar.accept_drops(&rev_row);
+        rev_bar.accept_paste(&rev_row);
         st.studio_detail_box.append(&ScrolledWindow::builder().child(&tv).vexpand(true).build());
         st.studio_detail_box.append(rev_bar.chips());
         st.studio_detail_box.append(&rev_row);

@@ -405,6 +405,7 @@ pub fn tr(en: bool, key: &str) -> &'static str {
             "studio.thoughts" => "Thoughts",
             "model.base_url" => "Base URL",
             "model.model_id" => "Model ID",
+            "img.pasted" => "Pasted image",
             _ => "",
         }
     } else {
@@ -711,6 +712,7 @@ pub fn tr(en: bool, key: &str) -> &'static str {
             "studio.thoughts" => "思考过程",
             "model.base_url" => "接口地址 (Base URL)",
             "model.model_id" => "模型 ID",
+            "img.pasted" => "粘贴的图片",
             _ => "",
         }
     }

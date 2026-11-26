@@ -704,15 +704,22 @@ public sealed partial class MainWindow : Window
             if (chat is { } c) RenderChat(c);
         }
 
+        var seq = ++_studioRefreshSeq;
         var art = await CoreAsync("studio.list", param, L10n.T("nb.op_load_studio"));
-        if (art is { } a) RenderArtifacts(a);
+        if (art is { } a && seq > _studioRenderedSeq) { _studioRenderedSeq = seq; RenderArtifacts(a); }
     }
+
+    // Core replies can arrive out of order; a slow list read taken while an artifact was RUNNING must not be
+    // rendered after the newer one that already shows READY.
+    private long _studioRefreshSeq;
+    private long _studioRenderedSeq;
 
     private async Task RefreshStudioArtifactsAsync()
     {
         if (_activeNotebookId == null) return;
+        var seq = ++_studioRefreshSeq;
         var art = await CoreAsync("studio.list", Args(("notebook_id", _activeNotebookId)), L10n.T("nb.op_load_studio"));
-        if (art is { } a) RenderArtifacts(a);
+        if (art is { } a && seq > _studioRenderedSeq) { _studioRenderedSeq = seq; RenderArtifacts(a); }
     }
 
     private static bool NeedsSummaryTranslation(string summaryMd, bool wantEnglish)
