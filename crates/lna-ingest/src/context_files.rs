@@ -1441,7 +1441,7 @@ pub async fn brief(
         let req = LlmRequest {
             system: "You read the user's attached reference files with the provided tools and report the passages relevant to the task, citing file name and page.".into(),
             messages: messages.clone(),
-            tools: if last { vec![] } else { tools.clone() },
+            tools: tools.clone(),
             tool_mode: if last { ToolMode::None } else { ToolMode::Auto },
             output: OutputMode::Text,
             max_output_tokens: ctx.profile.max_output_tokens.clamp(2048, 8192),

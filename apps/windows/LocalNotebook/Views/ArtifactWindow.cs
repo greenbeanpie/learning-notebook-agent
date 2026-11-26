@@ -472,6 +472,7 @@ public sealed class ArtifactViewerPane : IDisposable
         Grid.SetRow(_thoughtScroll, 1);
         processGrid.Children.Add(_thoughtScroll);
         _processGrid = processGrid;
+        HookThoughtFollow(_thoughtScroll, _thoughtPanel);
 
         // Tabs: process / preview. The preview tab only shows once a preview exists.
         _tabProcessBtn = MakeTabButton(L10n.T("art.tab_process"), () => SelectGenTab(false));
@@ -725,20 +726,76 @@ public sealed class ArtifactViewerPane : IDisposable
         if (follow) ScrollThoughtsToBottom();
     }
 
-    /// <summary>True when the process list is scrolled to its end (or has nothing to scroll).</summary>
-    private bool ThoughtScrollAtBottom()
+    private bool _thoughtStick = true;
+    private bool _thoughtUserDragging;
+    private DateTime _thoughtUserUntil = DateTime.MinValue;
+    private double _thoughtLastOffset;
+    private bool _thoughtScrollPending;
+
+    /// <summary>
+    /// The process list follows its newest output until the reader scrolls up, and again once they
+    /// scroll back to the end. Several agents write at once and cards also grow in ways that bypass
+    /// the append handlers (expand, replace, status changes), so "at the bottom right now" is not a
+    /// reliable test; following is a flag only the reader's own input can clear, and any growth of
+    /// the panel while it is set is followed.
+    /// </summary>
+    private void HookThoughtFollow(ScrollViewer sv, Panel panel)
     {
-        var sv = _thoughtScroll;
-        if (sv == null) return false;
-        return sv.ScrollableHeight - sv.VerticalOffset <= 24;
+        _thoughtStick = true;
+        _thoughtLastOffset = 0;
+        void MarkUser() => _thoughtUserUntil = DateTime.UtcNow.AddMilliseconds(900);
+        sv.AddHandler(UIElement.PointerWheelChangedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, e) =>
+        {
+            MarkUser();
+            if (e.GetCurrentPoint(sv).Properties.MouseWheelDelta > 0) _thoughtStick = false;
+        }), true);
+        sv.AddHandler(UIElement.PointerPressedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => _thoughtUserDragging = true), true);
+        Microsoft.UI.Xaml.Input.PointerEventHandler released = (_, _) => { _thoughtUserDragging = false; MarkUser(); };
+        sv.AddHandler(UIElement.PointerReleasedEvent, released, true);
+        sv.AddHandler(UIElement.PointerCanceledEvent, released, true);
+        sv.AddHandler(UIElement.PointerCaptureLostEvent, released, true);
+        sv.AddHandler(UIElement.KeyDownEvent, new Microsoft.UI.Xaml.Input.KeyEventHandler((_, e) =>
+        {
+            if (e.Key is Windows.System.VirtualKey.Up or Windows.System.VirtualKey.PageUp or Windows.System.VirtualKey.Home)
+            {
+                MarkUser();
+                _thoughtStick = false;
+            }
+        }), true);
+        sv.ViewChanged += (_, _) =>
+        {
+            var vo = sv.VerticalOffset;
+            var movedUp = vo < _thoughtLastOffset - 1.0;
+            var userActive = _thoughtUserDragging || DateTime.UtcNow < _thoughtUserUntil;
+            if (movedUp && userActive) _thoughtStick = false;
+            else if (!movedUp && sv.ScrollableHeight - vo <= 24) _thoughtStick = true;
+            _thoughtLastOffset = vo;
+        };
+        panel.SizeChanged += (_, _) => FollowThoughtsIfSticky();
     }
+
+    private void FollowThoughtsIfSticky()
+    {
+        if (!_thoughtStick || _thoughtScrollPending || _thoughtScroll == null) return;
+        _thoughtScrollPending = true;
+        _thoughtScroll.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
+        {
+            _thoughtScrollPending = false;
+            if (_thoughtStick) ScrollThoughtsToBottom();
+        });
+    }
+
+    /// <summary>True while the process list should follow new output.</summary>
+    private bool ThoughtScrollAtBottom() => _thoughtScroll != null && _thoughtStick;
 
     private void ScrollThoughtsToBottom()
     {
         var sv = _thoughtScroll;
         if (sv == null) return;
         sv.UpdateLayout();
+        if (sv.ScrollableHeight - sv.VerticalOffset <= 0.5) return;
         sv.ChangeView(null, sv.ScrollableHeight, null, disableAnimation: true);
+        _thoughtLastOffset = sv.ScrollableHeight;
     }
 
     /// <summary>One card of the execution-process panel. Reasoning cards are collapsed by default and cap the displayed text.</summary>

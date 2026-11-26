@@ -82,16 +82,29 @@ fun ChatScreen(
         // user's own scrolling decides this, never a content change.
         val listState = rememberLazyListState()
         var following by remember { mutableStateOf(true) }
+        // True from the moment a finger drags the list until the (fling) scroll it started has
+        // stopped. A backward scroll only counts as "the user scrolled up" in that window: layout
+        // changes while several agents stream also move the list and must not end following.
+        var userScroll by remember { mutableStateOf(false) }
         LaunchedEffect(listState) {
+            listState.interactionSource.interactions.collect {
+                if (it is androidx.compose.foundation.interaction.DragInteraction.Start) userScroll = true
+            }
+        }
+        LaunchedEffect(listState) {
+            var wasScrolling = false
             snapshotFlow { Triple(listState.canScrollForward, listState.lastScrolledBackward, listState.isScrollInProgress) }
-                .collect { (canForward, backward, _) ->
-                    if (!canForward) following = true else if (backward) following = false
+                .collect { (canForward, backward, scrolling) ->
+                    if (!canForward) following = true else if (backward && userScroll) following = false
+                    if (wasScrolling && !scrolling) userScroll = false
+                    wasScrolling = scrolling
                 }
         }
         val lastMsg = state.messages.lastOrNull()
         // sending (a new message) always jumps to the end
         LaunchedEffect(state.messages.size) { following = true }
-        LaunchedEffect(state.messages.size, lastMsg?.content?.length, lastMsg?.thoughts?.size) {
+        // every change of the last message (text, any step's state/detail, attachments) re-follows
+        LaunchedEffect(state.messages.size, lastMsg?.content?.length, lastMsg?.thoughts, lastMsg?.citations?.size) {
             if (following && state.messages.isNotEmpty()) {
                 listState.scrollToItem(state.messages.lastIndex, Int.MAX_VALUE)
             }

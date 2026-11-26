@@ -728,7 +728,9 @@ struct MainView: View {
                     // after the layout pass that placed the new text
                     DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                 }
-                .onChange(of: state.messages.last?.thoughts.count ?? 0) { _, _ in
+                // a step's state/detail changing (several agents report at once) grows the message
+                // without changing the step count, so watch the steps' text too
+                .onChange(of: (state.messages.last?.thoughts ?? []).reduce(0) { $0 + $1.title.count + $1.detail.count + $1.id.count }) { _, _ in
                     guard chatFollowing else { return }
                     DispatchQueue.main.async { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                 }

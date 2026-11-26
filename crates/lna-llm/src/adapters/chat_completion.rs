@@ -156,7 +156,12 @@ impl ProtocolAdapter for ChatCompletionAdapter {
             body["stream_options"] = json!({ "include_usage": true });
         }
 
-        if !req.tools.is_empty() && req.tool_mode == ToolMode::Auto {
+        // Tools stay in the request even when the model must not call them (the final answer
+        // round): dropping them changes the prompt prefix and loses the provider's prompt cache.
+        if !req.tools.is_empty() {
+            if req.tool_mode != ToolMode::Auto {
+                body["tool_choice"] = json!("none");
+            }
             body["tools"] = json!(req
                 .tools
                 .iter()
@@ -353,9 +358,12 @@ impl StreamDecoder for ChatCompletionDecoder {
                 .get("completion_tokens")
                 .and_then(|x| x.as_u64())
                 .unwrap_or(0);
+            // OpenAI-style `prompt_tokens_details.cached_tokens`; DeepSeek reports the hit count as
+            // `prompt_cache_hit_tokens` at the top of `usage`.
             let cached = u
                 .pointer("/prompt_tokens_details/cached_tokens")
                 .and_then(|x| x.as_u64())
+                .or_else(|| u.get("prompt_cache_hit_tokens").and_then(|x| x.as_u64()))
                 .unwrap_or(0);
             out.push(LlmEvent::Usage(Usage {
                 input_tokens: inp,

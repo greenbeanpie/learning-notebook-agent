@@ -346,10 +346,13 @@ pub async fn describe(
     atts: &[Attachment],
     question: &str,
 ) -> String {
+    // Only the content goes into the result: remarks about picture quality or the reading process
+    // would otherwise be taken for material and end up in what the student is taught.
+    const CONTENT_ONLY: &str = "只输出图片里的内容本身，不要评论图片质量、清晰度、噪声或识别过程；个别看不清的字符按上下文推断，实在无法确定的写成 [?]。";
     let focus = if question.trim().is_empty() {
-        "请完整描述这些图片的内容，提取其中的文字、公式和图表数据。".to_string()
+        format!("请完整描述这些图片的内容，提取其中的文字、公式和图表数据。{CONTENT_ONLY}")
     } else {
-        format!("用户的问题是：{question}\n请描述这些图片中与该问题相关的全部内容，并提取其中的文字、公式和图表数据。")
+        format!("用户的问题是：{question}\n请描述这些图片中与该问题相关的全部内容，并提取其中的文字、公式和图表数据。{CONTENT_ONLY}")
     };
     if profile.capabilities.supports_vision {
         let mut parts = image_parts(atts);

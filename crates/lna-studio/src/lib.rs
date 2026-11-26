@@ -1594,8 +1594,34 @@ User Revision Instruction:
                 .unwrap_or("")
                 .to_string()
         } else {
+            // What the user attached is read first (both briefs are checkpointed): it fixes the
+            // scope, so the source reading below fetches only what that material needs instead of
+            // drifting to the whole chapter that happens to contain it.
+            let material_hint = if has_user_material(&art.config) {
+                let files = self
+                    .file_brief(art, resolved, artifact_id, cancel.clone())
+                    .await?;
+                let images = self
+                    .image_brief(art, resolved, artifact_id, cancel.clone())
+                    .await?;
+                let joined = [files, images]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Some(truncate_str(&joined, 1_500).to_string()).filter(|s| !s.trim().is_empty())
+            } else {
+                None
+            };
             let text = self
-                .collect_evidence_text(art, profile, resolved, artifact_id, cancel.clone())
+                .collect_evidence_text(
+                    art,
+                    profile,
+                    resolved,
+                    artifact_id,
+                    material_hint.as_deref(),
+                    cancel.clone(),
+                )
                 .await?;
             self.save_checkpoint(
                 artifact_id,
@@ -2027,10 +2053,6 @@ User Revision Instruction:
             let mut running = futures_util::stream::iter(batch_sizes.iter().copied().enumerate().map(|(bi, batch_cnt)| {
                 let (reasoning_c, cancel_c) = (reasoning.clone(), cancel.clone());
                 async move {
-                    let mut batch_cfg = art.config.clone();
-                    if let Some(obj) = batch_cfg.as_object_mut() {
-                        obj.insert("count".into(), json!(batch_cnt));
-                    }
                     let batch_req = LlmRequest {
                         system: format!(
                             "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep every prompt, option, and explanation concise and accurate. Format all mathematical expressions and chemical formulas/equations in LaTeX wrapped in $...$ (e.g., $\\\\ce{{H2O}}$, $\\\\ce{{O2}}$, $\\\\ce{{CO2}}$, $\\\\ce{{2H2 + O2 -> 2H2O}}$, $x^2$, $\\\\frac{{a}}{{b}}$); never write bare ASCII formulas without subscripts/LaTeX, and double-escape all LaTeX backslashes in JSON strings so \\\\frac, \\\\times, \\\\text, \\\\ce are not corrupted.",
@@ -2039,15 +2061,15 @@ User Revision Instruction:
                         messages: vec![LlmMessage {
                             role: Role::User,
                             parts: vec![Part::Text(format!(
-                                "Batch {}/{}: generate exactly {} quiz questions.\nParameters: {}\nReference outline: {}\n\nParallel generation: the other batches are written at the same time by other authors. Draw your quiz questions mainly from portion {} of {} (equal portions of the material, in the order given) and prefer topics the other portions would not cover, so the batches do not overlap.\n\nSources:\n{}",
+                                "Parameters: {}\nReference outline: {}\n\nSources:\n{}\n\n=== THIS BATCH (batch {}/{}; everything above is identical for every batch) ===\nGenerate exactly {} quiz questions (this overrides any count in the parameters).\nParallel generation: the other batches are written at the same time by other authors. Draw your quiz questions mainly from portion {} of {} (equal portions of the material, in the order given) and prefer topics the other portions would not cover, so the batches do not overlap.",
+                                art.config,
+                                art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
+                                evidence_txt,
                                 bi + 1,
                                 batches,
                                 batch_cnt,
-                                batch_cfg,
-                                art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                                 bi + 1,
-                                batches,
-                                evidence_txt
+                                batches
                             ))],
                         }],
                         tools: vec![],
@@ -2154,10 +2176,6 @@ User Revision Instruction:
             let mut running = futures_util::stream::iter(batch_sizes.iter().copied().enumerate().map(|(bi, batch_cnt)| {
                 let (reasoning_c, cancel_c) = (reasoning.clone(), cancel.clone());
                 async move {
-                    let mut batch_cfg = art.config.clone();
-                    if let Some(obj) = batch_cfg.as_object_mut() {
-                        obj.insert("count".into(), json!(batch_cnt));
-                    }
                     let batch_req = LlmRequest {
                         system: format!(
                             "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep each flashcard front and back crisp and focused on core definitions or takeaways. Flashcards are drawn as plain text: write mathematics as compact Unicode (e.g. ℝⁿ, Aᵀ, x₁, N(A), dim C(A)=r, n−r, Ax=0), never LaTeX or `$` delimiters.",
@@ -2166,15 +2184,15 @@ User Revision Instruction:
                         messages: vec![LlmMessage {
                             role: Role::User,
                             parts: vec![Part::Text(format!(
-                                "Batch {}/{}: generate exactly {} flashcards.\nParameters: {}\nReference outline: {}\n\nParallel generation: the other batches are written at the same time by other authors. Draw your flashcards mainly from portion {} of {} (equal portions of the material, in the order given) and prefer topics the other portions would not cover, so the batches do not overlap.\n\nSources:\n{}",
+                                "Parameters: {}\nReference outline: {}\n\nSources:\n{}\n\n=== THIS BATCH (batch {}/{}; everything above is identical for every batch) ===\nGenerate exactly {} flashcards (this overrides any count in the parameters).\nParallel generation: the other batches are written at the same time by other authors. Draw your flashcards mainly from portion {} of {} (equal portions of the material, in the order given) and prefer topics the other portions would not cover, so the batches do not overlap.",
+                                art.config,
+                                art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
+                                evidence_txt,
                                 bi + 1,
                                 batches,
                                 batch_cnt,
-                                batch_cfg,
-                                art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                                 bi + 1,
-                                batches,
-                                evidence_txt
+                                batches
                             ))],
                         }],
                         tools: vec![],
@@ -2784,9 +2802,14 @@ Design rules:\n\
                 "properties": { "heading": { "type": "string" }, "focus": { "type": "string" } }
             }}}
         });
-        let mut plan_req = gen_req.clone();
-        plan_req.system = format!(
-            "You are the planner of a Local Notebook Studio {kind}. Split the requested work into 3-6 {what} that can be written independently and in parallel, in reading order, covering the requested scope without overlap. For each give a short `heading` and a `focus` naming exactly which concepts / source parts it covers. Output structured JSON only. Match the language requested in config or the primary language of the sources."
+        // The planner keeps the generator's system prompt and message; its instruction is appended
+        // at the end, so the planner call and every part call share one long prefix (the planner
+        // call warms the provider's prompt cache for all of them).
+        let mut plan_req = with_part_note(
+            gen_req,
+            &format!(
+                "PLANNING TASK (do not write the {kind} itself): split the requested work into 3-6 {what} that can be written independently and in parallel, in reading order, covering the requested scope without overlap. For each give a short `heading` and a `focus` naming exactly which concepts / source parts it covers. Output the structured JSON requested below only."
+            ),
         );
         plan_req.max_output_tokens = resolved.max_output_tokens.min(2000);
         let (plan, u) = self
@@ -4419,13 +4442,16 @@ Design rules:\n\
             )
         };
         let req = LlmRequest {
+            // The system prompt is the same for every branch of the map; what is specific to this
+            // branch (task, node, subtree) goes at the end of the user message, after the shared
+            // parameters and the sources, so parallel branches share the longest possible prefix.
             system: format!(
-                "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}). {task} Every new node needs a unique new \"id\" and a \"parent_id\" that is either \"{node_id}\", an id from the existing subtree, or the id of another new node you output.{rules} Strictly ground everything in the provided sources. Match the language requested in config or the primary language of the sources."
+                "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}). Follow the TASK at the end of the user message.{rules} Strictly ground everything in the provided sources. Match the language requested in config or the primary language of the sources."
             ),
             messages: vec![LlmMessage {
                 role: Role::User,
                 parts: vec![Part::Text(format!(
-                    "Parameters: {}\nPath: {}\nNode: [{node_id}] {label}\nSummary: {summary}\nFacets: {}\nExisting subtree:\n{outline}\nOther top-level branches (out of scope): {}\n\nSources:\n{evidence}",
+                    "Parameters: {}\n\nSources:\n{evidence}\n\n=== TASK ===\n{task} Every new node needs a unique new \"id\" and a \"parent_id\" that is either \"{node_id}\", an id from the existing subtree, or the id of another new node you output.\nPath: {}\nNode: [{node_id}] {label}\nSummary: {summary}\nFacets: {}\nExisting subtree:\n{outline}\nOther top-level branches (out of scope): {}",
                     art.config,
                     if path.is_empty() { "(root)".to_string() } else { path.join(" > ") },
                     if facets.is_empty() { "(none)".to_string() } else { facets.join("; ") },
@@ -5023,6 +5049,7 @@ Design rules:\n\
             },
         ];
 
+        let user_material = has_user_material(&art.config);
         let planner_instruction = if branch_focus {
             "Focus ONLY on the branch/topic given above (other branches are handled separately). Using the reading tools, read the parts of the sources that cover this branch in depth: read_index_node for its outline nodes, read_source_pages for its page ranges, search_sources for specific methods, theorems, formulas or cases. Make several rounds of calls when needed so that every sub-topic, method, theorem and formula of this branch is backed by actual source text, not just outline titles. Reply \"DONE\" only when the branch is fully covered."
         } else if is_mindmap {
@@ -5030,14 +5057,21 @@ Design rules:\n\
         } else {
             "Use the reading tools to fetch the specific sections or passages this artifact needs (not unrelated material). Call multiple tools in parallel and continue over several rounds when parts of the requested scope are still unread. Reply with \"DONE\" (without further tool calls) once the collected excerpts actually cover the requested scope."
         };
+        let planner_instruction = if user_material {
+            format!("{planner_instruction}\n\n{USER_MATERIAL_SCOPE}")
+        } else {
+            planner_instruction.to_string()
+        };
         let mut messages = vec![LlmMessage {
             role: Role::User,
             parts: vec![Part::Text(format!(
-                "Artifact type: {}\nUser config: {}\nUser topic/focus: {}\n\nSource Catalog & Outline:\n{}\n\n{}",
+                // the catalog is the same for every reader of these sources: it goes before the
+                // topic/focus, which differs per section or branch (prompt-cache prefix)
+                "Artifact type: {}\nUser config: {}\n\nSource Catalog & Outline:\n{}\n\nUser topic/focus: {}\n\n{}",
                 art.artifact_type.as_str(),
                 art.config,
-                topic_query.unwrap_or("Full selected scope (balanced coverage)"),
                 catalog_text,
+                topic_query.unwrap_or("Full selected scope (balanced coverage)"),
                 planner_instruction
             ))],
         }];
@@ -5539,6 +5573,7 @@ Design rules:\n\
         profile: &ModelProfile,
         resolved: &ResolvedProfile,
         artifact_id: &str,
+        material_hint: Option<&str>,
         cancel: CancellationToken,
     ) -> LnaResult<String> {
         if art.source_ids.is_empty() {
@@ -5551,7 +5586,16 @@ Design rules:\n\
             .and_then(|x| x.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(str::to_string);
+            .map(str::to_string)
+            .or_else(|| {
+                // No typed topic, but the user attached their own material (e.g. a photo of one
+                // exercise): that material is the scope, not the selection as a whole.
+                material_hint.map(|h| {
+                    format!(
+                        "(no topic typed) exactly what the user's attached material asks for — {h}"
+                    )
+                })
+            });
         let is_kg = art.artifact_type == ArtifactType::Mindmap
             && art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
         if is_kg {
@@ -7464,6 +7508,11 @@ fn score_kg_node_match(label: &str, summary: &str, quiz_text: &str, topic_hint: 
 
 /// The request carries the user's own material (pictures or files), so it can be generated
 /// without any selected source.
+/// Scope discipline for generation that starts from the user's own material (a photo of one
+/// exercise, a file, a link). Without it the model maps the material to the chapter that contains
+/// it and covers the whole chapter.
+pub(crate) const USER_MATERIAL_SCOPE: &str = "USER MATERIAL FIRST: the user attached their own material (<user_images> / <user_files>, or described in the topic above). The scope of this artifact is EXACTLY what that material shows or asks, e.g. one exercise means that one exercise. Do NOT widen it to the chapter, section or neighbouring topics that contain it, and do NOT cover related material the user did not mention. The user's material comes first; relate it to the sources only when that actually helps (a definition, theorem or formula it relies on that you must get right, or a connection worth pointing out): read just those passages, and never produce slides whose only purpose is to locate the material in the book, list prerequisites or recap the chapter.";
+
 fn has_user_material(config: &Value) -> bool {
     ["images", "files"].iter().any(|k| {
         config

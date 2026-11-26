@@ -35,6 +35,9 @@ internal sealed class SlideDeckViewer
         };
 
         var html = BuildPresentationHtml(PayloadWithFigures(payload, outputDir), L10n.IsEnglish, lectureMode: false);
+        // the page embeds KaTeX (about 0.6 MB) and may inline figure SVGs: far above
+        // NavigateToString's 2 MB limit once decks grow, so it is shown from a temp file like the lecture player
+        var htmlFile = Path.Combine(Path.GetTempPath(), "lna-deck", Guid.NewGuid().ToString("N") + ".html");
         webView.Loaded += async (_, _) =>
         {
             try
@@ -42,12 +45,19 @@ internal sealed class SlideDeckViewer
                 await webView.EnsureCoreWebView2Async();
                 webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
-                webView.NavigateToString(html);
+                Directory.CreateDirectory(Path.GetDirectoryName(htmlFile)!);
+                await File.WriteAllTextAsync(htmlFile, html);
+                webView.Source = new Uri(htmlFile);
             }
             catch
             {
                 // Keep graceful empty surface if WebView2 runtime is unavailable
             }
+        };
+
+        webView.Unloaded += (_, _) =>
+        {
+            try { File.Delete(htmlFile); } catch { /* a leftover temp file is harmless */ }
         };
 
         var stageFrame = new Border

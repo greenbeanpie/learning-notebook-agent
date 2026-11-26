@@ -109,22 +109,51 @@ public sealed partial class MainWindow
         {
             // New content (a streamed delta, an item that is measured late) grows the extent
             // without moving the offset, and ViewChanged is not raised for that: follow it here.
+            // The scroll viewer is looked up here too, so a late-applied template is still found.
             _chatScrollHooked = true;
             ChatList.LayoutUpdated += (_, _) =>
             {
                 if (!_chatStickToBottom || _scrollPending) return;
-                var sv = _chatScrollViewer;
+                var sv = EnsureChatScrollViewer();
                 if (sv != null && sv.ScrollableHeight - sv.VerticalOffset > 0.5) ScrollChatToBottomIfSticky();
             };
+            // What the user does with the list is observed directly (also when the event is
+            // handled by the inner ScrollViewer), because the scroll offset alone cannot tell a
+            // user scroll from a layout change.
+            ChatList.AddHandler(UIElement.PointerWheelChangedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, e) =>
+            {
+                MarkUserScroll();
+                if (e.GetCurrentPoint(ChatList).Properties.MouseWheelDelta > 0) _chatStickToBottom = false;
+            }), true);
+            ChatList.AddHandler(UIElement.PointerPressedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => _userDragging = true), true);
+            Microsoft.UI.Xaml.Input.PointerEventHandler released = (_, _) => { _userDragging = false; MarkUserScroll(); };
+            ChatList.AddHandler(UIElement.PointerReleasedEvent, released, true);
+            ChatList.AddHandler(UIElement.PointerCanceledEvent, released, true);
+            ChatList.AddHandler(UIElement.PointerCaptureLostEvent, released, true);
+            ChatList.AddHandler(UIElement.KeyDownEvent, new Microsoft.UI.Xaml.Input.KeyEventHandler((_, e) =>
+            {
+                if (e.Key is Windows.System.VirtualKey.Up or Windows.System.VirtualKey.PageUp or Windows.System.VirtualKey.Home)
+                {
+                    MarkUserScroll();
+                    _chatStickToBottom = false;
+                }
+            }), true);
         }
         return _chatScrollViewer;
     }
 
-    /// "Following" is decided only by what the user does: scrolling up (the offset moves up while
-    /// the extent did not shrink) stops it, reaching the bottom again resumes it. Our own scrolls
-    /// only go down and growing/shrinking content never moves the offset up by itself, so neither
-    /// can switch following off (the old code treated the late ViewChanged of its own scroll as a
-    /// user scroll, which made following drop out at random).
+    private bool _userDragging;
+    private DateTime _userScrollUntil = DateTime.MinValue;
+
+    /// The user touched the list (wheel, finger, scroll bar, keys); inertia scrolling after the
+    /// touch is still theirs for a moment.
+    private void MarkUserScroll() => _userScrollUntil = DateTime.UtcNow.AddMilliseconds(900);
+
+    /// "Following" is decided only by what the user does. The offset moving up counts as the user
+    /// scrolling up only while the user is actually interacting with the list: layout changes
+    /// (parallel agents rewriting their step lists, items re-measured, the extent shrinking and
+    /// growing again between two events) also move the offset and must never switch following off.
+    /// Reaching the bottom by scrolling down (or by our own scroll, which only goes down) resumes it.
     private void OnChatViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
         var sv = _chatScrollViewer;
@@ -132,14 +161,14 @@ public sealed partial class MainWindow
         var sh = sv.ScrollableHeight;
         var vo = sv.VerticalOffset;
         var movedUp = vo < _lastVerticalOffset - 1.0;
-        var extentShrank = sh < _lastScrollableHeight - 0.5;
-        if (sh - vo <= 36.0)
-        {
-            _chatStickToBottom = true;
-        }
-        else if (movedUp && !extentShrank)
+        var userActive = _userDragging || DateTime.UtcNow < _userScrollUntil;
+        if (movedUp && userActive)
         {
             _chatStickToBottom = false;
+        }
+        else if (!movedUp && sh - vo <= 36.0)
+        {
+            _chatStickToBottom = true;
         }
         else if (_chatStickToBottom && sh - vo > 0.5)
         {
@@ -166,7 +195,9 @@ public sealed partial class MainWindow
     {
         if (!_chatStickToBottom || _scrollPending) return;
         _scrollPending = true;
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        // Normal priority: at Low it can starve while several agents keep the UI thread busy
+        // with updates, which is exactly when following must keep working.
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
         {
             _scrollPending = false;
             if (!_chatStickToBottom) return;

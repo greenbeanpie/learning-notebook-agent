@@ -21,7 +21,11 @@ pub(crate) const ELEMENT_IDS_GUIDE: &str = "ELEMENT IDS (laser targets and build
 
 pub(crate) const CUES_GUIDE: &str = "CUES (attached to the narration sentence during which they happen):\n- Laser pointer: {\"type\":\"laser\",\"target\":<element id>,\"shape\":\"circle\"|\"ellipse\",\"scale\":1.0-1.6 (ring size relative to the element),\"speed\":0.3-1.5 (revolutions per second),\"duration_ms\":800-6000, \"angle_deg\": -90..90 (optional ellipse tilt to align with a slanted element such as an incline, a slanted vector or a rotated block; omit for horizontal)}. Use it only for genuinely key points (about 1-3 per slide), never decoratively.\n- Step reveal: {\"type\":\"step\",\"n\":k} shows build step k of this slide.\nBUILDS (step-by-step animation): \"builds\": [{\"step\":1,\"targets\":[ids],\"effect\":\"appear\"|\"fade\"|\"fly_up\"|\"draw\"|\"emphasis\"|\"dim_others\"}]. Steps are numbered 1..K consecutively; elements not listed are visible from the start. Every step must be revealed by exactly one {\"type\":\"step\"} cue, in increasing order, on the sentence where that content is first explained. Use builds for derivations, procedures, comparisons and lists explained one item at a time; keep simple slides static. \"draw\" suits figure curves/arrows; \"emphasis\"/\"dim_others\" highlight something already visible.";
 
-pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: when a function graph, implicit curve, 3-D surface, geometric figure or physics diagram genuinely helps, add \"figure_request\": {\"kind\":\"plot\"|\"plot3d\"|\"diagram\",\"purpose\":\"what it must show\",\"details\":\"exact functions, ranges, points, forces, angles, labels AND the part ids you will reference\"} to the slide (normally with layout \"figure\"). A separate drawing step turns it into a precise figure. In details, name each part you reference with an explicit id (e.g. \"curve id f: y=x^2-2x on [-1,3]; point id V at (1,-1) labelled 顶点; vector id G downward labelled G\") and use exactly those ids as figure:<id> in cues and builds. FIGURE + TEXT TOGETHER (important): a figure must never sit alone on a slide. The slide that shows a figure also carries the text that explains it — 2-3 very short (under ~16 Chinese characters or ~8 English words each) \"bullets\" and/or a \"formula\" stating the problem or claim and the key result, shown left of the figure — and the figure's labels use the same symbols as that text. Put the example's statement and its figure on the SAME slide; do not state an example on one slide and show its figure on the next, and do not use \"display_only\" for a figure slide. Narrate the text and the figure together: in each sentence point the laser at the figure part (figure:<id>) or bullet (b1..) being spoken about, and use builds so each bullet and its matching figure part appear in the same step.";
+pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: content that is obviously geometric or physical (vectors, forces, torques, coordinate systems, angles, shapes, trajectories, function graphs, surfaces) MUST have a figure; for anything else add one when a function graph, implicit curve, 3-D surface, geometric figure or physics diagram genuinely helps. Add \"figure_request\": {\"kind\":\"plot\"|\"plot3d\"|\"diagram\",\"purpose\":\"what it must show\",\"details\":\"exact functions, ranges, points, forces, angles, labels AND the part ids you will reference\"} to the slide (normally with layout \"figure\"). A separate drawing step turns it into a precise figure. In details, name each part you reference with an explicit id (e.g. \"curve id f: y=x^2-2x on [-1,3]; point id V at (1,-1) labelled 顶点; vector id G downward labelled G\") and use exactly those ids as figure:<id> in cues and builds. FIGURE + TEXT TOGETHER (important): a figure must never sit alone on a slide. The slide that shows a figure also carries the text that explains it — 2-3 very short (under ~16 Chinese characters or ~8 English words each) \"bullets\" and/or a \"formula\" stating the problem or claim and the key result, shown left of the figure — and the figure's labels use the same symbols as that text. Put the example's statement and its figure on the SAME slide; do not state an example on one slide and show its figure on the next, and do not use \"display_only\" for a figure slide. Narrate the text and the figure together: in each sentence point the laser at the figure part (figure:<id>) or bullet (b1..) being spoken about, and use builds so each bullet and its matching figure part appear in the same step.";
+
+/// Judgement rules shared by the planner and the authors: how much to say, to whom, and what
+/// never to talk about. They are principles, not page counts, so the model sizes the lecture itself.
+pub(crate) const TEACHING_JUDGEMENT: &str = "TEACHING JUDGEMENT (applies to the plan and to every slide):\n- ECONOMY: every slide must earn its place. Before adding one ask: would a student who already has the prerequisites miss something if it were removed? If not, leave it out. No orientation, agenda, section-divider, recap or \"where we are\" slides unless the lecture truly spans several topics. A derivation is taught as its sequence of steps in order, pausing only where a step is not obvious (a non-trivial identity, a choice, a physical argument) and moving quickly through routine algebra. Plan the fewest sections that teach the scope: a single derivation or exercise is ONE section.\n- VISUALS (show before you tell): content that is obviously geometric or physical — vectors, forces and torques, coordinate systems and angles, shapes, motion paths, function graphs, surfaces — MUST be shown with a figure (figure_request: diagram, plot or plot3d) while it is explained, and the figure's parts appear step by step (builds on figure:<id>) in step with the equations or bullets, with the laser on the part being spoken about. A page that is only a worked derivation (algebra steps, a proof, a calculation) is SUGGESTED to use visuals or animation: reveal the steps one at a time, highlight the current step, and add a small figure when one truly clarifies; when no figure fits, the step-by-step reveal is enough. Never invent a figure just to have one. A slide that carries a needed figure or a step-by-step build earns its place under ECONOMY.\n- LEARNER: infer the learner's level from the material itself (a university student working at this point of the course) and assume the usual prerequisites are known: do not define or re-teach prerequisite concepts, standard operations or notation (for example the cross product, derivatives or vector decomposition in a mechanics derivation). Explain only what is new or non-obvious in the material. If the user's request explicitly asks for background, give it.\n- NEVER TALK ABOUT HOW THIS LECTURE WAS PRODUCED: no OCR, text recognition or scan quality/noise, no image extraction, no outline, plan, section or generation steps, and no navigation such as \"this page sits in the derivation chain\". Speak as the teacher who wrote the lesson, about the content. Mentioning the textbook as a teaching resource (e.g. \"see the book's worked example\") is fine when it helps.";
 
 /// Mode/detail rules for the lecture author.
 pub(crate) fn lecture_rules(mode: &str, detail: &str) -> String {
@@ -29,16 +33,16 @@ pub(crate) fn lecture_rules(mode: &str, detail: &str) -> String {
         "preview" => "MODE preview (first-time learning of a unit): state the learning goals first, then teach concepts in a gentle order — concept → intuition → example → common pitfalls; highlight each new term with the laser the first time it appears.",
         "review" => "MODE review (consolidation of material already learned): recap key points, connect and contrast related ideas, interleave topics, call out common mistakes, end with a compact summary. Give extra time to the weak concepts listed below and pass quickly over mastered ones. Do not re-teach from scratch.",
         "practice" => "MODE practice (problem solving): build the lecture around problems. For each problem: one slide presenting the problem, with checkpoint {\"kind\":\"attempt\",\"question\":<the task>,\"expect\":<final answer>} so the learner solves it first; then worked-solution slides revealed step by step with builds and laser cues on each step; then a variant problem with less guidance (fading). Draw figures for problems that need them.",
-        _ => "MODE general: explain the requested material clearly for any kind of content (textbook, paper, article, a question): what it is → why it matters → how it works / how to use it → summary. Do not assume a textbook structure.",
+        _ => "MODE general: explain the requested material clearly for any kind of content (textbook, paper, article, a question, a derivation): lead with what the material says and how it works; add why it matters or a summary only where they genuinely help. Do not assume a textbook structure, and do not force a what → why → how template onto a short or purely technical piece of material.",
     };
     let detail_rule = match detail {
         "brief" => "DETAIL brief: only the essentials, few slides per section, short narration.",
         "detailed" => "DETAIL detailed: thorough coverage with derivations, examples and edge cases; more slides per section.",
         "standard" => "DETAIL standard: balanced coverage.",
-        _ => "DETAIL auto: decide the depth yourself from the amount and difficulty of the material in scope; do not pad and do not skip substance.",
+        _ => "DETAIL auto: decide the depth yourself from the amount and difficulty of the material in scope. The lecture is as long as the teaching needs and no longer: one page of material, one exercise or one derivation is a short lecture (a handful of slides), a section is a medium one, a whole chapter a long one. Do not pad and do not skip substance.",
     };
     format!(
-        "{mode_rule}\n{detail_rule}\nCHECKPOINTS: do NOT ask a question after every point. Questions happen when the learner interrupts, or — sparingly, about one per section at most — when you judge a pause genuinely helps (a key difficulty or a common confusion): add \"checkpoint\": {{\"kind\":\"ask\",\"question\":...,\"expect\":...,\"reason\":<why a pause helps here>}} to that slide.{}",
+        "{mode_rule}\n{detail_rule}\n{TEACHING_JUDGEMENT}\nCHECKPOINTS: do NOT ask a question after every point. Questions happen when the learner interrupts, or — sparingly, about one per section at most — when you judge a pause genuinely helps (a key difficulty or a common confusion): add \"checkpoint\": {{\"kind\":\"ask\",\"question\":...,\"expect\":...,\"reason\":<why a pause helps here>}} to that slide.{}",
         if mode == "practice" { " In practice mode the per-problem \"attempt\" checkpoint is part of the format and does not count." } else { "" }
     )
 }
@@ -156,7 +160,9 @@ fn outline_schema() -> Value {
                     "properties": {
                         "title": { "type": "string" },
                         "focus": { "type": "string" },
-                        "slides_hint": { "type": "integer" }
+                        "slides_hint": { "type": "integer" },
+                        "visual_need": { "type": "string", "enum": ["required", "suggested", "none"] },
+                        "visual": { "type": "string" }
                     }
                 }
             }
@@ -299,6 +305,38 @@ fn num_in(v: &Value, k: &str, lo: f64, hi: f64) -> Result<(), String> {
     }
 }
 
+/// Phrases that show the text is about how the lecture was produced (reading the scan, the
+/// plan, "this page" in a chain) instead of about the subject. Mentions of the book as a
+/// teaching resource are deliberately not in the list.
+const PROCESS_PHRASES: &[&str] = &[
+    "ocr",
+    "识别噪声",
+    "噪声很大",
+    "扫描版",
+    "扫描件",
+    "识别结果",
+    "识别错误",
+    "识别质量",
+    "图片识别",
+    "图像识别",
+    "推导链",
+    "这一页在",
+    "这一页的位置",
+    "本页在",
+    "页面解析",
+    "用户上传",
+    "用户附带",
+    "你上传的",
+];
+
+fn process_talk(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    PROCESS_PHRASES
+        .iter()
+        .find(|p| lower.contains(**p))
+        .copied()
+}
+
 /// Checks lecture slides (one section or a whole lecture). `label(i)` names slide i in messages.
 pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
     let mut issues = Vec::new();
@@ -330,6 +368,30 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
             });
         }
         prev_display_only = spoken.is_empty() && display_only;
+
+        // talk about how the material was read, or where "this page" sits in the plan, is not
+        // teaching content (the teacher never saw an OCR run or an outline)
+        let mut visible = vec![
+            sv(slide, "title"),
+            sv(slide, "subtitle"),
+            sv(slide, "callout"),
+        ];
+        visible.extend(
+            slide
+                .get("bullets")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|b| b.as_str().map(str::to_string)),
+        );
+        visible.extend(spoken.iter().map(|n| sv(n, "text")));
+        if let Some(term) = visible.iter().find_map(|t| process_talk(t)) {
+            issues.push(Issue {
+                slide: si,
+                msg: format!("talks about the reading/generation process (\"{term}\"); rewrite that text so it teaches the content itself and never mentions OCR, scan or recognition quality, the outline/plan, or where \"this page\" sits in the derivation chain"),
+                fix: Fix::None,
+            });
+        }
 
         // a figure never stands alone: the text that explains it sits on the same slide
         if (slide.get("figure_request").is_some_and(Value::is_object)
@@ -859,6 +921,9 @@ struct SectionCtx<'a> {
     section_focus: &'a str,
     position: String,
     extra: String,
+    /// "required" when the planner judged the section obviously geometric or physical: it must
+    /// carry at least one figure. "suggested" and "none" are guidance in the prompt only.
+    visual_need: &'a str,
 }
 
 impl StudioService {
@@ -1107,7 +1172,9 @@ impl StudioService {
         let mut running = futures_util::stream::iter(jobs.into_iter().map(|(i, title, req)| {
             let cancel_c = cancel.clone();
             async move {
-                let res = self
+                // A figure that could not be drawn (model error, invalid spec, no content parts)
+                // is tried once more before the slide is left without it.
+                let mut res = self
                     .generate_figure(
                         art,
                         profile,
@@ -1116,9 +1183,27 @@ impl StudioService {
                         &title,
                         &req,
                         excerpt,
-                        cancel_c,
+                        cancel_c.clone(),
                     )
                     .await;
+                let failed = match &res {
+                    Ok((fig, _)) => fig.is_none(),
+                    Err(e) => e.code != ErrorCode::Cancelled,
+                };
+                if failed && !cancel_c.is_cancelled() {
+                    res = self
+                        .generate_figure(
+                            art,
+                            profile,
+                            resolved,
+                            artifact_id,
+                            &title,
+                            &req,
+                            excerpt,
+                            cancel_c,
+                        )
+                        .await;
+                }
                 (i, title, res)
             }
         }))
@@ -1127,8 +1212,15 @@ impl StudioService {
             match res {
                 Ok((fig, u)) => {
                     add_usage(&mut usage, &u);
-                    if let Some(fig) = fig {
-                        slides[i]["figure"] = fig;
+                    match fig {
+                        Some(fig) => slides[i]["figure"] = fig,
+                        // no figure after the retry: a "figure" layout without one would play as
+                        // an empty-looking slide, so it becomes an ordinary slide
+                        None => {
+                            if sv(&slides[i], "layout") == "figure" {
+                                slides[i]["layout"] = json!("bullets");
+                            }
+                        }
                     }
                 }
                 Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
@@ -1162,6 +1254,21 @@ impl StudioService {
         if let Some(t) = full_text {
             return Ok(t.to_string());
         }
+        // The user's own material (briefed once at collection time) goes first for every
+        // section; the source passages below only support it.
+        let mut materials = String::new();
+        for (key, tag) in [("file_brief", "user_files"), ("image_brief", "user_images")] {
+            if let Ok(Some(saved)) = self.get_checkpoint(artifact_id, key) {
+                if let Some(t) = saved
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|t| !t.trim().is_empty())
+                {
+                    materials.push_str(&format!("<{tag}>\n{t}\n</{tag}>\n\n"));
+                }
+            }
+        }
+        let with_materials = |body: String| format!("{materials}{body}");
         let target_ids = Self::generation_source_ids(art);
         let window = resolved.context_window as usize;
         let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
@@ -1181,11 +1288,11 @@ impl StudioService {
             )
             .await
         {
-            Ok(Some(t)) if !t.trim().is_empty() => Ok(t),
+            Ok(Some(t)) if !t.trim().is_empty() => Ok(with_materials(t)),
             Err(e) if e.code == ErrorCode::Cancelled => Err(e),
             _ => {
                 let queries = vec![focus.to_string()];
-                Ok(
+                Ok(with_materials(
                     match self
                         .retrieval
                         .search(&art.notebook_id, &queries, &target_ids, 8_000, 14)
@@ -1200,7 +1307,7 @@ impl StudioService {
                             .join("\n\n"),
                         Err(_) => String::new(),
                     },
-                )
+                ))
             }
         }
     }
@@ -1233,19 +1340,26 @@ impl StudioService {
         let rules = lecture_rules(mode, detail);
         let schema = section_schema();
         let system = format!(
-            "You are the Local Notebook Studio lecture author producing structured JSON for lecture slides of ONE section of a narrated lesson (a teacher speaking over slides). Output {{\"slides\": [...]}} for this section only. Slide layouts as in a deck (title/section/agenda/bullets/two_column/cards/metrics/timeline/table/quote/formula/summary/figure); keep on-screen text concise and let the narration carry the explanation. Preserve source citation indices [n] in each slide's citations array.\n{NARRATION_RULES}\n{CUES_GUIDE}\n{ELEMENT_IDS_GUIDE}\n{FIGURE_REQUEST_GUIDE}\n{rules}\nStrictly ground every fact in the provided sources. Match the language requested in config or the primary language of the sources."
+            "You are the Local Notebook Studio lecture author producing structured JSON for lecture slides of ONE section of a narrated lesson (a teacher speaking over slides). Output {{\"slides\": [...]}} for this section only. Slide layouts as in a deck (title/section/agenda/bullets/two_column/cards/metrics/timeline/table/quote/formula/summary/figure); keep on-screen text concise and let the narration carry the explanation. Preserve source citation indices [n] in each slide's citations array.\n{NARRATION_RULES}\n{CUES_GUIDE}\n{ELEMENT_IDS_GUIDE}\n{FIGURE_REQUEST_GUIDE}\n{rules}\nStrictly ground every fact in the provided sources. Match the language requested in config or the primary language of the sources. Sections are written separately and played in order: unless the section position below asks for a title or summary slide, do not add an opening or closing slide of your own, only slides that teach this section's focus.{}",
+            if has_user_material(&art.config) {
+                format!("\n{USER_MATERIAL_SCOPE} Write only this section's focus; do not add material beyond it.")
+            } else {
+                String::new()
+            }
         );
         let user = format!(
-            "Parameters: {}\nLecture: {}\nObjectives: {}\nOutline:\n{}\n\nTHIS SECTION ({}): {}\nFocus: {}\n{}\n\nSources:\n{}",
+            // Everything shared by the sections comes first and what is specific to this section
+            // comes last, so parallel sections share a long prompt prefix (provider prompt cache).
+            "Parameters: {}\nLecture: {}\nObjectives: {}\nOutline:\n{}\n\nSources:\n{}\n\n=== THIS SECTION ({}): {} ===\nFocus: {}\n{}",
             art.config,
             sc.lecture_title,
             sc.objectives.join("; "),
             sc.outline_txt,
+            evidence,
             sc.position,
             sc.section_title,
             sc.section_focus,
-            sc.extra,
-            evidence
+            sc.extra
         );
         let mk_req = |text: String| LlmRequest {
             system: system.clone(),
@@ -1300,7 +1414,20 @@ impl StudioService {
         add_usage(&mut usage, &u);
 
         for round in 0..=LECTURE_REPAIR_ROUNDS {
-            let issues = check_lecture_slides(&slides, mode);
+            let mut issues = check_lecture_slides(&slides, mode);
+            // an obviously geometric or physical section without any figure: ask for one
+            if sc.visual_need == "required"
+                && !slides.iter().any(|s| {
+                    s.get("figure_request").is_some_and(Value::is_object)
+                        || s.get("figure").is_some_and(Value::is_object)
+                })
+            {
+                issues.push(Issue {
+                    slide: 0,
+                    msg: "this section is obviously geometric or physical but no slide has a \"figure_request\"; give the slide that introduces it a figure (layout \"figure\", with the explaining bullets/formula beside it) and reveal its parts step by step with builds on figure:<id> in step with the narration".into(),
+                    fix: Fix::None,
+                });
+            }
             if issues.is_empty() {
                 break;
             }
@@ -1524,8 +1651,13 @@ impl StudioService {
                 );
                 let req = LlmRequest {
                     system: format!(
-                        "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. Resolve the requested scope (topic, problem or unit given in config.topic; the whole selection if empty) against the sources, then plan a narrated lesson: title, learning objectives, and ordered sections. Each section has a title and a \"focus\" naming exactly which concepts/problems/source parts (chapters, sections, pages) it covers, plus an optional slides_hint. {}\nIf an approved outline is given, follow it. Strictly ground the plan in the sources. Match the language requested in config or the primary language of the sources.",
-                        lecture_rules(&mode, &detail)
+                        "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. Resolve the requested scope (topic, problem or unit given in config.topic; the user's attached material if any; the whole selection only if neither is given) against the sources, then plan a narrated lesson: title, learning objectives, and ordered sections. Each section has a title and a \"focus\" naming exactly which concepts/problems/source parts (chapters, sections, pages) it covers, plus an optional slides_hint (keep it small: slides are only as many as the section needs). Also give every section \"visual_need\": \"required\" when its content is obviously geometric or physical (vectors, forces, torques, angles, shapes, trajectories, graphs, surfaces), \"suggested\" when it is mainly a worked derivation, proof or calculation, otherwise \"none\"; and \"visual\": what to draw and how its parts are revealed step by step together with the explanation (empty when none). {}\nIf an approved outline is given, follow it. Strictly ground the plan in the sources. Match the language requested in config or the primary language of the sources.{}",
+                        lecture_rules(&mode, &detail),
+                        if has_user_material(&art.config) {
+                            format!("\n{USER_MATERIAL_SCOPE} A single exercise needs only a few sections (the problem, its solution steps, and at most the one concept it hinges on), never the whole chapter.")
+                        } else {
+                            String::new()
+                        }
                     ),
                     messages: vec![LlmMessage {
                         role: Role::User,
@@ -1636,6 +1768,16 @@ impl StudioService {
                 let sid = format!("s{}", i + 1);
                 let stitle = sv(&sec, "title");
                 let focus = sv(&sec, "focus");
+                let visual_need = match sv(&sec, "visual_need").as_str() {
+                    v @ ("required" | "suggested") => v.to_string(),
+                    _ => "none".to_string(),
+                };
+                let visual = sv(&sec, "visual");
+                let visual_note = match visual_need.as_str() {
+                    "required" => format!("\nVISUAL (required for this section — it is obviously geometric or physical, so at least one slide must carry a figure_request with step-by-step builds): {visual}"),
+                    "suggested" => format!("\nVISUAL (suggested — mainly a worked derivation: reveal the steps one at a time and highlight the current one; add a figure only if it truly clarifies): {visual}"),
+                    _ => String::new(),
+                };
                 let res: LnaResult<(Vec<Value>, Usage)> = async {
                     if cancel_c.is_cancelled() {
                         return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
@@ -1664,6 +1806,7 @@ impl StudioService {
                         outline_txt: outline_ref,
                         section_title: &stitle,
                         section_focus: &focus,
+                        visual_need: &visual_need,
                         position: format!(
                             "section {} of {}{}",
                             i + 1,
@@ -1678,7 +1821,7 @@ impl StudioService {
                         ),
                         extra: format!(
                             "Sections are written in parallel by separate authors: cover only this section's focus and leave the topics of the other outline entries to them.
-{kg_ref}"
+{kg_ref}{visual_note}"
                         ),
                     };
                     self.author_section(
@@ -2078,6 +2221,7 @@ impl StudioService {
                 outline_txt: &outline_txt,
                 section_title: &format!("补充讲解：{}", sv(cur, "title")),
                 section_focus: question,
+                visual_need: "none",
                 position: "a supplementary insertion of 1-2 slides right after the current slide".into(),
                 extra: format!(
                     "The learner interrupted at slide \"{}\" asking: {question}\nReason for this insertion: {reason}\nCurrent slide:\n{}\nProduce ONLY 1-2 supplementary slides that resolve this difficulty; do not repeat the current slide and do not continue the rest of the lecture.",
@@ -2139,6 +2283,7 @@ impl StudioService {
                     outline_txt: &outline_txt,
                     section_title: &stitle,
                     section_focus: &planned.join("; "),
+                    visual_need: "none",
                     position: format!("re-authoring remaining part {} of {} after an interruption", gi + 1, groups.len()),
                     extra: format!(
                         "ADAPTATION: {direction}\nThe learner asked: {question}\nWhy: {reason}\nAlready covered (do not repeat): {}\nPreviously planned slides for this part (cover the same content, adapted): {}",
@@ -2341,6 +2486,24 @@ mod tests {
     }
 
     #[test]
+    fn talk_about_the_reading_process_is_reported_but_the_book_may_be_named() {
+        let mut s = slide();
+        s["narration"][0]["text"] = json!("扫描版的识别噪声很大，下标要按标准的矢量分解去理解。");
+        let issues = check_lecture_slides(&[s], "general");
+        assert!(issues
+            .iter()
+            .any(|i| i.msg.contains("reading/generation process")));
+        let mut t = slide();
+        t["title"] = json!("先定位：这一页在推导链中的位置");
+        assert!(check_lecture_slides(&[t], "general")
+            .iter()
+            .any(|i| i.msg.contains("reading/generation process")));
+        let mut ok = slide();
+        ok["narration"][0]["text"] = json!("课本上的例题用的正是这个结论。");
+        assert!(check_lecture_slides(&[ok], "general").is_empty());
+    }
+
+    #[test]
     fn reports_bad_targets_params_tex_and_missing_narration() {
         let mut s = slide();
         s["narration"][0]["cues"][1]["target"] = json!("b9");
@@ -2468,7 +2631,69 @@ mod tests {
 
 /// On-screen slide text is shown by HTML/native renderers without a TeX engine: convert
 /// `$...$` math in every visible text field to Unicode (narration and figures are separate).
+/// The player typesets real math, so the TeX original of the converted fields is kept once in
+/// `slide["_src"]` (same structure, only those fields); it is never overwritten.
 pub fn texify_slide_text(slide: &mut Value) {
+    fn has_tex(v: &Value) -> bool {
+        match v {
+            Value::String(s) => s.contains(['$', '\\', '^']),
+            Value::Array(a) => a.iter().any(has_tex),
+            Value::Object(o) => o.values().any(has_tex),
+            _ => false,
+        }
+    }
+    /// Copy of the visible text fields `texify_slide_text` converts, or `None` if no TeX in them.
+    fn snapshot_src(o: &serde_json::Map<String, Value>) -> Option<Value> {
+        let mut src = serde_json::Map::new();
+        for k in ["title", "subtitle", "formula", "callout", "bullets"] {
+            if let Some(v) = o.get(k) {
+                src.insert(k.into(), v.clone());
+            }
+        }
+        for (k, fields) in [
+            ("cards", &["tag", "title", "body"][..]),
+            ("metrics", &["value", "label", "detail"][..]),
+            ("steps", &["title", "detail"][..]),
+            ("columns", &["heading", "items"][..]),
+        ] {
+            let Some(arr) = o.get(k).and_then(Value::as_array) else {
+                continue;
+            };
+            let items = arr
+                .iter()
+                .map(|item| {
+                    let mut m = serde_json::Map::new();
+                    for f in fields {
+                        if let Some(v) = item.get(*f) {
+                            m.insert((*f).into(), v.clone());
+                        }
+                    }
+                    Value::Object(m)
+                })
+                .collect();
+            src.insert(k.into(), Value::Array(items));
+        }
+        if let Some(cp) = o.get("checkpoint").and_then(Value::as_object) {
+            let mut m = serde_json::Map::new();
+            for k in ["question", "expect"] {
+                if let Some(v) = cp.get(k) {
+                    m.insert(k.into(), v.clone());
+                }
+            }
+            src.insert("checkpoint".into(), Value::Object(m));
+        }
+        if let Some(t) = o.get("table").and_then(Value::as_object) {
+            let mut m = serde_json::Map::new();
+            for k in ["headers", "rows"] {
+                if let Some(v) = t.get(k) {
+                    m.insert(k.into(), v.clone());
+                }
+            }
+            src.insert("table".into(), Value::Object(m));
+        }
+        let src = Value::Object(src);
+        has_tex(&src).then_some(src)
+    }
     fn conv(v: &mut Value) {
         match v {
             Value::String(s) if s.contains(['$', '\\', '^']) => {
@@ -2481,6 +2706,11 @@ pub fn texify_slide_text(slide: &mut Value) {
     let Some(o) = slide.as_object_mut() else {
         return;
     };
+    if !o.contains_key("_src") {
+        if let Some(src) = snapshot_src(o) {
+            o.insert("_src".into(), src);
+        }
+    }
     for k in ["title", "subtitle", "formula", "callout", "bullets"] {
         if let Some(v) = o.get_mut(k) {
             conv(v);
@@ -2542,5 +2772,37 @@ mod texify_tests {
         assert_eq!(s["formula"], "A⁻¹A=I");
         assert_eq!(s["table"]["rows"][0][0], "x→0");
         assert_eq!(s["narration"][0]["text"], "保持 $原样$");
+    }
+
+    #[test]
+    fn keeps_tex_original_in_src_once() {
+        let mut s = json!({
+            "title": "向量 $\\vec r_{oi}$",
+            "formula": "$A^{-1}A=I$",
+            "bullets": ["$x_i$ 与 plain"],
+            "cards": [{"tag": "t", "title": "$a^2$", "body": "b", "extra": "x"}],
+            "table": {"headers": ["$n$"], "rows": [["$x\\to0$"]]},
+            "narration": [{"text": "$n$"}]
+        });
+        texify_slide_text(&mut s);
+        assert_eq!(s["_src"]["title"], "向量 $\\vec r_{oi}$");
+        assert_eq!(s["_src"]["formula"], "$A^{-1}A=I$");
+        assert_eq!(s["_src"]["cards"][0]["title"], "$a^2$");
+        assert!(s["_src"]["cards"][0].get("extra").is_none());
+        assert_eq!(s["_src"]["table"]["rows"][0][0], "$x\\to0$");
+        assert!(s["_src"].get("narration").is_none());
+        assert_eq!(s["formula"], "A⁻¹A=I");
+        // second call: already converted, `_src` is kept as is
+        let before = s["_src"].clone();
+        texify_slide_text(&mut s);
+        assert_eq!(s["_src"], before);
+        assert_eq!(s["formula"], "A⁻¹A=I");
+    }
+
+    #[test]
+    fn no_src_without_tex() {
+        let mut s = json!({"title": "纯文本", "bullets": ["a", "b"], "table": {"headers": ["h"], "rows": [["c"]]}});
+        texify_slide_text(&mut s);
+        assert!(s.get("_src").is_none());
     }
 }

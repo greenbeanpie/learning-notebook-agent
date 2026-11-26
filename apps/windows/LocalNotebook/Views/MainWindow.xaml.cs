@@ -377,7 +377,7 @@ public sealed partial class MainWindow : Window
                         Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentBlueBrush"],
                     },
                 });
-                row.Children.Add(new TextBlock { Text = Str(nb, "title"), VerticalAlignment = VerticalAlignment.Center });
+                row.Children.Add(new TextBlock { Text = Str(nb, "title"), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 280 });
                 var item = new ListViewItem { Content = row, Tag = id };
                 NotebookListView.Items.Add(item);
                 if (id == _activeNotebookId) NotebookListView.SelectedItem = item;

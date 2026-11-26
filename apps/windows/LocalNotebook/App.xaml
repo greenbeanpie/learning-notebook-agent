@@ -68,6 +68,15 @@
                 <Setter Property="FontWeight" Value="SemiBold" />
             </Style>
 
+            <!-- Notebook switcher rows: touch-sized (just under the 38 px "new notebook" button). -->
+            <Style x:Key="NotebookPickerItemStyle" TargetType="ListViewItem">
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+                <Setter Property="Padding" Value="12,0" />
+                <Setter Property="Margin" Value="0,0,0,2" />
+                <Setter Property="MinHeight" Value="36" />
+            </Style>
+
             <Style x:Key="StretchListViewItemStyle" TargetType="ListViewItem">
                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
                 <Setter Property="Padding" Value="0" />

@@ -794,17 +794,20 @@ impl AgentService {
             "<sources selected_file_count=\"0\">(本笔记本没有选中的来源。请直接根据用户附带的图片、附件和通用知识作答，并在回答开头用一句话说明本次未参考笔记来源。)</sources>".to_string()
         } else {
             format_sources_xml(
-                &self.db,
                 &outcome.evidences,
                 outcome.grounded,
-                &selected_source_meta,
+                selected_source_meta.len(),
             )
         };
-        let system_prompt = history_summary
-            .as_deref()
-            .filter(|summary| !summary.trim().is_empty())
-            .map(|summary| format!("{CHAT_SYSTEM_PROMPT}\n\n[历史摘要]\n{summary}"))
-            .unwrap_or_else(|| CHAT_SYSTEM_PROMPT.to_string());
+        // stable parts first (instructions, file catalog), the rolling summary last
+        let mut system_prompt = CHAT_SYSTEM_PROMPT.to_string();
+        if !selected_source_meta.is_empty() {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&format_selected_files_xml(&self.db, &selected_source_meta));
+        }
+        if let Some(summary) = history_summary.as_deref().filter(|x| !x.trim().is_empty()) {
+            system_prompt.push_str(&format!("\n\n[历史摘要]\n{summary}"));
+        }
 
         let studio_hint_xml = {
             detect_studio_artifact_hint(user_text).map(|(art_type, zh_label)| {
@@ -1042,11 +1045,9 @@ impl AgentService {
             let req = LlmRequest {
                 system: system_prompt.clone(),
                 messages: llm_messages.clone(),
-                tools: if round < MAX_TOOL_ROUNDS {
-                    tools.clone()
-                } else {
-                    vec![]
-                },
+                // the tool list stays identical in the final round (only the choice changes), so
+                // the prompt prefix and the provider's prompt cache survive it
+                tools: tools.clone(),
                 tool_mode: if round < MAX_TOOL_ROUNDS && !tools.is_empty() {
                     ToolMode::Auto
                 } else {
@@ -1238,10 +1239,9 @@ impl AgentService {
                             .max(1)
                             .min(outcome.evidences.len());
                         sources_xml = format_sources_xml(
-                            &self.db,
                             &outcome.evidences[..keep],
                             outcome.grounded,
-                            &selected_source_meta,
+                            selected_source_meta.len(),
                         );
                         if let Some(last_user) = llm_messages.last_mut() {
                             last_user.parts = vec![Part::Text(format!(
@@ -2282,7 +2282,6 @@ impl AgentService {
             out.reverse();
             Ok(out)
         })?;
-        let plan = dialog::plan_history(&messages, budget);
         let existing: Option<(String, String)> = self.db.read(|conn| {
             conn.query_row(
                 "SELECT through_message_id, summary FROM conversation_summaries WHERE notebook_id=?1",
@@ -2290,6 +2289,13 @@ impl AgentService {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             ).optional().map_err(map_sql_err)
         })?;
+        // The verbatim window moves in big steps (not one pair per turn) so the history keeps
+        // the same prefix across turns and the provider's prompt cache can be reused.
+        let plan = dialog::plan_history_stable(
+            &messages,
+            budget,
+            existing.as_ref().map(|(through_id, _)| through_id.as_str()),
+        );
         let mut summary = existing.as_ref().map(|(_, text)| text.clone());
         let mut overflow_to_summarize = plan.overflow.clone();
         if let Some((through_id, _)) = existing.as_ref() {
@@ -2825,16 +2831,11 @@ fn load_citations(conn: &rusqlite::Connection, msg_id: &str) -> LnaResult<Vec<Ci
     Ok(out)
 }
 
-fn format_sources_xml(
-    db: &Database,
-    evidences: &[RetrievedEvidence],
-    grounded: bool,
-    selected_files: &[(String, String, String)],
-) -> String {
-    let mut out = format!(
-        "<sources selected_file_count=\"{}\">\n",
-        selected_files.len()
-    );
+/// The catalog of the selected files (guide + table of contents of each). It only changes when the
+/// selection or the sources change, so it goes into the system prompt, where it stays identical
+/// from turn to turn (provider prompt cache) instead of being repeated in every user message.
+fn format_selected_files_xml(db: &Database, selected_files: &[(String, String, String)]) -> String {
+    let mut out = String::new();
     if !selected_files.is_empty() {
         out.push_str("<selected_files>\n");
         for (id, title, kind) in selected_files {
@@ -2884,8 +2885,18 @@ fn format_sources_xml(
         }
         out.push_str("</selected_files>\n");
     }
+    out
+}
+
+/// The per-turn part: the retrieved evidence for this question.
+fn format_sources_xml(
+    evidences: &[RetrievedEvidence],
+    grounded: bool,
+    selected_file_count: usize,
+) -> String {
+    let mut out = format!("<sources selected_file_count=\"{selected_file_count}\">\n");
     if !grounded || evidences.is_empty() {
-        out.push_str("(未检索到与问题直接相关的来源片段；请结合 <selected_files> 目录树调用 read_index_node / read_source / inspect_source_pages，或在确实无依据时告知用户)\n</sources>");
+        out.push_str("(未检索到与问题直接相关的来源片段；请结合系统提示中 <selected_files> 的目录树调用 read_index_node / read_source / inspect_source_pages，或在确实无依据时告知用户)\n</sources>");
         return out;
     }
     for ev in evidences {

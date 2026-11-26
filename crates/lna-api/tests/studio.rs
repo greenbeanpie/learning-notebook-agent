@@ -727,3 +727,68 @@ fn max_parallel_setting_bounds_parallel_executors() {
     let prof = profile_with_limit(&env, &mock, 0);
     assert_eq!(prof["max_parallel"], json!(1), "{prof}");
 }
+
+fn common_prefix_chars(a: &str, b: &str) -> usize {
+    a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
+}
+
+/// Parallel executors of one job start their prompt with the same system prompt and the same
+/// shared block (parameters, outline, sources) and put only what is specific to them last, so the
+/// provider's prompt cache can serve all of them from one prefix.
+#[test]
+fn parallel_batches_share_a_long_prompt_prefix() {
+    let mock = MockLlm::start(|r| match r.kind {
+        Kind::Studio => studio_reply(r),
+        _ => Reply::Text("OK".into()),
+    });
+    let env = Env::new("prefixshare");
+    let nid = small_notebook(&env);
+    profile_with_limit(&env, &mock, 4);
+    let id = create(&env, &nid, "quiz", json!({ "count": 20 }));
+    studio_wait(&env, &id, "READY", 60);
+
+    let batches: Vec<_> = mock
+        .of_kind(Kind::Studio)
+        .into_iter()
+        .filter(|r| r.user_text().contains("=== THIS BATCH"))
+        .collect();
+    assert!(
+        batches.len() >= 4,
+        "expected 4 batches, saw {}",
+        batches.len()
+    );
+    let first = batches[0].user_text();
+    let shared_len = first[..first.find("=== THIS BATCH").unwrap()]
+        .chars()
+        .count();
+    assert!(
+        first
+            .chars()
+            .take(shared_len)
+            .collect::<String>()
+            .contains("Sources:"),
+        "the sources belong to the shared head"
+    );
+    for b in &batches[1..] {
+        assert_eq!(
+            b.system, batches[0].system,
+            "same system prompt for every batch"
+        );
+        let other = b.user_text();
+        let common = common_prefix_chars(&first, &other);
+        assert!(
+            common >= shared_len,
+            "batches must share the whole head ({common} < {shared_len})\nA: {:?}\nB: {:?}",
+            first
+                .chars()
+                .skip(common.saturating_sub(40))
+                .take(120)
+                .collect::<String>(),
+            other
+                .chars()
+                .skip(common.saturating_sub(40))
+                .take(120)
+                .collect::<String>()
+        );
+    }
+}

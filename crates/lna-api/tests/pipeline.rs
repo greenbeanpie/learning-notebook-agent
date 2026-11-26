@@ -67,7 +67,15 @@ fn tool_loop_stops_after_three_rounds_and_sums_usage() {
     let chat = mock.of_kind(Kind::Chat);
     assert_eq!(chat.len(), 13, "12 tool rounds + 1 final request");
     assert!(chat[..12].iter().all(|r| r.has_tools()));
-    assert!(!chat[12].has_tools(), "13th request must not offer tools");
+    // the tool list stays (stable prompt prefix for the provider cache) but is switched off
+    assert_eq!(
+        chat[12].body["tool_choice"],
+        json!("none"),
+        "13th request must not allow tool calls"
+    );
+    assert!(chat[..12]
+        .iter()
+        .all(|r| r.body.get("tool_choice").is_none_or(|v| v != "none")));
     // tool results are wrapped as untrusted
     assert!(chat[1].user_text().contains("untrusted"));
     let kinds = thought_kinds(&msg);

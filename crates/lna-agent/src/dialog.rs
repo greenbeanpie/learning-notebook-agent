@@ -230,9 +230,73 @@ pub fn plan_history(messages: &[HistoryMsg], budget_tokens: usize) -> HistoryPla
     plan
 }
 
+/// Like [`plan_history`], but the start of the verbatim window only moves in big steps, so the
+/// prompt prefix (history first) stays the same from turn to turn and the provider's prompt cache
+/// can reuse it: while everything after the summarised part still fits the budget nothing is
+/// dropped; once it does not, the window is cut down to about half the budget in one go.
+/// `summarized_through` is the last message already folded into the stored summary.
+pub fn plan_history_stable(
+    messages: &[HistoryMsg],
+    budget_tokens: usize,
+    summarized_through: Option<&str>,
+) -> HistoryPlan {
+    let boundary = summarized_through
+        .and_then(|id| messages.iter().position(|m| m.id == id))
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let after = &messages[boundary..];
+    let after_cost: usize = after.iter().map(|m| estimate_tokens(&m.content)).sum();
+    if after_cost <= budget_tokens {
+        let mut plan = plan_history(after, usize::MAX);
+        let mut overflow: Vec<HistoryMsg> = messages[..boundary].to_vec();
+        overflow.append(&mut plan.overflow);
+        plan.overflow = overflow;
+        return plan;
+    }
+    plan_history(messages, budget_tokens / 2 + budget_tokens / 20)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_history_window_moves_in_big_steps() {
+        let mk = |n: usize| -> Vec<HistoryMsg> {
+            (0..n)
+                .flat_map(|i| {
+                    [
+                        m(&format!("u{i}"), "user", &"问".repeat(200)),
+                        m(&format!("a{i}"), "assistant", &"答".repeat(200)),
+                    ]
+                })
+                .collect()
+        };
+        let budget = 8000;
+        let first_kept = |msgs: &[HistoryMsg], through: Option<&str>| {
+            plan_history_stable(msgs, budget, through)
+                .kept
+                .first()
+                .map(|x| x.id.clone())
+        };
+        // once a summary exists, the window start stays put while the history still fits
+        let mut through: Option<String> = None;
+        let mut starts = Vec::new();
+        for n in 1..=40 {
+            let msgs = mk(n);
+            let plan = plan_history_stable(&msgs, budget, through.as_deref());
+            if let Some(last) = plan.overflow.last() {
+                through = Some(last.id.clone());
+            }
+            starts.push(first_kept(&msgs, through.as_deref()));
+        }
+        starts.dedup();
+        assert!(
+            starts.len() <= 8,
+            "window start should move rarely, moved {} times",
+            starts.len()
+        );
+    }
 
     fn m(id: &str, role: &str, content: &str) -> HistoryMsg {
         HistoryMsg {

@@ -34,9 +34,89 @@ struct Gate {
     sem: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
+/// How long a prompt prefix counts as cached at the provider after its first request was sent.
+const WARM_TTL: Duration = Duration::from_secs(600);
+/// How long a request waits for the first request of the same prefix before it goes anyway.
+const WARM_WAIT: Duration = Duration::from_secs(20);
+/// Shorter prompts are not cached by providers (the unit is about 64 tokens, the minimum about 1k).
+const WARM_MIN_CHARS: usize = 3000;
+
+enum WarmEntry {
+    /// The first request with this prefix is in flight; `true` is sent once its first bytes arrived.
+    Warming(tokio::sync::watch::Receiver<bool>),
+    Warm(std::time::Instant),
+}
+
+type WarmMap = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, WarmEntry>>>;
+
+/// Held by the first request of a prompt prefix. Provider prompt caches are filled while the first
+/// request is processed, so parallel siblings sent at the same instant would all miss; they wait
+/// on this instead (released at the first response bytes, or when the request ends either way).
+struct WarmLeader {
+    map: WarmMap,
+    key: u64,
+    tx: tokio::sync::watch::Sender<bool>,
+    done: bool,
+}
+
+impl WarmLeader {
+    fn release(&mut self) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        if let Ok(mut m) = self.map.lock() {
+            m.insert(self.key, WarmEntry::Warm(std::time::Instant::now()));
+        }
+        let _ = self.tx.send(true);
+    }
+}
+
+impl Drop for WarmLeader {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+enum WarmRole {
+    Leader(WarmLeader),
+    Follower(tokio::sync::watch::Receiver<bool>),
+    Free,
+}
+
+/// Identifies the shared head of a request: provider/model, system prompt, tool names and the
+/// start of the first message. None when the prompt is too short to be cached at all.
+fn prefix_key(profile: &ResolvedProfile, req: &LlmRequest) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut head = String::new();
+    head.push_str(&req.system);
+    for m in req.messages.iter().take(1) {
+        for p in &m.parts {
+            if let Part::Text(t) = p {
+                head.push_str(t);
+            }
+        }
+    }
+    if head.chars().count() < WARM_MIN_CHARS {
+        return None;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    profile.id.hash(&mut h);
+    profile.model_id.hash(&mut h);
+    for t in &req.tools {
+        t.name.hash(&mut h);
+    }
+    head.chars()
+        .take(WARM_MIN_CHARS)
+        .collect::<String>()
+        .hash(&mut h);
+    Some(h.finish())
+}
+
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
+    warm: WarmMap,
     /// Called when a request had to be rewritten for the endpoint's wire format, so the profile remembers it (D5).
     sink: std::sync::Arc<std::sync::Mutex<Option<CapabilitySink>>>,
     gates: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Gate>>>,
@@ -82,7 +162,32 @@ impl LlmClient {
             http,
             sink: Default::default(),
             gates: Default::default(),
+            warm: Default::default(),
         }
+    }
+
+    fn warm_role(&self, key: Option<u64>) -> WarmRole {
+        let Some(key) = key else {
+            return WarmRole::Free;
+        };
+        let Ok(mut m) = self.warm.lock() else {
+            return WarmRole::Free;
+        };
+        match m.get(&key) {
+            Some(WarmEntry::Warm(t)) if t.elapsed() < WARM_TTL => return WarmRole::Free,
+            Some(WarmEntry::Warming(rx)) => return WarmRole::Follower(rx.clone()),
+            _ => {}
+        }
+        // forget entries that are long expired so the map stays small
+        m.retain(|_, e| !matches!(e, WarmEntry::Warm(t) if t.elapsed() >= WARM_TTL));
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        m.insert(key, WarmEntry::Warming(rx));
+        WarmRole::Leader(WarmLeader {
+            map: self.warm.clone(),
+            key,
+            tx,
+            done: false,
+        })
     }
 
     /// Sets how many requests the profile may have in flight at once (clamped to 1..=64). A
@@ -199,6 +304,21 @@ impl LlmClient {
     where
         F: FnMut(LlmEvent),
     {
+        // before taking a request slot: waiting siblings must not hold one
+        let mut leader = match self.warm_role(prefix_key(profile, req)) {
+            WarmRole::Leader(l) => Some(l),
+            WarmRole::Follower(mut rx) => {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled while waiting for the prompt cache"));
+                    }
+                    _ = tokio::time::sleep(WARM_WAIT) => {}
+                    _ = rx.wait_for(|done| *done) => {}
+                }
+                None
+            }
+            WarmRole::Free => None,
+        };
         let _slot = self.acquire_slot(&profile.id, &cancel).await?;
         let adapter = adapter_for(profile.protocol);
         let mut attempt = 0u32;
@@ -286,6 +406,9 @@ impl LlmClient {
 
                 match next_chunk {
                     Some(Ok(bytes)) => {
+                        if let Some(l) = leader.as_mut() {
+                            l.release();
+                        }
                         for frame in parser.push(&bytes)? {
                             for ev in decoder.on_frame(frame)? {
                                 if let LlmEvent::Finished { ref reason } = ev {
@@ -504,10 +627,25 @@ impl LlmClient {
             };
         } else if profile.capabilities.json_mode {
             req.output = OutputMode::JsonObject;
-            req.system = format!(
-                "{}\n\n请只输出符合以下 JSON Schema 的 JSON：\n{}",
-                req.system, schema
-            );
+            // The schema goes at the END of the last user message, not into the system prompt:
+            // calls of one job that differ only in their schema then still share the whole
+            // system + message prefix, which is what the provider's prompt cache matches on.
+            let note = format!("\n\n请只输出符合以下 JSON Schema 的 JSON：\n{schema}");
+            let last_text = req
+                .messages
+                .iter_mut()
+                .rev()
+                .find(|m| m.role == Role::User)
+                .and_then(|m| {
+                    m.parts.iter_mut().rev().find_map(|p| match p {
+                        Part::Text(t) => Some(t),
+                        _ => None,
+                    })
+                });
+            match last_text {
+                Some(t) => t.push_str(&note),
+                None => req.system.push_str(&note),
+            }
         } else {
             return Err(LnaError::new(
                 ErrorCode::CapabilityMissing,
@@ -1024,5 +1162,47 @@ mod salvage_tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[1]["id"], "b");
         assert!(salvage_array_items("{}", "nodes").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod warm_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn first_request_of_a_prefix_leads_and_siblings_wait_for_it() {
+        let c = LlmClient::new();
+        let mut leader = match c.warm_role(Some(7)) {
+            WarmRole::Leader(l) => l,
+            _ => panic!("the first request of a prefix leads"),
+        };
+        let mut sibling = match c.warm_role(Some(7)) {
+            WarmRole::Follower(rx) => rx,
+            _ => panic!("a sibling sent at the same time waits for the leader"),
+        };
+        // a different prefix does not wait
+        assert!(matches!(c.warm_role(Some(8)), WarmRole::Leader(_)));
+        assert!(!*sibling.borrow());
+        leader.release();
+        sibling.wait_for(|d| *d).await.unwrap();
+        // once released the prefix counts as cached: later requests go straight through
+        assert!(matches!(c.warm_role(Some(7)), WarmRole::Free));
+        // prompts that are too short to be cached are never held back
+        assert!(matches!(c.warm_role(None), WarmRole::Free));
+    }
+
+    #[tokio::test]
+    async fn a_leader_that_fails_still_releases_its_siblings() {
+        let c = LlmClient::new();
+        let leader = match c.warm_role(Some(1)) {
+            WarmRole::Leader(l) => l,
+            _ => panic!(),
+        };
+        let mut rx = match c.warm_role(Some(1)) {
+            WarmRole::Follower(rx) => rx,
+            _ => panic!(),
+        };
+        drop(leader);
+        rx.wait_for(|d| *d).await.unwrap();
     }
 }

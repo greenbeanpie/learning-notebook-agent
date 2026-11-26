@@ -35,8 +35,9 @@
                     <DropDownButton.Flyout>
                         <Flyout x:Name="NotebookFlyout" Placement="BottomEdgeAlignedLeft">
                             <StackPanel Width="340" Spacing="8">
-                                <ListView x:Name="NotebookListView" SelectionMode="Single" IsItemClickEnabled="True" MaxHeight="360"
-                                          ItemContainerStyle="{StaticResource StretchListViewItemStyle}" ItemClick="OnNotebookItemClick" />
+                                <ListView x:Name="NotebookListView" SelectionMode="Single" IsItemClickEnabled="True" MaxHeight="288"
+                                          ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                          ItemContainerStyle="{StaticResource NotebookPickerItemStyle}" ItemClick="OnNotebookItemClick" />
                                 <Button x:Name="NewNotebookBtn" Style="{StaticResource PillButtonStyle}" HorizontalAlignment="Stretch" Click="OnNewNotebookClick" />
                             </StackPanel>
                         </Flyout>
