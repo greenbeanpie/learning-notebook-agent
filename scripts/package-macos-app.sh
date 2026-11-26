@@ -39,6 +39,11 @@ chmod +x "$OUT_APP/Contents/Frameworks/liblna_ffi.dylib"
 echo "Fetching PDFium for PDF import..."
 bash "$ROOT_DIR/scripts/fetch-pdfium.sh" "$OUT_APP/Contents/MacOS"
 chmod +x "$OUT_APP/Contents/MacOS/libpdfium.dylib"
+# Only executables belong in Contents/MacOS: codesign treats a stray file there as code and keeps its signature
+# in an extended attribute, which breaks when the app is zipped without resource forks.
+if [[ -f "$OUT_APP/Contents/MacOS/PDFium-LICENSE.txt" ]]; then
+  mv "$OUT_APP/Contents/MacOS/PDFium-LICENSE.txt" "$OUT_APP/Contents/Resources/PDFium-LICENSE.txt"
+fi
 
 LOGO_SVG="$ROOT_DIR/assets/logo.svg"
 if [[ -f "$LOGO_SVG" ]]; then
@@ -106,8 +111,40 @@ if ! otool -l "$OUT_APP/Contents/MacOS/LocalNotebook" | grep -q "@executable_pat
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$OUT_APP/Contents/MacOS/LocalNotebook"
 fi
 
-echo "Ad-hoc signing app bundle..."
-codesign --force --deep --sign - "$OUT_APP"
+# Sign with the fixed local identity from scripts/setup-macos-signing.sh when it exists: the app's identity then
+# stays the same across rebuilds, so macOS does not ask for the Keychain password again. Otherwise fall back to an
+# ad-hoc signature (the identity is then the code hash, which changes on every build).
+SIGN_IDENTITY="${LNA_SIGN_IDENTITY:-Local Notebook Signing}"
+KEYCHAIN_ARGS=()
+if [[ -n "${LNA_SIGN_KEYCHAIN:-}" ]]; then KEYCHAIN_ARGS=(--keychain "$LNA_SIGN_KEYCHAIN"); fi
+signed=0
+if security find-identity -p codesigning ${LNA_SIGN_KEYCHAIN:+"$LNA_SIGN_KEYCHAIN"} 2>/dev/null | grep -q "\"$SIGN_IDENTITY\""; then
+  echo "Signing app bundle with \"$SIGN_IDENTITY\"..."
+  if codesign --force --deep ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} --sign "$SIGN_IDENTITY" "$OUT_APP"; then
+    signed=1
+  else
+    echo "Warning: signing with \"$SIGN_IDENTITY\" failed; falling back to an ad-hoc signature." >&2
+  fi
+fi
+if [[ "$signed" -eq 0 ]]; then
+  echo "Ad-hoc signing app bundle (run scripts/setup-macos-signing.sh once to get a stable signing identity)..."
+  codesign --force --deep --sign - "$OUT_APP"
+fi
 codesign --verify --deep --strict "$OUT_APP"
+echo "Designated requirement: $(codesign -d -r- "$OUT_APP" 2>&1 | sed -n 's/^#* *designated => //p')"
+
+# Optional: a zip for distribution, with install notes (first launch needs a one-time Gatekeeper approval).
+if [[ "${LNA_MAKE_ZIP:-0}" == "1" ]]; then
+  ZIP_DIR="$(dirname "$OUT_APP")"
+  ZIP_TMP="$(mktemp -d)"
+  mkdir "$ZIP_TMP/LocalNotebook"
+  ditto "$OUT_APP" "$ZIP_TMP/LocalNotebook/$(basename "$OUT_APP")"
+  cp "$ROOT_DIR/scripts/macos-install-notes.txt" "$ZIP_TMP/LocalNotebook/INSTALL.txt"
+  ARCH="$(uname -m)"
+  rm -f "$ZIP_DIR/LocalNotebook-macos-$ARCH.zip"
+  (cd "$ZIP_TMP" && ditto -c -k --norsrc --keepParent LocalNotebook "$ZIP_DIR/LocalNotebook-macos-$ARCH.zip")
+  rm -rf "$ZIP_TMP"
+  echo "Zip: $ZIP_DIR/LocalNotebook-macos-$ARCH.zip"
+fi
 
 echo "Done: $OUT_APP"
