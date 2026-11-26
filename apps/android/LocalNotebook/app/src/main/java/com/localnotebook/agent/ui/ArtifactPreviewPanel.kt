@@ -45,7 +45,7 @@ fun ThoughtsPanel(thoughts: List<ThoughtStepItem>, running: Boolean, en: Boolean
         if (running) {
             item {
                 Text(
-                    if (en) "AI workflow in progress..." else "AI 正在执行工具调用与思考…",
+                    L10n.t("art.ai_workflow_in_progress", en),
                     style = MaterialTheme.typography.titleSmall,
                 )
             }
@@ -53,7 +53,7 @@ fun ThoughtsPanel(thoughts: List<ThoughtStepItem>, running: Boolean, en: Boolean
         if (thoughts.isEmpty()) {
             item {
                 Text(
-                    if (en) "Waiting for AI workflow steps..." else "正在等待 AI 工作步骤与思考记录…",
+                    L10n.t("art.waiting_for_ai_workflow_steps", en),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

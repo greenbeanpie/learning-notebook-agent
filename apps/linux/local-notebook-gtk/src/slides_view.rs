@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
@@ -235,7 +236,7 @@ pub fn build_slides_widget(payload: &Value, en: bool) -> GtkBox {
         .cloned()
         .unwrap_or_default();
     if slides.is_empty() {
-        root.append(&Label::new(Some(if en { "No slides available." } else { "暂无幻灯片内容。" })));
+        root.append(&Label::new(Some(tr(en, "slides.no_slides_available"))));
         return root;
     }
 
@@ -281,7 +282,7 @@ pub fn build_slides_widget(payload: &Value, en: bool) -> GtkBox {
             .first()
             .filter(|s| !s.trim().is_empty())
             .map(String::as_str)
-            .unwrap_or(if en { "No speaker notes." } else { "本页暂无演讲备注。" }),
+            .unwrap_or(tr(en, "slides.no_speaker_notes")),
     ));
     notes_lbl.set_xalign(0.0);
     notes_lbl.set_wrap(true);
@@ -297,7 +298,7 @@ pub fn build_slides_widget(payload: &Value, en: bool) -> GtkBox {
             counter_u.set_text(&format!("{} / {total}", new_idx + 1));
             let n = notes_data.get(new_idx).map(String::as_str).unwrap_or("");
             notes_u.set_text(if n.trim().is_empty() {
-                if en { "No speaker notes." } else { "本页暂无演讲备注。" }
+                tr(en, "slides.no_speaker_notes")
             } else {
                 n
             });
@@ -306,11 +307,11 @@ pub fn build_slides_widget(payload: &Value, en: bool) -> GtkBox {
 
     let nav = GtkBox::new(Orientation::Horizontal, 8);
     nav.set_halign(gtk4::Align::Center);
-    let prev_btn = Button::with_label(if en { "‹ Previous" } else { "‹ 上一页" });
+    let prev_btn = Button::with_label(tr(en, "slides.previous"));
     prev_btn.add_css_class("lna-pill-btn");
-    let next_btn = Button::with_label(if en { "Next ›" } else { "下一页 ›" });
+    let next_btn = Button::with_label(tr(en, "slides.next"));
     next_btn.add_css_class("lna-pill-btn");
-    let play_btn = Button::with_label(if en { "▶ Play" } else { "▶ 自动放映" });
+    let play_btn = Button::with_label(tr(en, "slides.play_2"));
     play_btn.add_css_class("lna-primary-btn");
 
     {
@@ -344,7 +345,7 @@ pub fn build_slides_widget(payload: &Value, en: bool) -> GtkBox {
             let mut is_pl = playing_pl.borrow_mut();
             *is_pl = !*is_pl;
             if *is_pl {
-                play_b.set_label(if en { "⏸ Pause" } else { "⏸ 暂停放映" });
+                play_b.set_label(tr(en, "slides.pause_2"));
                 let idx_t = idx_pl.clone();
                 let playing_t = playing_pl.clone();
                 let upd_t = upd.clone();
@@ -360,12 +361,12 @@ pub fn build_slides_widget(payload: &Value, en: bool) -> GtkBox {
                         glib::ControlFlow::Continue
                     } else {
                         *playing_t.borrow_mut() = false;
-                        play_t.set_label(if en { "▶ Play" } else { "▶ 自动放映" });
+                        play_t.set_label(tr(en, "slides.play_2"));
                         glib::ControlFlow::Break
                     }
                 });
             } else {
-                play_b.set_label(if en { "▶ Play" } else { "▶ 自动放映" });
+                play_b.set_label(tr(en, "slides.play_2"));
             }
         });
     }
@@ -397,7 +398,7 @@ pub fn build_slides_widget(payload: &Value, en: bool) -> GtkBox {
         .build();
     root.append(&strip_sc);
 
-    let notes_exp = Expander::new(Some(if en { "Speaker Notes" } else { "演讲备注" }));
+    let notes_exp = Expander::new(Some(tr(en, "slides.speaker_notes")));
     notes_exp.set_child(Some(&notes_lbl));
     root.append(&notes_exp);
 

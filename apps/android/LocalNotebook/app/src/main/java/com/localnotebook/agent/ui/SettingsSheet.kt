@@ -119,7 +119,7 @@ fun UnifiedSettingsSheet(
                     0 -> {
                         Text(L10n.t("settings.language", en), style = MaterialTheme.typography.labelMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf("auto" to (if (en) "System" else "跟随系统"), "zh-CN" to "简体中文", "en-US" to "English").forEach { (code, lbl) ->
+                            listOf("auto" to (L10n.t("settings.system", en)), "zh-CN" to "简体中文", "en-US" to "English").forEach { (code, lbl) ->
                                 FilterChip(
                                     selected = draftPrefs.language == code,
                                     onClick = { draftPrefs = draftPrefs.copy(language = code) },
@@ -132,13 +132,13 @@ fun UnifiedSettingsSheet(
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(
                                 listOf(
-                                    "dark" to (if (en) "Obsidian Dark" else "黑曜深色"),
-                                    "light" to (if (en) "Paper Light" else "纸感浅色"),
-                                    "system" to (if (en) "System" else "跟随系统"),
-                                    "midnight" to (if (en) "Midnight Indigo" else "午夜靛蓝"),
-                                    "forest" to (if (en) "Nordic Forest" else "北欧森绿"),
-                                    "warm_paper" to (if (en) "Warm Parchment" else "暖纸羊皮"),
-                                    "rose_dusk" to (if (en) "Rose Dusk" else "暮色蔷薇"),
+                                    "dark" to (L10n.t("settings.obsidian_dark", en)),
+                                    "light" to (L10n.t("settings.theme_light", en)),
+                                    "system" to (L10n.t("settings.system", en)),
+                                    "midnight" to (L10n.t("settings.theme_midnight", en)),
+                                    "forest" to (L10n.t("settings.theme_forest", en)),
+                                    "warm_paper" to (L10n.t("settings.theme_warm_paper", en)),
+                                    "rose_dusk" to (L10n.t("settings.theme_rose_dusk", en)),
                                 ),
                                 key = { it.first },
                             ) { (code, lbl) ->
@@ -187,7 +187,7 @@ fun UnifiedSettingsSheet(
 
                     2 -> {
                         Text(
-                            if (en) "Saved Profiles" else "已保存的配置",
+                            L10n.t("model.saved_profiles", en),
                             style = MaterialTheme.typography.labelMedium,
                         )
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -195,11 +195,11 @@ fun UnifiedSettingsSheet(
                                 FilterChip(
                                     selected = selectedProfileId.isEmpty(),
                                     onClick = { selectProfile(null) },
-                                    label = { Text(if (en) "+ New" else "+ 新建") },
+                                    label = { Text(L10n.t("settings.new", en)) },
                                 )
                             }
                             items(profiles, key = { it.id }) { prof ->
-                                val tag = (if (prof.isActive) (if (en) " (Default)" else "（默认）") else "") +
+                                val tag = (if (prof.isActive) (L10n.t("settings.default", en)) else "") +
                                     (if (!prof.eligible) L10n.t("model.disabled_tag", en) else "")
                                 FilterChip(
                                     selected = selectedProfileId == prof.id,
@@ -210,7 +210,7 @@ fun UnifiedSettingsSheet(
                         }
                         if (presets.isNotEmpty()) {
                             Text(
-                                if (en) "Provider Presets" else "提供商预设（快速填充）",
+                                L10n.t("settings.provider_presets", en),
                                 style = MaterialTheme.typography.labelMedium,
                             )
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -246,7 +246,7 @@ fun UnifiedSettingsSheet(
                         OutlinedTextField(
                             value = baseUrl,
                             onValueChange = { baseUrl = it },
-                            label = { Text("Base URL") },
+                            label = { Text(L10n.t("model.base_url", en)) },
                             placeholder = { Text("https://api.openai.com/v1") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
@@ -254,7 +254,7 @@ fun UnifiedSettingsSheet(
                         OutlinedTextField(
                             value = modelId,
                             onValueChange = { modelId = it },
-                            label = { Text("Model ID") },
+                            label = { Text(L10n.t("model.model_id", en)) },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -271,9 +271,9 @@ fun UnifiedSettingsSheet(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(if (en) "Extra Headers" else "额外请求头", style = MaterialTheme.typography.labelLarge)
+                            Text(L10n.t("model.extra_headers", en), style = MaterialTheme.typography.labelLarge)
                             TextButton(onClick = { extraHeaders = extraHeaders + ("" to "") }) {
-                                Text(if (en) "+ Add Header" else "+ 添加请求头")
+                                Text(L10n.t("model.add_header", en))
                             }
                         }
                         extraHeaders.forEachIndexed { idx, (hk, hv) ->
@@ -287,7 +287,7 @@ fun UnifiedSettingsSheet(
                                     onValueChange = { v ->
                                         extraHeaders = extraHeaders.toMutableList().also { it[idx] = v to hv }
                                     },
-                                    label = { Text(if (en) "Name" else "名称") },
+                                    label = { Text(L10n.t("common.name", en)) },
                                     singleLine = true,
                                     modifier = Modifier.weight(1f),
                                 )
@@ -296,7 +296,7 @@ fun UnifiedSettingsSheet(
                                     onValueChange = { v ->
                                         extraHeaders = extraHeaders.toMutableList().also { it[idx] = hk to v }
                                     },
-                                    label = { Text(if (en) "Value" else "值") },
+                                    label = { Text(L10n.t("settings.value", en)) },
                                     singleLine = true,
                                     modifier = Modifier.weight(1.2f),
                                 )
@@ -308,39 +308,39 @@ fun UnifiedSettingsSheet(
                             }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (en) "Set as default chat model" else "设为当前默认对话模型", modifier = Modifier.weight(1f))
+                            Text(L10n.t("model.set_as_default_chat_model", en), modifier = Modifier.weight(1f))
                             Switch(checked = activateChat, onCheckedChange = { activateChat = it })
                         }
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (en) "Allow non-loopback HTTP" else "允许非回环 HTTP 明文传输", modifier = Modifier.weight(1f))
+                            Text(L10n.t("settings.allow_non_loopback_http", en), modifier = Modifier.weight(1f))
                             Switch(checked = allowInsecureHttp, onCheckedChange = { allowInsecureHttp = it })
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             FilterChip(
                                 selected = supportsVision,
                                 onClick = { supportsVision = !supportsVision },
-                                label = { Text(if (en) "Vision" else "图文视觉") },
+                                label = { Text(L10n.t("settings.vision", en)) },
                             )
                             FilterChip(
                                 selected = supportsAudio,
                                 onClick = { supportsAudio = !supportsAudio },
-                                label = { Text(if (en) "Audio" else "音频") },
+                                label = { Text(L10n.t("model.audio", en)) },
                             )
                             FilterChip(
                                 selected = supportsVideo,
                                 onClick = { supportsVideo = !supportsVideo },
-                                label = { Text(if (en) "Video" else "视频") },
+                                label = { Text(L10n.t("model.video", en)) },
                             )
                         }
 
                         HorizontalDivider()
                         Text(
-                            if (en) "Per-Modality Model Assignment" else "分模态模型指定（图文 / 音视频可使用不同模型）",
+                            L10n.t("settings.per_modality_model_assignment", en),
                             style = MaterialTheme.typography.labelMedium,
                         )
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                             Text(
-                                if (en) "Enable native audio/video processing" else "允许处理音视频文件",
+                                L10n.t("settings.enable_native_audio_video_processing", en),
                                 modifier = Modifier.weight(1f),
                             )
                             Switch(
@@ -348,13 +348,13 @@ fun UnifiedSettingsSheet(
                                 onCheckedChange = { onSaveMediaRouting(mediaRouting.copy(audioVideoEnabled = it)) },
                             )
                         }
-                        Text(if (en) "Vision (Image/PDF)" else "图文处理模型", style = MaterialTheme.typography.labelSmall)
+                        Text(L10n.t("route.vision_image_pdf", en), style = MaterialTheme.typography.labelSmall)
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             item {
                                 FilterChip(
                                     selected = mediaRouting.visionProfileId.isEmpty(),
                                     onClick = { onSaveMediaRouting(mediaRouting.copy(visionProfileId = "")) },
-                                    label = { Text(if (en) "Auto" else "自动") },
+                                    label = { Text(L10n.t("studio.cfg.level_auto", en)) },
                                 )
                             }
                             items(profiles.filter { it.supportsVision }, key = { "v_${it.id}" }) { p ->
@@ -366,13 +366,13 @@ fun UnifiedSettingsSheet(
                             }
                         }
                         if (mediaRouting.audioVideoEnabled) {
-                            Text(if (en) "Audio" else "音频处理模型", style = MaterialTheme.typography.labelSmall)
+                            Text(L10n.t("route.audio_2", en), style = MaterialTheme.typography.labelSmall)
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 item {
                                     FilterChip(
                                         selected = mediaRouting.audioProfileId.isEmpty(),
                                         onClick = { onSaveMediaRouting(mediaRouting.copy(audioProfileId = "")) },
-                                        label = { Text(if (en) "Auto" else "自动") },
+                                        label = { Text(L10n.t("studio.cfg.level_auto", en)) },
                                     )
                                 }
                                 items(profiles.filter { it.supportsAudio }, key = { "a_${it.id}" }) { p ->
@@ -383,13 +383,13 @@ fun UnifiedSettingsSheet(
                                     )
                                 }
                             }
-                            Text(if (en) "Video" else "视频处理模型", style = MaterialTheme.typography.labelSmall)
+                            Text(L10n.t("route.video_2", en), style = MaterialTheme.typography.labelSmall)
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 item {
                                     FilterChip(
                                         selected = mediaRouting.videoProfileId.isEmpty(),
                                         onClick = { onSaveMediaRouting(mediaRouting.copy(videoProfileId = "")) },
-                                        label = { Text(if (en) "Auto" else "自动") },
+                                        label = { Text(L10n.t("studio.cfg.level_auto", en)) },
                                     )
                                 }
                                 items(profiles.filter { it.supportsVideo }, key = { "vid_${it.id}" }) { p ->
@@ -447,7 +447,7 @@ fun UnifiedSettingsSheet(
                                     onClick = { onTestProfile(selectedProfileId) },
                                     modifier = Modifier.weight(1f),
                                 ) {
-                                    Text(if (en) "Test" else "测试连接")
+                                    Text(L10n.t("settings.test", en))
                                 }
                                 val curKref = profiles.firstOrNull { it.id == selectedProfileId }?.keychainRef.orEmpty()
                                 OutlinedButton(
@@ -455,13 +455,13 @@ fun UnifiedSettingsSheet(
                                     enabled = curKref.isNotEmpty(),
                                     modifier = Modifier.weight(1f),
                                 ) {
-                                    Text(if (en) "Clear Key" else "清除密钥")
+                                    Text(L10n.t("model.clear_key", en))
                                 }
                                 OutlinedButton(
                                     onClick = { onDeleteProfile(selectedProfileId) },
                                     modifier = Modifier.weight(1f),
                                 ) {
-                                    Text(if (en) "Delete" else "删除")
+                                    Text(L10n.t("studio.delete", en))
                                 }
                             }
                         }
@@ -469,13 +469,12 @@ fun UnifiedSettingsSheet(
 
                     3 -> {
                         Text(
-                            if (en) "Semantic search uses a local multilingual embedding model so queries match across phrasings and languages."
-                            else "语义检索使用本地多语言嵌入模型，让不同措辞或跨语言提问都能精准召回相关片段。",
+                            L10n.t("settings.semantic_search_uses_a_local", en),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Button(onClick = onDownloadEmbedding, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (en) "Download & Enable Model" else "下载并启用嵌入模型")
+                            Text(L10n.t("settings.download_enable_model", en))
                         }
                     }
                 }

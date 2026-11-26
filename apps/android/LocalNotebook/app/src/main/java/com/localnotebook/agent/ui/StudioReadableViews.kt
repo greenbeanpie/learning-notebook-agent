@@ -1,5 +1,6 @@
 package com.localnotebook.agent.ui
 
+import com.localnotebook.agent.core.L10n
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -51,7 +52,7 @@ fun ReportReadableView(payload: JSONObject, en: Boolean) {
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(if (en) "Key points" else "核心要点", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Text(L10n.t("readable.key_points", en), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                         MarkdownText(takeaways.joinToString("\n") { "- $it" }, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
@@ -90,12 +91,12 @@ fun QuizReadableView(payload: JSONObject, en: Boolean) {
                         }
                     }
                     TextButton(onClick = { revealed = !revealed }) {
-                        Text(if (revealed) (if (en) "Hide answer" else "隐藏答案") else (if (en) "Show answer" else "显示答案"))
+                        Text(if (revealed) (L10n.t("readable.hide_answer", en)) else (L10n.t("readable.show_answer", en)))
                     }
                     if (revealed) {
                         val accepted = q.optJSONArray("accepted_answers").strings()
                         if (accepted.isNotEmpty()) {
-                            MarkdownText((if (en) "**Answer:** " else "**参考答案：**") + accepted.joinToString(" / "))
+                            MarkdownText((L10n.t("readable.answer", en)) + accepted.joinToString(" / "))
                         }
                         val rubric = q.optString("rubric")
                         if (rubric.isNotBlank()) MarkdownText(rubric, style = MaterialTheme.typography.bodyMedium)
@@ -120,7 +121,7 @@ fun FlashcardsReadableView(payload: JSONObject, en: Boolean) {
     val cards = payload.optJSONArray("cards").objects()
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            if (en) "Tap a card to flip it." else "点按卡片翻面。",
+            L10n.t("readable.tap_a_card_to_flip", en),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -133,7 +134,7 @@ fun FlashcardsReadableView(payload: JSONObject, en: Boolean) {
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        "${i + 1} / ${cards.size} · " + if (flipped) (if (en) "Back" else "背面") else (if (en) "Front" else "正面"),
+                        "${i + 1} / ${cards.size} · " + if (flipped) (L10n.t("readable.back", en)) else (L10n.t("readable.front", en)),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -141,7 +142,7 @@ fun FlashcardsReadableView(payload: JSONObject, en: Boolean) {
                     val hint = card.optString("hint")
                     if (!flipped && hint.isNotBlank()) {
                         MarkdownText(
-                            (if (en) "Hint: " else "提示：") + hint,
+                            (L10n.t("readable.hint", en)) + hint,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             selectable = false,

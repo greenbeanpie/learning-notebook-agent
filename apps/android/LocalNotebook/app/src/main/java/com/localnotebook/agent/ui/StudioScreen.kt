@@ -183,14 +183,14 @@ fun StudioScreen(
         val cfgImages = rememberImageAttachState()
         AlertDialog(
             onDismissRequest = { pendingKind = null },
-            title = { Text(if (en) "Configure ${L10n.t("studio.$kind", en)}" else "生成配置 · ${L10n.t("studio.$kind", en)}") },
+            title = { Text(L10n.t("studio.configure", en).format(L10n.t("studio.$kind", en))) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = topicInput,
                         onValueChange = { topicInput = it },
-                        label = { Text(if (en) "Prompt / Focus & Scope (Optional)" else "生成提示与范围要求（可选）") },
-                        placeholder = { Text(if (en) "e.g. Focus on Chapter 3 key equations..." else "例如：仅关注第三节氧化还原反应与典型方程式…") },
+                        label = { Text(L10n.t("studio.cfg.topic_header", en)) },
+                        placeholder = { Text(L10n.t("studio.e_g_focus_on_chapter", en)) },
                         minLines = 4,
                         maxLines = 6,
                         modifier = Modifier.fillMaxWidth(),
@@ -201,12 +201,12 @@ fun StudioScreen(
                     }
                     AttachStrip(cfgImages, en)
                     if (kind == "mindmap" || kind == "knowledge_graph") {
-                        Text(if (en) "Detail Level" else "详尽程度", style = MaterialTheme.typography.labelMedium)
+                        Text(L10n.t("studio.cfg.detail_header", en), style = MaterialTheme.typography.labelMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf(
-                                "concise" to (if (en) "Concise" else "简洁"),
-                                "standard" to (if (en) "Standard" else "标准"),
-                                "detailed" to (if (en) "Detailed" else "详尽"),
+                                "concise" to (L10n.t("studio.concise", en)),
+                                "standard" to (L10n.t("studio.cfg.qty_standard", en)),
+                                "detailed" to (L10n.t("studio.cfg.level_detailed", en)),
                             ).forEach { (code, lbl) ->
                                 FilterChip(
                                     selected = detailLevel == code,
@@ -222,10 +222,10 @@ fun StudioScreen(
                                 FilterChip(selected = lectureMode == code, onClick = { lectureMode = code }, label = { Text(L10n.t("studio.cfg.lecture_mode_$code", en)) })
                             }
                         }
-                        Text(if (en) "Detail" else "详细程度", style = MaterialTheme.typography.labelMedium)
+                        Text(L10n.t("studio.detail", en), style = MaterialTheme.typography.labelMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf("auto" to "studio.cfg.level_auto", "brief" to "", "standard" to "", "detailed" to "").forEach { (code, key) ->
-                                val lbl = when (code) { "auto" -> L10n.t(key, en); "brief" -> if (en) "Brief" else "简要"; "standard" -> if (en) "Standard" else "标准"; else -> if (en) "Detailed" else "详细" }
+                                val lbl = when (code) { "auto" -> L10n.t(key, en); "brief" -> L10n.t("studio.brief", en); "standard" -> L10n.t("studio.cfg.qty_standard", en); else -> L10n.t("studio.detailed", en) }
                                 FilterChip(selected = detailLevel == code, onClick = { detailLevel = code }, label = { Text(lbl) })
                             }
                         }
@@ -235,12 +235,12 @@ fun StudioScreen(
                         }
                         Text(L10n.t("studio.cfg.lecture_hint", en), style = MaterialTheme.typography.bodySmall)
                     } else if (kind == "report") {
-                        Text(if (en) "Report Depth" else "报告深度", style = MaterialTheme.typography.labelMedium)
+                        Text(L10n.t("studio.report_depth", en), style = MaterialTheme.typography.labelMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf(
-                                "brief" to (if (en) "Brief" else "简明"),
-                                "standard" to (if (en) "Standard" else "标准"),
-                                "deep" to (if (en) "Deep" else "深度"),
+                                "brief" to (L10n.t("studio.brief_2", en)),
+                                "standard" to (L10n.t("studio.cfg.qty_standard", en)),
+                                "deep" to (L10n.t("studio.deep", en)),
                             ).forEach { (code, lbl) ->
                                 FilterChip(
                                     selected = detailLevel == code,
@@ -257,7 +257,7 @@ fun StudioScreen(
                     onCreateStudio(kind, topicInput.trim(), if (kind == "lecture") "$lectureMode|$detailLevel|${if (confirmScope) 1 else 0}" else detailLevel, cfgImages.toJson())
                     pendingKind = null
                 }) {
-                    Text(if (en) "Generate" else "开始生成")
+                    Text(L10n.t("studio.generate", en))
                 }
             },
             dismissButton = {
@@ -307,9 +307,9 @@ private fun ArtifactViewerScreen(
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(artifact.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 val pillText = if (artifact.sourceCount > 0) {
-                    if (en) "View prompt and ${artifact.sourceCount} sources" else "查看提示和 ${artifact.sourceCount} 个来源"
+                    L10n.t("studio.view_prompt_and_sources", en).format(artifact.sourceCount)
                 } else {
-                    if (en) "View prompt" else "查看提示"
+                    L10n.t("studio.view_prompt", en)
                 }
                 OutlinedButton(
                     onClick = { showPromptDialog = true },
@@ -394,7 +394,7 @@ private fun ArtifactViewerScreen(
                             OutlinedTextField(
                                 value = reviseInput,
                                 onValueChange = { reviseInput = it },
-                                placeholder = { Text(if (en) "Revise outline with prompt..." else "输入提示词调整提纲…", fontSize = 12.sp) },
+                                placeholder = { Text(L10n.t("studio.revise_outline_with_prompt", en), fontSize = 12.sp) },
                                 singleLine = true,
                                 modifier = Modifier.weight(1f),
                             )
@@ -411,7 +411,7 @@ private fun ArtifactViewerScreen(
                                     }
                                 },
                             ) {
-                                Text(if (revising) (if (en) "..." else "调整中") else (if (en) "Revise" else "AI 调整"), fontSize = 12.sp)
+                                Text(if (revising) (L10n.t("studio.revising", en)) else (L10n.t("studio.revise", en)), fontSize = 12.sp)
                             }
                         }
                         Button(onClick = { onApproveDraft(draft) }, modifier = Modifier.fillMaxWidth()) {

@@ -174,7 +174,7 @@ private fun ChatMessageCard(
                     .clickable { thoughtsExpanded = !thoughtsExpanded }
                     .padding(vertical = 2.dp),
             ) {
-                Text("Thoughts", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(L10n.t("studio.thoughts", en), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Icon(
                     if (thoughtsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                     contentDescription = null,

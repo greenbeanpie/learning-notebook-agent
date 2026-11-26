@@ -1,5 +1,5 @@
 use crate::attach::{self, AttachBar};
-use crate::i18n::{tr, user_error_advice, UiPreferences};
+use crate::i18n::{tr, user_error_advice, UiPreferences, trf};
 use crate::icons::{studio_icon_image, svg_image, SVG_BRAIN, SVG_CLOSE, SVG_FULLSCREEN, SVG_RING, SVG_SEARCH_DOC};
 use crate::mindmap_view::{build_mindmap_widget, new_memory, ActionFn, SharedMemory};
 use gtk4::prelude::*;
@@ -31,11 +31,7 @@ pub(crate) fn call_core(core: &Arc<CoreRuntime>, method: &str, params: Value) ->
 fn friendly_err(en: bool, err: (String, String)) -> String {
     // a model refused for missing tool calling / structured output says exactly what it lacks
     if err.0 == "CAPABILITY_MISSING" && !err.1.is_empty() {
-        return if en {
-            format!("{} This app only works with models that support tool calling and structured output.", err.1)
-        } else {
-            format!("{} 本应用只支持具备工具调用和结构化输出的模型。", err.1)
-        };
+        return trf(en, "studiocfg.this_app_only_works_with", &[&(err.1)]);
     }
     if let Some(adv) = user_error_advice(en, &err.0) {
         adv.to_string()
@@ -450,7 +446,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             }
             let en = st.is_en();
             let win = gtk4::Window::builder()
-                .title(if en { format!("Generate {k}") } else { format!("生成配置 · {k}") })
+                .title(trf(en, "studiocfg.generate_2", &[&k]))
                 .default_width(480)
                 .default_height(360)
                 .modal(true)
@@ -463,10 +459,8 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
 
             let prompt_lbl = Label::new(Some(if k == "lecture" {
                 tr(en, "studio.cfg.lecture_topic_header")
-            } else if en {
-                "Prompt / Focus & Scope (Optional)"
             } else {
-                "生成提示与范围要求（可选）"
+                tr(en, "studio.cfg.topic_header")
             }));
             prompt_lbl.set_xalign(0.0);
             vbox.append(&prompt_lbl);
@@ -487,26 +481,18 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             vbox.append(&tv_scroll);
 
             let detail_combo = if k == "mindmap" || k == "knowledge_graph" {
-                let dl = Label::new(Some(if en { "Detail Level" } else { "详尽程度" }));
+                let dl = Label::new(Some(tr(en, "studio.cfg.detail_header")));
                 dl.set_xalign(0.0);
                 vbox.append(&dl);
-                let dd = gtk4::DropDown::from_strings(if en {
-                    &["Concise (2-3 levels)", "Standard (3-4 levels)", "Detailed (4-5 levels)"]
-                } else {
-                    &["简洁（2~3 层概览）", "标准（3~4 层均衡）", "详尽（4~5 层细分）"]
-                });
+                let dd = gtk4::DropDown::from_strings(&[tr(en, "studiocfg.mm_concise"), tr(en, "studiocfg.mm_standard"), tr(en, "studiocfg.mm_detailed")]);
                 dd.set_selected(1);
                 vbox.append(&dd);
                 Some(dd)
             } else if k == "report" {
-                let dl = Label::new(Some(if en { "Depth" } else { "报告深度" }));
+                let dl = Label::new(Some(tr(en, "studiocfg.depth")));
                 dl.set_xalign(0.0);
                 vbox.append(&dl);
-                let dd = gtk4::DropDown::from_strings(if en {
-                    &["Brief", "Standard", "Deep"]
-                } else {
-                    &["简明摘要", "标准报告", "深度解析"]
-                });
+                let dd = gtk4::DropDown::from_strings(&[tr(en, "studiocfg.report_brief"), tr(en, "studiocfg.report_standard"), tr(en, "studiocfg.report_deep")]);
                 dd.set_selected(1);
                 vbox.append(&dd);
                 Some(dd)
@@ -526,14 +512,14 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
                     .collect();
                 let mode_dd = gtk4::DropDown::from_strings(&mode_labels);
                 vbox.append(&mode_dd);
-                let dl = Label::new(Some(if en { "Detail" } else { "详细程度" }));
+                let dl = Label::new(Some(tr(en, "studiocfg.detail")));
                 dl.set_xalign(0.0);
                 vbox.append(&dl);
                 let level_dd = gtk4::DropDown::from_strings(&[
                     tr(en, "studio.cfg.level_auto"),
-                    if en { "Brief" } else { "简要" },
-                    if en { "Standard" } else { "标准" },
-                    if en { "Detailed" } else { "详细" },
+                    tr(en, "studiocfg.brief"),
+                    tr(en, "studio.cfg.qty_standard"),
+                    tr(en, "studiocfg.detailed"),
                 ]);
                 vbox.append(&level_dd);
                 let confirm = CheckButton::with_label(tr(en, "studio.cfg.btn_lecture_confirm_scope"));
@@ -562,8 +548,8 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
 
             let actions = GtkBox::new(Orientation::Horizontal, 8);
             actions.set_halign(gtk4::Align::End);
-            let cancel_b = Button::with_label(if en { "Cancel" } else { "取消" });
-            let ok_b = Button::with_label(if en { "Generate" } else { "开始生成" });
+            let cancel_b = Button::with_label(tr(en, "common.cancel"));
+            let ok_b = Button::with_label(tr(en, "studiocfg.generate"));
             ok_b.add_css_class("suggested-action");
             actions.append(&cancel_b);
             actions.append(&ok_b);
@@ -771,11 +757,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             let out_path = out_dir.join("local-notebook-diagnostics.zip");
             if call_core(&st.core, "diagnostics.export", json!({ "output_path": out_path.to_string_lossy() })).is_ok() {
                 let en = st.is_en();
-                st.status_label.set_text(&if en {
-                    format!("Diagnostics exported to {}", out_path.display())
-                } else {
-                    format!("诊断日志已导出至 {}", out_path.display())
-                });
+                st.status_label.set_text(&trf(en, "art.diagnostics_exported_to", &[&(out_path.display())]));
             }
         });
     }
@@ -809,11 +791,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             let out_path = out_dir.join(format!("notebook-{nid}.lna"));
             if call_core(&st.core, "notebook.export", json!({ "notebook_id": nid, "output_path": out_path.to_string_lossy(), "format": "lna" })).is_ok() {
                 let en = st.is_en();
-                st.status_label.set_text(&if en {
-                    format!("Exported to {}", out_path.display())
-                } else {
-                    format!("已导出至 {}", out_path.display())
-                });
+                st.status_label.set_text(&trf(en, "art.exported_to", &[&(out_path.display())]));
             }
         });
     }
@@ -828,11 +806,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             let out_path = out_dir.join(format!("notebook-{nid}.md"));
             if call_core(&st.core, "notebook.export", json!({ "notebook_id": nid, "output_path": out_path.to_string_lossy(), "format": "markdown" })).is_ok() {
                 let en = st.is_en();
-                st.status_label.set_text(&if en {
-                    format!("Exported to {}", out_path.display())
-                } else {
-                    format!("已导出至 {}", out_path.display())
-                });
+                st.status_label.set_text(&trf(en, "art.exported_to", &[&(out_path.display())]));
             }
         });
     }
@@ -1323,7 +1297,7 @@ fn refresh_all(st: &Rc<UiState>) {
                             t_btn.add_css_class("lna-thoughts-btn");
                             let t_hdr = GtkBox::new(Orientation::Horizontal, 6);
                             t_hdr.append(&svg_image(SVG_RING, 14));
-                            t_hdr.append(&Label::new(Some("Thoughts")));
+                            t_hdr.append(&Label::new(Some(tr(en, "studio.thoughts"))));
                             t_btn.set_child(Some(&t_hdr));
                             t_btn.set_halign(gtk4::Align::Start);
 
@@ -1512,7 +1486,7 @@ impl LiveView {
         self.preview_host.append(&widget);
         if !self.preview_added {
             self.preview_added = true;
-            self.tabs.add_titled(&self.preview_host, Some("preview"), if self.en { "Preview" } else { "预览" });
+            self.tabs.add_titled(&self.preview_host, Some("preview"), tr(self.en, "art.tab_preview"));
             self.switcher.set_visible(true);
         }
         self.last_preview = Some(pv);
@@ -1624,7 +1598,7 @@ fn start_event_pump(st: &Rc<UiState>) {
                             let pct = (d.get("progress").and_then(Value::as_f64).unwrap_or(0.0) * 100.0).round() as i32;
                             live.stage_lbl.set_text(&format!(
                                 "{} · {} ({pct}%)",
-                                if live.en { "AI Workflow in Progress" } else { "AI 正在执行工作流" },
+                                tr(live.en, "art.ai_workflow_in_progress"),
                                 stage
                             ));
                         }
@@ -1697,11 +1671,7 @@ fn set_card_body(c: &mut LiveCard, body: &str, en: bool) {
         b.set_selectable(true);
         b.add_css_class("lna-muted");
         if c.reasoning {
-            let more = Button::with_label(if en {
-                "... earlier text omitted - click to load the full text"
-            } else {
-                "…前文已省略，点击查看完整内容"
-            });
+            let more = Button::with_label(tr(en, "art.earlier_text_omitted_click_to"));
             more.add_css_class("lna-pill-btn");
             more.set_halign(gtk4::Align::Start);
             more.set_visible(false);
@@ -1735,10 +1705,10 @@ fn build_thought_card(t: &Value, en: bool) -> (GtkBox, LiveCard) {
     let card = GtkBox::new(Orientation::Vertical, 4);
     card.add_css_class("lna-card");
     let tag = match kind {
-        "tool" => if en { "[Tool] " } else { "[工具调用] " },
-        "reasoning" => if en { "[Thinking] " } else { "[思考总结] " },
-        "error" => if en { "[Error] " } else { "[错误] " },
-        _ => if en { "[Step] " } else { "[步骤] " },
+        "tool" => tr(en, "art.tool"),
+        "reasoning" => tr(en, "art.thinking"),
+        "error" => tr(en, "art.error"),
+        _ => tr(en, "art.step"),
     };
     let head_text = format!("{tag}{title}");
     let body_box = GtkBox::new(Orientation::Vertical, 4);
@@ -1771,7 +1741,7 @@ fn build_thought_card(t: &Value, en: bool) -> (GtkBox, LiveCard) {
 /// so streaming events can update them.
 fn build_thoughts_panel(art: &Value, en: bool, running: bool, mut live: Option<&mut LiveCards>) -> GtkBox {
     let box_w = GtkBox::new(Orientation::Vertical, 6);
-    let hdr = Label::new(Some(if en { "Execution Process" } else { "执行过程" }));
+    let hdr = Label::new(Some(tr(en, "art.thoughts_header")));
     hdr.set_xalign(0.0);
     hdr.add_css_class("lna-muted");
     box_w.append(&hdr);
@@ -1785,21 +1755,13 @@ fn build_thoughts_panel(art: &Value, en: bool, running: bool, mut live: Option<&
         })
         .unwrap_or_default();
     if !running && !items.iter().any(|t| t.get("kind").and_then(Value::as_str) == Some("reasoning")) {
-        let note = Label::new(Some(if en {
-            "This model did not provide a chain of thought"
-        } else {
-            "该模型未提供思维链"
-        }));
+        let note = Label::new(Some(tr(en, "art.no_reasoning_note")));
         note.set_xalign(0.0);
         note.add_css_class("lna-muted");
         box_w.append(&note);
     }
     if items.is_empty() {
-        let empty = Label::new(Some(if en {
-            "Waiting for AI workflow steps..."
-        } else {
-            "正在等待 AI 工作步骤与思考记录…"
-        }));
+        let empty = Label::new(Some(tr(en, "art.waiting_for_ai_workflow_steps")));
         empty.set_xalign(0.0);
         empty.add_css_class("lna-muted");
         box_w.append(&empty);
@@ -1838,13 +1800,9 @@ fn build_prompt_sources_button(st: &Rc<UiState>, art: &Value, artifact_id: &str)
     };
 
     let pill_label = if src_count > 0 {
-        if en {
-            format!("View prompt and {src_count} sources")
-        } else {
-            format!("查看提示和 {src_count} 个来源")
-        }
+        trf(en, "studio.view_prompt_sources", &[&src_count])
     } else {
-        if en { "View prompt".to_string() } else { "查看提示".to_string() }
+        tr(en, "studio.view_prompt").to_string()
     };
 
     let btn = MenuButton::builder().label(&pill_label).build();
@@ -2000,7 +1958,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
     let kind = art.get("artifact_type").and_then(Value::as_str).unwrap_or("");
 
     if status == "READY" && art.get("thoughts").and_then(Value::as_array).map(|a| !a.is_empty()).unwrap_or(false) {
-        let exp = Expander::new(Some(if en { "AI Workflow & Thoughts" } else { "查看 AI 工具调用与思考过程" }));
+        let exp = Expander::new(Some(tr(en, "art.ai_workflow_thoughts")));
         let list = build_thoughts_panel(&art, en, false, None);
         exp.set_child(Some(&ScrolledWindow::builder().child(&list).min_content_height(160).max_content_height(280).build()));
         st.studio_detail_box.append(&exp);
@@ -2012,7 +1970,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         let pct = (art.get("progress").and_then(Value::as_f64).unwrap_or(0.0) * 100.0).round() as i32;
         let hdr_lbl = Label::new(Some(&format!(
             "{} · {} ({pct}%)",
-            if en { "AI Workflow in Progress" } else { "AI 正在执行工作流" },
+            tr(en, "art.ai_workflow_in_progress"),
             stage
         )));
         hdr_lbl.set_xalign(0.0);
@@ -2023,7 +1981,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         // Unvalidated preview of the in-progress artifact: a second tab, only once a preview exists.
         let tabs = Stack::new();
         tabs.set_vexpand(true);
-        tabs.add_titled(&process_view, Some("process"), if en { "Process" } else { "过程" });
+        tabs.add_titled(&process_view, Some("process"), tr(en, "art.tab_process"));
         let switcher = gtk4::StackSwitcher::new();
         switcher.set_stack(Some(&tabs));
         switcher.set_halign(gtk4::Align::Start);
@@ -2061,7 +2019,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         // Text streamed before this (re-)fetch that the stored bodies do not hold yet.
         live.flush_thoughts(&st.thought_streams.borrow());
         *st.live.borrow_mut() = Some(live);
-        let refresh_btn = Button::with_label(if en { "Refresh Progress" } else { "刷新实时进度" });
+        let refresh_btn = Button::with_label(tr(en, "art.refresh_progress"));
         refresh_btn.add_css_class("lna-pill-btn");
         refresh_btn.set_halign(gtk4::Align::Start);
         let st_ref = st.clone();
@@ -2145,11 +2103,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         });
         let rev_row = GtkBox::new(Orientation::Horizontal, 6);
         let rev_entry = Entry::builder()
-            .placeholder_text(if en {
-                "Enter revision prompt to refine outline..."
-            } else {
-                "输入调整要求（如：拆分第3部分、补充案例），可反复让 AI 调整…"
-            })
+            .placeholder_text(tr(en, "art.enter_revision_prompt_to_refine"))
             .hexpand(true)
             .build();
         let rev_bar = {
@@ -2161,7 +2115,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
                 Rc::new(move |m| status_c.set_text(m)),
             )
         };
-        let rev_btn = Button::with_label(if en { "Revise with AI" } else { "AI 调整提纲" });
+        let rev_btn = Button::with_label(tr(en, "art.outline_revise_btn"));
         rev_btn.add_css_class("lna-pill-btn");
         let st_rv = st.clone();
         let aid_rv = artifact_id.to_string();
@@ -2211,7 +2165,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
                 let en = st_link.is_en();
                 st_link.status_label.set_text(&format!(
                     "{}{concept}",
-                    if en { "Refining: " } else { "正在细化：" }
+                    tr(en, "art.refining")
                 ));
                 let (tx, rx) = std::sync::mpsc::channel();
                 let core = st_link.core.clone();
@@ -2230,19 +2184,11 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
                     let msg = match res {
                         Ok(r) if r.get("refined").and_then(Value::as_bool) == Some(true) => {
                             let added = r.get("added").and_then(Value::as_u64).unwrap_or(0);
-                            if en {
-                                format!("Added {added} finer point(s) under \"{label}\"")
-                            } else {
-                                format!("已为「{label}」追加 {added} 个更细的子知识点")
-                            }
+                            trf(en, "art.added_finer_point_s_under", &[&added, &label])
                         }
                         Ok(r) => {
                             let reason = r.get("reason").and_then(Value::as_str).unwrap_or("");
-                            let head = if en {
-                                format!("\"{label}\" is already a minimal concept")
-                            } else {
-                                format!("「{label}」已是最小知识点")
-                            };
+                            let head = trf(en, "art.is_already_a_minimal_concept", &[&label]);
                             if reason.is_empty() { head } else { format!("{head} — {reason}") }
                         }
                         Err(e) => friendly_err(en, e),
@@ -2380,17 +2326,8 @@ fn open_privacy_dialog(parent: &ApplicationWindow, en: bool) {
     bx.set_margin_bottom(18);
     bx.set_margin_start(18);
     bx.set_margin_end(18);
-    let body = Label::new(Some(if en {
-        "• All notebooks, sources, embeddings, and chat history are stored locally on this device.\n\
-         • API keys are stored in the system keyring (Secret Service).\n\
-         • Only queries and selected excerpts sent during chat or Studio generation leave your device to your configured AI endpoint.\n\
-         • Local semantic search embeddings run completely offline."
-    } else {
-        "• 所有笔记本、来源资料、本地向量索引与对话记录均存储在本地设备。\n\
-         • API Key 保存在系统密钥环（Secret Service）中。\n\
-         • 仅在发起对话、Studio 生成或使用云端视觉/音视频模型时，相关内容会发送至你配置的 AI 接口。\n\
-         • 本地语义检索嵌入模型完全离线运行，不上传任何数据。"
-    }));
+    let privacy_text = [tr(en, "privacy.line_local"), tr(en, "privacy.line_keys"), tr(en, "privacy.line_send"), tr(en, "privacy.line_embed")].join("\n");
+    let body = Label::new(Some(privacy_text.as_str()));
     body.set_wrap(true);
     body.set_xalign(0.0);
     let close_btn = Button::with_label(tr(en, "studio.close"));
@@ -2433,27 +2370,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     });
 
     let theme_ids = ["dark", "light", "system", "midnight", "forest", "warm_paper", "rose_dusk"];
-    let theme_labels = if en {
-        [
-            "Obsidian Dark (Default)",
-            "Paper Light",
-            "Follow System",
-            "Midnight Indigo",
-            "Nordic Forest",
-            "Warm Parchment",
-            "Rose Dusk",
-        ]
-    } else {
-        [
-            "黑曜深色（默认）",
-            "纸感浅色",
-            "跟随系统",
-            "午夜靛蓝",
-            "北欧森绿",
-            "暖纸羊皮",
-            "暮色蔷薇",
-        ]
-    };
+    let theme_labels = [tr(en, "settings.theme_dark"), tr(en, "settings.theme_light"), tr(en, "settings.theme_system"), tr(en, "settings.theme_midnight"), tr(en, "settings.theme_forest"), tr(en, "settings.theme_warm_paper"), tr(en, "settings.theme_rose_dusk")];
     let theme_dd = DropDown::new(
         Some(StringList::new(&theme_labels)),
         None::<gtk4::Expression>,
@@ -2519,7 +2436,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
 
     let studio_lang_dd = DropDown::new(
         Some(StringList::new(&[
-            if en { "Follow UI language" } else { "跟随界面语言" },
+            tr(en, "settings.follow_ui_language"),
             "简体中文",
             "English",
         ])),
@@ -2533,8 +2450,8 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
 
     let quiz_view_dd = DropDown::new(
         Some(StringList::new(&[
-            if en { "Continuous scroll" } else { "连续滚动显示" },
-            if en { "One question at a time" } else { "逐题展示" },
+            tr(en, "settings.continuous_scroll"),
+            tr(en, "settings.one_question_at_a_time"),
         ])),
         None::<gtk4::Expression>,
     );
@@ -2542,8 +2459,8 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
 
     let quiz_submit_dd = DropDown::new(
         Some(StringList::new(&[
-            if en { "Manual submit" } else { "手动提交答案" },
-            if en { "Auto check on select" } else { "选择即自动判题" },
+            tr(en, "settings.manual_submit"),
+            tr(en, "settings.auto_check_on_select"),
         ])),
         None::<gtk4::Expression>,
     );
@@ -2644,9 +2561,9 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     gen_box.append(&sug_row);
     gen_box.append(&Label::new(Some(tr(en, "settings.default_studio_lang"))));
     gen_box.append(&studio_lang_dd);
-    gen_box.append(&Label::new(Some(if en { "Quiz view mode" } else { "测验显示方式" })));
+    gen_box.append(&Label::new(Some(tr(en, "settings.quiz_view_mode"))));
     gen_box.append(&quiz_view_dd);
-    gen_box.append(&Label::new(Some(if en { "Quiz submit mode" } else { "测验提交方式" })));
+    gen_box.append(&Label::new(Some(tr(en, "settings.quiz_submit_mode"))));
     gen_box.append(&quiz_submit_dd);
     gen_box.append(&gen_extra_row);
     gen_box.append(&save_prefs_btn);
@@ -2668,11 +2585,11 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let current_keychain_ref: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
 
     let profile_row = GtkBox::new(Orientation::Horizontal, 8);
-    let profile_dd = DropDown::from_strings(&[if en { "— New Profile —" } else { "— 新建配置 —" }]);
+    let profile_dd = DropDown::from_strings(&[tr(en, "model.new_profile")]);
     profile_dd.set_hexpand(true);
-    let new_prof_btn = Button::with_label(if en { "New" } else { "新建" });
+    let new_prof_btn = Button::with_label(tr(en, "model.new"));
     new_prof_btn.add_css_class("lna-pill-btn");
-    let del_prof_btn = Button::with_label(if en { "Delete" } else { "删除" });
+    let del_prof_btn = Button::with_label(tr(en, "studio.delete"));
     del_prof_btn.add_css_class("lna-pill-btn");
     profile_row.append(&profile_dd);
     profile_row.append(&new_prof_btn);
@@ -2690,13 +2607,13 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         .build();
     let model_row = GtkBox::new(Orientation::Horizontal, 8);
     let model_entry = Entry::builder().placeholder_text("Model ID").hexpand(true).build();
-    let discover_btn = Button::with_label(if en { "Fetch Models" } else { "获取模型列表" });
+    let discover_btn = Button::with_label(tr(en, "model.fetch_models"));
     discover_btn.add_css_class("lna-pill-btn");
     model_row.append(&model_entry);
     model_row.append(&discover_btn);
 
     let discovered_models: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-    let discovered_dd = DropDown::from_strings(&[if en { "Discovered models..." } else { "已获取的模型列表…" }]);
+    let discovered_dd = DropDown::from_strings(&[tr(en, "model.discovered_models")]);
     discovered_dd.set_visible(false);
 
     let key_entry = Entry::builder()
@@ -2706,7 +2623,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
 
     let insecure_http_sw = Switch::new();
     let insecure_row = GtkBox::new(Orientation::Horizontal, 8);
-    let insecure_lbl = Label::new(Some(if en { "Allow non-loopback HTTP" } else { "允许非回环 HTTP 明文传输" }));
+    let insecure_lbl = Label::new(Some(tr(en, "model.allow_non_loopback_http")));
     insecure_lbl.set_hexpand(true);
     insecure_lbl.set_xalign(0.0);
     insecure_row.append(&insecure_lbl);
@@ -2715,34 +2632,34 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let active_chat_sw = Switch::new();
     active_chat_sw.set_active(true);
     let active_row = GtkBox::new(Orientation::Horizontal, 8);
-    let active_lbl = Label::new(Some(if en { "Set as default chat model" } else { "设为当前默认对话模型" }));
+    let active_lbl = Label::new(Some(tr(en, "model.set_as_default_chat_model")));
     active_lbl.set_hexpand(true);
     active_lbl.set_xalign(0.0);
     active_row.append(&active_lbl);
     active_row.append(&active_chat_sw);
 
     let mod_row = GtkBox::new(Orientation::Horizontal, 14);
-    let vision_chk = CheckButton::with_label(if en { "Vision (images/PDF)" } else { "图文视觉" });
-    let audio_chk = CheckButton::with_label(if en { "Audio" } else { "音频" });
-    let video_chk = CheckButton::with_label(if en { "Video" } else { "视频" });
+    let vision_chk = CheckButton::with_label(tr(en, "model.vision_images_pdf"));
+    let audio_chk = CheckButton::with_label(tr(en, "model.audio"));
+    let video_chk = CheckButton::with_label(tr(en, "model.video"));
     mod_row.append(&vision_chk);
     mod_row.append(&audio_chk);
     mod_row.append(&video_chk);
 
     // Advanced Options Expander
-    let adv_exp = Expander::new(Some(if en { "Advanced Options" } else { "高级选项" }));
+    let adv_exp = Expander::new(Some(tr(en, "model.advanced_options")));
     let adv_box = GtkBox::new(Orientation::Vertical, 8);
     let thinking_sw = Switch::new();
     thinking_sw.set_active(true);
     let thinking_row = GtkBox::new(Orientation::Horizontal, 8);
-    let thinking_lbl = Label::new(Some(if en { "Show thinking process" } else { "显示模型思考过程" }));
+    let thinking_lbl = Label::new(Some(tr(en, "model.show_thinking_process")));
     thinking_lbl.set_hexpand(true);
     thinking_lbl.set_xalign(0.0);
     thinking_row.append(&thinking_lbl);
     thinking_row.append(&thinking_sw);
 
     let effort_ids = ["", "low", "medium", "high"];
-    let effort_dd = DropDown::from_strings(&[if en { "Default" } else { "默认" }, "low", "medium", "high"]);
+    let effort_dd = DropDown::from_strings(&[tr(en, "tts.default_voice"), "low", "medium", "high"]);
     let ctx_entry = Entry::builder().text("32000").placeholder_text("Context Window").build();
     let out_entry = Entry::builder().text("8000").placeholder_text("Max Output Tokens").build();
     let price_in_entry = Entry::builder().placeholder_text("Input price ($/1M)").build();
@@ -2751,18 +2668,18 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let extra_headers_rows: Rc<RefCell<Vec<(Entry, Entry)>>> = Rc::new(RefCell::new(Vec::new()));
     let headers_list = GtkBox::new(Orientation::Vertical, 6);
     let headers_hdr = GtkBox::new(Orientation::Horizontal, 8);
-    let headers_lbl = Label::new(Some(if en { "Extra Headers" } else { "额外请求头" }));
+    let headers_lbl = Label::new(Some(tr(en, "model.extra_headers")));
     headers_lbl.set_hexpand(true);
     headers_lbl.set_xalign(0.0);
-    let add_hdr_btn = Button::with_label(if en { "+ Add Header" } else { "+ 添加请求头" });
+    let add_hdr_btn = Button::with_label(tr(en, "model.add_header"));
     add_hdr_btn.add_css_class("lna-pill-btn");
     let rows_add = extra_headers_rows.clone();
     let list_add = headers_list.clone();
     add_hdr_btn.connect_clicked(move |_| {
         let row_box = GtkBox::new(Orientation::Horizontal, 6);
-        let k_ent = Entry::builder().placeholder_text(if en { "Header name" } else { "请求头名称" }).hexpand(true).build();
-        let v_ent = Entry::builder().placeholder_text(if en { "Value" } else { "请求头值" }).hexpand(true).build();
-        let del_btn = Button::with_label(if en { "Delete" } else { "删除" });
+        let k_ent = Entry::builder().placeholder_text(tr(en, "model.header_name")).hexpand(true).build();
+        let v_ent = Entry::builder().placeholder_text(tr(en, "model.value")).hexpand(true).build();
+        let del_btn = Button::with_label(tr(en, "studio.delete"));
         del_btn.add_css_class("lna-pill-btn");
         row_box.append(&k_ent);
         row_box.append(&v_ent);
@@ -2781,9 +2698,9 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     headers_hdr.append(&add_hdr_btn);
 
     adv_box.append(&thinking_row);
-    adv_box.append(&Label::new(Some(if en { "Reasoning Effort" } else { "推理强度" })));
+    adv_box.append(&Label::new(Some(tr(en, "model.reasoning_effort"))));
     adv_box.append(&effort_dd);
-    adv_box.append(&Label::new(Some(if en { "Context Window / Max Output Tokens" } else { "上下文窗口 / 最大输出 Token" })));
+    adv_box.append(&Label::new(Some(tr(en, "model.context_window_max_output_tokens"))));
     adv_box.append(&ctx_entry);
     adv_box.append(&out_entry);
     adv_box.append(&price_in_entry);
@@ -2796,11 +2713,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let media_card = GtkBox::new(Orientation::Vertical, 8);
     media_card.add_css_class("lna-card");
     let av_row = GtkBox::new(Orientation::Horizontal, 8);
-    let av_lbl = Label::new(Some(if en {
-        "Enable native audio/video processing"
-    } else {
-        "允许处理音视频文件（直接交给原生支持音视频的 AI 处理）"
-    }));
+    let av_lbl = Label::new(Some(tr(en, "route.enable_native_audio_video_processing")));
     av_lbl.set_hexpand(true);
     av_lbl.set_xalign(0.0);
     av_lbl.set_wrap(true);
@@ -2818,20 +2731,20 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let vision_prof_ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![String::new()]));
     let audio_prof_ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![String::new()]));
     let video_prof_ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![String::new()]));
-    let vision_mod_dd = DropDown::from_strings(&[if en { "Auto (prefer default chat)" } else { "自动（优先默认对话模型）" }]);
-    let audio_mod_dd = DropDown::from_strings(&[if en { "Auto (prefer default chat)" } else { "自动（优先默认对话模型）" }]);
-    let video_mod_dd = DropDown::from_strings(&[if en { "Auto (prefer default chat)" } else { "自动（优先默认对话模型）" }]);
+    let vision_mod_dd = DropDown::from_strings(&[tr(en, "route.auto_prefer_default_chat")]);
+    let audio_mod_dd = DropDown::from_strings(&[tr(en, "route.auto_prefer_default_chat")]);
+    let video_mod_dd = DropDown::from_strings(&[tr(en, "route.auto_prefer_default_chat")]);
     let routing_summary_lbl = Label::new(None);
     routing_summary_lbl.set_xalign(0.0);
     routing_summary_lbl.set_wrap(true);
     routing_summary_lbl.add_css_class("lna-muted");
 
     media_card.append(&av_row);
-    media_card.append(&Label::new(Some(if en { "Vision (Image/PDF)" } else { "图文处理模型" })));
+    media_card.append(&Label::new(Some(tr(en, "route.vision_image_pdf"))));
     media_card.append(&vision_mod_dd);
-    media_card.append(&Label::new(Some(if en { "Audio" } else { "音频处理模型" })));
+    media_card.append(&Label::new(Some(tr(en, "route.audio_2"))));
     media_card.append(&audio_mod_dd);
-    media_card.append(&Label::new(Some(if en { "Video" } else { "视频处理模型" })));
+    media_card.append(&Label::new(Some(tr(en, "route.video_2"))));
     media_card.append(&video_mod_dd);
     media_card.append(&routing_summary_lbl);
 
@@ -2843,9 +2756,9 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let model_actions = GtkBox::new(Orientation::Horizontal, 8);
     let save_model_btn = Button::with_label(tr(en, "settings.save"));
     save_model_btn.add_css_class("lna-primary-btn");
-    let test_model_btn = Button::with_label(if en { "Test Connection" } else { "测试连接" });
+    let test_model_btn = Button::with_label(tr(en, "model.test_connection"));
     test_model_btn.add_css_class("lna-pill-btn");
-    let clear_key_btn = Button::with_label(if en { "Clear Key" } else { "清除密钥" });
+    let clear_key_btn = Button::with_label(tr(en, "model.clear_key"));
     clear_key_btn.add_css_class("lna-pill-btn");
     model_actions.append(&save_model_btn);
     model_actions.append(&test_model_btn);
@@ -2855,11 +2768,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         .ok()
         .and_then(|v| v.get("presets").and_then(Value::as_array).cloned())
         .unwrap_or_default();
-    let mut preset_labels: Vec<String> = vec![if en {
-        "— Select Provider Preset —".into()
-    } else {
-        "— 选择 AI 提供商预设（快速填充）—".into()
-    }];
+    let mut preset_labels: Vec<String> = vec![tr(en, "model.select_provider_preset").into()];
     for pr in &presets_val {
         let lbl = if en {
             pr.get("name_en").and_then(Value::as_str)
@@ -2895,7 +2804,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
             audio_mod_dd.set_sensitive(av_on);
             video_mod_dd.set_sensitive(av_on);
 
-            let auto_lbl = if en { "Auto (prefer default chat)" } else { "自动（优先默认对话模型）" };
+            let auto_lbl = tr(en, "route.auto_prefer_default_chat");
             let profs = profiles_state.borrow();
             let fill_dd = |dd: &DropDown, ids_rc: &Rc<RefCell<Vec<String>>>, cap: &str, selected_id: &str| {
                 let mut labels = vec![auto_lbl.to_string()];
@@ -2917,7 +2826,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
             fill_dd(&video_mod_dd, &video_prof_ids, "supports_video", &vidp);
 
             let chat_m = profs.iter().find(|p| p.get("is_active").and_then(Value::as_bool).unwrap_or(false));
-            let chat_name = chat_m.and_then(|p| p.get("display_name").and_then(Value::as_str)).unwrap_or(if en { "Not configured" } else { "未配置" });
+            let chat_name = chat_m.and_then(|p| p.get("display_name").and_then(Value::as_str)).unwrap_or(tr(en, "route.not_configured"));
             let pick_mod = |exp_id: &str, cap: &str, empty_lbl: &str| -> String {
                 if !exp_id.is_empty() {
                     if let Some(m) = profs.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(exp_id) && p.pointer(&format!("/capabilities/{cap}")).and_then(Value::as_bool).unwrap_or(false)) {
@@ -2935,23 +2844,17 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                     .unwrap_or(empty_lbl)
                     .to_string()
             };
-            let summary = if en {
-                format!(
-                    "Current model routing:\n• Chat: {}\n• Vision: {}\n• Audio: {}\n• Video: {}",
-                    chat_name,
-                    pick_mod(&vp, "supports_vision", "None (local OCR fallback)"),
-                    if av_on { pick_mod(&ap, "supports_audio", "Not assigned") } else { "Disabled".into() },
-                    if av_on { pick_mod(&vidp, "supports_video", "Not assigned") } else { "Disabled".into() },
-                )
-            } else {
-                format!(
-                    "当前多模型分配：\n• 默认对话：{}\n• 图文处理：{}\n• 音频处理：{}\n• 视频处理：{}",
-                    chat_name,
-                    pick_mod(&vp, "supports_vision", "未指定（将尝试本地 OCR）"),
-                    if av_on { pick_mod(&ap, "supports_audio", "未指定") } else { "已关闭".into() },
-                    if av_on { pick_mod(&vidp, "supports_video", "未指定") } else { "已关闭".into() },
-                )
-            };
+            let route_off = tr(en, "route.disabled");
+            let summary = trf(
+                en,
+                "route.summary",
+                &[
+                    &chat_name,
+                    &pick_mod(&vp, "supports_vision", tr(en, "route.vision_none")),
+                    &(if av_on { pick_mod(&ap, "supports_audio", tr(en, "route.unassigned")) } else { route_off.to_string() }),
+                    &(if av_on { pick_mod(&vidp, "supports_video", tr(en, "route.unassigned")) } else { route_off.to_string() }),
+                ],
+            );
             routing_summary_lbl.set_text(&summary);
         }
     };
@@ -3048,7 +2951,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                         let row_box = GtkBox::new(Orientation::Horizontal, 6);
                         let k_ent = Entry::builder().text(hk).hexpand(true).build();
                         let v_ent = Entry::builder().text(hv.as_str().unwrap_or("")).hexpand(true).build();
-                        let del_btn = Button::with_label(if en { "Delete" } else { "删除" });
+                        let del_btn = Button::with_label(tr(en, "studio.delete"));
                         del_btn.add_css_class("lna-pill-btn");
                         row_box.append(&k_ent);
                         row_box.append(&v_ent);
@@ -3066,9 +2969,9 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 }
                 let has_sec = p.get("has_secret").and_then(Value::as_bool).unwrap_or(false);
                 model_status_lbl.set_text(if has_sec {
-                    if en { "Key status: saved in system keyring." } else { "密钥状态：已保存在系统密钥环。" }
+                    tr(en, "model.key_status_saved_in_system")
                 } else {
-                    if en { "Key status: not saved." } else { "密钥状态：未保存。" }
+                    tr(en, "model.key_status_not_saved")
                 });
             } else {
                 *current_profile_id.borrow_mut() = None;
@@ -3087,11 +2990,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 out_entry.set_text("8000");
                 price_in_entry.set_text("");
                 price_out_entry.set_text("");
-                model_status_lbl.set_text(if en {
-                    "Editing new profile. Choose a preset or fill in details and save."
-                } else {
-                    "正在编辑新配置，可选择预设或手动填写后保存。"
-                });
+                model_status_lbl.set_text(tr(en, "model.editing_new_profile_choose_a"));
             }
         }
     };
@@ -3107,18 +3006,18 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 .ok()
                 .and_then(|v| v.get("profiles").and_then(Value::as_array).cloned())
                 .unwrap_or_default();
-            let mut labels = vec![if en { "— New Profile —".to_string() } else { "— 新建配置 —".to_string() }];
+            let mut labels = vec![tr(en, "model.new_profile").to_string()];
             let mut target_idx = 0usize;
             for (i, p) in profs.iter().enumerate() {
                 let id = p.get("id").and_then(Value::as_str).unwrap_or("");
                 let name = p.get("display_name").and_then(Value::as_str).unwrap_or("");
                 let act = if p.get("is_active").and_then(Value::as_bool).unwrap_or(false) {
-                    if en { " (Default)" } else { "（默认对话）" }
+                    tr(en, "model.default")
                 } else {
                     ""
                 };
                 let disabled = if p.get("eligible").and_then(Value::as_bool) == Some(false) {
-                    if en { " (unsupported, disabled)" } else { "（不支持，已停用）" }
+                    tr(en, "model.disabled_tag")
                 } else {
                     ""
                 };
@@ -3228,7 +3127,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                         .text(hv.as_str().unwrap_or(""))
                         .hexpand(true)
                         .build();
-                    let del_btn = Button::with_label(if en { "Delete" } else { "删除" });
+                    let del_btn = Button::with_label(tr(en, "studio.delete"));
                     del_btn.add_css_class("lna-pill-btn");
                     row_box.append(&k_ent);
                     row_box.append(&v_ent);
@@ -3278,11 +3177,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                     let refs: Vec<&str> = list.iter().map(String::as_str).collect();
                     discovered_dd.set_model(Some(&StringList::new(&refs)));
                     discovered_dd.set_visible(!list.is_empty());
-                    model_status_lbl.set_text(&if en {
-                        format!("Found {} models.", list.len())
-                    } else {
-                        format!("找到 {} 个模型。", list.len())
-                    });
+                    model_status_lbl.set_text(&trf(en, "model.found_models", &[&(list.len())]));
                     *discovered_models.borrow_mut() = list;
                 }
                 Err(e) => model_status_lbl.set_text(&friendly_err(en, e)),
@@ -3299,15 +3194,15 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         });
     }
 
-    model_box.append(&Label::new(Some(if en { "Saved Profiles" } else { "已保存的配置" })));
+    model_box.append(&Label::new(Some(tr(en, "model.saved_profiles"))));
     model_box.append(&profile_row);
-    model_box.append(&Label::new(Some(if en { "Provider Preset" } else { "AI 提供商预设" })));
+    model_box.append(&Label::new(Some(tr(en, "model.provider_preset"))));
     model_box.append(&preset_dd);
-    model_box.append(&Label::new(Some(if en { "Protocol" } else { "协议" })));
+    model_box.append(&Label::new(Some(tr(en, "model.protocol"))));
     model_box.append(&proto_dd);
-    model_box.append(&Label::new(Some("Base URL")));
+    model_box.append(&Label::new(Some(tr(en, "model.base_url"))));
     model_box.append(&url_entry);
-    model_box.append(&Label::new(Some("Model ID")));
+    model_box.append(&Label::new(Some(tr(en, "model.model_id"))));
     model_box.append(&model_row);
     model_box.append(&discovered_dd);
     model_box.append(&Label::new(Some("API Key")));
@@ -3396,13 +3291,13 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let model_status_lbl = model_status_lbl.clone();
         test_model_btn.connect_clicked(move |_| {
             let Some(pid) = current_profile_id.borrow().clone() else {
-                model_status_lbl.set_text(if en { "Save profile first." } else { "请先保存配置。" });
+                model_status_lbl.set_text(tr(en, "model.save_profile_first"));
                 return;
             };
             match call_core(&core, "profile.test", json!({ "profile_id": pid })) {
                 Ok(res) => {
                     let reply = res.get("reply").and_then(Value::as_str).unwrap_or("OK");
-                    model_status_lbl.set_text(&if en { format!("Connected: {reply}") } else { format!("连接成功：{reply}") });
+                    model_status_lbl.set_text(&trf(en, "model.connected", &[&reply]));
                 }
                 Err(e) => model_status_lbl.set_text(&friendly_err(en, e)),
             }
@@ -3418,7 +3313,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 return;
             }
             if call_core(&core, "secret.clear", json!({ "keychain_ref": kref })).is_ok() {
-                model_status_lbl.set_text(if en { "API key cleared." } else { "密钥已清除。" });
+                model_status_lbl.set_text(tr(en, "model.api_key_cleared"));
             }
         });
     }
@@ -3435,24 +3330,18 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let active = es.get("active").and_then(Value::as_bool).unwrap_or(false);
         let ready = es.get("ready_chunks").and_then(Value::as_i64).unwrap_or(0);
         let total = es.get("total_chunks").and_then(Value::as_i64).unwrap_or(0);
-        if en {
-            format!("Status: {} ({ready}/{total} chunks indexed)", if active { "Enabled" } else { "Not enabled" })
-        } else {
-            format!("状态：{}（已索引 {ready}/{total} 个片段）", if active { "已启用" } else { "未启用" })
-        }
-    } else if en {
-        "Local embedding model status".into()
+        trf(en, "emb.status_line", &[&tr(en, if active { "emb.state_on" } else { "emb.state_off" }), &ready, &total])
     } else {
-        "本地语义检索模型状态".into()
+        tr(en, "emb.model_status").into()
     };
     let emb_status = Label::new(Some(&emb_status_text));
     emb_status.set_xalign(0.0);
     let emb_actions = GtkBox::new(Orientation::Horizontal, 8);
-    let dl_btn = Button::with_label(if en { "Download & Enable" } else { "下载并启用" });
+    let dl_btn = Button::with_label(tr(en, "emb.download_enable"));
     dl_btn.add_css_class("lna-primary-btn");
-    let cancel_dl_btn = Button::with_label(if en { "Cancel" } else { "取消" });
+    let cancel_dl_btn = Button::with_label(tr(en, "common.cancel"));
     cancel_dl_btn.add_css_class("lna-pill-btn");
-    let rebuild_btn = Button::with_label(if en { "Rebuild Index" } else { "重建索引" });
+    let rebuild_btn = Button::with_label(tr(en, "emb.rebuild_index"));
     rebuild_btn.add_css_class("lna-pill-btn");
     let st_e = st.clone();
     dl_btn.connect_clicked(move |_| {
@@ -3486,7 +3375,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
 fn build_preview_widget(pv: &Value, artifact_type: &str, en: bool, memory: &SharedMemory) -> GtkBox {
     let wrap = GtkBox::new(Orientation::Vertical, 6);
     wrap.set_vexpand(true);
-    let note = Label::new(Some(if en { "Preview (unvalidated)" } else { "预览（未校验）" }));
+    let note = Label::new(Some(tr(en, "art.preview_unvalidated")));
     note.set_xalign(0.0);
     note.add_css_class("lna-muted");
     wrap.append(&note);
