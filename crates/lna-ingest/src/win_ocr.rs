@@ -329,13 +329,17 @@ mod macos_tests {
         let res = windows_ocr_image_files(&[img.as_path(), Path::new("/nonexistent.png")]);
         assert_eq!(res.len(), 2);
         let text = res[0].clone().expect("text recognized");
-        assert!(text.to_lowercase().contains("linear algebra"), "got: {text}");
+        assert!(
+            text.to_lowercase().contains("linear algebra"),
+            "got: {text}"
+        );
         assert!(res[1].is_none());
     }
 
     #[test]
     fn sips_transcodes_png_to_png_and_rejects_garbage() {
-        let tmp = std::env::temp_dir().join(format!("lna_sips_garbage_{}.heic", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("lna_sips_garbage_{}.heic", std::process::id()));
         std::fs::write(&tmp, b"not an image").unwrap();
         assert!(windows_wic_to_png(&tmp).is_none());
         let _ = std::fs::remove_file(&tmp);

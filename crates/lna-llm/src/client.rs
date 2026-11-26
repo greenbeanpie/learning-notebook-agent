@@ -547,14 +547,22 @@ impl LlmClient {
             on_status(&bilingual_status(
                 &format!(
                     "结构化输出未通过校验（{}{}），正在进行第 {}/{} 次修复…",
-                    if truncated { "输出被长度上限截断；" } else { "" },
+                    if truncated {
+                        "输出被长度上限截断；"
+                    } else {
+                        ""
+                    },
                     reason_txt,
                     repair_attempt + 1,
                     max_repairs
                 ),
                 &format!(
                     "Structured output failed validation ({}{}); repair attempt {}/{}…",
-                    if truncated { "output was cut off at the length limit; " } else { "" },
+                    if truncated {
+                        "output was cut off at the length limit; "
+                    } else {
+                        ""
+                    },
                     reason_txt,
                     repair_attempt + 1,
                     max_repairs

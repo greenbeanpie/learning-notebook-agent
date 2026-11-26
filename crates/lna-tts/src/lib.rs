@@ -215,10 +215,16 @@ pub fn parse_say_voices(listing: &str) -> Vec<(String, String)> {
 }
 
 /// Picks the voice for a host: the first (A) or second (B) installed voice of the language.
-pub fn pick_say_voice(voices: &[(String, String)], lang_prefix: &str, host_b: bool) -> Option<String> {
+pub fn pick_say_voice(
+    voices: &[(String, String)],
+    lang_prefix: &str,
+    host_b: bool,
+) -> Option<String> {
     let wanted = if lang_prefix == "zh" { "zh_" } else { "en_" };
-    let matching: Vec<&(String, String)> =
-        voices.iter().filter(|(_, l)| l.starts_with(wanted)).collect();
+    let matching: Vec<&(String, String)> = voices
+        .iter()
+        .filter(|(_, l)| l.starts_with(wanted))
+        .collect();
     // Prefer one voice per region so A and B sound different without being a different dialect.
     let idx = if host_b && matching.len() > 1 { 1 } else { 0 };
     matching.get(idx).map(|(n, _)| n.clone())
@@ -503,19 +509,34 @@ garbage line without locale\n";
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let tts = SystemTtsProvider;
-        let v = Voice { id: "host_a".into(), name: "Host A".into(), lang: "auto".into() };
+        let v = Voice {
+            id: "host_a".into(),
+            name: "Host A".into(),
+            lang: "auto".into(),
+        };
         let out = tmp.join("turn.wav");
         let info = tts
-            .synthesize("Hello from the notebook.", &v, &out, CancellationToken::new())
+            .synthesize(
+                "Hello from the notebook.",
+                &v,
+                &out,
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let wav = parse_wav_pcm16(&out).unwrap();
         assert!(info.duration_ms > 0);
-        assert!(wav.samples.iter().any(|s| s.abs() > 200), "synthesized audio is silent");
+        assert!(
+            wav.samples.iter().any(|s| s.abs() > 200),
+            "synthesized audio is silent"
+        );
 
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let err = tts.synthesize("cancelled", &v, &tmp.join("c.wav"), cancel).await.unwrap_err();
+        let err = tts
+            .synthesize("cancelled", &v, &tmp.join("c.wav"), cancel)
+            .await
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::Cancelled);
         let _ = std::fs::remove_dir_all(&tmp);
     }

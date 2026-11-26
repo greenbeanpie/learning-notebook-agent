@@ -302,7 +302,8 @@ fn b7_chinese_and_hostile_fts_input() {
         )
     };
     assert!(search("零空间").unwrap().grounded, "two-character word");
-    assert!(search("秩").unwrap().grounded || true); // single character may legitimately be ignored
+    // a single character may legitimately be ignored, so only require that the search itself succeeds
+    search("秩").unwrap();
     for hostile in [
         "\"",
         "\"\"\"",

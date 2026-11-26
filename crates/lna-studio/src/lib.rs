@@ -859,7 +859,10 @@ impl StudioService {
             id,
             &art.notebook_id,
             "tool",
-            &self.l("工具调用 · 按提示词迭代调整提纲", "Tool call · Revising the outline from your prompt"),
+            &self.l(
+                "工具调用 · 按提示词迭代调整提纲",
+                "Tool call · Revising the outline from your prompt",
+            ),
             instr,
         );
         let files = context_files::context_items(images);
@@ -1442,7 +1445,10 @@ User Revision Instruction:
                             &fresh_art.notebook_id,
                             "error",
                             &self.l("执行失败", "Run failed"),
-                            &self.l("请检查模型配置或权限设置后重试。", "Check the model configuration or permissions, then try again."),
+                            &self.l(
+                                "请检查模型配置或权限设置后重试。",
+                                "Check the model configuration or permissions, then try again.",
+                            ),
                         );
                         let log = format_error_log(&fresh_art, Some(&profile), &records);
                         let _ = self.mark_failed_with_log(artifact_id, &e, &log);
@@ -1493,7 +1499,10 @@ User Revision Instruction:
                             &fresh_art.notebook_id,
                             "error",
                             &self.l("执行失败", "Run failed"),
-                            &self.l("未能完成生成，请稍后重试。", "Generation could not be completed. Please try again later."),
+                            &self.l(
+                                "未能完成生成，请稍后重试。",
+                                "Generation could not be completed. Please try again later.",
+                            ),
                         );
                         let log = format_error_log(&fresh_art, Some(&profile), &records);
                         let _ = self.mark_failed_with_log(artifact_id, &e, &log);
@@ -1536,7 +1545,10 @@ User Revision Instruction:
                     &art.notebook_id,
                     "stage",
                     &self.l("复用已缓存来源证据", "Reusing cached source evidence"),
-                    &self.l("已从检查点加载来源资料，跳过重复收集。", "Loaded the sources from the checkpoint; skipping repeated collection."),
+                    &self.l(
+                        "已从检查点加载来源资料，跳过重复收集。",
+                        "Loaded the sources from the checkpoint; skipping repeated collection.",
+                    ),
                 );
             }
             checkpoint
@@ -1687,67 +1699,71 @@ User Revision Instruction:
         let evidence_cap =
             (max_evidence > 0 && evidence_txt.starts_with("[1] ")).then_some(max_evidence);
 
-        let (mut payload, usage) =
-            if let Some(saved) = saved_generate.and_then(|v| v.get("payload").cloned()) {
-                self.append_thought(
+        let (mut payload, usage) = if let Some(saved) =
+            saved_generate.and_then(|v| v.get("payload").cloned())
+        {
+            self.append_thought(
                     artifact_id,
                     &art.notebook_id,
                     "stage",
                     &self.l("复用已验证内容检查点", "Reusing the validated content checkpoint"),
                     &self.l("已加载上次生成的结构化内容，准备继续渲染。", "Loaded the previously generated structured content; ready to continue rendering."),
                 );
-                (saved, Usage::default())
-            } else {
-                self.append_thought(
+            (saved, Usage::default())
+        } else {
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &self.l("生成结构化成品内容", "Generating structured content"),
+                &self.l(
+                    &format!("正在生成「{}」…", art.title),
+                    &format!("Generating \"{}\"…", art.title),
+                ),
+            );
+            let max_repairs = if attempt == 1 { 2 } else { 0 };
+            let (mut generated, usage) = self
+                .generate_structured_payload(
+                    art,
+                    profile,
+                    resolved,
                     artifact_id,
-                    &art.notebook_id,
-                    "stage",
-                    &self.l("生成结构化成品内容", "Generating structured content"),
-                    &self.l(&format!("正在生成「{}」…", art.title), &format!("Generating \"{}\"…", art.title)),
-                );
-                let max_repairs = if attempt == 1 { 2 } else { 0 };
-                let (mut generated, usage) = self
-                    .generate_structured_payload(
-                        art,
-                        profile,
-                        resolved,
-                        artifact_id,
-                        &evidence_txt,
-                        reasoning,
-                        max_repairs,
-                        cancel.clone(),
-                    )
-                    .await?;
-                if let Some(max) = evidence_cap {
-                    if art.artifact_type != ArtifactType::Quiz {
-                        validate::sanitize_citations(&mut generated, max);
-                    }
+                    &evidence_txt,
+                    reasoning,
+                    max_repairs,
+                    cancel.clone(),
+                )
+                .await?;
+            if let Some(max) = evidence_cap {
+                if art.artifact_type != ArtifactType::Quiz {
+                    validate::sanitize_citations(&mut generated, max);
                 }
-                match art.artifact_type {
-                    ArtifactType::Quiz => {
-                        let allowed_types: Vec<&str> = art
-                            .config
-                            .get("types")
-                            .and_then(|v| v.as_array())
-                            .map(|items| items.iter().filter_map(|v| v.as_str()).collect())
-                            .unwrap_or_default();
-                        validate::validate_quiz_with(&generated, &allowed_types, evidence_cap)?;
-                    }
-                    ArtifactType::Flashcards => validate::dedup_flashcards(&mut generated),
-                    ArtifactType::Mindmap => validate::normalize_mindmap(&mut generated),
-                    _ => {}
+            }
+            match art.artifact_type {
+                ArtifactType::Quiz => {
+                    let allowed_types: Vec<&str> = art
+                        .config
+                        .get("types")
+                        .and_then(|v| v.as_array())
+                        .map(|items| items.iter().filter_map(|v| v.as_str()).collect())
+                        .unwrap_or_default();
+                    validate::validate_quiz_with(&generated, &allowed_types, evidence_cap)?;
                 }
-                // Only save the checkpoint after validation succeeds so broken payloads are never reused.
-                self.save_checkpoint(
-                    artifact_id,
-                    "generate",
-                    json!({
-                        "sources_fingerprint": art.sources_fingerprint,
-                        "payload": generated.clone()
-                    }),
-                )?;
-                (generated, usage)
-            };
+                ArtifactType::Flashcards => validate::dedup_flashcards(&mut generated),
+                ArtifactType::Mindmap => validate::normalize_mindmap(&mut generated),
+                _ => {}
+            }
+            // Only save the checkpoint after validation succeeds so broken payloads are never reused.
+            self.save_checkpoint(
+                artifact_id,
+                "generate",
+                json!({
+                    "sources_fingerprint": art.sources_fingerprint,
+                    "payload": generated.clone()
+                }),
+            )?;
+            (generated, usage)
+        };
 
         if let Some(max) = evidence_cap {
             if art.artifact_type != ArtifactType::Quiz {
@@ -1895,7 +1911,10 @@ User Revision Instruction:
             &art.notebook_id,
             "stage",
             &self.l("成品生成完成", "Generation complete"),
-            &self.l("内容校验与渲染均已完成，可开始交互预览或导出。", "Validation and rendering are done. You can now preview interactively or export."),
+            &self.l(
+                "内容校验与渲染均已完成，可开始交互预览或导出。",
+                "Validation and rendering are done. You can now preview interactively or export.",
+            ),
         );
         self.emit_status_event(artifact_id, "READY", "READY", 1.0, None, None);
         Ok(())
@@ -2015,7 +2034,10 @@ User Revision Instruction:
                     .run_structured_with_thought(
                         artifact_id,
                         &art.notebook_id,
-                        &self.l(&format!("第 {}/{} 批推理思考", bi + 1, batches), &format!("Batch {}/{} reasoning", bi + 1, batches)),
+                        &self.l(
+                            &format!("第 {}/{} 批推理思考", bi + 1, batches),
+                            &format!("Batch {}/{} reasoning", bi + 1, batches),
+                        ),
                         resolved,
                         &batch_req,
                         schema_name,
@@ -2139,7 +2161,10 @@ User Revision Instruction:
                     .run_structured_with_thought(
                         artifact_id,
                         &art.notebook_id,
-                        &self.l(&format!("第 {}/{} 批推理思考", bi + 1, batches), &format!("Batch {}/{} reasoning", bi + 1, batches)),
+                        &self.l(
+                            &format!("第 {}/{} 批推理思考", bi + 1, batches),
+                            &format!("Batch {}/{} reasoning", bi + 1, batches),
+                        ),
                         resolved,
                         &batch_req,
                         schema_name,
@@ -2241,7 +2266,10 @@ User Revision Instruction:
                     .run_text_with_thought(
                         artifact_id,
                         &art.notebook_id,
-                        &self.l("演示文稿视觉架构与版式思考", "Slide visual architecture and layout reasoning"),
+                        &self.l(
+                            "演示文稿视觉架构与版式思考",
+                            "Slide visual architecture and layout reasoning",
+                        ),
                         resolved,
                         &plan_req,
                         cancel.clone(),
@@ -2300,7 +2328,10 @@ Design rules:\n\
                 .run_structured_with_thought(
                     artifact_id,
                     &art.notebook_id,
-                    &self.l("演示文稿内容与排版生成", "Slide content and layout generation"),
+                    &self.l(
+                        "演示文稿内容与排版生成",
+                        "Slide content and layout generation",
+                    ),
                     resolved,
                     &author_req,
                     schema_name,
@@ -2733,7 +2764,13 @@ Design rules:\n\
             &art.notebook_id,
             "tool",
             &self.l("按需阅读附件", "Reading attachments on demand"),
-            &self.l(&format!("正在按需读取用户附带的 {} 个参考文件/链接…", atts.len()), &format!("Reading the {} reference file(s)/link(s) you attached…", atts.len())),
+            &self.l(
+                &format!("正在按需读取用户附带的 {} 个参考文件/链接…", atts.len()),
+                &format!(
+                    "Reading the {} reference file(s)/link(s) you attached…",
+                    atts.len()
+                ),
+            ),
         );
         let task = format!(
             "为生成学习成品「{}」收集材料。用户要求（config）：{}",
@@ -2792,8 +2829,14 @@ Design rules:\n\
             artifact_id,
             &art.notebook_id,
             "tool",
-            &self.l("工具调用 · 识别附带图片", "Tool call · Reading attached images"),
-            &self.l(&format!("正在读取 {} 张图片", atts.len()), &format!("Reading {} image(s)", atts.len())),
+            &self.l(
+                "工具调用 · 识别附带图片",
+                "Tool call · Reading attached images",
+            ),
+            &self.l(
+                &format!("正在读取 {} 张图片", atts.len()),
+                &format!("Reading {} image(s)", atts.len()),
+            ),
         );
         let topic = art
             .config
@@ -3728,7 +3771,10 @@ Design rules:\n\
                 artifact_id,
                 &art.notebook_id,
                 "stage",
-                &self.l(&format!("已完成 {finished}/{total} 个分支"), &format!("Finished {finished}/{total} branches")),
+                &self.l(
+                    &format!("已完成 {finished}/{total} 个分支"),
+                    &format!("Finished {finished}/{total} branches"),
+                ),
                 "",
             );
             self.save_checkpoint(
@@ -3773,7 +3819,10 @@ Design rules:\n\
                         &art.notebook_id,
                         "stage",
                         &self.l("结构审查", "Structure review"),
-                        &self.l(&format!("按审查建议调整了 {n} 处主题的位置或合并。"), &format!("Moved or merged {n} topic(s) per the review suggestions.")),
+                        &self.l(
+                            &format!("按审查建议调整了 {n} 处主题的位置或合并。"),
+                            &format!("Moved or merged {n} topic(s) per the review suggestions."),
+                        ),
                     );
                 }
             }
@@ -3836,7 +3885,10 @@ Design rules:\n\
                         artifact_id,
                         &art.notebook_id,
                         "stage",
-                        &self.l("分支追加失败，缩小范围重试", "Branch expansion failed; retrying with a smaller scope"),
+                        &self.l(
+                            "分支追加失败，缩小范围重试",
+                            "Branch expansion failed; retrying with a smaller scope",
+                        ),
                         &truncate_str(&e.message, 200),
                     );
                     attempt_rules = format!(
@@ -4099,9 +4151,15 @@ Design rules:\n\
                 artifact_id,
                 &art.notebook_id,
                 &if refine {
-                    self.l(&format!("细化「{label}」思考"), &format!("Refining \"{label}\" reasoning"))
+                    self.l(
+                        &format!("细化「{label}」思考"),
+                        &format!("Refining \"{label}\" reasoning"),
+                    )
                 } else {
-                    self.l(&format!("分支「{label}」追加思考"), &format!("Branch \"{label}\" expansion reasoning"))
+                    self.l(
+                        &format!("分支「{label}」追加思考"),
+                        &format!("Branch \"{label}\" expansion reasoning"),
+                    )
                 },
                 resolved,
                 &req,
@@ -4294,7 +4352,10 @@ Design rules:\n\
             .run_structured_with_thought(
                 artifact_id,
                 &art.notebook_id,
-                &self.l(&format!("重新分组「{parent_label}」思考"), &format!("Regrouping \"{parent_label}\" reasoning")),
+                &self.l(
+                    &format!("重新分组「{parent_label}」思考"),
+                    &format!("Regrouping \"{parent_label}\" reasoning"),
+                ),
                 resolved,
                 &req,
                 "mindmap_groups",
@@ -4359,8 +4420,14 @@ Design rules:\n\
             artifact_id,
             &art.notebook_id,
             "stage",
-            &self.l(&format!("细化知识点：{label}"), &format!("Refining knowledge point: {label}")),
-            &self.l("正在查阅原文，判断该知识点能否继续拆分…", "Reading the source to decide whether this point can be split further…"),
+            &self.l(
+                &format!("细化知识点：{label}"),
+                &format!("Refining knowledge point: {label}"),
+            ),
+            &self.l(
+                "正在查阅原文，判断该知识点能否继续拆分…",
+                "Reading the source to decide whether this point can be split further…",
+            ),
         );
         let (exp, usage) = self
             .expand_mindmap_node(
@@ -4425,17 +4492,29 @@ Design rules:\n\
         } else if !exp.reason.trim().is_empty() {
             exp.reason
         } else {
-            self.l("未在来源中找到可进一步拆分的内容，已标记为最小知识点。", "No further split was found in the sources; marked as a minimal knowledge point.")
+            self.l(
+                "未在来源中找到可进一步拆分的内容，已标记为最小知识点。",
+                "No further split was found in the sources; marked as a minimal knowledge point.",
+            )
         };
         self.append_thought(
             artifact_id,
             &art.notebook_id,
             "stage",
-            &self.l(&format!("细化完成：{label}"), &format!("Refinement done: {label}")),
+            &self.l(
+                &format!("细化完成：{label}"),
+                &format!("Refinement done: {label}"),
+            ),
             &if added > 0 {
-                self.l(&format!("已追加 {added} 个更细的子知识点。"), &format!("Added {added} finer sub-point(s)."))
+                self.l(
+                    &format!("已追加 {added} 个更细的子知识点。"),
+                    &format!("Added {added} finer sub-point(s)."),
+                )
             } else {
-                self.l(&format!("该知识点已是最小单位：{reason}"), &format!("This point is already minimal: {reason}"))
+                self.l(
+                    &format!("该知识点已是最小单位：{reason}"),
+                    &format!("This point is already minimal: {reason}"),
+                )
             },
         );
         self.emit_status_event(artifact_id, "READY", "READY", 1.0, None, None);
@@ -4739,7 +4818,13 @@ Design rules:\n\
             let mut full_thought = String::new();
             let mut pending_thought = String::new();
             let mut last_flush = std::time::Instant::now();
-            let thought_title = self.l(&format!("按需资料规划与思考（第 {} 轮）", round + 1), &format!("On-demand reading planning and reasoning (round {})", round + 1));
+            let thought_title = self.l(
+                &format!("按需资料规划与思考（第 {} 轮）", round + 1),
+                &format!(
+                    "On-demand reading planning and reasoning (round {})",
+                    round + 1
+                ),
+            );
             let stream_res = self
                 .llm
                 .stream(resolved, &req, cancel.clone(), |ev| match ev {
@@ -5019,35 +5104,50 @@ Design rules:\n\
                             .and_then(Value::as_array)
                             .map(|a| a.iter().filter_map(Value::as_str).collect())
                             .unwrap_or_default();
-                        self.l(&format!("工具调用 · 检索来源：{}", qs.join(" / ")), &format!("Tool call · Searching sources: {}", qs.join(" / ")))
+                        self.l(
+                            &format!("工具调用 · 检索来源：{}", qs.join(" / ")),
+                            &format!("Tool call · Searching sources: {}", qs.join(" / ")),
+                        )
                     }
                     "read_index_node" => {
                         let nid = args.get("node_id").and_then(Value::as_str).unwrap_or("");
-                        self.l(&format!("工具调用 · 读取目录节点：{}", nid), &format!("Tool call · Reading outline node: {}", nid))
+                        self.l(
+                            &format!("工具调用 · 读取目录节点：{}", nid),
+                            &format!("Tool call · Reading outline node: {}", nid),
+                        )
                     }
                     "read_source_pages" => {
                         let ps = args.get("page_start").and_then(Value::as_i64).unwrap_or(1);
                         let pe = args.get("page_end").and_then(Value::as_i64).unwrap_or(ps);
-                        self.l(&format!("工具调用 · 精读页码：第 {}-{} 页", ps, pe), &format!("Tool call · Reading pages {}-{}", ps, pe))
+                        self.l(
+                            &format!("工具调用 · 精读页码：第 {}-{} 页", ps, pe),
+                            &format!("Tool call · Reading pages {}-{}", ps, pe),
+                        )
                     }
-                    other => self.l(&format!("工具调用 · {}", other), &format!("Tool call · {}", other)),
+                    other => self.l(
+                        &format!("工具调用 · {}", other),
+                        &format!("Tool call · {}", other),
+                    ),
                 };
                 self.append_thought(
                     artifact_id,
                     &art.notebook_id,
                     "tool",
                     &tool_label,
-                    &self.l(&format!(
-                        "{}（累计已读取 {} 条片段，约 {} tokens）",
-                        summary_note,
-                        collected.len(),
-                        used_chars / 3
-                    ), &format!(
-                        "{} ({} passages read so far, ~{} tokens)",
-                        summary_note,
-                        collected.len(),
-                        used_chars / 3
-                    )),
+                    &self.l(
+                        &format!(
+                            "{}（累计已读取 {} 条片段，约 {} tokens）",
+                            summary_note,
+                            collected.len(),
+                            used_chars / 3
+                        ),
+                        &format!(
+                            "{} ({} passages read so far, ~{} tokens)",
+                            summary_note,
+                            collected.len(),
+                            used_chars / 3
+                        ),
+                    ),
                 );
                 tool_results.push(Part::ToolResult {
                     call_id,
@@ -5073,16 +5173,22 @@ Design rules:\n\
                 artifact_id,
                 &art.notebook_id,
                 "stage",
-                &self.l(&format!("按需精读第 {} 轮", round + 1), &format!("On-demand reading, round {}", round + 1)),
-                &self.l(&format!(
-                    "已按需读取 {} 条关键片段（约 {} tokens）。",
-                    collected.len(),
-                    used_chars / 3
-                ), &format!(
-                    "Read {} key passages on demand (~{} tokens).",
-                    collected.len(),
-                    used_chars / 3
-                )),
+                &self.l(
+                    &format!("按需精读第 {} 轮", round + 1),
+                    &format!("On-demand reading, round {}", round + 1),
+                ),
+                &self.l(
+                    &format!(
+                        "已按需读取 {} 条关键片段（约 {} tokens）。",
+                        collected.len(),
+                        used_chars / 3
+                    ),
+                    &format!(
+                        "Read {} key passages on demand (~{} tokens).",
+                        collected.len(),
+                        used_chars / 3
+                    ),
+                ),
             );
             if used_chars >= char_budget * 85 / 100 {
                 break;
@@ -5570,8 +5676,20 @@ Core Topics: {}",
                 artifact_id,
                 &art.notebook_id,
                 "tool",
-                &self.l(&format!("工具调用 · 归约章节摘要（第 {} 批）", batch_index + 1), &format!("Tool call · Reducing chapter summaries (batch {})", batch_index + 1)),
-                &self.l(&format!("正在合并本批次 {} 组章节摘要…", batch.len()), &format!("Merging {} groups of chapter summaries in this batch…", batch.len())),
+                &self.l(
+                    &format!("工具调用 · 归约章节摘要（第 {} 批）", batch_index + 1),
+                    &format!(
+                        "Tool call · Reducing chapter summaries (batch {})",
+                        batch_index + 1
+                    ),
+                ),
+                &self.l(
+                    &format!("正在合并本批次 {} 组章节摘要…", batch.len()),
+                    &format!(
+                        "Merging {} groups of chapter summaries in this batch…",
+                        batch.len()
+                    ),
+                ),
             );
             let batch_req = LlmRequest {
                 system: "You are a document structure synthesis assistant. Merge this batch of section summaries while preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.".into(),
@@ -5588,7 +5706,10 @@ Core Topics: {}",
                 .run_text_with_thought(
                     artifact_id,
                     &art.notebook_id,
-                    &self.l(&format!("章节归约思考（第 {} 批）", batch_index + 1), &format!("Chapter reduction reasoning (batch {})", batch_index + 1)),
+                    &self.l(
+                        &format!("章节归约思考（第 {} 批）", batch_index + 1),
+                        &format!("Chapter reduction reasoning (batch {})", batch_index + 1),
+                    ),
                     resolved,
                     &batch_req,
                     cancel.clone(),
@@ -5649,14 +5770,20 @@ Core Topics: {}",
                 artifact_id,
                 &art.notebook_id,
                 "tool",
-                &self.l("工具调用 · 按章节检索关键原文片段", "Tool call · Retrieving key passages by chapter"),
-                &self.l(&format!(
-                    "正在为前 {} 个核心章节检索高相关证据片段…",
-                    digests.len().min(12)
-                ), &format!(
-                    "Retrieving highly relevant evidence for the top {} core chapters…",
-                    digests.len().min(12)
-                )),
+                &self.l(
+                    "工具调用 · 按章节检索关键原文片段",
+                    "Tool call · Retrieving key passages by chapter",
+                ),
+                &self.l(
+                    &format!(
+                        "正在为前 {} 个核心章节检索高相关证据片段…",
+                        digests.len().min(12)
+                    ),
+                    &format!(
+                        "Retrieving highly relevant evidence for the top {} core chapters…",
+                        digests.len().min(12)
+                    ),
+                ),
             );
         }
         let mut details = Vec::new();
@@ -5826,7 +5953,10 @@ Core Topics: {}",
                     .run_text_with_thought(
                         artifact_id,
                         notebook_id,
-                        &self.l(&format!("章节摘要思考：{title} / {section_key}"), &format!("Chapter summary reasoning: {title} / {section_key}")),
+                        &self.l(
+                            &format!("章节摘要思考：{title} / {section_key}"),
+                            &format!("Chapter summary reasoning: {title} / {section_key}"),
+                        ),
                         profile,
                         &req,
                         cancel.clone(),
