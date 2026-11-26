@@ -14,9 +14,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Newer Cargo nests build output as target/<profile>/build/<crate>/<hash>/out, so ort-sys' copy-dylibs resolves
+      # its destination to target/<profile>/build and then also writes into build/examples and build/deps.
       - name: Prepare target dirs for ort-sys copy-dylibs
         shell: pwsh
-        run: New-Item -ItemType Directory -Force -Path target/debug/examples,target/debug/deps | Out-Null
+        run: New-Item -ItemType Directory -Force -Path target/debug/examples,target/debug/deps,target/debug/build/examples,target/debug/build/deps | Out-Null
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -49,9 +51,11 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - uses: dtolnay/rust-toolchain@stable
+      # Newer Cargo nests build output as target/<profile>/build/<crate>/<hash>/out, so ort-sys' copy-dylibs resolves
+      # its destination to target/<profile>/build and then also writes into build/examples and build/deps.
       - name: Prepare target dirs for ort-sys copy-dylibs
         shell: pwsh
-        run: New-Item -ItemType Directory -Force -Path target/release/examples,target/release/deps | Out-Null
+        run: New-Item -ItemType Directory -Force -Path target/release/examples,target/release/deps,target/release/build/examples,target/release/build/deps | Out-Null
       - name: Assemble the runnable client (core + NativeAOT client + PDFium)
         shell: pwsh
         run: pwsh scripts/package-windows-client.ps1 -Out dist/LocalNotebook
