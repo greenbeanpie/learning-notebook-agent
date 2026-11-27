@@ -488,11 +488,11 @@ public sealed partial class MainWindow
             status.Text = L10n.Fmt("settings.found_models", modelBox.Items.Count);
         };
 
-        var saveModelBtn = new Button { Content = L10n.T("common.save"), Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"] };
+        ContentDialog? settingsDialog = null; // its primary button is "Save" on the models tab
         var clearKeyBtn = new Button { Content = L10n.T("model.clear_key"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
         var testBtn = new Button { Content = L10n.T("model.test_connection"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
 
-        saveModelBtn.Click += async (_, _) =>
+        async Task SaveModelAsync()
         {
             var url = urlBox.Text.Trim();
             var modelId = (string.IsNullOrWhiteSpace(modelBox.Text) ? modelBox.SelectedItem as string : modelBox.Text)?.Trim() ?? "";
@@ -528,9 +528,9 @@ public sealed partial class MainWindow
             // saving only stores; capabilities are measured by "test connection"
             if (keyBox.Password.Length > 0) up.Add(("api_key", keyBox.Password));
             status.Text = L10n.T("model.probing");
-            saveModelBtn.IsEnabled = false;
+            if (settingsDialog != null) settingsDialog.IsPrimaryButtonEnabled = false;
             var (saved, saveErr) = await Api.CallAsync("profile.upsert", Args(up.ToArray()));
-            saveModelBtn.IsEnabled = true;
+            if (settingsDialog != null) settingsDialog.IsPrimaryButtonEnabled = true;
             if (saveErr is { } se || saved is not { } sv)
             {
                 status.Text = saveErr is { Code: "CAPABILITY_MISSING" } ce
@@ -556,7 +556,7 @@ public sealed partial class MainWindow
                 profiles = Arr(rl, "profiles").ToList();
                 LoadPicker(profileId);
             }
-        };
+        }
 
         clearKeyBtn.Click += async (_, _) =>
         {
@@ -633,11 +633,12 @@ public sealed partial class MainWindow
         mediaSettingsBox.Children.Add(mediaRoutingSummary);
 
         var modelActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        modelActions.Children.Add(saveModelBtn);
         modelActions.Children.Add(testBtn);
         modelActions.Children.Add(clearKeyBtn);
 
         var modelsPanel = new StackPanel { Spacing = 10, Padding = new Thickness(4, 8, 4, 8) };
+        modelsPanel.Children.Add(modelActions);
+        modelsPanel.Children.Add(status);
         modelsPanel.Children.Add(top);
         modelsPanel.Children.Add(presetBox);
         modelsPanel.Children.Add(protocolBox);
@@ -649,8 +650,6 @@ public sealed partial class MainWindow
         modelsPanel.Children.Add(modalityBox);
         modelsPanel.Children.Add(new Expander { Header = L10n.T("model.advanced_options"), Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         modelsPanel.Children.Add(mediaSettingsBox);
-        modelsPanel.Children.Add(modelActions);
-        modelsPanel.Children.Add(status);
 
         // ---- Tab 4: Semantic Search (Embeddings) ----
         var embStatus = new TextBlock { TextWrapping = TextWrapping.Wrap };
@@ -724,7 +723,20 @@ public sealed partial class MainWindow
             Title = L10n.T("settings.title"),
             Content = pivot,
             CloseButtonText = L10n.T("common.close"),
+            DefaultButton = ContentDialogButton.Primary,
             XamlRoot = Content.XamlRoot,
+        };
+        settingsDialog = dialog;
+        // "Save" sits with the dialog buttons and only applies to the models tab
+        void SyncSaveButton() => dialog.PrimaryButtonText = pivot.SelectedIndex == 2 ? L10n.T("common.apply") : "";
+        pivot.SelectionChanged += (_, _) => SyncSaveButton();
+        SyncSaveButton();
+        dialog.PrimaryButtonClick += async (_, args) =>
+        {
+            args.Cancel = true; // keep the dialog open
+            var deferral = args.GetDeferral();
+            try { await SaveModelAsync(); }
+            finally { deferral.Complete(); }
         };
 
         await dialog.ShowAsync();

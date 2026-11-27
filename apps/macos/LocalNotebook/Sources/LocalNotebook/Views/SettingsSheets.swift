@@ -83,6 +83,7 @@ struct UnifiedSettingsSheet: View {
     @State private var statusMsg = ""
     @State private var isTesting = false
     @State private var isDiscovering = false
+    @State private var settingsTab = 0
 
     // Semantic Search tab state
     @State private var embStatusText = ""
@@ -102,6 +103,12 @@ struct UnifiedSettingsSheet: View {
                     .font(.headline)
                     .foregroundColor(palette.textPrimary)
                 Spacer()
+                if settingsTab == 2 {
+                    Button(state.t("settings.apply")) {
+                        Task { await saveCurrentProfile() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
                 Button(state.t("settings.close")) { dismiss() }
                     .buttonStyle(.plain)
                     .font(.callout)
@@ -113,18 +120,22 @@ struct UnifiedSettingsSheet: View {
                     .clipShape(Capsule())
             }
 
-            TabView {
+            TabView(selection: $settingsTab) {
                 appearanceTab
                     .tabItem { Label(state.t("settings.tab_appearance"), systemImage: "paintbrush") }
+                    .tag(0)
 
                 generalTab
                     .tabItem { Label(state.t("settings.tab_general"), systemImage: "slider.horizontal.3") }
+                    .tag(1)
 
                 aiModelsTab
                     .tabItem { Label(state.t("settings.tab_models"), systemImage: "cpu") }
+                    .tag(2)
 
                 embeddingTab
                     .tabItem { Label(state.t("settings.tab_embedding"), systemImage: "magnifyingglass") }
+                    .tag(3)
             }
         }
         .padding(18)
@@ -265,6 +276,30 @@ struct UnifiedSettingsSheet: View {
     private var aiModelsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                // Actions: Test Connection / Clear Key (Save is in the header)
+                HStack(spacing: 10) {
+                    Button(isTesting ? (L10n.t("model.testing", en: state.isEnglish)) : (L10n.t("model.test_connection", en: state.isEnglish))) {
+                        Task { await testCurrentProfile() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isTesting || profileId == nil)
+
+                    Button(L10n.t("model.clear_key", en: state.isEnglish)) {
+                        Task { await clearCurrentKey() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(profileId == nil || keychainRef.isEmpty)
+
+                    Spacer()
+                }
+
+                if !statusMsg.isEmpty {
+                    Text(statusMsg)
+                        .font(.caption)
+                        .foregroundColor(palette.textSecondary)
+                        .textSelection(.enabled)
+                }
+
                 // Saved Profiles row + New / Delete
                 HStack(spacing: 8) {
                     Picker(L10n.t("model.saved_profiles", en: state.isEnglish), selection: $selectedProfileId) {
@@ -524,35 +559,6 @@ struct UnifiedSettingsSheet: View {
                 .background(palette.elevatedBg)
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.subtleBorder, lineWidth: 1))
                 .cornerRadius(10)
-
-                // Actions: Save / Test Connection / Clear Key
-                HStack(spacing: 10) {
-                    Button(state.t("settings.save")) {
-                        Task { await saveCurrentProfile() }
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button(isTesting ? (L10n.t("model.testing", en: state.isEnglish)) : (L10n.t("model.test_connection", en: state.isEnglish))) {
-                        Task { await testCurrentProfile() }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isTesting || profileId == nil)
-
-                    Button(L10n.t("model.clear_key", en: state.isEnglish)) {
-                        Task { await clearCurrentKey() }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(profileId == nil || keychainRef.isEmpty)
-
-                    Spacer()
-                }
-
-                if !statusMsg.isEmpty {
-                    Text(statusMsg)
-                        .font(.caption)
-                        .foregroundColor(palette.textSecondary)
-                        .textSelection(.enabled)
-                }
             }
             .padding(14)
         }

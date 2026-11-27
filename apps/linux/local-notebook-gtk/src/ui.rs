@@ -2864,13 +2864,12 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     model_status_lbl.add_css_class("lna-muted");
 
     let model_actions = GtkBox::new(Orientation::Horizontal, 8);
-    let save_model_btn = Button::with_label(tr(en, "settings.save"));
+    let save_model_btn = Button::with_label(tr(en, "settings.apply"));
     save_model_btn.add_css_class("lna-primary-btn");
     let test_model_btn = Button::with_label(tr(en, "model.test_connection"));
     test_model_btn.add_css_class("lna-pill-btn");
     let clear_key_btn = Button::with_label(tr(en, "model.clear_key"));
     clear_key_btn.add_css_class("lna-pill-btn");
-    model_actions.append(&save_model_btn);
     model_actions.append(&test_model_btn);
     model_actions.append(&clear_key_btn);
 
@@ -3307,6 +3306,8 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         });
     }
 
+    model_box.append(&model_actions);
+    model_box.append(&model_status_lbl);
     model_box.append(&Label::new(Some(tr(en, "model.saved_profiles"))));
     model_box.append(&profile_row);
     model_box.append(&Label::new(Some(tr(en, "model.provider_preset"))));
@@ -3325,8 +3326,6 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     model_box.append(&mod_row);
     model_box.append(&adv_exp);
     model_box.append(&media_card);
-    model_box.append(&model_actions);
-    model_box.append(&model_status_lbl);
 
     let st_m = st.clone();
     let rows_save = extra_headers_rows.clone();
@@ -3481,7 +3480,24 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     tabs.append_page(&model_scroll, Some(&Label::new(Some(tr(en, "settings.tab_models")))));
     tabs.append_page(&emb_box, Some(&Label::new(Some(tr(en, "settings.tab_embedding")))));
 
-    win.set_child(Some(&tabs));
+    // "Save" lives in a footer bar (outside the scrolling form) and only applies to the models tab
+    tabs.set_vexpand(true);
+    let footer = GtkBox::new(Orientation::Horizontal, 8);
+    footer.set_halign(gtk4::Align::End);
+    footer.set_margin_top(8);
+    footer.set_margin_bottom(12);
+    footer.set_margin_start(16);
+    footer.set_margin_end(16);
+    footer.append(&save_model_btn);
+    footer.set_visible(tabs.current_page() == Some(2));
+    {
+        let footer = footer.clone();
+        tabs.connect_switch_page(move |_, _, idx| footer.set_visible(idx == 2));
+    }
+    let root = GtkBox::new(Orientation::Vertical, 0);
+    root.append(&tabs);
+    root.append(&footer);
+    win.set_child(Some(&root));
     win.present();
 }
 

@@ -316,6 +316,7 @@ enum L10n {
         "settings.show_suggestions": "显示后续提问建议",
         "settings.default_studio_lang": "Studio 默认输出语言",
         "settings.save": "保存",
+        "settings.apply": "应用",
         "settings.close": "关闭",
         "settings.saved": "设置已保存。",
         // --- synced from the Windows client ---
@@ -1140,6 +1141,7 @@ enum L10n {
         "settings.show_suggestions": "Show suggested follow-up questions",
         "settings.default_studio_lang": "Default Studio language",
         "settings.save": "Save",
+        "settings.apply": "Apply",
         "settings.close": "Close",
         "settings.saved": "Settings saved.",
         // --- synced from the Windows client ---

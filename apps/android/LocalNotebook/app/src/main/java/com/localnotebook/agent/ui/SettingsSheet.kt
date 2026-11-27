@@ -191,6 +191,30 @@ fun UnifiedSettingsSheet(
                     }
 
                     2 -> {
+                        if (selectedProfileId.isNotEmpty()) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                OutlinedButton(
+                                    onClick = { onTestProfile(selectedProfileId) },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(L10n.t("settings.test", en))
+                                }
+                                val curKref = profiles.firstOrNull { it.id == selectedProfileId }?.keychainRef.orEmpty()
+                                OutlinedButton(
+                                    onClick = { if (curKref.isNotEmpty()) onClearKey(curKref) },
+                                    enabled = curKref.isNotEmpty(),
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(L10n.t("model.clear_key", en))
+                                }
+                                OutlinedButton(
+                                    onClick = { onDeleteProfile(selectedProfileId) },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text(L10n.t("studio.delete", en))
+                                }
+                            }
+                        }
                         Text(
                             L10n.t("model.saved_profiles", en),
                             style = MaterialTheme.typography.labelMedium,
@@ -429,57 +453,6 @@ fun UnifiedSettingsSheet(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Button(
-                            onClick = {
-                                val hdrMap = extraHeaders
-                                    .mapNotNull { (k, v) -> k.trim().takeIf { it.isNotEmpty() }?.let { it to v.trim() } }
-                                    .toMap()
-                                onSaveModel(
-                                    selectedProfileId.ifEmpty { null },
-                                    protocol,
-                                    baseUrl,
-                                    modelId,
-                                    apiKey,
-                                    hdrMap,
-                                    contextWindow,
-                                    maxOutputTokens,
-                                    activateChat,
-                                    allowInsecureHttp,
-                                    supportsVision,
-                                    supportsAudio,
-                                    supportsVideo,
-                                    (maxParallelText.toIntOrNull() ?: 4).coerceIn(1, 64),
-                                )
-                            },
-                            enabled = baseUrl.isNotBlank() && modelId.isNotBlank(),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(L10n.t("settings.save", en))
-                        }
-                        if (selectedProfileId.isNotEmpty()) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                                OutlinedButton(
-                                    onClick = { onTestProfile(selectedProfileId) },
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Text(L10n.t("settings.test", en))
-                                }
-                                val curKref = profiles.firstOrNull { it.id == selectedProfileId }?.keychainRef.orEmpty()
-                                OutlinedButton(
-                                    onClick = { if (curKref.isNotEmpty()) onClearKey(curKref) },
-                                    enabled = curKref.isNotEmpty(),
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Text(L10n.t("model.clear_key", en))
-                                }
-                                OutlinedButton(
-                                    onClick = { onDeleteProfile(selectedProfileId) },
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Text(L10n.t("studio.delete", en))
-                                }
-                            }
-                        }
                     }
 
                     3 -> {
@@ -492,6 +465,35 @@ fun UnifiedSettingsSheet(
                             Text(L10n.t("settings.download_enable_model", en))
                         }
                     }
+                }
+            }
+            if (tabIndex == 2) {
+                Button(
+                    onClick = {
+                        val hdrMap = extraHeaders
+                            .mapNotNull { (k, v) -> k.trim().takeIf { it.isNotEmpty() }?.let { it to v.trim() } }
+                            .toMap()
+                        onSaveModel(
+                            selectedProfileId.ifEmpty { null },
+                            protocol,
+                            baseUrl,
+                            modelId,
+                            apiKey,
+                            hdrMap,
+                            contextWindow,
+                            maxOutputTokens,
+                            activateChat,
+                            allowInsecureHttp,
+                            supportsVision,
+                            supportsAudio,
+                            supportsVideo,
+                            (maxParallelText.toIntOrNull() ?: 4).coerceIn(1, 64),
+                        )
+                    },
+                    enabled = baseUrl.isNotBlank() && modelId.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(L10n.t("settings.apply", en))
                 }
             }
         }
