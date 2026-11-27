@@ -12,11 +12,14 @@
 use super::*;
 use crate::figure::{render_figure, svg_to_png, FIGURE_DSL_GUIDE};
 use crate::material::{config_for_prompt, image_parts, with_images};
-use futures_util::StreamExt as _;
 use std::collections::HashSet;
 
 pub const LECTURE_REPAIR_ROUNDS: usize = 2;
 const FIGURE_REVIEW_ROUNDS: usize = 2;
+/// Hard per-request output token cap for lecture slide generation & repair (prevents runaway output).
+pub const LECTURE_MAX_OUTPUT_TOKENS: u32 = 32_768;
+/// Target upper bound of slides written per batch (3–4 slides per batch for coherence and stability).
+pub const LECTURE_SLIDE_BATCH_MAX: usize = 4;
 
 pub(crate) const ELEMENT_IDS_GUIDE: &str = "ELEMENT IDS (laser targets and build targets) on a slide: \"title\", \"subtitle\", \"b1\"..\"bN\" (bullets, 1-based), \"card1\".., \"metric1\".., \"step1\".. (timeline steps), \"col1\"/\"col2\" (whole column) and \"col1.i2\" (item 2 of column 1), \"table\" and \"table.r1\" (row 1), \"formula\", \"callout\", \"figure\" (the whole figure) and \"figure:<part id>\" (one part of the figure, e.g. \"figure:V\", \"figure:F1\"). Only ids of elements that exist on that slide are valid.";
 
@@ -207,6 +210,86 @@ fn section_schema() -> Value {
         "required": ["slides"],
         "properties": { "slides": { "type": "array", "items": lecture_slide_schema() } }
     })
+}
+
+fn section_page_skeleton_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pages"],
+        "properties": {
+            "pages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["title", "points", "needs_figure"],
+                    "properties": {
+                        "title": { "type": "string" },
+                        "points": { "type": "array", "items": { "type": "string" } },
+                        "needs_figure": { "type": "boolean" },
+                        "figure_hint": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Splits `total` planned slides into balanced 0-based `[start, end)` batches of at most
+/// `LECTURE_SLIDE_BATCH_MAX` (3–4 slides per batch whenever `total >= 5`).
+fn split_slide_batches(total: usize) -> Vec<(usize, usize)> {
+    if total == 0 {
+        return Vec::new();
+    }
+    if total <= LECTURE_SLIDE_BATCH_MAX {
+        return vec![(0, total)];
+    }
+    let batches = total.div_ceil(LECTURE_SLIDE_BATCH_MAX);
+    let base = total / batches;
+    let rem = total % batches;
+    let mut out = Vec::with_capacity(batches);
+    let mut start = 0;
+    for i in 0..batches {
+        let len = base + usize::from(i < rem);
+        out.push((start, start + len));
+        start += len;
+    }
+    out
+}
+
+fn format_page_skeleton(pages: &[Value]) -> String {
+    pages
+        .iter()
+        .enumerate()
+        .map(|(idx, p)| {
+            let title = sv(p, "title");
+            let pts: Vec<&str> = p
+                .get("points")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let needs_fig = p
+                .get("needs_figure")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let fig_hint = sv(p, "figure_hint");
+            let fig_str = if needs_fig {
+                if fig_hint.is_empty() {
+                    " [figure: required]".to_string()
+                } else {
+                    format!(" [figure: {fig_hint}]")
+                }
+            } else {
+                String::new()
+            };
+            format!("{}. {}{} — {}", idx + 1, title, fig_str, pts.join("; "))
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        )
 }
 
 fn outline_schema() -> Value {
@@ -1245,6 +1328,10 @@ struct SectionCtx<'a> {
     /// "required" when the planner judged the section obviously geometric or physical: it must
     /// carry at least one figure. "suggested" and "none" are guidance in the prompt only.
     visual_need: &'a str,
+    /// Optional checkpoint key (e.g. `lecture_sec_s1`) to persist page skeleton & completed batches.
+    checkpoint_key: Option<String>,
+    /// When true, plan per-page skeleton first and author 3–4 slides per batch.
+    batch_by_page: bool,
 }
 
 impl StudioService {
@@ -1302,18 +1389,7 @@ impl StudioService {
             request,
             truncate_str(excerpt, 3000)
         );
-        let req = LlmRequest {
-            system: system.clone(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text(user.clone())],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: resolved.bounded_output(4000),
-            reasoning: ReasoningOptions::default(),
-        };
+        let req = LlmRequest::simple(system.clone(), user.clone(), resolved.bounded_output(4000));
         let (mut spec, u) = {
             self.run_structured_with_thought(
                 artifact_id,
@@ -1373,18 +1449,8 @@ impl StudioService {
                 "required": ["ok"],
                 "properties": { "ok": { "type": "boolean" }, "problems": { "type": "string" }, "figure": figure_spec_schema() }
             });
-            let review_req = LlmRequest {
-                system: system.clone(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts,
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::Text,
-                max_output_tokens: resolved.bounded_output(4000),
-                reasoning: ReasoningOptions::default(),
-            };
+            let review_req =
+                LlmRequest::from_parts(system.clone(), parts, resolved.bounded_output(4000));
             let target = if !problems {
                 vision.clone().unwrap_or_else(|| resolved.clone())
             } else {
@@ -1492,29 +1558,16 @@ impl StudioService {
             })
             .collect();
         let limit = self.parallelism(profile).min(jobs.len().max(1));
-        let mut running = futures_util::stream::iter(jobs.into_iter().map(|(i, title, req)| {
-            let cancel_c = cancel.clone();
-            async move {
-                // A figure that could not be drawn (model error, invalid spec, no content parts)
-                // is tried once more before the slide is left without it.
-                let mut res = self
-                    .generate_figure(
-                        art,
-                        profile,
-                        resolved,
-                        artifact_id,
-                        &title,
-                        &req,
-                        excerpt,
-                        cancel_c.clone(),
-                    )
-                    .await;
-                let failed = match &res {
-                    Ok((fig, _)) => fig.is_none(),
-                    Err(e) => e.code != ErrorCode::Cancelled,
-                };
-                if failed && !cancel_c.is_cancelled() {
-                    res = self
+        lna_llm::run_parallel_unordered(
+            jobs,
+            limit,
+            &cancel,
+            |_, (i, title, req)| {
+                let cancel_c = cancel.clone();
+                async move {
+                    // A figure that could not be drawn (model error, invalid spec, no content parts)
+                    // is tried once more before the slide is left without it.
+                    let mut res = self
                         .generate_figure(
                             art,
                             profile,
@@ -1523,41 +1576,60 @@ impl StudioService {
                             &title,
                             &req,
                             excerpt,
-                            cancel_c,
+                            cancel_c.clone(),
                         )
                         .await;
+                    let failed = match &res {
+                        Ok((fig, _)) => fig.is_none(),
+                        Err(e) => e.code != ErrorCode::Cancelled,
+                    };
+                    if failed && !cancel_c.is_cancelled() {
+                        res = self
+                            .generate_figure(
+                                art,
+                                profile,
+                                resolved,
+                                artifact_id,
+                                &title,
+                                &req,
+                                excerpt,
+                                cancel_c,
+                            )
+                            .await;
+                    }
+                    (i, title, res)
                 }
-                (i, title, res)
-            }
-        }))
-        .buffer_unordered(limit);
-        while let Some((i, title, res)) = next_or_cancel(&mut running, &cancel).await? {
-            match res {
-                Ok((fig, u)) => {
-                    add_usage(&mut usage, &u);
-                    match fig {
-                        Some(fig) => slides[i]["figure"] = fig,
-                        // no figure after the retry: a "figure" layout without one would play as
-                        // an empty-looking slide, so it becomes an ordinary slide
-                        None => {
-                            if sv(&slides[i], "layout") == "figure" {
-                                slides[i]["layout"] = json!("bullets");
+            },
+            |_, (i, title, res)| {
+                match res {
+                    Ok((fig, u)) => {
+                        add_usage(&mut usage, &u);
+                        match fig {
+                            Some(fig) => slides[i]["figure"] = fig,
+                            // no figure after the retry: a "figure" layout without one would play as
+                            // an empty-looking slide, so it becomes an ordinary slide
+                            None => {
+                                if sv(&slides[i], "layout") == "figure" {
+                                    slides[i]["layout"] = json!("bullets");
+                                }
                             }
                         }
                     }
+                    Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+                    Err(e) => {
+                        self.append_thought(
+                            artifact_id,
+                            &art.notebook_id,
+                            "stage",
+                            &format!("配图失败：{title}"),
+                            &truncate_str(&e.message, 300),
+                        );
+                    }
                 }
-                Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
-                Err(e) => {
-                    self.append_thought(
-                        artifact_id,
-                        &art.notebook_id,
-                        "stage",
-                        &format!("配图失败：{title}"),
-                        &truncate_str(&e.message, 300),
-                    );
-                }
-            }
-        }
+                Ok(())
+            },
+        )
+        .await?;
         Ok(usage)
     }
 
@@ -1685,44 +1757,314 @@ impl StudioService {
             sc.section_focus,
             sc.extra
         );
-        let mk_req = |text: String| {
+        let max_out = resolved.hard_output_cap(LECTURE_MAX_OUTPUT_TOKENS);
+        let mk_req = |sys: String, text: String, cap: u32| {
             with_images(
-                LlmRequest {
-                    system: system.clone(),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text(text)],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::Text,
-                    max_output_tokens: resolved.max_output_tokens,
-                    reasoning: reasoning.clone(),
-                },
+                LlmRequest::simple(sys, text, cap).with_reasoning(reasoning.clone()),
                 &images,
             )
         };
         let mut usage = Usage::default();
-        let (out, u) = {
-            self.run_structured_with_thought(
-                artifact_id,
-                &art.notebook_id,
-                &format!("撰写讲解：{}", sc.section_title),
-                resolved,
-                &mk_req(user.clone()),
-                "lecture_section",
-                &schema,
-                max_repairs,
-                cancel.clone(),
-            )
-            .await?
+        let mut slides: Vec<Value> = if sc.batch_by_page {
+            // Load section-level checkpoint (skeleton + already-written batches) so a failure on
+            // batch K only retries batch K without losing earlier batches.
+            let saved_sec = sc
+                .checkpoint_key
+                .as_deref()
+                .and_then(|ck| self.get_checkpoint(artifact_id, ck).ok().flatten())
+                .filter(|v| {
+                    v.get("sources_fingerprint").and_then(Value::as_str)
+                        == Some(art.sources_fingerprint.as_str())
+                });
+            let (skeleton_pages, mut done_batches): (Vec<Value>, BTreeMap<String, Vec<Value>>) =
+                match saved_sec {
+                    Some(v) => {
+                        let pages = v
+                            .get("pages")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let batches = v
+                            .get("batches")
+                            .and_then(Value::as_object)
+                            .map(|o| {
+                                o.iter()
+                                    .filter_map(|(k, val)| {
+                                        val.as_array().map(|a| (k.clone(), a.clone()))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (pages, batches)
+                    }
+                    None => (Vec::new(), BTreeMap::new()),
+                };
+
+            let skeleton_pages = if !skeleton_pages.is_empty() {
+                if !done_batches.is_empty() {
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        &format!("复用已撰写页批次：{}", sc.section_title),
+                        &format!(
+                            "已从检查点恢复本节 {} 页骨架与 {} 个已完成批次，仅续写剩余批次。",
+                            skeleton_pages.len(),
+                            done_batches.len()
+                        ),
+                    );
+                }
+                skeleton_pages
+            } else {
+                let skel_system = format!(
+                    "You are the Local Notebook Studio lecture planner producing a concise per-page skeleton JSON for ONE section of a narrated lesson. Output {{\"pages\": [{{\"title\": ..., \"points\": [...], \"needs_figure\": true|false, \"figure_hint\": ...}}]}}. Plan only as many pages as needed to teach this section's focus clearly (concise title, 2–4 key points per page, whether a mathematical/physical figure is needed, and a short figure_hint when needs_figure is true).
+{rules}
+Strictly ground every page in the provided sources. Match the language requested in config or the primary language of the sources.{}",
+                    if has_user_material(&art.config) {
+                        format!("
+{USER_MATERIAL_SCOPE} Plan only this section's focus; do not add material beyond it.")
+                    } else {
+                        String::new()
+                    }
+                );
+                let skel_user = format!(
+                    "{user}
+
+PLANNING TASK: Output ONLY the per-page skeleton ({{\"pages\": [...]}}) for this section — do not write full slides or narration yet."
+                );
+                let skel_req = mk_req(skel_system, skel_user, resolved.hard_output_cap(8_192));
+                let (skel_out, u) = self
+                    .run_structured_with_thought_ex(
+                        artifact_id,
+                        &art.notebook_id,
+                        &format!("规划逐页骨架：{}", sc.section_title),
+                        resolved,
+                        &skel_req,
+                        "lecture_section_skeleton",
+                        &section_page_skeleton_schema(),
+                        max_repairs,
+                        Some("pages"),
+                        cancel.clone(),
+                    )
+                    .await?;
+                add_usage(&mut usage, &u);
+                let pages = skel_out
+                    .get("pages")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(ck) = sc.checkpoint_key.as_deref() {
+                    let _ = self.save_checkpoint(
+                        artifact_id,
+                        ck,
+                        json!({
+                            "sources_fingerprint": art.sources_fingerprint,
+                            "pages": pages,
+                            "batches": done_batches,
+                        }),
+                    );
+                }
+                pages
+            };
+
+            if skeleton_pages.is_empty() {
+                // Fallback: single capped call with array continuation if skeleton came back empty
+                let (out, u) = self
+                    .run_structured_with_thought_ex(
+                        artifact_id,
+                        &art.notebook_id,
+                        &format!("撰写讲解：{}", sc.section_title),
+                        resolved,
+                        &mk_req(system.clone(), user.clone(), max_out),
+                        "lecture_section",
+                        &schema,
+                        max_repairs,
+                        Some("slides"),
+                        cancel.clone(),
+                    )
+                    .await?;
+                add_usage(&mut usage, &u);
+                out.get("slides")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                let batches = split_slide_batches(skeleton_pages.len());
+                let total_batches = batches.len();
+                let skeleton_txt = format_page_skeleton(&skeleton_pages);
+                let mut written_titles: Vec<String> = Vec::new();
+                let mut collected: Vec<Value> = Vec::new();
+
+                for (bi, (start, end)) in batches.into_iter().enumerate() {
+                    if cancel.is_cancelled() {
+                        return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+                    }
+                    let bkey = format!("b{bi}");
+                    if let Some(cached) = done_batches.get(&bkey) {
+                        for s in cached {
+                            let t = sv(s, "title");
+                            if !t.is_empty() {
+                                written_titles.push(t);
+                            }
+                        }
+                        collected.extend(cached.iter().cloned());
+                        continue;
+                    }
+                    let slice_txt = skeleton_pages[start..end]
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, p)| {
+                            let pno = start + offset + 1;
+                            let title = sv(p, "title");
+                            let pts: Vec<&str> = p
+                                .get("points")
+                                .and_then(Value::as_array)
+                                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                                .unwrap_or_default();
+                            let needs_fig = p
+                                .get("needs_figure")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+                            let fig_hint = sv(p, "figure_hint");
+                            format!(
+                                "- Page {pno}: {title}
+  Points: {}
+  Figure: {}",
+                                pts.join("; "),
+                                if needs_fig {
+                                    if fig_hint.is_empty() {
+                                        "required"
+                                    } else {
+                                        fig_hint.as_str()
+                                    }
+                                } else {
+                                    "none"
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(
+                            "
+",
+                        );
+                    let prev_txt = if written_titles.is_empty() {
+                        "(none yet — this is the first batch of this section)".to_string()
+                    } else {
+                        written_titles
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, t)| format!("{}. {t}", idx + 1))
+                            .collect::<Vec<_>>()
+                            .join(
+                                "
+",
+                            )
+                    };
+                    let batch_user = format!(
+                        "{user}
+
+=== SECTION PAGE SKELETON ({} pages total) ===
+{skeleton_txt}
+
+=== ALREADY WRITTEN PAGES IN THIS SECTION (do NOT repeat; continue seamlessly) ===
+{prev_txt}
+
+=== THIS BATCH ({}/{}, write ONLY pages {}-{}) ===
+{slice_txt}
+
+Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, following the skeleton and connecting smoothly from the already written pages.",
+                        skeleton_pages.len(),
+                        bi + 1,
+                        total_batches,
+                        start + 1,
+                        end,
+                        end - start,
+                    );
+                    let thought_label = if total_batches == 1 {
+                        format!("撰写讲解：{}", sc.section_title)
+                    } else {
+                        format!(
+                            "撰写讲解：{}（第 {}/{} 批，第 {}-{} 页）",
+                            sc.section_title,
+                            bi + 1,
+                            total_batches,
+                            start + 1,
+                            end
+                        )
+                    };
+                    let (out, u) = self
+                        .run_structured_with_thought_ex(
+                            artifact_id,
+                            &art.notebook_id,
+                            &thought_label,
+                            resolved,
+                            &mk_req(system.clone(), batch_user, max_out),
+                            "lecture_section",
+                            &schema,
+                            max_repairs,
+                            Some("slides"),
+                            cancel.clone(),
+                        )
+                        .await?;
+                    add_usage(&mut usage, &u);
+                    let batch_slides = out
+                        .get("slides")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    if batch_slides.is_empty() {
+                        return Err(LnaError::new(
+                            ErrorCode::OutputInvalid,
+                            format!(
+                                "Lecture section batch {}/{} produced no slides",
+                                bi + 1,
+                                total_batches
+                            ),
+                        ));
+                    }
+                    for s in &batch_slides {
+                        let t = sv(s, "title");
+                        if !t.is_empty() {
+                            written_titles.push(t);
+                        }
+                    }
+                    done_batches.insert(bkey, batch_slides.clone());
+                    if let Some(ck) = sc.checkpoint_key.as_deref() {
+                        let _ = self.save_checkpoint(
+                            artifact_id,
+                            ck,
+                            json!({
+                                "sources_fingerprint": art.sources_fingerprint,
+                                "pages": skeleton_pages,
+                                "batches": done_batches,
+                            }),
+                        );
+                    }
+                    collected.extend(batch_slides);
+                }
+                collected
+            }
+        } else {
+            let (out, u) = self
+                .run_structured_with_thought_ex(
+                    artifact_id,
+                    &art.notebook_id,
+                    &format!("撰写讲解：{}", sc.section_title),
+                    resolved,
+                    &mk_req(system.clone(), user.clone(), max_out),
+                    "lecture_section",
+                    &schema,
+                    max_repairs,
+                    Some("slides"),
+                    cancel.clone(),
+                )
+                .await?;
+            add_usage(&mut usage, &u);
+            out.get("slides")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
         };
-        add_usage(&mut usage, &u);
-        let mut slides = out
-            .get("slides")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
         if slides.is_empty() {
             return Err(LnaError::new(
                 ErrorCode::OutputInvalid,
@@ -1797,15 +2139,16 @@ impl StudioService {
                 issues_text(&issues, &slides)
             );
             let res = {
-                self.run_structured_with_thought(
+                self.run_structured_with_thought_ex(
                     artifact_id,
                     &art.notebook_id,
                     &format!("返修讲解：{}", sc.section_title),
                     resolved,
-                    &mk_req(repair),
+                    &mk_req(system.clone(), repair, max_out),
                     "lecture_section",
                     &schema,
                     max_repairs.min(1),
+                    Some("slides"),
                     cancel.clone(),
                 )
                 .await
@@ -1994,27 +2337,24 @@ impl StudioService {
                     "第 1 步：确定讲解范围、学习目标与小节；之后逐个小节查阅原文，撰写幻灯片、讲稿与激光/动画提示。",
                 );
                 let images = image_parts(&self.db.paths().root, art, resolved);
-                let req = with_images(LlmRequest {
-                    system: format!(
-                        "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. {}\nIf an approved outline is given, follow it.",
-                        lecture_plan_rules(art)
-                    ),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text(format!(
+                let req = with_images(
+                    LlmRequest::simple(
+                        format!(
+                            "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. {}\nIf an approved outline is given, follow it.",
+                            lecture_plan_rules(art)
+                        ),
+                        format!(
                             "Parameters: {}\nApproved outline: {}\n{}\n\nSources:\n{}",
                             config_for_prompt(&art.config, !images.is_empty()),
                             art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                             kg_hint,
                             evidence_txt
-                        ))],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::Text,
-                    max_output_tokens: resolved.bounded_output(6000),
-                    reasoning: reasoning.clone(),
-                }, &images);
+                        ),
+                        resolved.hard_output_cap(8_192),
+                    )
+                    .with_reasoning(reasoning.clone()),
+                    &images,
+                );
                 let (outline, u) = {
                     self.run_structured_with_thought(
                         artifact_id,
@@ -2126,117 +2466,134 @@ impl StudioService {
         }
         let (title_ref, objectives_ref, outline_ref, kg_ref) =
             (&title, &objectives, &outline_txt, &kg_hint);
-        let mut running = futures_util::stream::iter(pending.into_iter().map(|(i, sec)| {
-            let reasoning_c = reasoning.clone();
-            let cancel_c = cancel.clone();
-            async move {
-                let sid = format!("s{}", i + 1);
-                let stitle = sv(&sec, "title");
-                let focus = sv(&sec, "focus");
-                let visual_need = match sv(&sec, "visual_need").as_str() {
-                    v @ ("required" | "suggested") => v.to_string(),
-                    _ => "none".to_string(),
-                };
-                let visual = sv(&sec, "visual");
-                let visual_note = match visual_need.as_str() {
-                    "required" => format!("\nVISUAL (required for this section — it is obviously geometric or physical, so at least one slide must carry a figure_request with step-by-step builds): {visual}"),
-                    "suggested" => format!("\nVISUAL (suggested — mainly a worked derivation: reveal the steps one at a time and highlight the current one; add a figure only if it truly clarifies): {visual}"),
-                    _ => String::new(),
-                };
-                let res: LnaResult<(Vec<Value>, Usage)> = async {
-                    if cancel_c.is_cancelled() {
-                        return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
-                    }
-                    self.append_thought(
-                        artifact_id,
-                        &art.notebook_id,
-                        "stage",
-                        &format!("撰写小节 {}/{}：{}", i + 1, total, stitle),
-                        "正在查阅该小节对应的原文，并撰写幻灯片、讲稿与激光/分步动画提示…",
-                    );
-                    let evidence = self
-                        .section_evidence(
+        lna_llm::run_parallel_unordered(
+            pending,
+            limit,
+            &cancel,
+            |_, (i, sec)| {
+                let reasoning_c = reasoning.clone();
+                let cancel_c = cancel.clone();
+                async move {
+                    let sid = format!("s{}", i + 1);
+                    let stitle = sv(&sec, "title");
+                    let focus = sv(&sec, "focus");
+                    let visual_need = match sv(&sec, "visual_need").as_str() {
+                        v @ ("required" | "suggested") => v.to_string(),
+                        _ => "none".to_string(),
+                    };
+                    let visual = sv(&sec, "visual");
+                    let visual_note = match visual_need.as_str() {
+                        "required" => format!("\nVISUAL (required for this section — it is obviously geometric or physical, so at least one slide must carry a figure_request with step-by-step builds): {visual}"),
+                        "suggested" => format!("\nVISUAL (suggested — mainly a worked derivation: reveal the steps one at a time and highlight the current one; add a figure only if it truly clarifies): {visual}"),
+                        _ => String::new(),
+                    };
+                    let res: LnaResult<(Vec<Value>, Usage)> = async {
+                        if cancel_c.is_cancelled() {
+                            return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+                        }
+                        self.append_thought(
+                            artifact_id,
+                            &art.notebook_id,
+                            "stage",
+                            &format!("撰写小节 {}/{}：{}", i + 1, total, stitle),
+                            "正在查阅该小节对应的原文，先规划逐页骨架再按批撰写幻灯片、讲稿与激光/分步动画提示…",
+                        );
+                        let evidence = self
+                            .section_evidence(
+                                art,
+                                profile,
+                                resolved,
+                                artifact_id,
+                                &format!("{stitle} — {focus}"),
+                                full_text,
+                                cancel_c.clone(),
+                            )
+                            .await?;
+                        let sc = SectionCtx {
+                            lecture_title: title_ref,
+                            objectives: objectives_ref,
+                            outline_txt: outline_ref,
+                            section_title: &stitle,
+                            section_focus: &focus,
+                            visual_need: &visual_need,
+                            position: format!(
+                                "section {} of {}{}",
+                                i + 1,
+                                total,
+                                if i == 0 {
+                                    "; open the lecture with a title slide"
+                                } else if i + 1 == total {
+                                    "; close the lecture with a summary slide"
+                                } else {
+                                    ""
+                                }
+                            ),
+                            extra: format!(
+                                "Sections are written in parallel by separate authors: cover only this section's focus and leave the topics of the other outline entries to them.
+{kg_ref}{visual_note}"
+                            ),
+                            checkpoint_key: Some(format!("lecture_sec_{sid}")),
+                            batch_by_page: true,
+                        };
+                        self.author_section(
                             art,
                             profile,
                             resolved,
                             artifact_id,
-                            &format!("{stitle} — {focus}"),
-                            full_text,
+                            &sc,
+                            &evidence,
+                            reasoning_c,
+                            max_repairs,
                             cancel_c.clone(),
                         )
-                        .await?;
-                    let sc = SectionCtx {
-                        lecture_title: title_ref,
-                        objectives: objectives_ref,
-                        outline_txt: outline_ref,
-                        section_title: &stitle,
-                        section_focus: &focus,
-                        visual_need: &visual_need,
-                        position: format!(
-                            "section {} of {}{}",
-                            i + 1,
-                            total,
-                            if i == 0 {
-                                "; open the lecture with a title slide"
-                            } else if i + 1 == total {
-                                "; close the lecture with a summary slide"
-                            } else {
-                                ""
-                            }
-                        ),
-                        extra: format!(
-                            "Sections are written in parallel by separate authors: cover only this section's focus and leave the topics of the other outline entries to them.
-{kg_ref}{visual_note}"
-                        ),
-                    };
-                    self.author_section(
-                        art,
-                        profile,
-                        resolved,
-                        artifact_id,
-                        &sc,
-                        &evidence,
-                        reasoning_c,
-                        max_repairs,
-                        cancel_c.clone(),
-                    )
-                    .await
+                        .await
+                    }
+                    .await;
+                    (sid, stitle, res)
                 }
-                .await;
-                (sid, stitle, res)
-            }
-        }))
-        .buffer_unordered(limit);
-        while let Some((sid, stitle, res)) = next_or_cancel(&mut running, &cancel).await? {
-            match res {
-                Ok((mut slides, u)) => {
-                    add_usage(&mut usage_sum, &u);
-                    finalize_slides(&mut slides, &sid, &format!("{sid}-"));
-                    done.insert(sid.clone(), Value::Array(slides));
+            },
+            |_, (sid, stitle, res)| {
+                match res {
+                    Ok((mut slides, u)) => {
+                        add_usage(&mut usage_sum, &u);
+                        finalize_slides(&mut slides, &sid, &format!("{sid}-"));
+                        done.insert(sid.clone(), Value::Array(slides));
+                    }
+                    Err(e) if e.code == ErrorCode::Cancelled || cancel.is_cancelled() => {
+                        return Err(e)
+                    }
+                    Err(e) => {
+                        // a failed section is reported; finished ones stay in the checkpoint
+                        self.append_thought(
+                            artifact_id,
+                            &art.notebook_id,
+                            "stage",
+                            &format!("小节生成失败：{stitle}"),
+                            &truncate_str(&e.message, 300),
+                        );
+                        self.save_checkpoint(
+                            artifact_id,
+                            "lecture_passes",
+                            json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": done }),
+                        )?;
+                        return Err(e);
+                    }
                 }
-                Err(e) if e.code == ErrorCode::Cancelled || cancel.is_cancelled() => return Err(e),
-                Err(e) => {
-                    // a failed section is reported; finished ones stay in the checkpoint
-                    self.append_thought(
-                        artifact_id,
-                        &art.notebook_id,
-                        "stage",
-                        &format!("小节生成失败：{stitle}"),
-                        &truncate_str(&e.message, 300),
-                    );
-                    self.save_checkpoint(artifact_id, "lecture_passes", json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": done }))?;
-                    return Err(e);
-                }
-            }
-            self.save_checkpoint(artifact_id, "lecture_passes", json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": done }))?;
-            self.emit_preview(
-                artifact_id,
-                &art.notebook_id,
-                "lecture_passes",
-                &json!({ "outline": outline, "done": done }),
-            );
-        }
-        drop(running);
+                self.save_checkpoint(
+                    artifact_id,
+                    "lecture_passes",
+                    json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": done }),
+                )?;
+                self.emit_preview(
+                    artifact_id,
+                    &art.notebook_id,
+                    "lecture_passes",
+                    &json!({ "outline": outline, "done": done }),
+                );
+                Ok(())
+            },
+        )
+        .await?;
 
         let mut slides: Vec<Value> = Vec::new();
         for i in 0..total {
@@ -2421,38 +2778,32 @@ impl StudioService {
             .await?;
             format!("{evidence}\n\nFrom the learner's attached files:\n{b}")
         };
-        let req = LlmRequest {
-            system: "You are the Local Notebook Studio lecture teacher of a narrated lecture and the learner just paused you with a question. Answer it directly and accurately from the sources and the lecture context, at the learner's level, in the learner's language. \"answer\": Markdown (LaTeX $...$ allowed). \"speak\": the same answer as 1-4 plain spoken sentences for text-to-speech (no LaTeX/markdown/symbols). Then judge from the question whether the REST of the lecture should change: \"extend\" if something already explained was unclear or a prerequisite is missing (insert 1-2 supplementary slides now); \"slower\" or \"simpler\" if the pace/level is too high; \"more_examples\" if the learner needs worked examples; \"skip_known\" if the learner is clearly ahead; \"none\" for an isolated detail question (the usual case). Give a short reason in the learner's language. Respond with structured JSON for lecture answer.".into(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: attachments::user_parts(
-                    &self.db,
-                    &self.secrets,
-                    &self.llm,
-                    &art.notebook_id,
-                    &resolved,
-                    format!(
-                        "Lecture: {} (mode {})\nCovered slides: {}\nCurrent slide:\n{}\nSpoken so far on this slide: {}\nUpcoming slides: {}\nEarlier Q&A:\n{}\n\nQuestion: {}\n\nSources:\n{}",
-                        sv(&payload, "title"),
-                        sv(&payload, "mode"),
-                        covered.join(" | "),
-                        Self::slide_text(&slide),
-                        spoken,
-                        upcoming.join(" | "),
-                        if hist.is_empty() { "(none)".into() } else { hist },
-                        question,
-                        evidence
-                    ),
-                    images,
-                )
-                .await,
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: resolved.bounded_output(3000),
-            reasoning: ReasoningOptions::default(),
-        };
+        let parts = attachments::user_parts(
+            &self.db,
+            &self.secrets,
+            &self.llm,
+            &art.notebook_id,
+            &resolved,
+            format!(
+                "Lecture: {} (mode {})\nCovered slides: {}\nCurrent slide:\n{}\nSpoken so far on this slide: {}\nUpcoming slides: {}\nEarlier Q&A:\n{}\n\nQuestion: {}\n\nSources:\n{}",
+                sv(&payload, "title"),
+                sv(&payload, "mode"),
+                covered.join(" | "),
+                Self::slide_text(&slide),
+                spoken,
+                upcoming.join(" | "),
+                if hist.is_empty() { "(none)".into() } else { hist },
+                question,
+                evidence
+            ),
+            images,
+        )
+        .await;
+        let req = LlmRequest::from_parts(
+            "You are the Local Notebook Studio lecture teacher of a narrated lecture and the learner just paused you with a question. Answer it directly and accurately from the sources and the lecture context, at the learner's level, in the learner's language. \"answer\": Markdown (LaTeX $...$ allowed). \"speak\": the same answer as 1-4 plain spoken sentences for text-to-speech (no LaTeX/markdown/symbols). Then judge from the question whether the REST of the lecture should change: \"extend\" if something already explained was unclear or a prerequisite is missing (insert 1-2 supplementary slides now); \"slower\" or \"simpler\" if the pace/level is too high; \"more_examples\" if the learner needs worked examples; \"skip_known\" if the learner is clearly ahead; \"none\" for an isolated detail question (the usual case). Give a short reason in the learner's language. Respond with structured JSON for lecture answer.",
+            parts,
+            resolved.bounded_output(3000),
+        );
         let (out, usage) = self
             .llm
             .complete_structured(
@@ -2593,6 +2944,8 @@ impl StudioService {
                     sv(cur, "title"),
                     Self::slide_text(cur)
                 ),
+                checkpoint_key: None,
+                batch_by_page: false,
             };
             let (mut add, u) = self
                 .author_section(
@@ -2622,55 +2975,75 @@ impl StudioService {
                     _ => groups.push((sec, vec![s.clone()])),
                 }
             }
+            let total_groups = groups.len();
+            let limit = self.parallelism(&profile).min(total_groups.max(1));
+            let (art_ref, prof_ref, res_ref, full_ref) =
+                (&art, &profile, &resolved, full.as_deref());
+            let (title_ref, obj_ref, outline_ref, sec_ref, cov_ref, aid_ref) =
+                (&title, &objectives, &outline_txt, &sections, &covered, &aid);
+            let parts = lna_llm::run_parallel_ordered(groups, limit, &cancel, |gi, (sec, old)| {
+                let reasoning_c = reasoning.clone();
+                let cancel_c = cancel.clone();
+                async move {
+                    let stitle = sec_ref
+                        .iter()
+                        .find(|s| sv(s, "id") == sec)
+                        .map(|s| sv(s, "title"))
+                        .unwrap_or_else(|| sec.clone());
+                    let planned: Vec<String> = old.iter().map(|s| sv(s, "title")).collect();
+                    let focus = format!("{stitle}: {}", planned.join("; "));
+                    let evidence = self
+                        .section_evidence(
+                            art_ref,
+                            prof_ref,
+                            res_ref,
+                            artifact_id,
+                            &focus,
+                            full_ref,
+                            cancel_c.clone(),
+                        )
+                        .await?;
+                    let sc = SectionCtx {
+                        lecture_title: title_ref,
+                        objectives: obj_ref,
+                        outline_txt: outline_ref,
+                        section_title: &stitle,
+                        section_focus: &planned.join("; "),
+                        visual_need: "none",
+                        position: format!(
+                            "re-authoring remaining part {} of {} after an interruption",
+                            gi + 1,
+                            total_groups
+                        ),
+                        extra: format!(
+                            "ADAPTATION: {direction}\nThe learner asked: {question}\nWhy: {reason}\nAlready covered (do not repeat): {}\nPreviously planned slides for this part (cover the same content, adapted): {}",
+                            cov_ref.join(" | "),
+                            planned.join(" | ")
+                        ),
+                        checkpoint_key: None,
+                        batch_by_page: true,
+                    };
+                    let (mut part, u) = self
+                        .author_section(
+                            art_ref,
+                            prof_ref,
+                            res_ref,
+                            artifact_id,
+                            &sc,
+                            &evidence,
+                            reasoning_c,
+                            2,
+                            cancel_c,
+                        )
+                        .await?;
+                    finalize_slides(&mut part, &sec, &format!("{aid_ref}{}-", gi + 1));
+                    Ok((part, u))
+                }
+            })
+            .await?;
             let mut out = Vec::new();
-            for (gi, (sec, old)) in groups.iter().enumerate() {
-                let stitle = sections
-                    .iter()
-                    .find(|s| sv(s, "id") == *sec)
-                    .map(|s| sv(s, "title"))
-                    .unwrap_or_else(|| sec.clone());
-                let planned: Vec<String> = old.iter().map(|s| sv(s, "title")).collect();
-                let focus = format!("{stitle}: {}", planned.join("; "));
-                let evidence = self
-                    .section_evidence(
-                        &art,
-                        &profile,
-                        &resolved,
-                        artifact_id,
-                        &focus,
-                        full.as_deref(),
-                        cancel.clone(),
-                    )
-                    .await?;
-                let sc = SectionCtx {
-                    lecture_title: &title,
-                    objectives: &objectives,
-                    outline_txt: &outline_txt,
-                    section_title: &stitle,
-                    section_focus: &planned.join("; "),
-                    visual_need: "none",
-                    position: format!("re-authoring remaining part {} of {} after an interruption", gi + 1, groups.len()),
-                    extra: format!(
-                        "ADAPTATION: {direction}\nThe learner asked: {question}\nWhy: {reason}\nAlready covered (do not repeat): {}\nPreviously planned slides for this part (cover the same content, adapted): {}",
-                        covered.join(" | "),
-                        planned.join(" | ")
-                    ),
-                };
-                let (mut part, u) = self
-                    .author_section(
-                        &art,
-                        &profile,
-                        &resolved,
-                        artifact_id,
-                        &sc,
-                        &evidence,
-                        reasoning.clone(),
-                        2,
-                        cancel.clone(),
-                    )
-                    .await?;
+            for (part, u) in parts {
                 add_usage(&mut usage, &u);
-                finalize_slides(&mut part, sec, &format!("{aid}{}-", gi + 1));
                 out.extend(part);
             }
             (out, rest, idx + 1)
@@ -3315,5 +3688,32 @@ mod prereq_tests {
         assert!(ends_evidence_read(ErrorCode::Cancelled));
         assert!(!ends_evidence_read(ErrorCode::FetchFailed));
         assert!(!ends_evidence_read(ErrorCode::ModelRateLimited));
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn split_slide_batches_keeps_three_to_four_slides_per_batch() {
+        assert!(split_slide_batches(0).is_empty());
+        assert_eq!(split_slide_batches(1), vec![(0, 1)]);
+        assert_eq!(split_slide_batches(4), vec![(0, 4)]);
+        assert_eq!(split_slide_batches(5), vec![(0, 3), (3, 5)]);
+        assert_eq!(split_slide_batches(6), vec![(0, 3), (3, 6)]);
+        assert_eq!(split_slide_batches(7), vec![(0, 4), (4, 7)]);
+        assert_eq!(split_slide_batches(8), vec![(0, 4), (4, 8)]);
+        assert_eq!(split_slide_batches(9), vec![(0, 3), (3, 6), (6, 9)]);
+        assert_eq!(split_slide_batches(10), vec![(0, 4), (4, 7), (7, 10)]);
+    }
+
+    #[test]
+    fn page_skeleton_schema_requires_title_points_and_figure_flag() {
+        let s = section_page_skeleton_schema();
+        assert_eq!(s["required"], json!(["pages"]));
+        let item_req = &s["properties"]["pages"]["items"]["required"];
+        assert_eq!(*item_req, json!(["title", "points", "needs_figure"]));
+        assert_eq!(LECTURE_MAX_OUTPUT_TOKENS, 32_768);
     }
 }

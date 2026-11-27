@@ -47,6 +47,10 @@ fn outline(n_sections: usize) -> String {
 fn is_collect_reader(r: &Req) -> bool {
     r.system.contains("research planner")
 }
+/// The outline planner (not the per-section page skeleton planner, which shares its wording).
+fn is_outline_planner(r: &Req) -> bool {
+    r.system.contains("lecture planner") && !r.system.contains("per-page skeleton")
+}
 fn is_section_reader(r: &Req) -> bool {
     r.system.contains("deepening ONE branch")
 }
@@ -110,7 +114,7 @@ fn reader_writes_the_outline_and_small_lectures_do_not_reread() {
 
     let reqs = requests(&mock);
     assert!(
-        !reqs.iter().any(|r| r.system.contains("lecture planner")),
+        !reqs.iter().any(is_outline_planner),
         "no separate planner request"
     );
     let readers: Vec<&Req> = reqs.iter().filter(|r| is_collect_reader(r)).collect();
@@ -147,7 +151,7 @@ fn an_invalid_closing_reply_is_asked_again_in_the_same_conversation() {
         .collect();
     assert_eq!(again.len(), 1, "asked once more");
     assert!(has_tool_results(again[0]), "in the reading conversation");
-    assert!(!reqs.iter().any(|r| r.system.contains("lecture planner")));
+    assert!(!reqs.iter().any(is_outline_planner));
 }
 
 /// A lecture of many sections over large sources still reads each section's passages.

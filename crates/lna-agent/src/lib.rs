@@ -609,20 +609,12 @@ impl AgentService {
                 lines.reverse();
                 Ok(lines.join("\n"))
             }).unwrap_or_default();
-            let rewrite_req = LlmRequest {
-                system: QUERY_REWRITE_PROMPT.to_string(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts: vec![Part::Text(format!(
-                        "对话历史：\n{history_text}\n\n当前问题：\n{user_text}"
-                    ))],
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::JsonObject,
-                max_output_tokens: 512,
-                reasoning: ReasoningOptions::default(),
-            };
+            let rewrite_req = LlmRequest::simple(
+                QUERY_REWRITE_PROMPT,
+                format!("对话历史：\n{history_text}\n\n当前问题：\n{user_text}"),
+                512,
+            )
+            .with_output(OutputMode::JsonObject);
             let rewrite_result = tokio::time::timeout(
                 Duration::from_secs(3),
                 self.llm.complete_structured(
@@ -1042,24 +1034,22 @@ impl AgentService {
                     )],
                 });
             }
-            let req = LlmRequest {
-                system: system_prompt.clone(),
-                messages: llm_messages.clone(),
-                // the tool list stays identical in the final round (only the choice changes), so
-                // the prompt prefix and the provider's prompt cache survive it
-                tools: tools.clone(),
-                tool_mode: if round < MAX_TOOL_ROUNDS && !tools.is_empty() {
+            // the tool list stays identical in the final round (only the choice changes), so
+            // the prompt prefix and the provider's prompt cache survive it
+            let req = LlmRequest::conversation(
+                system_prompt.clone(),
+                llm_messages.clone(),
+                resolved.max_output_tokens,
+            )
+            .with_tools(
+                tools.clone(),
+                if round < MAX_TOOL_ROUNDS && !tools.is_empty() {
                     ToolMode::Auto
                 } else {
                     ToolMode::None
                 },
-                output: OutputMode::Text,
-                max_output_tokens: resolved.max_output_tokens,
-                reasoning: ReasoningOptions {
-                    show_summary: resolved.show_thinking,
-                    effort: resolved.effort.clone(),
-                },
-            };
+            )
+            .with_reasoning(resolved.reasoning_options());
 
             let mut pending_calls: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
             let mut round_text = String::new();
@@ -2111,21 +2101,9 @@ impl AgentService {
                 "active": true,
             }),
         );
-        let req = LlmRequest {
-            system: SUMMARY_PROMPT.to_string(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text(titles_list)],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::JsonObject,
-            max_output_tokens: 1200,
-            reasoning: ReasoningOptions {
-                show_summary: resolved.show_thinking,
-                effort: resolved.effort.clone(),
-            },
-        };
+        let req = LlmRequest::simple(SUMMARY_PROMPT, titles_list, 1200)
+            .with_output(OutputMode::JsonObject)
+            .with_reasoning(resolved.reasoning_options());
 
         let mut thought_buf = String::new();
         let mut last_emit = std::time::Instant::now();
@@ -2317,20 +2295,12 @@ impl AgentService {
                 .collect::<Vec<_>>()
                 .join("\n");
             let previous = summary.as_deref().unwrap_or("");
-            let req = LlmRequest {
-                system: HISTORY_SUMMARY_PROMPT.to_string(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts: vec![Part::Text(format!(
-                        "已有摘要：\n{previous}\n\n需要合并的新对话：\n{transcript}"
-                    ))],
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::JsonObject,
-                max_output_tokens: 512,
-                reasoning: ReasoningOptions::default(),
-            };
+            let req = LlmRequest::simple(
+                HISTORY_SUMMARY_PROMPT,
+                format!("已有摘要：\n{previous}\n\n需要合并的新对话：\n{transcript}"),
+                512,
+            )
+            .with_output(OutputMode::JsonObject);
             let schema = json!({
                 "type": "object",
                 "properties": { "summary": { "type": "string" } },
@@ -2425,20 +2395,12 @@ impl AgentService {
     ) {
         let service = self.clone();
         tokio::spawn(async move {
-            let req = LlmRequest {
-                system: FOLLOWUPS_PROMPT.to_string(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts: vec![Part::Text(format!(
-                        "问题：\n{question}\n\n回答：\n{answer}"
-                    ))],
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::JsonObject,
-                max_output_tokens: 256,
-                reasoning: ReasoningOptions::default(),
-            };
+            let req = LlmRequest::simple(
+                FOLLOWUPS_PROMPT,
+                format!("问题：\n{question}\n\n回答：\n{answer}"),
+                256,
+            )
+            .with_output(OutputMode::JsonObject);
             let fu_tid = format!("followups:{message_id}");
             service.emit(
                 &format!("notebook:{notebook_id}"),

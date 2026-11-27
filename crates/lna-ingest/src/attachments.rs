@@ -8,10 +8,7 @@
 
 use base64::Engine as _;
 use image::{imageops::FilterType, DynamicImage, ImageFormat};
-use lna_llm::{
-    LlmClient, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, ResolvedProfile, Role,
-    ToolMode,
-};
+use lna_llm::{LlmClient, LlmRequest, Part, ResolvedProfile};
 use lna_secrets::SecretStore;
 use lna_storage::Database;
 use lna_types::{new_ulid, Attachment, LnaError, LnaResult};
@@ -359,29 +356,22 @@ pub async fn describe(
         parts.push(Part::Text(format!(
             "{focus}\n要求：只报告图片中确实存在的文字、图表数值、公式（用 LaTeX）和视觉细节，不要猜测。"
         )));
-        let req = LlmRequest {
-            system: "You are a rigorous visual reading assistant. Extract only accurate facts visible in the provided images, including exact text, chart values and equations, without guessing.".into(),
-            messages: vec![LlmMessage { role: Role::User, parts }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: profile.output_budget().clamp(1024, 4096),
-            reasoning: ReasoningOptions::default(),
-        };
+        let req = LlmRequest::from_parts(
+            "You are a rigorous visual reading assistant. Extract only accurate facts visible in the provided images, including exact text, chart values and equations, without guessing.",
+            parts,
+            profile.output_budget().clamp(1024, 4096),
+        );
         if let Ok((txt, usage)) = llm
             .complete_text(profile, &req, CancellationToken::new())
             .await
         {
-            let _ = lna_storage::record_usage(
+            crate::media::record_llm_usage(
                 db,
                 Some(notebook_id),
-                Some(&profile.id),
+                &profile.id,
                 "attachment_vision",
                 None,
-                usage.input_tokens as i64,
-                usage.output_tokens as i64,
-                usage.cached_tokens as i64,
-                false,
+                &usage,
             );
             return txt;
         }

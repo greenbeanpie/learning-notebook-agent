@@ -704,7 +704,9 @@ pub const ZH_DOC: &str = "# 第三章 向量空间\n\n## 3.5 基与维数\n\n向
 pub fn studio_reply(r: &Req) -> Reply {
     let s = &r.system;
     let user_text = r.body.to_string();
-    let json = if s.contains("for lecture outline") {
+    let json = if s.contains("per-page skeleton") {
+        json!({"pages":[{"title":"基与维数","points":["定义","维数定理"],"needs_figure":false,"figure_hint":""},{"title":"一条曲线","points":["要点"],"needs_figure":true,"figure_hint":"曲线示意"}]})
+    } else if s.contains("for lecture outline") {
         json!({"title":"基与维数讲解","objectives":["理解基","理解维数"],"sections":[{"title":"基与维数","focus":"3.5 节：基的定义与维数定理"}]})
     } else if s.contains("for lecture slides") {
         json!({"slides":[

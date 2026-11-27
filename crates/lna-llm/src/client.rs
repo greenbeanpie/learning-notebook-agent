@@ -673,6 +673,58 @@ impl LlmClient {
         Ok((text, usage, stop))
     }
 
+    /// Streams one assistant turn and collects text, tool calls (ignoring nameless entries),
+    /// opaque provider parts, usage, and stop reason while forwarding thinking deltas.
+    pub async fn complete_turn<F>(
+        &self,
+        profile: &ResolvedProfile,
+        req: &LlmRequest,
+        cancel: CancellationToken,
+        mut on_thinking: F,
+    ) -> LnaResult<TurnOutput>
+    where
+        F: FnMut(&str),
+    {
+        let mut text = String::new();
+        let mut opaque = Vec::new();
+        let mut usage = Usage::default();
+        let mut calls: std::collections::BTreeMap<u32, (String, String, String)> =
+            std::collections::BTreeMap::new();
+        let stop_reason = self
+            .stream(profile, req, cancel, |ev| match ev {
+                LlmEvent::ThoughtDelta(delta) => on_thinking(&delta),
+                LlmEvent::TextDelta(t) => text.push_str(&t),
+                LlmEvent::ToolCallStart { index, id, name } => {
+                    calls.insert(index, (id, name, String::new()));
+                }
+                LlmEvent::ToolCallDelta { index, json } => {
+                    if let Some(entry) = calls.get_mut(&index) {
+                        entry.2.push_str(&json);
+                    }
+                }
+                LlmEvent::Opaque(o) => opaque.push(Part::Opaque(o)),
+                LlmEvent::Usage(u) => usage = u,
+                _ => {}
+            })
+            .await?;
+        let tool_calls = calls
+            .into_values()
+            .filter(|(_, name, _)| !name.trim().is_empty())
+            .map(|(id, name, raw_arguments)| CollectedToolCall {
+                id,
+                name,
+                raw_arguments,
+            })
+            .collect();
+        Ok(TurnOutput {
+            text,
+            tool_calls,
+            opaque,
+            usage,
+            stop_reason,
+        })
+    }
+
     /// Structured output: JSON schema when supported, else JSON mode with the schema in the prompt,
     /// plus schema-repair turns. Models with neither are refused.
     pub async fn complete_structured(
@@ -830,10 +882,20 @@ impl LlmClient {
                     let mut cont = req.clone();
                     let done_list = items
                         .iter()
-                        .map(|it| {
+                        .enumerate()
+                        .map(|(idx, it)| {
                             let id = it.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                            let label = it.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                            format!("[{id}] {label}")
+                            let label = it
+                                .get("label")
+                                .or_else(|| it.get("title"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            match (id.is_empty(), label.is_empty()) {
+                                (false, false) => format!("[{id}] {label}"),
+                                (false, true) => format!("[{id}]"),
+                                (true, false) => format!("#{} {label}", idx + 1),
+                                (true, true) => format!("#{}", idx + 1),
+                            }
                         })
                         .collect::<Vec<_>>()
                         .join("; ");
@@ -988,23 +1050,17 @@ impl LlmClient {
                     max_repairs
                 ),
             ));
-            let repair_req = LlmRequest {
-                system: "You are a strict JSON repairer. Output only valid JSON that strictly conforms to the provided JSON Schema, with no commentary or code fences.".into(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts: vec![Part::Text(format!(
-                        "The following JSON failed schema validation ({}).{} Fix it and output valid JSON only:\nSchema:\n{}\n\nOriginal output:\n{}",
-                        last_reason,
-                        if truncated { " It was also cut off by the output length limit, so output a SHORTER but complete version." } else { "" },
-                        schema, candidate
-                    ))],
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: req.output.clone(),
-                max_output_tokens: base_req.max_output_tokens,
-                reasoning: ReasoningOptions::default(),
-            };
+            let repair_req = LlmRequest::simple(
+                "You are a strict JSON repairer. Output only valid JSON that strictly conforms to the provided JSON Schema, with no commentary or code fences.",
+                format!(
+                    "The following JSON failed schema validation ({}).{} Fix it and output valid JSON only:\nSchema:\n{}\n\nOriginal output:\n{}",
+                    last_reason,
+                    if truncated { " It was also cut off by the output length limit, so output a SHORTER but complete version." } else { "" },
+                    schema, candidate
+                ),
+                base_req.max_output_tokens,
+            )
+            .with_output(req.output.clone());
             let (repaired, ru, rstop) = self
                 .complete_text_with_stop(
                     profile,
@@ -1590,5 +1646,159 @@ mod abort_tests {
         let e = parse_structured(&schema, "{\"abort_reason\":\"图看不清\"}").unwrap_err();
         assert_eq!(e.code, ErrorCode::ModelRefused);
         assert!(e.message.contains("图看不清"));
+    }
+}
+
+/// One tool call collected from an assistant turn stream.
+#[derive(Debug, Clone)]
+pub struct CollectedToolCall {
+    pub id: String,
+    pub name: String,
+    pub raw_arguments: String,
+}
+
+/// Aggregated result of a single streamed assistant turn.
+#[derive(Debug, Clone)]
+pub struct TurnOutput {
+    pub text: String,
+    pub tool_calls: Vec<CollectedToolCall>,
+    pub opaque: Vec<Part>,
+    pub usage: Usage,
+    pub stop_reason: StopReason,
+}
+
+/// Next item from `stream`, or `Cancelled` as soon as `cancel` fires.
+pub async fn next_or_cancel<S>(
+    stream: &mut S,
+    cancel: &CancellationToken,
+) -> LnaResult<Option<S::Item>>
+where
+    S: futures_util::Stream + Unpin,
+{
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(LnaError::new(ErrorCode::Cancelled, "Cancelled")),
+        item = stream.next() => Ok(item),
+    }
+}
+
+/// Runs `make` over `items` concurrently with at most `limit` futures in flight,
+/// returning outputs in original input order. Stops on the first error or cancellation.
+pub async fn run_parallel_ordered<T, O, F, Fut>(
+    items: Vec<T>,
+    limit: usize,
+    cancel: &CancellationToken,
+    mut make: F,
+) -> LnaResult<Vec<O>>
+where
+    F: FnMut(usize, T) -> Fut,
+    Fut: std::future::Future<Output = LnaResult<O>>,
+{
+    let total = items.len();
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+    let futs: Vec<_> = items
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let fut = make(i, item);
+            async move { (i, fut.await) }
+        })
+        .collect();
+    let mut running = futures_util::stream::iter(futs).buffer_unordered(limit.clamp(1, total));
+    let mut out: Vec<Option<O>> = (0..total).map(|_| None).collect();
+    while let Some((i, res)) = next_or_cancel(&mut running, cancel).await? {
+        out[i] = Some(res?);
+    }
+    Ok(out.into_iter().flatten().collect())
+}
+
+/// Runs `make` over `items` concurrently with at most `limit` futures in flight,
+/// passing each result to `on_done` as soon as it finishes (ideal for incremental checkpoints).
+pub async fn run_parallel_unordered<T, O, F, Fut, H>(
+    items: Vec<T>,
+    limit: usize,
+    cancel: &CancellationToken,
+    mut make: F,
+    mut on_done: H,
+) -> LnaResult<()>
+where
+    F: FnMut(usize, T) -> Fut,
+    Fut: std::future::Future<Output = O>,
+    H: FnMut(usize, O) -> LnaResult<()>,
+{
+    let total = items.len();
+    if total == 0 {
+        return Ok(());
+    }
+    let futs: Vec<_> = items
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let fut = make(i, item);
+            async move { (i, fut.await) }
+        })
+        .collect();
+    let mut running = futures_util::stream::iter(futs).buffer_unordered(limit.clamp(1, total));
+    while let Some((i, val)) = next_or_cancel(&mut running, cancel).await? {
+        on_done(i, val)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod parallel_and_cap_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn run_parallel_ordered_preserves_order_and_bounds_concurrency() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let items = vec![10u32, 20, 30, 40, 50];
+        let out = run_parallel_ordered(items, 2, &CancellationToken::new(), |_, v| {
+            let active = active.clone();
+            let peak = peak.clone();
+            async move {
+                let cur = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(cur, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(15)).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(v * 2)
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(out, vec![20, 40, 60, 80, 100]);
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+    }
+
+    #[test]
+    fn hard_output_cap_bounds_unlimited_profiles() {
+        let mut p = ResolvedProfile {
+            id: "p".into(),
+            display_name: "p".into(),
+            protocol: ProtocolKind::Gemini,
+            base_url: "https://example.com".into(),
+            model_id: "m".into(),
+            api_key: None,
+            show_thinking: false,
+            effort: None,
+            context_window: 128_000,
+            max_output_tokens: 0,
+            capabilities: Default::default(),
+            extra_headers: Default::default(),
+            anthropic_version: "2023-06-01".into(),
+            preset: None,
+            shrink_media: false,
+        };
+        assert_eq!(p.bounded_output(32_768), 0);
+        assert_eq!(p.hard_output_cap(32_768), 32_768);
+        p.max_output_tokens = 65_536;
+        assert_eq!(p.hard_output_cap(32_768), 32_768);
+        p.max_output_tokens = 8_192;
+        assert_eq!(p.hard_output_cap(32_768), 8_192);
     }
 }

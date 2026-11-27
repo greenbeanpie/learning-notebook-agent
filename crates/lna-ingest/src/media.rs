@@ -3,10 +3,7 @@ use crate::office::EmbeddedImageInfo;
 use crate::parser::{self, Block, BlockKind, ParsedDoc, PdfPageMeta};
 use crate::win_ocr;
 use base64::Engine as _;
-use lna_llm::{
-    LlmClient, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, ResolvedProfile, Role,
-    ToolMode,
-};
+use lna_llm::{LlmClient, LlmRequest, Part, ResolvedProfile};
 use lna_secrets::SecretStore;
 use lna_storage::Database;
 use lna_types::{ErrorCode, LnaError, LnaResult, ProtocolKind, Source, SourceKind};
@@ -410,6 +407,27 @@ pub async fn media_part_for_file(
     }
 }
 
+pub(crate) fn record_llm_usage(
+    db: &Database,
+    notebook_id: Option<&str>,
+    profile_id: &str,
+    scope: &str,
+    subject_id: Option<&str>,
+    usage: &lna_llm::Usage,
+) {
+    let _ = lna_storage::record_usage(
+        db,
+        notebook_id,
+        Some(profile_id),
+        scope,
+        subject_id,
+        usage.input_tokens as i64,
+        usage.output_tokens as i64,
+        usage.cached_tokens as i64,
+        false,
+    );
+}
+
 pub async fn ingest_audio_video(
     db: &Database,
     secrets: &Arc<dyn SecretStore>,
@@ -463,18 +481,11 @@ pub async fn ingest_audio_video(
         )
     };
 
-    let req = LlmRequest {
-        system: "You are a high-precision multimodal media understanding assistant. Strictly based on the actual speech and visual content in the media, output clear, searchable structured Markdown in the primary language of the media.".into(),
-        messages: vec![LlmMessage {
-            role: Role::User,
-            parts: vec![media_part, Part::Text(prompt)],
-        }],
-        tools: vec![],
-        tool_mode: ToolMode::None,
-        output: OutputMode::Text,
-        max_output_tokens: resolved.output_budget().max(4096),
-        reasoning: ReasoningOptions::default(),
-    };
+    let req = LlmRequest::from_parts(
+        "You are a high-precision multimodal media understanding assistant. Strictly based on the actual speech and visual content in the media, output clear, searchable structured Markdown in the primary language of the media.",
+        vec![media_part, Part::Text(prompt)],
+        resolved.output_budget().max(4096),
+    );
 
     let res = llm
         .complete_text(&resolved, &req, CancellationToken::new())
@@ -485,16 +496,13 @@ pub async fn ingest_audio_video(
     }
 
     let (md_text, usage) = res?;
-    let _ = lna_storage::record_usage(
+    record_llm_usage(
         db,
         Some(&src.notebook_id),
-        Some(&resolved.id),
+        &resolved.id,
         "ingest_media",
         Some(&src.id),
-        usage.input_tokens as i64,
-        usage.output_tokens as i64,
-        usage.cached_tokens as i64,
-        false,
+        &usage,
     );
 
     let trimmed = md_text.trim();
@@ -528,40 +536,30 @@ pub async fn ingest_image(
                 - 若图片包含图表、示意图、流程图或照片，请用清晰条目描述其中的数据趋势、结构关系与关键视觉细节。",
                 src.title
             );
-            let req = LlmRequest {
-                system: "You are a high-precision image analysis and OCR assistant. Output only text and visual facts directly observed in the image, using Markdown tables and LaTeX formulas where appropriate.".into(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts: vec![
-                        Part::Media {
-                            mime_type: mime,
-                            data_base64: Some(b64),
-                            file_uri: None,
-                            audio_format: None,
-                        },
-                        Part::Text(prompt),
-                    ],
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::Text,
-                max_output_tokens: resolved.output_budget().max(4096),
-                reasoning: ReasoningOptions::default(),
-            };
+            let req = LlmRequest::from_parts(
+                "You are a high-precision image analysis and OCR assistant. Output only text and visual facts directly observed in the image, using Markdown tables and LaTeX formulas where appropriate.",
+                vec![
+                    Part::Media {
+                        mime_type: mime,
+                        data_base64: Some(b64),
+                        file_uri: None,
+                        audio_format: None,
+                    },
+                    Part::Text(prompt),
+                ],
+                resolved.output_budget().max(4096),
+            );
             if let Ok((txt, usage)) = llm
                 .complete_text(&resolved, &req, CancellationToken::new())
                 .await
             {
-                let _ = lna_storage::record_usage(
+                record_llm_usage(
                     db,
                     Some(&src.notebook_id),
-                    Some(&resolved.id),
+                    &resolved.id,
                     "ingest_media",
                     Some(&src.id),
-                    usage.input_tokens as i64,
-                    usage.output_tokens as i64,
-                    usage.cached_tokens as i64,
-                    false,
+                    &usage,
                 );
                 if !txt.trim().is_empty() {
                     return Ok(parser::parse_markdown(&txt));
@@ -657,23 +655,16 @@ pub async fn ocr_pdf_pages(
         let batches: Vec<Vec<u32>> = ocr_pages.chunks(4).map(|c| c.to_vec()).collect();
         let limit = llm.parallel_limit(&resolved.id).clamp(1, 64);
         let resolved_ref = &resolved;
-        let mut running = futures_util::StreamExt::buffer_unordered(
-            futures_util::stream::iter(batches.into_iter().enumerate().map(
-                |(i, batch)| async move {
-                    (
-                        i,
-                        ocr_pdf_batch(db, llm, resolved_ref, src, pdf_path, batch).await,
-                    )
-                },
-            )),
+        let batch_pages = lna_llm::run_parallel_ordered(
+            batches,
             limit,
-        );
-        let mut by_batch: std::collections::BTreeMap<usize, Vec<(u32, String)>> =
-            std::collections::BTreeMap::new();
-        while let Some((i, pages)) = futures_util::StreamExt::next(&mut running).await {
-            by_batch.insert(i, pages);
-        }
-        for (_, pages) in by_batch {
+            &CancellationToken::new(),
+            |_, batch| async move {
+                Ok(ocr_pdf_batch(db, llm, resolved_ref, src, pdf_path, batch).await)
+            },
+        )
+        .await?;
+        for pages in batch_pages {
             for (pno, txt) in pages {
                 let start = cursor;
                 cursor += txt.len();
@@ -727,33 +718,23 @@ async fn ocr_pdf_batch(
         === PAGE <页码> ===",
         page_list.join(", ")
     )));
-    let req = LlmRequest {
-        system: "You are a professional document OCR assistant. Faithfully transcribe text, Markdown tables, LaTeX formulas, and brief figure annotations visible on each page without fabrication.".into(),
-        messages: vec![LlmMessage {
-            role: Role::User,
-            parts,
-        }],
-        tools: vec![],
-        tool_mode: ToolMode::None,
-        output: OutputMode::Text,
-        max_output_tokens: resolved.output_budget().max(4096),
-        reasoning: ReasoningOptions::default(),
-    };
+    let req = LlmRequest::from_parts(
+        "You are a professional document OCR assistant. Faithfully transcribe text, Markdown tables, LaTeX formulas, and brief figure annotations visible on each page without fabrication.",
+        parts,
+        resolved.output_budget().max(4096),
+    );
     match llm
         .complete_text(resolved, &req, CancellationToken::new())
         .await
     {
         Ok((resp_text, usage)) => {
-            let _ = lna_storage::record_usage(
+            record_llm_usage(
                 db,
                 Some(&src.notebook_id),
-                Some(&resolved.id),
+                &resolved.id,
                 "ingest_ocr",
                 Some(&src.id),
-                usage.input_tokens as i64,
-                usage.output_tokens as i64,
-                usage.cached_tokens as i64,
-                false,
+                &usage,
             );
             split_ocr_pages_response(&resp_text, &rendered)
                 .into_iter()
@@ -898,32 +879,22 @@ pub async fn vision_inspect_images(
             要求：只报告图片中确实存在的文字、图表数值、公式（用 LaTeX）和视觉细节，标注对应页码或图片名称。"
         )));
 
-        let req = LlmRequest {
-            system: "You are a rigorous visual reading assistant. Extract only accurate facts visible in the provided images, including exact text, chart values, and LaTeX equations, without guessing missing text or numbers.".into(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts,
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: resolved.output_budget().max(4096),
-            reasoning: ReasoningOptions::default(),
-        };
+        let req = LlmRequest::from_parts(
+            "You are a rigorous visual reading assistant. Extract only accurate facts visible in the provided images, including exact text, chart values, and LaTeX equations, without guessing missing text or numbers.",
+            parts,
+            resolved.output_budget().max(4096),
+        );
 
         let (txt, usage) = llm
             .complete_text(&resolved, &req, CancellationToken::new())
             .await?;
-        let _ = lna_storage::record_usage(
+        record_llm_usage(
             db,
             Some(notebook_id),
-            Some(&resolved.id),
+            &resolved.id,
             "agent_vision",
             None,
-            usage.input_tokens as i64,
-            usage.output_tokens as i64,
-            usage.cached_tokens as i64,
-            false,
+            &usage,
         );
         return Ok(txt);
     }

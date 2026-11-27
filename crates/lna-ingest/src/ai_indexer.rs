@@ -3,10 +3,7 @@ use crate::media;
 use crate::office;
 use crate::parser::{self, Block, BlockKind, ParsedDoc, PdfPageMeta};
 use base64::Engine as _;
-use lna_llm::{
-    LlmClient, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, ResolvedProfile, Role,
-    ToolMode,
-};
+use lna_llm::{LlmClient, LlmRequest, OutputMode, Part, ResolvedProfile};
 use lna_retrieval::tokenize_for_fts;
 use lna_secrets::SecretStore;
 use lna_storage::{db::map_sql_err, Database};
@@ -314,18 +311,12 @@ pub async fn run_ai_index_nodes(
         return Ok(None);
     }
     let (probe, _is_small) = build_structural_probe(src, doc);
-    let req = LlmRequest {
-        system: AI_NODES_SYSTEM_PROMPT.to_string(),
-        messages: vec![LlmMessage {
-            role: Role::User,
-            parts: vec![Part::Text(probe)],
-        }],
-        tools: vec![],
-        tool_mode: ToolMode::None,
-        output: OutputMode::JsonObject,
-        max_output_tokens: 2048.min(resolved.output_budget().max(1024)),
-        reasoning: ReasoningOptions::default(),
-    };
+    let req = LlmRequest::simple(
+        AI_NODES_SYSTEM_PROMPT,
+        probe,
+        2048.min(resolved.output_budget().max(1024)),
+    )
+    .with_output(OutputMode::JsonObject);
     let (value, usage) = llm
         .complete_structured(
             &resolved,
@@ -335,16 +326,13 @@ pub async fn run_ai_index_nodes(
             CancellationToken::new(),
         )
         .await?;
-    let _ = lna_storage::record_usage(
+    media::record_llm_usage(
         db,
         Some(&src.notebook_id),
-        Some(&resolved.id),
+        &resolved.id,
         "ingest_ai_index",
         Some(&src.id),
-        usage.input_tokens as i64,
-        usage.output_tokens as i64,
-        usage.cached_tokens as i64,
-        false,
+        &usage,
     );
     Ok(parse_ai_index_response(&src.id, value)
         .map(|o| o.nodes)
@@ -381,18 +369,12 @@ pub async fn run_ai_guide(
         "=== 已构建的目录索引 ===\n{outline}\n{}",
         truncate_chars(&probe, 6_000)
     );
-    let req = LlmRequest {
-        system: AI_GUIDE_SYSTEM_PROMPT.to_string(),
-        messages: vec![LlmMessage {
-            role: Role::User,
-            parts: vec![Part::Text(text)],
-        }],
-        tools: vec![],
-        tool_mode: ToolMode::None,
-        output: OutputMode::JsonObject,
-        max_output_tokens: 1024.min(resolved.output_budget().max(512)),
-        reasoning: ReasoningOptions::default(),
-    };
+    let req = LlmRequest::simple(
+        AI_GUIDE_SYSTEM_PROMPT,
+        text,
+        1024.min(resolved.output_budget().max(512)),
+    )
+    .with_output(OutputMode::JsonObject);
     let (value, usage) = llm
         .complete_structured(
             &resolved,
@@ -402,16 +384,13 @@ pub async fn run_ai_guide(
             CancellationToken::new(),
         )
         .await?;
-    let _ = lna_storage::record_usage(
+    media::record_llm_usage(
         db,
         Some(&src.notebook_id),
-        Some(&resolved.id),
+        &resolved.id,
         "ingest_ai_guide",
         Some(&src.id),
-        usage.input_tokens as i64,
-        usage.output_tokens as i64,
-        usage.cached_tokens as i64,
-        false,
+        &usage,
     );
     #[derive(Deserialize)]
     struct RawGuide {
@@ -552,18 +531,12 @@ pub async fn run_ai_vision_toc_index(
     };
     parts.push(Part::Text(extra_instr));
 
-    let req = LlmRequest {
-        system: AI_INDEX_SYSTEM_PROMPT.to_string(),
-        messages: vec![LlmMessage {
-            role: Role::User,
-            parts,
-        }],
-        tools: vec![],
-        tool_mode: ToolMode::None,
-        output: OutputMode::JsonObject,
-        max_output_tokens: resolved.output_budget().clamp(2048, 4096),
-        reasoning: ReasoningOptions::default(),
-    };
+    let req = LlmRequest::from_parts(
+        AI_INDEX_SYSTEM_PROMPT,
+        parts,
+        resolved.output_budget().clamp(2048, 4096),
+    )
+    .with_output(OutputMode::JsonObject);
 
     let (value, usage) = llm
         .complete_structured(
@@ -574,16 +547,13 @@ pub async fn run_ai_vision_toc_index(
             CancellationToken::new(),
         )
         .await?;
-    let _ = lna_storage::record_usage(
+    media::record_llm_usage(
         db,
         Some(&src.notebook_id),
-        Some(&resolved.id),
+        &resolved.id,
         "ingest_vision_toc_index",
         Some(&src.id),
-        usage.input_tokens as i64,
-        usage.output_tokens as i64,
-        usage.cached_tokens as i64,
-        false,
+        &usage,
     );
 
     Ok(parse_ai_index_response(&src.id, value))

@@ -5,10 +5,7 @@ use lna_agent::AgentService;
 use lna_embedding::EmbeddingService;
 use lna_ingest::IngestService;
 use lna_jobs::JobQueue;
-use lna_llm::{
-    LlmClient, LlmEvent, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, Role, ToolDef,
-    ToolMode,
-};
+use lna_llm::{LlmClient, LlmEvent, LlmRequest, OutputMode, Part, ToolDef, ToolMode};
 use lna_retrieval::RetrievalEngine;
 use lna_secrets::{KeyringSecretStore, SecretStore};
 use lna_storage::{db::map_sql_err, Database, StoragePaths};
@@ -179,106 +176,86 @@ impl CoreRuntime {
         caps.streaming = true;
         caps.stream_usage = ping_usage.input_tokens > 0 || ping_usage.output_tokens > 0;
 
-        let tool_req = LlmRequest {
-            system: "You must call the lna_capability_probe tool exactly once with {\"ok\":true}. Do not answer in natural language.".into(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text("Call the capability probe now.".into())],
-            }],
-            tools: vec![ToolDef {
-                name: "lna_capability_probe".into(),
-                description: "Capability detection probe".into(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": { "ok": { "type": "boolean" } },
-                    "required": ["ok"],
-                    "additionalProperties": false
-                }),
-            }],
-            tool_mode: ToolMode::Auto,
-            output: OutputMode::Text,
-            // room for models that think before answering: a small cap is spent on reasoning and
-            // leaves no tool call / JSON, which would wrongly mark the model as unsupported
-            max_output_tokens: 4096,
-            reasoning: ReasoningOptions::default(),
-        };
-        let mut tool_called = false;
-        if self
-            .llm
-            .stream_strict(resolved, &tool_req, CancellationToken::new(), |event| {
-                if matches!(event, LlmEvent::ToolCallStart { .. }) {
-                    tool_called = true;
-                }
-            })
-            .await
-            .is_ok()
-        {
-            caps.tools = tool_called;
-        } else {
-            caps.tools = false;
-        }
-
         let probe_schema = json!({
             "type": "object",
             "properties": { "ok": { "type": "boolean" } },
             "required": ["ok"],
             "additionalProperties": false
         });
-        let schema_req = LlmRequest {
-            system: "Return only a JSON object with ok set to true.".into(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text("Return the probe object.".into())],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::JsonSchema {
+        // Room for models that think before answering: a small cap is spent on reasoning and
+        // leaves no tool call / JSON, which would wrongly mark the model as unsupported.
+        let tool_req = LlmRequest::simple(
+            "You must call the lna_capability_probe tool exactly once with {\"ok\":true}. Do not answer in natural language.",
+            "Call the capability probe now.",
+            4096,
+        )
+        .with_tools(
+            vec![ToolDef {
                 name: "lna_capability_probe".into(),
-                schema: probe_schema.clone(),
-            },
-            // room for models that think before answering: a small cap is spent on reasoning and
-            // leaves no tool call / JSON, which would wrongly mark the model as unsupported
-            max_output_tokens: 4096,
-            reasoning: ReasoningOptions::default(),
-        };
-        caps.json_schema = self
-            .llm
-            .complete_text_strict(resolved, &schema_req, CancellationToken::new())
-            .await
-            .ok()
-            .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
-            .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
-            .unwrap_or(false);
-
-        let json_mode_req = LlmRequest {
-            system: "Return only a JSON object with ok set to true.".into(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text("Return the probe object.".into())],
+                description: "Capability detection probe".into(),
+                parameters: probe_schema.clone(),
             }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::JsonObject,
-            // room for models that think before answering: a small cap is spent on reasoning and
-            // leaves no tool call / JSON, which would wrongly mark the model as unsupported
-            max_output_tokens: 4096,
-            reasoning: ReasoningOptions::default(),
-        };
-        caps.json_mode = self
-            .llm
-            .complete_text_strict(resolved, &json_mode_req, CancellationToken::new())
-            .await
-            .ok()
-            .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
-            .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
-            .unwrap_or(false);
+            ToolMode::Auto,
+        );
+        let schema_req = LlmRequest::simple(
+            "Return only a JSON object with ok set to true.",
+            "Return the probe object.",
+            4096,
+        )
+        .with_output(OutputMode::JsonSchema {
+            name: "lna_capability_probe".into(),
+            schema: probe_schema,
+        });
+        let json_mode_req = LlmRequest::simple(
+            "Return only a JSON object with ok set to true.",
+            "Return the probe object.",
+            4096,
+        )
+        .with_output(OutputMode::JsonObject);
 
-        // The three samples are independent, so they run together; each is bounded by the client timeout.
-        let (vision, audio, video) = tokio::join!(
+        let tool_fut = async {
+            let mut tool_called = false;
+            self.llm
+                .stream_strict(resolved, &tool_req, CancellationToken::new(), |event| {
+                    if matches!(event, LlmEvent::ToolCallStart { .. }) {
+                        tool_called = true;
+                    }
+                })
+                .await
+                .is_ok()
+                && tool_called
+        };
+        let schema_fut = async {
+            self.llm
+                .complete_text_strict(resolved, &schema_req, CancellationToken::new())
+                .await
+                .ok()
+                .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
+                .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
+                .unwrap_or(false)
+        };
+        let json_mode_fut = async {
+            self.llm
+                .complete_text_strict(resolved, &json_mode_req, CancellationToken::new())
+                .await
+                .ok()
+                .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
+                .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
+                .unwrap_or(false)
+        };
+
+        // All six capability probes are independent and bounded by LlmClient's per-profile gate.
+        let (tools_ok, schema_ok, json_mode_ok, vision, audio, video) = tokio::join!(
+            tool_fut,
+            schema_fut,
+            json_mode_fut,
             self.probe_media(resolved, MediaProbe::Image),
             self.probe_media(resolved, MediaProbe::Audio),
             self.probe_media(resolved, MediaProbe::Video),
         );
+        caps.tools = tools_ok;
+        caps.json_schema = schema_ok;
+        caps.json_mode = json_mode_ok;
         let mut failed = Vec::new();
         let mut settle = |kind: &str, verdict: Result<bool, String>| match verdict {
             Ok(seen) => seen,
@@ -328,27 +305,20 @@ impl CoreRuntime {
                 None,
             ),
         };
-        let req = LlmRequest {
-            system: "You are checking which kinds of input reach you. Answer briefly and honestly; never guess about an attachment you did not receive.".into(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![
-                    Part::Text(question),
-                    Part::Media {
-                        mime_type: mime.into(),
-                        data_base64: Some(data),
-                        file_uri: None,
-                        audio_format,
-                    },
-                ],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
+        let req = LlmRequest::from_parts(
+            "You are checking which kinds of input reach you. Answer briefly and honestly; never guess about an attachment you did not receive.",
+            vec![
+                Part::Text(question),
+                Part::Media {
+                    mime_type: mime.into(),
+                    data_base64: Some(data),
+                    file_uri: None,
+                    audio_format,
+                },
+            ],
             // room for models that think before answering
-            max_output_tokens: 512,
-            reasoning: ReasoningOptions::default(),
-        };
+            512,
+        );
         let reply = match self
             .llm
             .complete_text_strict(resolved, &req, CancellationToken::new())
@@ -419,18 +389,7 @@ impl CoreRuntime {
         &self,
         resolved: &lna_llm::ResolvedProfile,
     ) -> LnaResult<(String, lna_llm::Usage)> {
-        let req = LlmRequest {
-            system: "Reply with OK.".into(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text("ping".into())],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: 512,
-            reasoning: ReasoningOptions::default(),
-        };
+        let req = LlmRequest::simple("Reply with OK.", "ping", 512);
         self.llm
             .complete_text_strict(resolved, &req, CancellationToken::new())
             .await
@@ -467,9 +426,17 @@ impl CoreRuntime {
                     !c.embedding_only && c.probed_at.is_none() && c.chat_missing().is_some()
                 })
                 .collect();
-            for prof in pending {
-                core.probe_stored_profile(&prof).await;
-            }
+            let _ = lna_llm::run_parallel_unordered(
+                pending,
+                4,
+                &core.shutdown,
+                |_, prof| {
+                    let core = core.clone();
+                    async move { core.probe_stored_profile(&prof).await }
+                },
+                |_, ()| Ok(()),
+            )
+            .await;
         });
 
         // Worker 1: Fast ingest & summary loop (never blocked by Studio, B-14)
@@ -1871,27 +1838,9 @@ impl CoreRuntime {
             });
             return Ok(json!({ "ok": true, "translated_with_llm": false }));
         };
-        let api_key = match prof.keychain_ref.as_deref() {
-            Some(kref) => self.secrets.get(kref)?,
-            None => None,
-        };
-        let resolved = lna_llm::ResolvedProfile {
-            id: prof.id,
-            display_name: prof.display_name,
-            protocol: prof.protocol,
-            base_url: prof.base_url,
-            model_id: prof.model_id,
-            api_key,
-            show_thinking: false,
-            effort: None,
-            context_window: prof.context_window,
-            max_output_tokens: prof.max_output_tokens,
-            capabilities: prof.capabilities,
-            extra_headers: prof.extra_headers,
-            anthropic_version: "2023-06-01".into(),
-            preset: prof.preset.clone(),
-            shrink_media: prof.shrink_media,
-        };
+        let mut resolved = self.agent.resolve_profile(&prof)?;
+        resolved.show_thinking = false;
+        resolved.effort = None;
 
         let (summary_md, sq_json): (Option<String>, Option<String>) = self.db.read(|conn| {
             Ok(conn
@@ -1923,20 +1872,14 @@ impl CoreRuntime {
             "suggested_questions": suggested_questions,
         });
 
-        let req = lna_llm::LlmRequest {
-            system: format!(
+        let req = LlmRequest::simple(
+            format!(
                 "You are a UI content translator. Translate all text values in the provided JSON into {lang_name}. Keep JSON keys strictly unchanged, preserve Markdown **bold** emphasis, and output valid JSON only with no code fences."
             ),
-            messages: vec![lna_llm::LlmMessage {
-                role: lna_llm::Role::User,
-                parts: vec![lna_llm::Part::Text(input_payload.to_string())],
-            }],
-            tools: vec![],
-            tool_mode: lna_llm::ToolMode::None,
-            output: lna_llm::OutputMode::JsonObject,
-            max_output_tokens: 2048.min(resolved.output_budget().max(1024)),
-            reasoning: lna_llm::ReasoningOptions::default(),
-        };
+            input_payload.to_string(),
+            2048.min(resolved.output_budget().max(1024)),
+        )
+        .with_output(OutputMode::JsonObject);
 
         let tr_tid = format!("translate:{notebook_id}");
         self.emit(

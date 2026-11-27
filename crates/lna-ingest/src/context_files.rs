@@ -11,10 +11,7 @@
 use crate::attachments::{attachments_dir, write_meta, MAX_IMAGES_PER_MESSAGE};
 use crate::{chunker, formats, media, office, parser, ssrf};
 use base64::Engine as _;
-use lna_llm::{
-    LlmClient, LlmMessage, LlmRequest, OutputMode, Part, ReasoningOptions, ResolvedProfile, Role,
-    ToolDef, ToolMode,
-};
+use lna_llm::{LlmClient, LlmMessage, LlmRequest, Part, ResolvedProfile, Role, ToolDef, ToolMode};
 use lna_secrets::SecretStore;
 use lna_storage::Database;
 use lna_types::{new_ulid, Attachment, ErrorCode, LnaError, LnaResult, SourceKind};
@@ -1000,18 +997,11 @@ async fn ask_media(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResu
         &att.name,
     )
     .await?;
-    let req = LlmRequest {
-        system: "You answer questions about the attached audio or video strictly from what is actually said or shown in it. Give timestamps [MM:SS] for the parts you rely on. Do not invent content.".into(),
-        messages: vec![LlmMessage {
-            role: Role::User,
-            parts: vec![part, Part::Text(format!("文件：{}\n问题：{question}", att.name))],
-        }],
-        tools: vec![],
-        tool_mode: ToolMode::None,
-        output: OutputMode::Text,
-        max_output_tokens: resolved.output_budget().clamp(1024, 4096),
-        reasoning: ReasoningOptions::default(),
-    };
+    let req = LlmRequest::from_parts(
+        "You answer questions about the attached audio or video strictly from what is actually said or shown in it. Give timestamps [MM:SS] for the parts you rely on. Do not invent content.",
+        vec![part, Part::Text(format!("文件：{}\n问题：{question}", att.name))],
+        resolved.output_budget().clamp(1024, 4096),
+    );
     let res = ctx
         .llm
         .complete_text(&resolved, &req, CancellationToken::new())
@@ -1020,16 +1010,13 @@ async fn ask_media(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResu
         ctx.llm.delete_gemini_file(&resolved, &name).await;
     }
     let (answer, usage) = res?;
-    let _ = lna_storage::record_usage(
+    crate::media::record_llm_usage(
         ctx.db,
         Some(ctx.notebook_id),
-        Some(&resolved.id),
+        &resolved.id,
         "attachment_media",
         None,
-        usage.input_tokens as i64,
-        usage.output_tokens as i64,
-        usage.cached_tokens as i64,
-        false,
+        &usage,
     );
     Ok(ToolOutcome::ok(format!(
         "（音视频模型对「{}」的回答）\n{answer}",
@@ -1377,35 +1364,25 @@ async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult
             att.name
         )));
     }
-    let req = LlmRequest {
-        system: "You copy requested items out of document text exactly as written, without solving, paraphrasing or completing anything.".into(),
-        messages: vec![LlmMessage {
-            role: Role::User,
-            parts: vec![Part::Text(format!(
-                "材料（「{}」{where_} 的文字层，排版和公式可能有提取误差，请按原意修正为 LaTeX，但不要改动内容）：\n<material>\n{material}\n</material>\n\n提取：{instruction}\n{EXTRACT_RULES}",
-                att.name
-            ))],
-        }],
-        tools: vec![],
-        tool_mode: ToolMode::None,
-        output: OutputMode::Text,
-        max_output_tokens: ctx.profile.output_budget().clamp(1024, 8192),
-        reasoning: ReasoningOptions::default(),
-    };
+    let req = LlmRequest::simple(
+        "You copy requested items out of document text exactly as written, without solving, paraphrasing or completing anything.",
+        format!(
+            "材料（「{}」{where_} 的文字层，排版和公式可能有提取误差，请按原意修正为 LaTeX，但不要改动内容）：\n<material>\n{material}\n</material>\n\n提取：{instruction}\n{EXTRACT_RULES}",
+            att.name
+        ),
+        ctx.profile.output_budget().clamp(1024, 8192),
+    );
     let (text, usage) = ctx
         .llm
         .complete_text(ctx.profile, &req, CancellationToken::new())
         .await?;
-    let _ = lna_storage::record_usage(
+    crate::media::record_llm_usage(
         ctx.db,
         Some(ctx.notebook_id),
-        Some(&ctx.profile.id),
+        &ctx.profile.id,
         "attachment_extract",
         None,
-        usage.input_tokens as i64,
-        usage.output_tokens as i64,
-        usage.cached_tokens as i64,
-        false,
+        &usage,
     );
     Ok(ToolOutcome::ok(format!(
         "[{} · {where_} · 按文字提取]\n{}",
@@ -1449,68 +1426,45 @@ pub async fn brief(
     let mut final_text = String::new();
     for round in 0..=max_rounds {
         let last = round == max_rounds;
-        let req = LlmRequest {
-            system: "You read the user's attached reference files with the provided tools and report the passages relevant to the task, citing file name and page.".into(),
-            messages: messages.clone(),
-            tools: tools.clone(),
-            tool_mode: if last { ToolMode::None } else { ToolMode::Auto },
-            output: OutputMode::Text,
-            max_output_tokens: ctx.profile.output_budget().clamp(2048, 8192),
-            reasoning: ReasoningOptions::default(),
-        };
-        let mut text = String::new();
-        let mut opaque = Vec::new();
-        let mut calls: std::collections::BTreeMap<u32, (String, String, String)> =
-            Default::default();
-        ctx.llm
-            .stream(ctx.profile, &req, cancel.clone(), |ev| match ev {
-                lna_llm::LlmEvent::TextDelta(t) => text.push_str(&t),
-                lna_llm::LlmEvent::ToolCallStart { index, id, name } => {
-                    calls.insert(index, (id, name, String::new()));
-                }
-                lna_llm::LlmEvent::ToolCallDelta { index, json } => {
-                    if let Some(c) = calls.get_mut(&index) {
-                        c.2.push_str(&json);
-                    }
-                }
-                lna_llm::LlmEvent::Opaque(o) => opaque.push(Part::Opaque(o)),
-                lna_llm::LlmEvent::Usage(u) => {
-                    usage.input_tokens += u.input_tokens;
-                    usage.output_tokens += u.output_tokens;
-                    usage.cached_tokens += u.cached_tokens;
-                }
-                _ => {}
-            })
+        let req = LlmRequest::conversation(
+            "You read the user's attached reference files with the provided tools and report the passages relevant to the task, citing file name and page.",
+            messages.clone(),
+            ctx.profile.output_budget().clamp(2048, 8192),
+        )
+        .with_tools(
+            tools.clone(),
+            if last { ToolMode::None } else { ToolMode::Auto },
+        );
+        let turn = ctx
+            .llm
+            .complete_turn(ctx.profile, &req, cancel.clone(), |_| {})
             .await?;
-        calls.retain(|_, (_, n, _)| !n.trim().is_empty());
-        if calls.is_empty() || last {
-            final_text = text;
+        usage.add(&turn.usage);
+        if turn.tool_calls.is_empty() || last {
+            final_text = turn.text;
             break;
         }
-        let mut asst = opaque;
-        if !text.trim().is_empty() {
-            asst.push(Part::Text(text));
+        let mut asst = turn.opaque;
+        if !turn.text.trim().is_empty() {
+            asst.push(Part::Text(turn.text));
         }
-        let mut results = Vec::new();
-        for (_, (id, name, raw)) in calls {
-            let args: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
-            if name == "abort_task" {
+        let mut parsed_calls = Vec::with_capacity(turn.tool_calls.len());
+        for tc in turn.tool_calls {
+            let args: Value = serde_json::from_str(&tc.raw_arguments).unwrap_or_else(|_| json!({}));
+            if tc.name == "abort_task" {
                 let reason = args
                     .get("reason")
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|r| !r.is_empty())
                     .unwrap_or("(no reason given)");
-                let _ = lna_storage::record_usage(
+                crate::media::record_llm_usage(
                     ctx.db,
                     Some(ctx.notebook_id),
-                    Some(&ctx.profile.id),
+                    &ctx.profile.id,
                     "attachment_read",
                     None,
-                    usage.input_tokens as i64,
-                    usage.output_tokens as i64,
-                    usage.cached_tokens as i64,
-                    false,
+                    &usage,
                 );
                 return Err(LnaError::new(
                     ErrorCode::ModelRefused,
@@ -1518,19 +1472,31 @@ pub async fn brief(
                 ));
             }
             asst.push(Part::ToolCall {
-                id: id.clone(),
-                name: name.clone(),
+                id: tc.id.clone(),
+                name: tc.name.clone(),
                 arguments: args.clone(),
             });
-            let o = run_tool(ctx, &name, &args)
-                .await
-                .unwrap_or_else(|| ToolOutcome::err(format!("不支持的工具：{name}")));
-            results.push(Part::ToolResult {
-                call_id: id,
-                content: format!("<tool_result trust=\"untrusted\">{}</tool_result>", o.text),
-                is_error: o.is_error,
-            });
+            parsed_calls.push((tc.id, tc.name, args));
         }
+        // Execute independent attachment tool calls concurrently (including vision/text extraction),
+        // bounded by the profile's parallel limit.
+        let limit = ctx.llm.parallel_limit(&ctx.profile.id).clamp(1, 16);
+        let results = lna_llm::run_parallel_ordered(
+            parsed_calls,
+            limit,
+            &cancel,
+            |_, (id, name, args)| async move {
+                let o = run_tool(ctx, &name, &args)
+                    .await
+                    .unwrap_or_else(|| ToolOutcome::err(format!("不支持的工具：{name}")));
+                Ok(Part::ToolResult {
+                    call_id: id,
+                    content: format!("<tool_result trust=\"untrusted\">{}</tool_result>", o.text),
+                    is_error: o.is_error,
+                })
+            },
+        )
+        .await?;
         messages.push(LlmMessage {
             role: Role::Assistant,
             parts: asst,
@@ -1540,16 +1506,13 @@ pub async fn brief(
             parts: results,
         });
     }
-    let _ = lna_storage::record_usage(
+    crate::media::record_llm_usage(
         ctx.db,
         Some(ctx.notebook_id),
-        Some(&ctx.profile.id),
+        &ctx.profile.id,
         "attachment_read",
         None,
-        usage.input_tokens as i64,
-        usage.output_tokens as i64,
-        usage.cached_tokens as i64,
-        false,
+        &usage,
     );
     Ok(final_text.trim().to_string())
 }

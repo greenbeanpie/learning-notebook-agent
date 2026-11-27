@@ -95,11 +95,79 @@ pub struct LlmRequest {
     pub reasoning: ReasoningOptions,
 }
 
+impl LlmRequest {
+    /// Single-turn text request with no tools, `OutputMode::Text`, and default reasoning.
+    pub fn simple(
+        system: impl Into<String>,
+        user_text: impl Into<String>,
+        max_output_tokens: u32,
+    ) -> Self {
+        Self::from_parts(
+            system,
+            vec![Part::Text(user_text.into())],
+            max_output_tokens,
+        )
+    }
+
+    /// Single-turn request with arbitrary user parts (e.g. media + text).
+    pub fn from_parts(system: impl Into<String>, parts: Vec<Part>, max_output_tokens: u32) -> Self {
+        Self::conversation(
+            system,
+            vec![LlmMessage {
+                role: Role::User,
+                parts,
+            }],
+            max_output_tokens,
+        )
+    }
+
+    /// Multi-turn request with no tools, `OutputMode::Text`, and default reasoning.
+    pub fn conversation(
+        system: impl Into<String>,
+        messages: Vec<LlmMessage>,
+        max_output_tokens: u32,
+    ) -> Self {
+        Self {
+            system: system.into(),
+            messages,
+            tools: Vec::new(),
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            max_output_tokens,
+            reasoning: ReasoningOptions::default(),
+        }
+    }
+
+    pub fn with_output(mut self, output: OutputMode) -> Self {
+        self.output = output;
+        self
+    }
+
+    pub fn with_reasoning(mut self, reasoning: ReasoningOptions) -> Self {
+        self.reasoning = reasoning;
+        self
+    }
+
+    pub fn with_tools(mut self, tools: Vec<ToolDef>, tool_mode: ToolMode) -> Self {
+        self.tools = tools;
+        self.tool_mode = tool_mode;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cached_tokens: u64,
+}
+
+impl Usage {
+    pub fn add(&mut self, other: &Usage) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cached_tokens = self.cached_tokens.saturating_add(other.cached_tokens);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +265,24 @@ impl ResolvedProfile {
             0
         } else {
             self.max_output_tokens.min(cap)
+        }
+    }
+
+    /// Hard output-token ceiling: even when the profile is configured with no limit (`0`),
+    /// never exceed `cap`. Prevents runaway outputs on long-form generation tasks.
+    pub fn hard_output_cap(&self, cap: u32) -> u32 {
+        if self.max_output_tokens == 0 {
+            cap
+        } else {
+            self.max_output_tokens.min(cap)
+        }
+    }
+
+    /// Reasoning options derived from this profile's settings.
+    pub fn reasoning_options(&self) -> ReasoningOptions {
+        ReasoningOptions {
+            show_summary: self.show_thinking,
+            effort: self.effort.clone(),
         }
     }
 
