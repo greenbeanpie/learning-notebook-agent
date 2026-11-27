@@ -1423,14 +1423,25 @@ pub async fn brief(
     max_rounds: usize,
     cancel: CancellationToken,
 ) -> LnaResult<String> {
-    let tools = tool_defs(ctx.atts);
+    let mut tools = tool_defs(ctx.atts);
     if tools.is_empty() {
         return Ok(String::new());
     }
+    tools.push(ToolDef {
+        name: "abort_task".into(),
+        description: "Call this only when the task cannot be done faithfully — e.g. the attached file is unreadable or missing, or the request contradicts it. It stops the whole job and shows the reason to the user. Never guess or invent content instead.".into(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Why the task cannot be done faithfully"}
+            },
+            "required": ["reason"]
+        }),
+    });
     let mut messages = vec![LlmMessage {
         role: Role::User,
         parts: vec![Part::Text(format!(
-            "{}\n\n任务：{task}\n\n请用工具只读取完成这个任务需要的附件内容（不需要的部分不要读）。读完后不要再调用工具，直接输出摘录：逐条列出相关原文要点，每条注明附件名和页码/位置；不要编造附件中没有的内容。",
+            "{}\n\n任务：{task}\n\n请用工具只读取完成这个任务需要的附件内容（不需要的部分不要读）。读完后不要再调用工具，直接输出摘录：逐条列出相关原文要点，每条注明附件名和页码/位置；不要编造附件中没有的内容。如果附件无法读取、缺失，或与任务矛盾，可以调用 abort_task 说明原因，而不是猜测。",
             manifest(ctx.profile, ctx.atts)
         ))],
     }];
@@ -1471,6 +1482,7 @@ pub async fn brief(
                 _ => {}
             })
             .await?;
+        calls.retain(|_, (_, n, _)| !n.trim().is_empty());
         if calls.is_empty() || last {
             final_text = text;
             break;
@@ -1482,6 +1494,29 @@ pub async fn brief(
         let mut results = Vec::new();
         for (_, (id, name, raw)) in calls {
             let args: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+            if name == "abort_task" {
+                let reason = args
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or("(no reason given)");
+                let _ = lna_storage::record_usage(
+                    ctx.db,
+                    Some(ctx.notebook_id),
+                    Some(&ctx.profile.id),
+                    "attachment_read",
+                    None,
+                    usage.input_tokens as i64,
+                    usage.output_tokens as i64,
+                    usage.cached_tokens as i64,
+                    false,
+                );
+                return Err(LnaError::new(
+                    ErrorCode::ModelRefused,
+                    format!("模型主动终止任务：{reason}"),
+                ));
+            }
             asst.push(Part::ToolCall {
                 id: id.clone(),
                 name: name.clone(),

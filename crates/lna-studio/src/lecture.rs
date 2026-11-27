@@ -64,6 +64,66 @@ fn slide_item_schema() -> Value {
     base["properties"]["slides"]["items"].clone()
 }
 
+/// How a lecture is planned (scope, sections, visuals): shared by the separate outline planner
+/// and the source reader that writes the outline itself once it has read enough.
+pub(crate) fn lecture_plan_rules(art: &StudioArtifact) -> String {
+    let mode = art
+        .config
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("general");
+    let detail = art
+        .config
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or("auto");
+    format!(
+        "Resolve the requested scope (topic, problem or unit given in config.topic; the user's attached material if any; the whole selection only if neither is given) against the sources, then plan a narrated lesson: title, learning objectives, and ordered sections. Each section has a title and a \"focus\" naming exactly which concepts/problems/source parts (chapters, sections, pages) it covers, plus an optional slides_hint (keep it small: slides are only as many as the section needs). Also give every section \"visual_need\": \"required\" when its content is obviously geometric or physical (vectors, forces, torques, angles, shapes, trajectories, graphs, surfaces) — including a derivation whose steps reason about vector directions, components or cross products, \"suggested\" when it is mainly a worked derivation, proof or calculation, otherwise \"none\"; and \"visual\": what to draw and how its parts are revealed step by step together with the explanation (empty when none). {}\nStrictly ground the plan in the sources. Match the language requested in config or the primary language of the sources.{}",
+        lecture_rules(mode, detail),
+        if has_user_material(&art.config) {
+            format!("\n{USER_MATERIAL_SCOPE} A single exercise needs only a few sections (the problem and its solution steps), never the whole chapter and never a concept-review or prerequisites section before the solution; a short closing part after the solution (method summary, extension, common mistakes) is fine when it adds value.")
+        } else {
+            String::new()
+        }
+    )
+}
+
+/// A lecture with at most this many sections is a small scope: its sections reuse the evidence
+/// collected for the whole lecture instead of reading the sources again one by one.
+pub(crate) const SMALL_LECTURE_SECTIONS: usize = 3;
+
+/// Tokens of source text a section's authoring prompt can hold.
+pub(crate) fn section_prompt_room(resolved: &ResolvedProfile) -> usize {
+    let window = resolved.context_window as usize;
+    let reserved_output = (resolved.output_budget() as usize).min(window / 4);
+    let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
+    available_input.saturating_mul(70) / 100
+}
+
+/// Token budget of one section's own source reading.
+pub(crate) fn section_read_budget(resolved: &ResolvedProfile) -> usize {
+    section_prompt_room(resolved).min(16_000)
+}
+
+/// What the collecting reader is told when its last reply should be the lecture outline.
+pub(crate) fn lecture_reader_finish(art: &StudioArtifact, kg_hint: &str) -> ReaderFinish {
+    let schema = outline_schema();
+    ReaderFinish {
+        instruction: format!(
+            "When the excerpts you have read cover the requested scope, do NOT call more tools and do NOT reply DONE: reply with the lecture plan itself — one JSON object (no prose, no code fence) matching this JSON Schema:\n{schema}\n\nPlanning rules: {}{}",
+            lecture_plan_rules(art),
+            if kg_hint.is_empty() {
+                String::new()
+            } else {
+                format!("\n{kg_hint}")
+            }
+        ),
+        schema,
+        schema_name: "lecture_outline",
+        thought_title: "讲解大纲规划思考".into(),
+    }
+}
+
 pub(crate) fn cue_schema() -> Value {
     json!({
         "type": "object",
@@ -1533,10 +1593,7 @@ impl StudioService {
         }
         let with_materials = |body: String| format!("{materials}{body}");
         let target_ids = Self::generation_source_ids(art);
-        let window = resolved.context_window as usize;
-        let reserved_output = (resolved.output_budget() as usize).min(window / 4);
-        let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
-        let budget = (available_input.saturating_mul(70) / 100).min(16_000);
+        let budget = section_read_budget(resolved);
         match self
             .gather_evidence_on_demand(
                 art,
@@ -1547,11 +1604,12 @@ impl StudioService {
                 budget,
                 Some(&target_ids),
                 true,
+                None,
                 cancel,
             )
             .await
         {
-            Ok(Some(t)) if !t.trim().is_empty() => Ok(with_materials(t)),
+            Ok(Some((t, _))) if !t.trim().is_empty() => Ok(with_materials(t)),
             Err(e) if ends_evidence_read(e.code) => Err(e),
             _ => {
                 let queries = vec![focus.to_string()];
@@ -1821,7 +1879,7 @@ impl StudioService {
         Ok((slides, usage))
     }
 
-    fn lecture_kg_hint(&self, art: &StudioArtifact) -> String {
+    pub(crate) fn lecture_kg_hint(&self, art: &StudioArtifact) -> String {
         let mode = art
             .config
             .get("mode")
@@ -1888,7 +1946,7 @@ impl StudioService {
             .to_string();
         let mut usage_sum = Usage::default();
         let target_ids = Self::generation_source_ids(art);
-        let full_text = if self.sources_fit_directly(&target_ids, resolved)? {
+        let mut full_text = if self.sources_fit_directly(&target_ids, resolved)? {
             Some(evidence_txt)
         } else {
             None
@@ -1908,13 +1966,23 @@ impl StudioService {
                     .and_then(Value::as_object)
                     .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                     .unwrap_or_default();
-                self.append_thought(
-                    artifact_id,
-                    &art.notebook_id,
-                    "stage",
-                    "复用已完成的讲解小节",
-                    &format!("已从检查点恢复大纲与 {} 个已完成的小节。", done.len()),
-                );
+                if done.is_empty() {
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        "讲解大纲已确定",
+                        "大纲已在查阅来源时一并确定（或从检查点恢复），直接开始撰写小节。",
+                    );
+                } else {
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        "复用已完成的讲解小节",
+                        &format!("已从检查点恢复大纲与 {} 个已完成的小节。", done.len()),
+                    );
+                }
                 (v.get("outline").cloned().unwrap_or_else(|| json!({})), done)
             }
             None => {
@@ -1928,13 +1996,8 @@ impl StudioService {
                 let images = image_parts(&self.db.paths().root, art, resolved);
                 let req = with_images(LlmRequest {
                     system: format!(
-                        "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. Resolve the requested scope (topic, problem or unit given in config.topic; the user's attached material if any; the whole selection only if neither is given) against the sources, then plan a narrated lesson: title, learning objectives, and ordered sections. Each section has a title and a \"focus\" naming exactly which concepts/problems/source parts (chapters, sections, pages) it covers, plus an optional slides_hint (keep it small: slides are only as many as the section needs). Also give every section \"visual_need\": \"required\" when its content is obviously geometric or physical (vectors, forces, torques, angles, shapes, trajectories, graphs, surfaces) — including a derivation whose steps reason about vector directions, components or cross products, \"suggested\" when it is mainly a worked derivation, proof or calculation, otherwise \"none\"; and \"visual\": what to draw and how its parts are revealed step by step together with the explanation (empty when none). {}\nIf an approved outline is given, follow it. Strictly ground the plan in the sources. Match the language requested in config or the primary language of the sources.{}",
-                        lecture_rules(&mode, &detail),
-                        if has_user_material(&art.config) {
-                            format!("\n{USER_MATERIAL_SCOPE} A single exercise needs only a few sections (the problem and its solution steps), never the whole chapter and never a concept-review or prerequisites section before the solution; a short closing part after the solution (method summary, extension, common mistakes) is fine when it adds value.")
-                        } else {
-                            String::new()
-                        }
+                        "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. {}\nIf an approved outline is given, follow it.",
+                        lecture_plan_rules(art)
                     ),
                     messages: vec![LlmMessage {
                         role: Role::User,
@@ -2014,6 +2077,23 @@ impl StudioService {
             .collect::<Vec<_>>()
             .join("\n");
         let total = sections.len();
+        // A small scope (the user's own material, or a lecture of a few sections) was read in
+        // full by the collecting reader: every section reuses that evidence instead of reading
+        // the same passages again. Whole books and multi-chapter lectures still read per section.
+        if full_text.is_none()
+            && !evidence_txt.trim().is_empty()
+            && (has_user_material(&art.config) || total <= SMALL_LECTURE_SECTIONS)
+            && evidence_txt.len() <= section_prompt_room(resolved) * 3
+        {
+            full_text = Some(evidence_txt);
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                "沿用已收集的原文",
+                "范围较小，各小节直接使用查阅来源时已收集的原文，不再重复查阅。",
+            );
+        }
         // Orchestrator/executor: the outline above is the plan; every pending section is an
         // independent executor (own evidence reading + authoring) and up to the profile's
         // parallel-request limit of them run at once. Only this task merges and checkpoints.

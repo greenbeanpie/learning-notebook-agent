@@ -1532,6 +1532,28 @@ fn abort_reason(v: &serde_json::Value) -> Option<String> {
     (!r.is_empty()).then(|| r.to_string())
 }
 
+/// A structured answer written outside `complete_structured_continuing` (e.g. the final
+/// reply of a tool loop) checked against `schema`: `Ok(Some(value))` when it is valid,
+/// `Ok(None)` when it is not (the caller asks again), `Err(ModelRefused)` when it is an abort.
+pub fn parse_structured(
+    schema: &serde_json::Value,
+    raw: &str,
+) -> LnaResult<Option<serde_json::Value>> {
+    let candidate = strip_code_fences(raw);
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(&candidate) else {
+        return Ok(None);
+    };
+    if let Some(reason) = abort_reason(&val) {
+        return Err(LnaError::new(
+            ErrorCode::ModelRefused,
+            format!("模型主动终止了任务：{reason}"),
+        ));
+    }
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|e| LnaError::invalid(format!("Invalid JSON schema: {e}")))?;
+    Ok(validator.is_valid(&val).then_some(val))
+}
+
 #[cfg(test)]
 mod abort_tests {
     use super::*;
@@ -1550,5 +1572,23 @@ mod abort_tests {
         );
         assert_eq!(abort_reason(&json!({"abort_reason":"  "})), None);
         assert_eq!(abort_reason(&json!({"a":1})), None);
+    }
+
+    #[test]
+    fn parse_structured_accepts_valid_rejects_invalid_and_reports_abort() {
+        let schema = json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"]});
+        assert_eq!(
+            parse_structured(&schema, "{\"a\":\"x\"}").unwrap(),
+            Some(json!({"a":"x"}))
+        );
+        assert_eq!(
+            parse_structured(&schema, "```json\n{\"a\":\"y\"}\n```").unwrap(),
+            Some(json!({"a":"y"}))
+        );
+        assert_eq!(parse_structured(&schema, "DONE").unwrap(), None);
+        assert_eq!(parse_structured(&schema, "{\"b\":1}").unwrap(), None);
+        let e = parse_structured(&schema, "{\"abort_reason\":\"图看不清\"}").unwrap_err();
+        assert_eq!(e.code, ErrorCode::ModelRefused);
+        assert!(e.message.contains("图看不清"));
     }
 }

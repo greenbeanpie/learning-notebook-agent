@@ -659,3 +659,59 @@ fn studio_reads_attached_files_on_demand_and_keeps_only_ids() {
     env.ok("studio.delete", json!({ "artifact_id": id }));
     assert_eq!(attachment_count(&env), 0);
 }
+
+/// While reading an attached file the model can stop the whole job with `abort_task`: the
+/// artifact fails with the refusal code and the model's reason, with no generation request and no
+/// retry.
+#[test]
+fn studio_file_brief_abort_task_fails_the_job_with_its_reason() {
+    let mock = MockLlm::start(|r| {
+        if r.has_tools() && r.system.contains("attached reference files") {
+            assert!(
+                r.body.to_string().contains("abort_task"),
+                "the abort tool is offered while reading files"
+            );
+            return Reply::Tool {
+                id: "abort1".into(),
+                name: "abort_task".into(),
+                args: json!({ "reason": "附件内容与任务矛盾" }),
+            };
+        }
+        Reply::Text("{}".into())
+    });
+    let env = Env::new("ctx_studio_abort");
+    let nid = env.notebook();
+    env.profile(&mock, 32000);
+    let art = env.ok(
+        "studio.create",
+        json!({ "notebook_id": nid, "artifact_type": "quiz", "config": { "topic": "牛顿定律" },
+                "files": [{ "name": "lesson.md", "data_base64": b64("# 热力学\n\nS = k ln W".as_bytes()) }] }),
+    );
+    let id = art["id"].as_str().unwrap().to_string();
+    env.wait(30, || {
+        let a = env.ok("studio.get", json!({ "artifact_id": id }));
+        a["status"] == json!("READY") || a["status"] == json!("FAILED")
+    });
+    let a = env.ok("studio.get", json!({ "artifact_id": id }));
+    assert_eq!(a["status"], json!("FAILED"), "{a}");
+    assert_eq!(a["error_code"], json!("MODEL_REFUSED"), "{a}");
+    assert!(
+        a["error_detail"]
+            .as_str()
+            .unwrap_or("")
+            .contains("附件内容与任务矛盾"),
+        "{a}"
+    );
+    assert!(
+        mock.of_kind(Kind::Studio).is_empty(),
+        "no generation request after the abort"
+    );
+    let reads = mock
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.has_tools() && r.system.contains("attached reference files"))
+        .count();
+    assert_eq!(reads, 1, "no retry after a refusal");
+}

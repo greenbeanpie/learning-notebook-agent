@@ -1671,6 +1671,19 @@ User Revision Instruction:
             } else {
                 None
             };
+            // A lecture without an outline to review is planned by the reader itself once it
+            // has read enough (one request instead of a reading pass plus a planning pass that
+            // sends all the evidence again).
+            let review_requested = art
+                .config
+                .get("reviewOutline")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let finish = (art.artifact_type == ArtifactType::Lecture
+                && !review_requested
+                && art.draft.is_none())
+            .then(|| lecture::lecture_reader_finish(art, &self.lecture_kg_hint(art)));
+            let mut read_plan: Option<Value> = None;
             let text = self
                 .collect_evidence_text(
                     art,
@@ -1678,6 +1691,8 @@ User Revision Instruction:
                     resolved,
                     artifact_id,
                     material_hint.as_deref(),
+                    finish.as_ref(),
+                    &mut read_plan,
                     cancel.clone(),
                 )
                 .await?;
@@ -1689,6 +1704,21 @@ User Revision Instruction:
                     "evidence_text": text
                 }),
             )?;
+            if let Some(outline) = read_plan.filter(|o| {
+                o.get("sections")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| !a.is_empty())
+            }) {
+                // the lecture pass finds this checkpoint and skips its own planner
+                let passes = json!({ "sources_fingerprint": art.sources_fingerprint, "outline": outline, "done": {} });
+                self.save_checkpoint(artifact_id, "lecture_passes", passes)?;
+                self.emit_preview(
+                    artifact_id,
+                    &art.notebook_id,
+                    "lecture_passes",
+                    &json!({ "outline": outline, "done": {} }),
+                );
+            }
             text
         };
         // which notebook sources the evidence actually came from (shown with the artifact)
@@ -4516,11 +4546,12 @@ Design rules:\n\
                         budget,
                         Some(&target_ids),
                         true,
+                        None,
                         cancel.clone(),
                     )
                     .await
                 {
-                    Ok(Some(t)) => t,
+                    Ok(Some((t, _))) => t,
                     Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
                         return Err(e)
                     }
@@ -5030,8 +5061,9 @@ Design rules:\n\
         token_budget: usize,
         source_ids_override: Option<&[String]>,
         branch_focus: bool,
+        finish: Option<&ReaderFinish>,
         cancel: CancellationToken,
-    ) -> LnaResult<Option<String>> {
+    ) -> LnaResult<Option<(String, Option<Value>)>> {
         let is_mindmap = art.artifact_type == ArtifactType::Mindmap;
         let effective_source_ids = source_ids_override.unwrap_or(&art.source_ids);
         let selected_json =
@@ -5217,6 +5249,9 @@ Design rules:\n\
             "Focus ONLY on the branch/topic given above (other branches are handled separately). Using the reading tools, read the parts of the sources that cover this branch in depth: read_index_node for its outline nodes, read_source_pages for its page ranges, search_sources for specific methods, theorems, formulas or cases. Make several rounds of calls when needed so that every sub-topic, method, theorem and formula of this branch is backed by actual source text, not just outline titles. Reply \"DONE\" only when the branch is fully covered."
         } else if is_mindmap {
             "Use the reading tools to inspect the table of contents (e.g., early pages via read_source_pages) if the outline is coarse, and read key sections across ALL major chapters/themes evenly (call multiple tools in parallel) so every branch has concrete sub-topics, definitions, theorems, formulas, and details. Do NOT reply \"DONE\" until all major chapters/themes in scope are covered at uniform depth."
+        } else if finish.is_some() {
+            // how the reader ends is given by `finish` (appended below)
+            "Use the reading tools to fetch the specific sections or passages this artifact needs (not unrelated material). Call multiple tools in parallel and continue over several rounds when parts of the requested scope are still unread; every tool result shows you the passages it added."
         } else {
             "Use the reading tools to fetch the specific sections or passages this artifact needs (not unrelated material). Call multiple tools in parallel and continue over several rounds when parts of the requested scope are still unread. Reply with \"DONE\" (without further tool calls) once the collected excerpts actually cover the requested scope."
         };
@@ -5226,8 +5261,12 @@ Design rules:\n\
             planner_instruction.to_string()
         };
         let planner_instruction = format!(
-            "{planner_instruction}\n\nIf the user's attached material or the sources cannot support this task faithfully (for example a picture is unreadable or missing, or the request contradicts the sources), you may call abort_task with the reason instead of guessing."
+            "{planner_instruction}\n\nIf the user's attached material or the sources cannot support this task faithfully (for example a picture is unreadable or missing, or the request contradicts the sources), you may call abort_task with the reason instead of guessing.{}",
+            finish
+                .map(|f| format!("\n\n{}", f.instruction))
+                .unwrap_or_default()
         );
+        let mut plan: Option<Value> = None;
         let mut messages = vec![LlmMessage {
             role: Role::User,
             parts: vec![Part::Text(format!(
@@ -5306,6 +5345,7 @@ Design rules:\n\
                 &pictures,
             );
             let mut calls: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
+            let mut round_text = String::new();
             let mut round_usage = Usage::default();
             let mut thought_seq: Option<i32> = None;
             let mut full_thought = String::new();
@@ -5353,6 +5393,7 @@ Design rules:\n\
                             }
                         }
                     }
+                    LlmEvent::TextDelta(t) => round_text.push_str(&t),
                     LlmEvent::ToolCallStart { index, id, name } => {
                         calls.insert(index, (id, name, String::new()));
                     }
@@ -5411,6 +5452,16 @@ Design rules:\n\
             // a call without a name can be neither run nor echoed back to the model: dropped
             calls.retain(|_, (_, name, _)| !name.trim().is_empty());
             if calls.is_empty() {
+                // the reader's closing reply: with `finish` it should be the requested result
+                if let Some(f) = finish {
+                    plan = lna_llm::parse_structured(&f.schema, &round_text)?;
+                    if plan.is_none() && !round_text.trim().is_empty() {
+                        messages.push(LlmMessage {
+                            role: Role::Assistant,
+                            parts: vec![Part::Text(round_text.clone())],
+                        });
+                    }
+                }
                 break;
             }
 
@@ -5424,6 +5475,7 @@ Design rules:\n\
                     arguments: args.clone(),
                 });
 
+                let first_new = collected.len();
                 let mut added_here = 0usize;
                 let mut summary_note = String::new();
                 match name.as_str() {
@@ -5657,10 +5709,23 @@ Design rules:\n\
                         ),
                     ),
                 );
+                // the reader sees what it read (numbered as in the final evidence), so it can
+                // judge coverage from the text and not only from outline titles
+                let new_passages = collected[first_new..].join("\n\n");
+                let closing = if finish.is_some() {
+                    "If parts of the scope are still unread or only known from outline titles, keep reading them; otherwise give the final answer as instructed."
+                } else {
+                    "If parts of the scope are still unread or only known from outline titles, keep reading them; reply DONE only when the scope is covered."
+                };
                 tool_results.push(Part::ToolResult {
                     call_id,
                     content: format!(
-                        "{summary_note} Total collected: {} excerpts (~{} tokens of ~{} budget). If parts of the scope are still unread or only known from outline titles, keep reading them; reply DONE only when the scope is covered.",
+                        "{}{summary_note} Total collected: {} excerpts (~{} tokens of ~{} budget). {closing}",
+                        if new_passages.is_empty() {
+                            "(No new passages: already read, nothing found, or the reading budget is full.)\n".to_string()
+                        } else {
+                            format!("{new_passages}\n\n")
+                        },
                         collected.len(),
                         used_chars / 3,
                         char_budget / 3
@@ -5700,6 +5765,82 @@ Design rules:\n\
             );
             if used_chars >= char_budget * 85 / 100 {
                 break;
+            }
+        }
+
+        // The reader stopped without a valid closing answer (rounds or budget used up, or the
+        // reply did not fit the schema): asked once more in the same conversation, which
+        // still holds every passage it read. Failing that, the caller plans on its own.
+        if let Some(f) = finish.filter(|_| plan.is_none() && !collected.is_empty()) {
+            if cancel.is_cancelled() {
+                return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
+            }
+            let mut msgs = messages.clone();
+            msgs.push(LlmMessage {
+                role: Role::User,
+                parts: vec![Part::Text(
+                    "Stop reading now and give the final answer as instructed above, based on the passages you have read (no more tool calls).".into(),
+                )],
+            });
+            let req = material::with_images(
+                LlmRequest {
+                    system: planner_system.into(),
+                    messages: msgs,
+                    // the conversation holds tool calls, so the tools stay declared
+                    tools: tools.clone(),
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::Text,
+                    max_output_tokens: resolved.output_budget().min(6000),
+                    reasoning: ReasoningOptions {
+                        show_summary: profile.show_thinking,
+                        effort: profile.effort.clone(),
+                    },
+                },
+                &pictures,
+            );
+            match self
+                .run_structured_with_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    &f.thought_title,
+                    resolved,
+                    &req,
+                    f.schema_name,
+                    &f.schema,
+                    1,
+                    cancel.clone(),
+                )
+                .await
+            {
+                Ok((v, u)) => {
+                    let _ = lna_storage::record_usage(
+                        &self.db,
+                        Some(&art.notebook_id),
+                        Some(&profile.id),
+                        "studio_on_demand_read",
+                        Some(artifact_id),
+                        u.input_tokens as i64,
+                        u.output_tokens as i64,
+                        u.cached_tokens as i64,
+                        false,
+                    );
+                    plan = Some(v);
+                }
+                Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
+                    return Err(e)
+                }
+                Err(e) => {
+                    self.append_thought(
+                        artifact_id,
+                        &art.notebook_id,
+                        "stage",
+                        &self.l("阅读后未能直接给出结果", "No result from the reading pass"),
+                        &self.l(
+                            &format!("将单独规划（{}）。", truncate_str(&e.message, 160)),
+                            &format!("Planning separately ({}).", truncate_str(&e.message, 160)),
+                        ),
+                    );
+                }
             }
         }
 
@@ -5747,13 +5888,17 @@ Design rules:\n\
         } else {
             8_000
         };
-        Ok(Some(format!(
-            "Source Outline:\n{}\n\nOn-Demand Retrieved Excerpts:\n{}",
-            truncate_str(&catalog_text, outline_return_cap),
-            collected.join("\n\n")
+        Ok(Some((
+            format!(
+                "Source Outline:\n{}\n\nOn-Demand Retrieved Excerpts:\n{}",
+                truncate_str(&catalog_text, outline_return_cap),
+                collected.join("\n\n")
+            ),
+            plan,
         )))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn collect_evidence_text(
         &self,
         art: &StudioArtifact,
@@ -5761,6 +5906,8 @@ Design rules:\n\
         resolved: &ResolvedProfile,
         artifact_id: &str,
         material_hint: Option<&str>,
+        finish: Option<&ReaderFinish>,
+        plan_out: &mut Option<Value>,
         cancel: CancellationToken,
     ) -> LnaResult<String> {
         if art.source_ids.is_empty() {
@@ -5820,11 +5967,12 @@ Design rules:\n\
                         kg_budget.min(28_000),
                         Some(&target_ids),
                         false,
+                        None,
                         cancel.clone(),
                     )
                     .await
                 {
-                    Ok(Some(on_demand_text)) => return Ok(on_demand_text),
+                    Ok(Some((on_demand_text, _))) => return Ok(on_demand_text),
                     Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
                         return Err(e)
                     }
@@ -6058,11 +6206,15 @@ Core Topics: {}",
                 ),
                 None,
                 false,
+                finish,
                 cancel.clone(),
             )
             .await;
         match on_demand {
-            Ok(Some(on_demand_text)) => return Ok(on_demand_text),
+            Ok(Some((on_demand_text, read_plan))) => {
+                *plan_out = read_plan;
+                return Ok(on_demand_text);
+            }
             Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
                 return Err(e)
             }
@@ -7730,6 +7882,17 @@ pub(crate) fn sources_used_in(evidence: &str, refs: &[ArtifactSourceRef]) -> Vec
         .filter(|r| used.contains(&r.id))
         .map(|r| r.id.clone())
         .collect()
+}
+
+/// How a source reader ends when its closing reply should be a structured result (e.g. the
+/// lecture outline) instead of "DONE".
+pub(crate) struct ReaderFinish {
+    /// Appended to the reader's instructions: when to stop and what to reply with.
+    pub instruction: String,
+    pub schema: Value,
+    pub schema_name: &'static str,
+    /// Title of the reasoning shown if the result has to be asked for once more.
+    pub thought_title: String,
 }
 
 pub(crate) const USER_MATERIAL_SCOPE: &str = "USER MATERIAL FIRST: the user attached their own material (<user_images> / <user_files>, or described in the topic above). The scope of this artifact is EXACTLY what that material shows or asks, e.g. one exercise means that one exercise. Do NOT widen it to the chapter, section or neighbouring topics that contain it, and do NOT cover related material the user did not mention. The user's material comes first; relate it to the sources only when that actually helps (a definition, theorem or formula it relies on that you must get right, or a connection worth pointing out): read just those passages, and never produce slides whose only purpose is to locate the material in the book, list prerequisites or recap the chapter. After the material itself is fully covered, a short closing part that grows out of it — a method summary, an extension or variant, common mistakes — is welcome when it adds value.";
