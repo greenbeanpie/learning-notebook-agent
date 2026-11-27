@@ -740,3 +740,25 @@ fn d1_nameless_tool_calls_and_their_results_are_not_replayed() {
         "{body}"
     );
 }
+
+#[test]
+fn cloudflare_gateway_responses_are_not_served_from_its_cache() {
+    let mut p = profile(ProtocolKind::ChatCompletion);
+    assert!(
+        p.gateway_cache_headers().is_empty(),
+        "other hosts are untouched"
+    );
+    p.base_url = "https://gateway.ai.cloudflare.com/v1/acct/gw/custom-x".into();
+    assert_eq!(
+        p.gateway_cache_headers(),
+        vec![("cf-aig-skip-cache".to_string(), "true".to_string())]
+    );
+    assert!(p
+        .resolved_extra_headers()
+        .iter()
+        .any(|(k, v)| k == "cf-aig-skip-cache" && v == "true"));
+    // a profile that sets the cache header itself is left alone
+    p.extra_headers
+        .insert("cf-aig-cache-ttl".into(), "3600".into());
+    assert!(p.gateway_cache_headers().is_empty());
+}

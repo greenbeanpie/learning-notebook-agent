@@ -197,7 +197,9 @@ impl CoreRuntime {
             }],
             tool_mode: ToolMode::Auto,
             output: OutputMode::Text,
-            max_output_tokens: 64,
+            // room for models that think before answering: a small cap is spent on reasoning and
+            // leaves no tool call / JSON, which would wrongly mark the model as unsupported
+            max_output_tokens: 4096,
             reasoning: ReasoningOptions::default(),
         };
         let mut tool_called = false;
@@ -234,7 +236,9 @@ impl CoreRuntime {
                 name: "lna_capability_probe".into(),
                 schema: probe_schema.clone(),
             },
-            max_output_tokens: 64,
+            // room for models that think before answering: a small cap is spent on reasoning and
+            // leaves no tool call / JSON, which would wrongly mark the model as unsupported
+            max_output_tokens: 4096,
             reasoning: ReasoningOptions::default(),
         };
         caps.json_schema = self
@@ -255,7 +259,9 @@ impl CoreRuntime {
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::JsonObject,
-            max_output_tokens: 64,
+            // room for models that think before answering: a small cap is spent on reasoning and
+            // leaves no tool call / JSON, which would wrongly mark the model as unsupported
+            max_output_tokens: 4096,
             reasoning: ReasoningOptions::default(),
         };
         caps.json_mode = self
@@ -422,7 +428,7 @@ impl CoreRuntime {
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: 16,
+            max_output_tokens: 512,
             reasoning: ReasoningOptions::default(),
         };
         self.llm

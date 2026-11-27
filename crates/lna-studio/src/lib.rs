@@ -2914,7 +2914,7 @@ Design rules:\n\
                 "PLANNING TASK (do not write the {kind} itself): split the requested work into 3-6 {what} that can be written independently and in parallel, in reading order, covering the requested scope without overlap. For each give a short `heading` and a `focus` naming exactly which concepts / source parts it covers. Output the structured JSON requested below only."
             ),
         );
-        plan_req.max_output_tokens = resolved.output_budget().min(2000);
+        plan_req.max_output_tokens = resolved.bounded_output(2000);
         let (plan, u) = self
             .run_structured_with_thought(
                 artifact_id,
@@ -4726,7 +4726,7 @@ Design rules:\n\
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: resolved.output_budget().min(2000),
+            max_output_tokens: resolved.bounded_output(2000),
             reasoning,
         };
         let (out, usage) = self
@@ -5790,7 +5790,7 @@ Design rules:\n\
                     tools: tools.clone(),
                     tool_mode: ToolMode::None,
                     output: OutputMode::Text,
-                    max_output_tokens: resolved.output_budget().min(6000),
+                    max_output_tokens: resolved.bounded_output(6000),
                     reasoning: ReasoningOptions {
                         show_summary: profile.show_thinking,
                         effort: profile.effort.clone(),

@@ -176,6 +176,9 @@ impl ProtocolAdapter for ResponsesAdapter {
         for (k, v) in &profile.extra_headers {
             builder = builder.header(k, v);
         }
+        for (k, v) in profile.gateway_cache_headers() {
+            builder = builder.header(k, v);
+        }
         builder
             .build()
             .map_err(|e| LnaError::internal(e.to_string()))

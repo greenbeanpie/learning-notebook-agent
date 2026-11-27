@@ -189,6 +189,17 @@ impl ResolvedProfile {
         }
     }
 
+    /// Output limit for a request that only needs `cap` tokens of answer. A profile with a limit
+    /// keeps the smaller of the two; a profile set to "no limit" (`0`) stays unlimited, because
+    /// a reasoning model spends part of any cap on thinking and may write nothing at all.
+    pub fn bounded_output(&self, cap: u32) -> u32 {
+        if self.max_output_tokens == 0 {
+            0
+        } else {
+            self.max_output_tokens.min(cap)
+        }
+    }
+
     /// True when some extra header carries the key itself (e.g. `cf-aig-authorization: Bearer
     /// {api_key}`). Such a profile must not also send the key in the protocol's default auth
     /// header: a gateway would forward it to the upstream provider as that provider's key.
@@ -219,7 +230,8 @@ impl ResolvedProfile {
             .as_ref()
             .map(|k| k.expose_secret().to_string())
             .filter(|s| !s.is_empty());
-        self.extra_headers
+        let mut headers: Vec<(String, String)> = self
+            .extra_headers
             .iter()
             .filter_map(|(k, v)| {
                 if v.contains(API_KEY_PLACEHOLDER) {
@@ -229,7 +241,25 @@ impl ResolvedProfile {
                     Some((k.clone(), v.clone()))
                 }
             })
-            .collect()
+            .collect();
+        headers.extend(self.gateway_cache_headers());
+        headers
+    }
+
+    /// Cloudflare AI Gateway may cache responses by request body. A generation that failed (cut
+    /// off, invalid JSON) would then come back identical on every retry, so the cache is skipped
+    /// unless the profile sets the header itself.
+    pub fn gateway_cache_headers(&self) -> Vec<(String, String)> {
+        let on_gateway = self.base_url.contains("gateway.ai.cloudflare.com");
+        let set = self.extra_headers.keys().any(|k| {
+            k.eq_ignore_ascii_case("cf-aig-skip-cache")
+                || k.eq_ignore_ascii_case("cf-aig-cache-ttl")
+        });
+        if on_gateway && !set {
+            vec![("cf-aig-skip-cache".to_string(), "true".to_string())]
+        } else {
+            Vec::new()
+        }
     }
 }
 

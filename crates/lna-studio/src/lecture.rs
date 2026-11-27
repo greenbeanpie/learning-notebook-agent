@@ -1311,7 +1311,7 @@ impl StudioService {
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: resolved.output_budget().min(4000),
+            max_output_tokens: resolved.bounded_output(4000),
             reasoning: ReasoningOptions::default(),
         };
         let (mut spec, u) = {
@@ -1382,7 +1382,7 @@ impl StudioService {
                 tools: vec![],
                 tool_mode: ToolMode::None,
                 output: OutputMode::Text,
-                max_output_tokens: resolved.output_budget().min(4000),
+                max_output_tokens: resolved.bounded_output(4000),
                 reasoning: ReasoningOptions::default(),
             };
             let target = if !problems {
@@ -2012,7 +2012,7 @@ impl StudioService {
                     tools: vec![],
                     tool_mode: ToolMode::None,
                     output: OutputMode::Text,
-                    max_output_tokens: resolved.output_budget().min(6000),
+                    max_output_tokens: resolved.bounded_output(6000),
                     reasoning: reasoning.clone(),
                 }, &images);
                 let (outline, u) = {
@@ -2450,7 +2450,7 @@ impl StudioService {
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: resolved.output_budget().min(3000),
+            max_output_tokens: resolved.bounded_output(3000),
             reasoning: ReasoningOptions::default(),
         };
         let (out, usage) = self

@@ -170,7 +170,7 @@ public sealed partial class MainWindow
         var clearKeyBtn = new Button { Content = L10n.T("model.clear_key"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
         var testBtn = new Button { Content = L10n.T("model.test_connection"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
 
-        var picker = new ComboBox { Header = L10n.T("model.saved_profiles"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        var picker = new ComboBox { Header = L10n.T("model.saved_profiles"), HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 0 };
         var presetBox = new ComboBox
         {
             Header = L10n.T("settings.provider_preset_quick_fill"),
@@ -185,7 +185,7 @@ public sealed partial class MainWindow
         var protocolBox = new ComboBox { Header = L10n.T("model.protocol"), HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var name in Protocols) protocolBox.Items.Add(new ComboBoxItem { Content = name, Tag = name });
         var urlBox = new TextBox { Header = L10n.T("model.base_url"), PlaceholderText = "https://api.example.com/v1" };
-        var modelBox = new ComboBox { Header = L10n.T("model.model_id"), IsEditable = true, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var modelBox = new ComboBox { Header = L10n.T("model.model_id"), IsEditable = true, HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 0 };
         var discoverBtn = new Button { Content = L10n.T("model.fetch_models") };
         var keyBox = new PasswordBox { Header = L10n.T("tts.api_key") };
         var allowInsecureHttpBox = new CheckBox { Content = L10n.T("settings.allow_non_loopback_plaintext_http") };
@@ -880,7 +880,7 @@ public sealed partial class MainWindow
         };
 
         var modelRow = new Grid { ColumnSpacing = 8 };
-        modelRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        modelRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 0 });
         modelRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         discoverBtn.VerticalAlignment = VerticalAlignment.Bottom;
         Grid.SetColumn(discoverBtn, 1);
@@ -888,7 +888,7 @@ public sealed partial class MainWindow
         modelRow.Children.Add(discoverBtn);
 
         var top = new Grid { ColumnSpacing = 8 };
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 0 });
         top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         newBtn.VerticalAlignment = deleteBtn.VerticalAlignment = VerticalAlignment.Bottom;
@@ -998,10 +998,10 @@ public sealed partial class MainWindow
         embPanel.Children.Add(embRow);
 
         var pivot = new Pivot { MinWidth = 540 };
-        pivot.Items.Add(new PivotItem { Header = L10n.T("settings.tab_appearance"), Content = new ScrollViewer { Content = appearancePanel, MaxHeight = 560 } });
-        pivot.Items.Add(new PivotItem { Header = L10n.T("settings.tab_general"), Content = new ScrollViewer { Content = generalPanel, MaxHeight = 560 } });
-        pivot.Items.Add(new PivotItem { Header = L10n.T("settings.tab_models"), Content = new ScrollViewer { Content = modelsPanel, MaxHeight = 560 } });
-        pivot.Items.Add(new PivotItem { Header = L10n.T("settings.tab_embedding"), Content = new ScrollViewer { Content = embPanel, MaxHeight = 560 } });
+        pivot.Items.Add(new PivotItem { Header = L10n.T("settings.tab_appearance"), Content = new ScrollViewer { Content = appearancePanel, MaxHeight = 560, HorizontalScrollMode = ScrollMode.Disabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } });
+        pivot.Items.Add(new PivotItem { Header = L10n.T("settings.tab_general"), Content = new ScrollViewer { Content = generalPanel, MaxHeight = 560, HorizontalScrollMode = ScrollMode.Disabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } });
+        pivot.Items.Add(new PivotItem { Header = L10n.T("settings.tab_models"), Content = new ScrollViewer { Content = modelsPanel, MaxHeight = 560, HorizontalScrollMode = ScrollMode.Disabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } });
+        pivot.Items.Add(new PivotItem { Header = L10n.T("settings.tab_embedding"), Content = new ScrollViewer { Content = embPanel, MaxHeight = 560, HorizontalScrollMode = ScrollMode.Disabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } });
 
         var dialog = new ContentDialog
         {
@@ -1012,6 +1012,8 @@ public sealed partial class MainWindow
             XamlRoot = Content.XamlRoot,
         };
         settingsDialog = dialog;
+        // the dialog's default maximum width (548) is narrower than the tabs; wider content was cut off
+        dialog.Resources["ContentDialogMaxWidth"] = 760d;
         // "Apply" sits with the dialog buttons and only applies to the models tab
         void SyncSaveButton()
         {
