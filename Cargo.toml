@@ -56,6 +56,8 @@ secrecy = { version = "0.10", features = ["serde"] }
 jsonschema = "0.26"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+tar = { version = "0.4", default-features = false }
+lzma-rust2 = { version = "0.15", default-features = false, features = ["std", "xz"] }
 hex = "0.4"
 ulid = "1.1"
 url = "2.5"

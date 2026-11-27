@@ -23,6 +23,8 @@ fn profile(protocol: ProtocolKind, base_url: &str) -> ResolvedProfile {
         capabilities: ModelCapabilities::default(),
         extra_headers: BTreeMap::new(),
         anthropic_version: "2023-06-01".into(),
+        preset: None,
+        shrink_media: false,
     }
 }
 

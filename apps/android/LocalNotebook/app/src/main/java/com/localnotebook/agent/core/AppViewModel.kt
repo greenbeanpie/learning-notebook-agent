@@ -76,6 +76,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 core.events.collect { ev ->
                     when (ev.event) {
                         "source.status", "studio.status", "chat.finished", "notebook.summary_updated" -> refreshAll()
+                        // background capability probe or profile.test finished: refresh the list only,
+                        // the settings form keeps its unapplied edits (see SettingsSheet LaunchedEffect)
+                        "profile.updated" -> loadModelProfiles()
                         "studio.thought" -> {
                             val aid = ev.data.optString("artifact_id")
                             val kind = ev.data.optString("kind", "stage")
@@ -278,9 +281,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     _ui.update { it.copy(activeNotebookId = id, activeArtifact = null, activeSourcePreview = null) }
                     refreshAll()
                     if (files.isNotEmpty()) {
-                        val paths = JSONArray()
-                        for (u in files) paths.put(copyUriToCache(u).absolutePath)
-                        core.call("source.add_files", JSONObject().put("notebook_id", id).put("paths", paths))
+                        val staged = mutableListOf<StagedFile>()
+                        try {
+                            for (u in files) staged += stageUri(u)
+                            val paths = JSONArray()
+                            for (s in staged) paths.put(s.path.absolutePath)
+                            core.call("source.add_files", JSONObject().put("notebook_id", id).put("paths", paths))
+                        } finally {
+                            staged.forEach { it.discard() }
+                        }
                         refreshAll()
                     }
                 }
@@ -301,9 +310,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun copyUriToCache(uri: Uri): File {
+    /** A picked file copied into the cache. [path] is what goes to the core: the re-encoded file when [shrunk]. */
+    private class StagedFile(val copy: File, val path: File, val shrunk: Boolean) {
+        fun discard() {
+            if (shrunk) {
+                copy.delete()
+                path.delete()
+            }
+        }
+    }
+
+    /** Copies [uri] into the cache, re-encoding it first when the active MiMo profile requires it. */
+    private suspend fun stageUri(uri: Uri): StagedFile {
         val ctx = getApplication<Application>()
-        return withContext(Dispatchers.IO) {
+        val (displayName, copy) = withContext(Dispatchers.IO) {
             var name = "imported_file"
             ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
                 val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -314,8 +334,42 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ctx.contentResolver.openInputStream(uri)?.use { input ->
                 out.outputStream().use { output -> input.copyTo(output) }
             }
-            out
+            name to out
         }
+        val shrunk = shrinkForActiveProfile(copy, displayName)
+        return StagedFile(copy, shrunk ?: copy, shrunk != null)
+    }
+
+    /**
+     * MiMo caps raw audio/video at about 35 MB. With "shrink media" on, an oversized audio/video file is
+     * re-encoded on the device first (Android has no ffmpeg). Returns the re-encoded file, named after the
+     * original, or null when nothing needs to change. Throws when even the lowest quality does not fit.
+     */
+    private suspend fun shrinkForActiveProfile(src: File, displayName: String): File? {
+        val profile = _ui.value.modelProfiles.firstOrNull { it.isActive } ?: return null
+        if (profile.preset != "mimo" || !profile.shrinkMedia) return null
+        val isVideo = MediaShrinker.mediaKind(displayName) ?: return null
+        if (src.length() <= MediaShrinker.MIMO_LIMIT_BYTES) return null
+
+        val ctx = getApplication<Application>()
+        val en = _ui.value.prefs.isEnglish
+        _ui.update { it.copy(statusBanner = L10n.t("model.shrinking_media", en)) }
+        val tmp = try {
+            MediaShrinker.shrinkIfNeeded(ctx, src, isVideo, MediaShrinker.MIMO_LIMIT_BYTES, en)
+        } finally {
+            _ui.update { it.copy(statusBanner = "") }
+        }
+        if (tmp == null) return null
+
+        // Keep the original name so the source title does not change; only the container extension differs.
+        val dir = File(ctx.cacheDir, "imports").apply { mkdirs() }
+        val stem = displayName.substringBeforeLast('.')
+        val named = File(dir, "${System.currentTimeMillis()}_$stem.${tmp.extension}")
+        if (!tmp.renameTo(named)) {
+            tmp.copyTo(named, overwrite = true)
+            tmp.delete()
+        }
+        return named
     }
 
     suspend fun refreshAll() {
@@ -468,25 +522,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun importFileUri(uri: Uri) {
         viewModelScope.launch {
             runCatching {
-                val ctx = getApplication<Application>()
-                val displayName = withContext(Dispatchers.IO) {
-                    var name = "imported_file"
-                    ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
-                        val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        if (idx >= 0 && c.moveToFirst()) name = c.getString(idx) ?: name
-                    }
-                    name
+                val staged = stageUri(uri)
+                try {
+                    val nid = _ui.value.activeNotebookId
+                    core.call("source.add_files", JSONObject().put("notebook_id", nid).put("paths", JSONArray().put(staged.path.absolutePath)))
+                } finally {
+                    staged.discard()
                 }
-                val dst = withContext(Dispatchers.IO) {
-                    val dir = File(ctx.cacheDir, "imports").apply { mkdirs() }
-                    val out = File(dir, "${System.currentTimeMillis()}_$displayName")
-                    ctx.contentResolver.openInputStream(uri)?.use { input ->
-                        out.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    out
-                }
-                val nid = _ui.value.activeNotebookId
-                core.call("source.add_files", JSONObject().put("notebook_id", nid).put("paths", JSONArray().put(dst.absolutePath)))
                 refreshAll()
             }.onFailure { reportError(it) }
         }
@@ -773,10 +815,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 baseUrl = o.optString("base_url"),
                                 defaultModel = o.optString("default_model"),
                                 contextWindow = o.optInt("context_window", 32000),
-                                maxOutputTokens = o.optInt("max_output_tokens", 8000),
-                                supportsVision = o.optBoolean("supports_vision", false),
-                                supportsAudio = o.optBoolean("supports_audio", false),
-                                supportsVideo = o.optBoolean("supports_video", false),
+                                maxOutputTokens = o.optInt("max_output_tokens", 0),
                                 extraHeaders = hdrMap,
                             )
                         )
@@ -817,12 +856,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 isActive = o.optBoolean("is_active", false),
                                 allowInsecureHttp = o.optBoolean("allow_insecure_http", false),
                                 contextWindow = o.optInt("context_window", 32000),
-                                maxOutputTokens = o.optInt("max_output_tokens", 8000),
-                                maxParallel = o.optInt("max_parallel", 4),
+                                maxOutputTokens = o.optInt("max_output_tokens", 0),
+                                maxParallel = o.optInt("max_parallel", 0),
                                 supportsVision = caps?.optBoolean("supports_vision", false) ?: false,
                                 supportsAudio = caps?.optBoolean("supports_audio", false) ?: false,
                                 supportsVideo = caps?.optBoolean("supports_video", false) ?: false,
+                                probed = caps != null && !caps.isNull("probed_at"),
                                 extraHeaders = hdrMap,
+                                preset = o.optString("preset").takeIf { it.isNotEmpty() && it != "null" },
+                                shrinkMedia = o.optBoolean("shrink_media", false),
                                 eligible = o.optBoolean("eligible", true),
                                 unsupportedReason = o.optString("unsupported_reason").takeIf { it.isNotEmpty() && it != "null" },
                                 probePending = o.optBoolean("probe_pending", false),
@@ -876,28 +918,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         apiKey: String,
         extraHeaders: Map<String, String> = emptyMap(),
         contextWindow: Int = 32000,
-        maxOutputTokens: Int = 8000,
+        maxOutputTokens: Int = 0,
         activateChat: Boolean = true,
         allowInsecureHttp: Boolean = false,
-        supportsVision: Boolean = false,
-        supportsAudio: Boolean = false,
-        supportsVideo: Boolean = false,
-        maxParallel: Int = 4,
+        maxParallel: Int = 0,
+        preset: String = "",
+        shrinkMedia: Boolean = false,
+        onFailed: () -> Unit = {},
     ) {
         viewModelScope.launch {
             runCatching {
+                // 0 = unlimited for both limits; modalities are detected by the core, not sent
                 val body = JSONObject()
                     .put("display_name", "$protocol / $modelId")
-                    .put("max_parallel", maxParallel.coerceIn(1, 64))
+                    .put("max_parallel", maxParallel.coerceIn(0, 64))
+                    .put("preset", preset)
+                    .put("shrink_media", shrinkMedia)
                     .put("protocol", protocol)
                     .put("base_url", baseUrl.trim())
                     .put("model_id", modelId.trim())
                     .put("context_window", contextWindow)
-                    .put("max_output_tokens", maxOutputTokens)
+                    .put("max_output_tokens", maxOutputTokens.coerceAtLeast(0))
                     .put("allow_insecure_http", allowInsecureHttp)
-                    .put("supports_vision", supportsVision)
-                    .put("supports_audio", supportsAudio)
-                    .put("supports_video", supportsVideo)
                     .put("extra_headers", JSONObject(extraHeaders))
                     .put("activate", activateChat)
                 if (!profileId.isNullOrEmpty()) body.put("id", profileId)
@@ -916,7 +958,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 loadModelProfiles()
                 _ui.update { it.copy(statusBanner = L10n.t("model.saved_checked", it.prefs.isEnglish)) }
-            }.onFailure { reportError(it) }
+            }.onFailure {
+                reportError(it)
+                onFailed()
+            }
         }
     }
 
@@ -934,11 +979,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 val res = core.call("profile.test", JSONObject().put("profile_id", profileId))
                 val reply = res.optString("reply", "OK")
-                _ui.update {
-                    it.copy(
-                        statusBanner = L10n.t("app.connected", it.prefs.isEnglish).format(reply)
+                val en = _ui.value.prefs.isEnglish
+                val msg = StringBuilder(L10n.t("app.connected", en).format(reply))
+                val failed = res.optJSONArray("media_failed")
+                for (i in 0 until (failed?.length() ?: 0)) {
+                    val f = failed!!.getJSONObject(i)
+                    val kind = when (f.optString("kind")) {
+                        "vision" -> L10n.t("settings.vision", en)
+                        "audio" -> L10n.t("model.audio", en)
+                        else -> L10n.t("model.video", en)
+                    }
+                    msg.append('\n').append(
+                        L10n.t("model.media_probe_failed", en)
+                            .replace("{0}", kind).replace("{1}", f.optString("detail"))
                     )
                 }
+                _ui.update { it.copy(statusBanner = msg.toString()) }
             }.onFailure { reportError(it) }
             loadModelProfiles()
         }
@@ -978,20 +1034,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
-        /** "工具调用 ✓ · 结构化输出 ✓ · 识图" for the model list. */
+        /**
+         * "工具调用 ✓ · 结构化输出 ✓" for the settings page. Empty until the core has probed the
+         * profile; the detected inputs are shown separately (see SettingsSheet).
+         */
         fun capsSummary(caps: JSONObject?, en: Boolean): String {
             if (caps == null) return ""
             if (caps.optBoolean("embedding_only", false)) return L10n.t("model.embedding_only", en)
-            if (caps.isNull("probed_at") || !caps.has("probed_at")) return L10n.t("model.probe_pending", en)
-            val parts = mutableListOf(
+            if (caps.isNull("probed_at")) return ""
+            return listOf(
                 L10n.t("model.cap_tools", en) + if (caps.optBoolean("tools")) " ✓" else " ✗",
                 L10n.t("model.cap_structured", en) +
                     if (caps.optBoolean("json_schema") || caps.optBoolean("json_mode")) " ✓" else " ✗",
-            )
-            if (caps.optBoolean("supports_vision")) parts += L10n.t("app.vision", en)
-            if (caps.optBoolean("supports_audio")) parts += L10n.t("model.audio", en)
-            if (caps.optBoolean("supports_video")) parts += L10n.t("model.video", en)
-            return parts.joinToString(" · ")
+            ).joinToString(" · ")
         }
 
         private val dotLeaderRegex = Regex("[·.…•\u2024\u2026]{3,}")

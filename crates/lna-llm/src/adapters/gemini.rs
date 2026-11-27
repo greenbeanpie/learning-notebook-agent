@@ -123,10 +123,11 @@ impl ProtocolAdapter for GeminiAdapter {
             }
         }
 
-        let capped_max_tokens = clamp_reasoning_and_output_tokens(req.max_output_tokens);
-        let mut gen_cfg = json!({
-            "maxOutputTokens": capped_max_tokens
-        });
+        // 0 = no limit: omit maxOutputTokens so the model's default applies.
+        let mut gen_cfg = json!({});
+        if req.max_output_tokens != 0 {
+            gen_cfg["maxOutputTokens"] = json!(req.max_output_tokens);
+        }
         if req.reasoning.show_summary {
             gen_cfg["thinkingConfig"] = json!({ "includeThoughts": true });
         }
@@ -371,6 +372,8 @@ mod tests {
             capabilities: Default::default(),
             extra_headers: Default::default(),
             anthropic_version: String::new(),
+            preset: None,
+            shrink_media: false,
         };
         let req = LlmRequest {
             system: String::new(),

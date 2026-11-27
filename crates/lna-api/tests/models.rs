@@ -203,31 +203,42 @@ fn upsert_params(mock: &MockLlm) -> Value {
     })
 }
 
-/// Saving a profile only stores it (the endpoint is not contacted and client-sent capability
-/// flags are ignored); `profile.test` probes tools / JSON Schema / JSON mode / stream usage and
-/// stores the result.
+/// Saving a profile stores it and starts a background probe: the reply still shows it unchecked,
+/// and the probe then stores tools / JSON Schema / JSON mode / stream usage and the media inputs
+/// (announced by `profile.updated`). Saving again without a connection change keeps the result;
+/// changing the model makes it stale and probes again. `profile.test` probes once more.
 #[test]
-fn saving_a_profile_does_not_probe_but_testing_does() {
+fn saving_a_profile_starts_a_probe_and_testing_repeats_it() {
     let env = Env::new("probe");
     for (schema_ok, json_mode_ok) in [(true, true), (false, true)] {
         let mock = probe_mock(true, schema_ok);
         mock.raw_probe
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut rx = env.core.events.subscribe();
         let prof = env.ok("profile.upsert", upsert_params(&mock));
         let pid = prof["id"].as_str().unwrap().to_string();
-        assert_eq!(mock.total(), 0, "saving must not contact the endpoint");
         let caps = &prof["capabilities"];
         assert_eq!(caps["tools"], json!(false), "{prof}");
         assert_eq!(caps["json_schema"], json!(false));
         assert!(caps["probed_at"].is_null(), "{prof}");
-        let listed = env.ok("profile.list", json!({}));
-        let row = listed["profiles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["id"] == pid)
-            .unwrap();
-        assert_eq!(row["probe_pending"], json!(true), "{row}");
+
+        // the background probe stores its result and tells clients
+        env.wait_probed(&pid);
+        let row = listed_profile(&env, &pid);
+        assert_eq!(row["probe_pending"], json!(false), "{row}");
+        assert_eq!(row["capabilities"]["tools"], json!(true), "{row}");
+        assert_eq!(row["capabilities"]["json_schema"], json!(schema_ok));
+        assert_eq!(row["capabilities"]["json_mode"], json!(json_mode_ok));
+        assert_eq!(row["capabilities"]["stream_usage"], json!(true));
+        let mut announced = false;
+        env.wait(10, || {
+            while let Ok(ev) = rx.try_recv() {
+                announced |= ev.topic == "profiles"
+                    && ev.event == "profile.updated"
+                    && ev.data["profile_id"] == json!(pid);
+            }
+            announced
+        });
 
         let r = env.ok("profile.test", json!({ "profile_id": pid }));
         assert!(mock.total() > 0);
@@ -237,28 +248,30 @@ fn saving_a_profile_does_not_probe_but_testing_does() {
         assert_eq!(r["capabilities"]["stream_usage"], json!(true));
         assert!(r["capabilities"]["probed_at"].is_i64());
 
-        // saving again without touching the connection keeps the measurements
+        // saving again without touching the connection keeps the measurements, and does not probe
         let mut again = upsert_params(&mock);
         again["id"] = json!(pid);
+        let before = mock.total();
         let prof = env.ok("profile.upsert", again);
         assert_eq!(prof["capabilities"]["tools"], json!(true), "{prof}");
         assert!(prof["capabilities"]["probed_at"].is_i64());
-        // changing the model makes them stale
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            mock.total(),
+            before,
+            "an unchanged profile is not probed again"
+        );
+
+        // changing the model makes them stale; the reply says so and the probe runs again
         let mut changed = upsert_params(&mock);
         changed["id"] = json!(pid);
         changed["model_id"] = json!("another-model");
         let prof = env.ok("profile.upsert", changed);
         assert_eq!(prof["capabilities"]["tools"], json!(false), "{prof}");
         assert!(prof["capabilities"]["probed_at"].is_null());
-        env.ok("profile.test", json!({ "profile_id": pid }));
-        let stored = env.ok("profile.list", json!({}));
-        let found = stored["profiles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["id"] == pid)
-            .unwrap();
-        assert_eq!(found["eligible"], json!(true));
+        env.wait_probed(&pid);
+        let found = listed_profile(&env, &pid);
+        assert_eq!(found["eligible"], json!(true), "{found}");
     }
 }
 
@@ -419,11 +432,11 @@ fn a_model_rejecting_tools_at_run_time_is_reported_not_downgraded() {
         chat.iter().all(|c| c.body.get("tools").is_some()),
         "never retried without tools"
     );
-    // saving never probed it, so the profile is still "not checked yet"; the user tests it in
-    // the settings
+    // the run-time rejection does not downgrade the stored profile: it stays as the probe found it
+    // (the user re-tests it in the settings)
     let stored = env.ok("profile.list", json!({}));
     assert_eq!(
-        stored["profiles"][0]["probe_pending"],
+        stored["profiles"][0]["capabilities"]["tools"],
         json!(true),
         "{stored}"
     );
@@ -434,6 +447,12 @@ fn builtin_provider_presets_include_official_and_opencode_go_headers() {
     let env = Env::new("presets");
     let res = env.ok("profile.presets", json!({}));
     let presets = res["presets"].as_array().expect("presets array");
+    // media support is detected by the test, never declared by a preset
+    for p in presets {
+        assert!(p.get("supports_vision").is_none(), "{p}");
+        assert!(p.get("supports_audio").is_none(), "{p}");
+        assert!(p.get("supports_video").is_none(), "{p}");
+    }
     let ids: Vec<&str> = presets.iter().filter_map(|p| p["id"].as_str()).collect();
     for expected in [
         "openai",
@@ -523,4 +542,229 @@ fn existing_unqualified_profiles_are_refused_after_probing() {
     env.ok("profile.test", json!({ "profile_id": pid }));
     let list = env.ok("profile.list", json!({}));
     assert_eq!(list["profiles"][0]["eligible"], json!(true), "{list}");
+}
+
+/// Whether any user message of a Chat Completions request carries a content part of `kind`.
+fn has_part(body: &Value, kind: &str) -> bool {
+    body["messages"].as_array().into_iter().flatten().any(|m| {
+        m["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|p| p["type"] == kind)
+    })
+}
+
+/// A model that sees pictures (when `sees`), rejects audio, and cannot take video. The media
+/// samples are sent to it as real requests (`raw_probe`), so their answers are what the test sees.
+fn media_mock(sees: bool) -> MockLlm {
+    let mock = MockLlm::start(move |r| {
+        if r.has_tools() {
+            return Reply::Tool {
+                id: "p1".into(),
+                name: "lna_capability_probe".into(),
+                args: json!({ "ok": true }),
+            };
+        }
+        if matches!(
+            r.body["response_format"]["type"].as_str(),
+            Some("json_schema" | "json_object")
+        ) {
+            return Reply::Text(r#"{"ok":true}"#.into());
+        }
+        if has_part(&r.body, "input_audio") {
+            return Reply::Status(
+                400,
+                r#"{"error":{"message":"audio input is not supported"}}"#.into(),
+            );
+        }
+        if has_part(&r.body, "image_url") {
+            let t = if sees {
+                "Red."
+            } else {
+                "I cannot see any attachment."
+            };
+            return Reply::Text(t.into());
+        }
+        Reply::Text("OK".into())
+    });
+    mock.raw_probe
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    mock
+}
+
+/// Image / audio / video support is detected by the test, whatever the profile declared: a sample
+/// the model understands counts as support, and a clean "not supported" is `false` and not a
+/// failure. Here the model sees pictures, rejects audio, and Chat Completions has no video input.
+#[test]
+fn testing_detects_the_inputs_the_model_takes_whatever_was_declared() {
+    let env = Env::new("probe_media");
+    for sees in [true, false] {
+        for declared in [true, false] {
+            let mock = media_mock(sees);
+            let mut params = upsert_params(&mock);
+            params["supports_vision"] = json!(declared);
+            params["supports_audio"] = json!(declared);
+            params["supports_video"] = json!(declared);
+            let prof = env.ok("profile.upsert", params);
+            let pid = prof["id"].as_str().unwrap().to_string();
+
+            let r = env.ok("profile.test", json!({ "profile_id": pid }));
+            assert_eq!(
+                r["detected"],
+                json!({ "vision": sees, "audio": false, "video": false }),
+                "{r}"
+            );
+            let caps = &r["capabilities"];
+            assert_eq!(caps["supports_vision"], json!(sees), "{r}");
+            assert_eq!(caps["supports_audio"], json!(false), "{r}");
+            assert_eq!(caps["supports_video"], json!(false), "{r}");
+            assert_eq!(r["media_failed"], json!([]), "{r}");
+
+            // the stored profile says the same
+            let row = listed_profile(&env, &pid);
+            assert_eq!(row["capabilities"]["supports_vision"], json!(sees), "{row}");
+            assert_eq!(row["capabilities"]["supports_audio"], json!(false), "{row}");
+            assert_eq!(row["capabilities"]["supports_video"], json!(false), "{row}");
+        }
+    }
+}
+
+/// `profile.upsert` never takes image / audio / video support from the client: a new profile
+/// starts without it, and an edit that keeps the connection keeps what the probe found.
+#[test]
+fn upsert_ignores_client_sent_media_flags() {
+    let env = Env::new("upsert_flags");
+    let mock = media_mock(true);
+    let mut params = upsert_params(&mock);
+    params["supports_vision"] = json!(true);
+    params["supports_audio"] = json!(true);
+    params["supports_video"] = json!(true);
+    let prof = env.ok("profile.upsert", params);
+    let pid = prof["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        prof["capabilities"]["supports_vision"],
+        json!(false),
+        "{prof}"
+    );
+    assert_eq!(
+        prof["capabilities"]["supports_audio"],
+        json!(false),
+        "{prof}"
+    );
+    assert_eq!(
+        prof["capabilities"]["supports_video"],
+        json!(false),
+        "{prof}"
+    );
+
+    env.wait_probed(&pid);
+    let row = listed_profile(&env, &pid);
+    assert_eq!(row["capabilities"]["supports_vision"], json!(true), "{row}");
+    assert_eq!(row["capabilities"]["supports_audio"], json!(false), "{row}");
+
+    // an edit that keeps the connection keeps the probe's result, whatever the client sends
+    let mut again = upsert_params(&mock);
+    again["id"] = json!(pid);
+    again["supports_vision"] = json!(false);
+    again["supports_audio"] = json!(true);
+    again["supports_video"] = json!(true);
+    let prof = env.ok("profile.upsert", again);
+    assert_eq!(
+        prof["capabilities"]["supports_vision"],
+        json!(true),
+        "{prof}"
+    );
+    assert_eq!(
+        prof["capabilities"]["supports_audio"],
+        json!(false),
+        "{prof}"
+    );
+    assert_eq!(
+        prof["capabilities"]["supports_video"],
+        json!(false),
+        "{prof}"
+    );
+    assert!(prof["capabilities"]["probed_at"].is_i64(), "{prof}");
+}
+
+fn listed_profile(env: &Env, pid: &str) -> Value {
+    let listed = env.ok("profile.list", json!({}));
+    listed["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == pid)
+        .unwrap()
+        .clone()
+}
+
+/// `preset` and `shrink_media` persist per profile. "mimo" keeps shrinking on; an update without
+/// the fields keeps both; `preset: ""` clears the preset and turns shrinking off; shrinking is
+/// stored off for any non-MiMo preset.
+#[test]
+fn preset_and_shrink_media_persist_per_profile() {
+    let env = Env::new("preset_shrink");
+    // saving starts a background probe, so the endpoint is a local mock, not the provider
+    let mock = MockLlm::start(|_| Reply::Text("OK".into()));
+    let base = json!({
+        "display_name": "MiMo", "protocol": "chat_completion",
+        "base_url": mock.base_url(), "model_id": "mimo-v2.6-flash",
+    });
+
+    let mut create = base.clone();
+    create["preset"] = json!("mimo");
+    create["shrink_media"] = json!(true);
+    let prof = env.ok("profile.upsert", create);
+    let pid = prof["id"].as_str().unwrap().to_string();
+    assert_eq!(prof["preset"], json!("mimo"), "{prof}");
+    assert_eq!(prof["shrink_media"], json!(true), "{prof}");
+    let row = listed_profile(&env, &pid);
+    assert_eq!(row["preset"], json!("mimo"), "{row}");
+    assert_eq!(row["shrink_media"], json!(true), "{row}");
+
+    // an update without the fields keeps both stored values
+    let mut again = base.clone();
+    again["id"] = json!(pid);
+    let prof = env.ok("profile.upsert", again);
+    assert_eq!(prof["preset"], json!("mimo"), "{prof}");
+    assert_eq!(prof["shrink_media"], json!(true), "{prof}");
+    let row = listed_profile(&env, &pid);
+    assert_eq!(row["preset"], json!("mimo"), "{row}");
+    assert_eq!(row["shrink_media"], json!(true), "{row}");
+
+    // an empty preset clears it, and shrinking goes off with it
+    let mut cleared = base.clone();
+    cleared["id"] = json!(pid);
+    cleared["preset"] = json!("");
+    let prof = env.ok("profile.upsert", cleared);
+    assert!(prof["preset"].is_null(), "{prof}");
+    assert_eq!(prof["shrink_media"], json!(false), "{prof}");
+    let row = listed_profile(&env, &pid);
+    assert!(row["preset"].is_null(), "{row}");
+    assert_eq!(row["shrink_media"], json!(false), "{row}");
+
+    // shrinking requested on a non-MiMo preset is stored off
+    let mut openai = base.clone();
+    openai["preset"] = json!("openai");
+    openai["shrink_media"] = json!(true);
+    let prof = env.ok("profile.upsert", openai);
+    let other_id = prof["id"].as_str().unwrap().to_string();
+    assert_eq!(prof["preset"], json!("openai"), "{prof}");
+    assert_eq!(prof["shrink_media"], json!(false), "{prof}");
+
+    // switching an existing MiMo profile to another preset turns shrinking off
+    let mut mimo = base.clone();
+    mimo["id"] = json!(pid);
+    mimo["preset"] = json!("mimo");
+    mimo["shrink_media"] = json!(true);
+    env.ok("profile.upsert", mimo);
+    let mut glm = base.clone();
+    glm["id"] = json!(pid);
+    glm["preset"] = json!("glm");
+    let prof = env.ok("profile.upsert", glm);
+    assert_eq!(prof["preset"], json!("glm"), "{prof}");
+    assert_eq!(prof["shrink_media"], json!(false), "{prof}");
+    let row = listed_profile(&env, &other_id);
+    assert_eq!(row["shrink_media"], json!(false), "{row}");
 }

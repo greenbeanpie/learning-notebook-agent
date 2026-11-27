@@ -190,6 +190,14 @@ fn every_api_method_handles_empty_params_without_internal_errors() {
         if m == "profile.test" || m == "profile.discover_models" {
             continue; // need a real profile; covered in models.rs
         }
+        // These download from the internet (and write into the app's data folder): never
+        // start them from a test.
+        if matches!(
+            m.as_str(),
+            "embedding.download" | "ffmpeg.install" | "ffmpeg.remove"
+        ) {
+            continue;
+        }
         let r = env.raw(m, json!({}));
         if let Some(code) = r["error"]["code"].as_str() {
             assert_ne!(

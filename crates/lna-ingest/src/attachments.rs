@@ -290,7 +290,7 @@ fn read_base64(a: &Attachment) -> Option<String> {
 }
 
 /// `[图片 n：name]` label + image part for each stored picture (lost files are noted in text).
-fn image_parts(atts: &[Attachment]) -> Vec<Part> {
+pub fn image_parts(atts: &[Attachment]) -> Vec<Part> {
     let mut parts = Vec::with_capacity(atts.len() * 2);
     for (i, a) in atts.iter().enumerate() {
         let Some(b64) = read_base64(a) else {
@@ -365,7 +365,7 @@ pub async fn describe(
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: profile.max_output_tokens.clamp(1024, 4096),
+            max_output_tokens: profile.output_budget().clamp(1024, 4096),
             reasoning: ReasoningOptions::default(),
         };
         if let Ok((txt, usage)) = llm

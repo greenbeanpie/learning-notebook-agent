@@ -22,16 +22,112 @@ pub struct WireParams {
 
 type CapabilitySink = std::sync::Arc<dyn Fn(&str, &WireParams) + Send + Sync>;
 
-/// Default and bounds of the per-profile limit on requests in flight (the user sets it per profile).
-pub const DEFAULT_PARALLEL_REQUESTS: u32 = 4;
+/// Default of the per-profile limit on requests in flight: 0 = unlimited (the user sets it per profile).
+pub const DEFAULT_PARALLEL_REQUESTS: u32 = 0;
+/// Executor count used for a profile without a configured limit: the most executors any
+/// orchestrator fans out to, so `parallel_limit` reports this for "unlimited".
 pub const MAX_PARALLEL_REQUESTS: u32 = 64;
+
+/// Attempts (the first one included) of a request the endpoint throttles with 429, or 503 with
+/// Retry-After, before the error is returned.
+const MAX_THROTTLED_TRIES: u32 = 8;
+/// Upper bound of one wait before a throttled request is retried.
+const MAX_THROTTLE_WAIT: Duration = Duration::from_secs(30);
+/// Successful requests in a row that raise a learned cap by one.
+const SUCCESSES_TO_RAISE_CAP: u32 = 20;
 
 /// How many requests of one profile may be in flight at once. Every request of the program goes
 /// through `LlmClient::stream`, so this one gate bounds all AI work of a profile (chat, indexing,
-/// Studio executors, ...) without any caller having to hold a permit across nested calls.
+/// Studio executors, ...) without any caller having to hold a slot across nested calls.
+///
+/// The configured limit (None = unlimited) is a hard cap. On top of it the gate learns the real
+/// limit of the provider: a 429 while N requests are in flight caps the profile at max(1, N-1),
+/// and every `SUCCESSES_TO_RAISE_CAP` successes in a row raise that cap by one (the learned cap is
+/// dropped once it reaches the configured limit).
 struct Gate {
-    limit: usize,
-    sem: std::sync::Arc<tokio::sync::Semaphore>,
+    configured: Option<usize>,
+    state: std::sync::Mutex<GateState>,
+    /// Woken when a slot is released or the cap changes.
+    freed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct GateState {
+    in_flight: usize,
+    learned: Option<usize>,
+    successes: u32,
+}
+
+impl Gate {
+    fn new(configured: Option<usize>) -> Self {
+        Self {
+            configured,
+            state: Default::default(),
+            freed: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn cap(&self, st: &GateState) -> usize {
+        self.configured
+            .unwrap_or(usize::MAX)
+            .min(st.learned.unwrap_or(usize::MAX))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, GateState> {
+        // the state is plain counters: a poisoned lock is still consistent
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A request slot of a profile, held from the start of a request until its last attempt ends.
+struct GateSlot {
+    gate: std::sync::Arc<Gate>,
+}
+
+impl GateSlot {
+    /// The provider throttled this request while the profile had `in_flight` requests running.
+    fn throttled(&self) {
+        let mut st = self.gate.lock();
+        let in_flight = st.in_flight.max(1);
+        let learned = in_flight.saturating_sub(1).max(1);
+        st.learned = Some(st.learned.map_or(learned, |c| c.min(learned)));
+        st.successes = 0;
+        tracing::info!(
+            cap = learned,
+            in_flight,
+            "provider throttled; learned parallel cap"
+        );
+    }
+
+    /// A request of the profile finished without being throttled.
+    fn succeeded(&self) {
+        let mut raised = false;
+        {
+            let mut st = self.gate.lock();
+            st.successes += 1;
+            if st.successes >= SUCCESSES_TO_RAISE_CAP {
+                st.successes = 0;
+                if let Some(c) = st.learned {
+                    let next = c + 1;
+                    st.learned = match self.gate.configured {
+                        Some(k) if next >= k => None,
+                        _ => Some(next),
+                    };
+                    raised = true;
+                }
+            }
+        }
+        if raised {
+            self.gate.freed.notify_waiters();
+        }
+    }
+}
+
+impl Drop for GateSlot {
+    fn drop(&mut self) {
+        self.gate.lock().in_flight -= 1;
+        self.gate.freed.notify_waiters();
+    }
 }
 
 /// How long a prompt prefix counts as cached at the provider after its first request was sent.
@@ -119,7 +215,10 @@ pub struct LlmClient {
     warm: WarmMap,
     /// Called when a request had to be rewritten for the endpoint's wire format, so the profile remembers it (D5).
     sink: std::sync::Arc<std::sync::Mutex<Option<CapabilitySink>>>,
-    gates: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Gate>>>,
+    gates:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<Gate>>>>,
+    /// Wait before the first retry of a throttled request (doubles per try, capped at 30s).
+    retry_base: Duration,
 }
 
 impl Default for LlmClient {
@@ -163,7 +262,14 @@ impl LlmClient {
             sink: Default::default(),
             gates: Default::default(),
             warm: Default::default(),
+            retry_base: Duration::from_secs(1),
         }
+    }
+
+    /// Sets the wait before the first retry of a throttled request (1s by default; tests use less).
+    pub fn with_retry_base(mut self, base: Duration) -> Self {
+        self.retry_base = base;
+        self
     }
 
     fn warm_role(&self, key: Option<u64>) -> WarmRole {
@@ -190,33 +296,32 @@ impl LlmClient {
         })
     }
 
-    /// Sets how many requests the profile may have in flight at once (clamped to 1..=64). A
+    /// Sets how many requests the profile may have in flight at once. 0 means unlimited (the
+    /// default); other values are a hard cap (clamped to 1..=1024 by the storage layer). A
     /// changed limit takes effect for requests that start afterwards; running ones finish normally.
     pub fn set_parallel_limit(&self, profile_id: &str, limit: u32) {
-        let limit = limit.clamp(1, MAX_PARALLEL_REQUESTS) as usize;
+        let configured = (limit > 0).then_some(limit as usize);
         if let Ok(mut g) = self.gates.lock() {
-            match g.get(profile_id) {
-                Some(gate) if gate.limit == limit => {}
-                _ => {
-                    g.insert(
-                        profile_id.to_string(),
-                        Gate {
-                            limit,
-                            sem: std::sync::Arc::new(tokio::sync::Semaphore::new(limit)),
-                        },
-                    );
-                }
+            let same = g
+                .get(profile_id)
+                .is_some_and(|gate| gate.configured == configured);
+            if !same {
+                g.insert(
+                    profile_id.to_string(),
+                    std::sync::Arc::new(Gate::new(configured)),
+                );
             }
         }
     }
 
-    /// The limit currently applied to a profile.
+    /// The configured limit of a profile as an executor count: the limit itself, or
+    /// `MAX_PARALLEL_REQUESTS` when the profile is unlimited (callers fan out at most that far).
     pub fn parallel_limit(&self, profile_id: &str) -> usize {
         self.gates
             .lock()
             .ok()
-            .and_then(|g| g.get(profile_id).map(|x| x.limit))
-            .unwrap_or(DEFAULT_PARALLEL_REQUESTS as usize)
+            .and_then(|g| g.get(profile_id).and_then(|x| x.configured))
+            .unwrap_or(MAX_PARALLEL_REQUESTS as usize)
     }
 
     /// Waits for a free request slot of the profile (None for profiles without an id, e.g. probes).
@@ -224,30 +329,33 @@ impl LlmClient {
         &self,
         profile_id: &str,
         cancel: &CancellationToken,
-    ) -> LnaResult<Option<tokio::sync::OwnedSemaphorePermit>> {
+    ) -> LnaResult<Option<GateSlot>> {
         if profile_id.is_empty() {
             return Ok(None);
         }
-        let sem = {
+        let gate = {
             let mut g = self
                 .gates
                 .lock()
                 .map_err(|_| LnaError::internal("request gate poisoned"))?;
             g.entry(profile_id.to_string())
-                .or_insert_with(|| Gate {
-                    limit: DEFAULT_PARALLEL_REQUESTS as usize,
-                    sem: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                        DEFAULT_PARALLEL_REQUESTS as usize,
-                    )),
-                })
-                .sem
+                .or_insert_with(|| std::sync::Arc::new(Gate::new(None)))
                 .clone()
         };
-        tokio::select! {
-            _ = cancel.cancelled() => Err(LnaError::new(ErrorCode::Cancelled, "Cancelled while waiting for a request slot")),
-            p = sem.acquire_owned() => p
-                .map(Some)
-                .map_err(|_| LnaError::internal("request gate closed")),
+        loop {
+            // created before the check, so a release between check and wait is not missed
+            let freed = gate.freed.notified();
+            {
+                let mut st = gate.lock();
+                if st.in_flight < gate.cap(&st) {
+                    st.in_flight += 1;
+                    return Ok(Some(GateSlot { gate: gate.clone() }));
+                }
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled while waiting for a request slot")),
+                _ = freed => {}
+            }
         }
     }
 
@@ -319,12 +427,12 @@ impl LlmClient {
             }
             WarmRole::Free => None,
         };
-        let _slot = self.acquire_slot(&profile.id, &cancel).await?;
+        let slot = self.acquire_slot(&profile.id, &cancel).await?;
         let adapter = adapter_for(profile.protocol);
         let mut attempt = 0u32;
+        let mut throttled_tries = 0u32;
         let mut profile = profile.clone();
         let mut req = req.clone();
-        req.max_output_tokens = clamp_reasoning_and_output_tokens(req.max_output_tokens);
         // at most two rewrites (stream_options and the max-tokens field can both be rejected)
         let mut relaxes_left = if allow_relax { 2u32 } else { 0 };
         let mut relaxed = false;
@@ -380,7 +488,30 @@ impl LlmClient {
                         continue;
                     }
                 }
-                if (status.as_u16() == 429 || status.is_server_error()) && attempt < 3 {
+                // Throttled: wait and send the same request again, before any byte of a stream was
+                // read. 503 counts only with Retry-After (the endpoint says when to come back).
+                let throttled =
+                    status.as_u16() == 429 || (status.as_u16() == 503 && retry_after.is_some());
+                if throttled {
+                    if let Some(s) = slot.as_ref() {
+                        s.throttled();
+                    }
+                    throttled_tries += 1;
+                    if throttled_tries < MAX_THROTTLED_TRIES {
+                        let delay = throttle_delay(throttled_tries, retry_after, self.retry_base);
+                        tracing::info!(
+                            profile = %profile.id,
+                            status = status.as_u16(),
+                            try_no = throttled_tries,
+                            delay_ms = delay.as_millis() as u64,
+                            "request throttled by the endpoint; waiting before retry"
+                        );
+                        sleep_cancellable(delay, &cancel).await?;
+                        continue;
+                    }
+                    return Err(err);
+                }
+                if status.is_server_error() && attempt < 3 {
                     attempt += 1;
                     sleep_backoff(attempt, retry_after, &cancel).await?;
                     continue;
@@ -461,6 +592,9 @@ impl LlmClient {
                         },
                     );
                 }
+            }
+            if let Some(s) = slot.as_ref() {
+                s.succeeded();
             }
             return Ok(stop_reason.unwrap_or(StopReason::EndTurn));
         }
@@ -620,6 +754,11 @@ impl LlmClient {
             .map_err(|e| LnaError::invalid(format!("Invalid JSON schema: {e}")))?;
 
         let mut req = base_req.clone();
+        // Every structured answer may be an abort: the model that cannot do the task says why
+        // instead of inventing content that fits the schema.
+        let sent_schema = with_abort_property(schema);
+        let schema = &sent_schema;
+        req.system.push_str(ABORT_NOTE);
         // A profile that was never checked (saving does not probe) is tried with JSON Schema;
         // once checked, what the probe found decides.
         let unchecked = profile.capabilities.probed_at.is_none() && !profile.capabilities.json_mode;
@@ -739,7 +878,71 @@ impl LlmClient {
             }
         }
 
+        // The whole output budget went into reasoning and no answer was written. Repairing an
+        // empty text is pointless, so the original request is asked again with an instruction
+        // to think briefly (the per-request budget is fixed, so it cannot be raised).
+        let mut empty_retries = 0;
+        while candidate.trim().is_empty()
+            && matches!(stop, StopReason::MaxTokens)
+            && empty_retries < 2
+        {
+            empty_retries += 1;
+            on_status(&bilingual_status(
+                &format!("模型把输出额度全部用在了思考上，没有写出任何内容，正在要求它缩短思考后重试（第 {empty_retries}/2 次）…"),
+                &format!("The model spent its whole output budget on reasoning and wrote nothing; asking again with a shorter-thinking instruction (attempt {empty_retries}/2)…"),
+            ));
+            let mut retry = req.clone();
+            let note = "
+
+（上一次尝试把输出额度全部用在了思考上，没有输出内容。这一次请把思考压缩到最少，立刻输出完整的 JSON。）";
+            let last_text = retry
+                .messages
+                .iter_mut()
+                .rev()
+                .find(|m| m.role == Role::User)
+                .and_then(|m| {
+                    m.parts.iter_mut().rev().find_map(|p| match p {
+                        Part::Text(t) => Some(t),
+                        _ => None,
+                    })
+                });
+            match last_text {
+                Some(t) => t.push_str(note),
+                None => retry.system.push_str(note),
+            }
+            let (again, au, astop) = self
+                .complete_text_with_stop(
+                    profile,
+                    &retry,
+                    cancel.clone(),
+                    &mut on_thinking,
+                    &mut on_text,
+                )
+                .await?;
+            add_usage(&mut total_usage, &au);
+            stop = astop;
+            candidate = strip_code_fences(&again);
+        }
+
         for repair_attempt in 0..=max_repairs {
+            // Nothing was written, so there is nothing to repair: asking a "repairer" to fix an
+            // empty text makes it invent content that merely fits the schema.
+            if candidate.trim().is_empty() {
+                last_reason = if matches!(stop, StopReason::MaxTokens) {
+                    "the model used its whole output budget on reasoning and wrote nothing".into()
+                } else {
+                    "the model returned an empty answer".into()
+                };
+                break;
+            }
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&candidate) {
+                if let Some(reason) = abort_reason(&val) {
+                    return Err(LnaError::new(
+                        ErrorCode::ModelRefused,
+                        format!("模型主动终止了任务：{reason}"),
+                    ));
+                }
+            }
             match serde_json::from_str::<serde_json::Value>(&candidate) {
                 Ok(val) => {
                     let errs: Vec<String> = validator
@@ -1122,6 +1325,24 @@ async fn sleep_backoff(
     }
 }
 
+/// Wait before the retry after the `try_no`-th throttled attempt: Retry-After when the endpoint
+/// gave one, else `base` doubled per try (1s, 2s, 4s, ...). Never more than `MAX_THROTTLE_WAIT`.
+fn throttle_delay(try_no: u32, retry_after_secs: Option<u64>, base: Duration) -> Duration {
+    let wait = match retry_after_secs {
+        Some(s) => Duration::from_secs(s),
+        None => base.saturating_mul(1u32 << try_no.saturating_sub(1).min(16)),
+    };
+    wait.min(MAX_THROTTLE_WAIT)
+}
+
+/// Sleeps for `delay`, or returns a Cancelled error as soon as `cancel` fires.
+async fn sleep_cancellable(delay: Duration, cancel: &CancellationToken) -> LnaResult<()> {
+    tokio::select! {
+        _ = cancel.cancelled() => Err(LnaError::new(ErrorCode::Cancelled, "Cancelled while waiting for the endpoint to accept the request")),
+        _ = tokio::time::sleep(delay) => Ok(()),
+    }
+}
+
 /// Complete items of the flat array under `key` in possibly truncated JSON text: parses
 /// element by element and stops at the first incomplete one.
 pub(crate) fn salvage_array_items(text: &str, key: &str) -> Vec<serde_json::Value> {
@@ -1207,5 +1428,127 @@ mod warm_tests {
         };
         drop(leader);
         rx.wait_for(|d| *d).await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    async fn acquire(c: &LlmClient, profile_id: &str) -> Option<GateSlot> {
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            c.acquire_slot(profile_id, &CancellationToken::new()),
+        )
+        .await
+        .expect("a slot was not free")
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unlimited_profile_hands_out_slots_without_waiting() {
+        let c = LlmClient::new();
+        c.set_parallel_limit("p", 0);
+        let mut held = Vec::new();
+        for _ in 0..10 {
+            held.push(acquire(&c, "p").await.expect("a gated profile"));
+        }
+        assert_eq!(c.parallel_limit("p"), MAX_PARALLEL_REQUESTS as usize);
+    }
+
+    #[tokio::test]
+    async fn a_throttle_caps_the_profile_below_the_requests_in_flight() {
+        let c = LlmClient::new();
+        c.set_parallel_limit("p", 0);
+        let mut held = vec![
+            acquire(&c, "p").await.unwrap(),
+            acquire(&c, "p").await.unwrap(),
+            acquire(&c, "p").await.unwrap(),
+        ];
+        // throttled with 3 in flight: the cap becomes 2
+        held[0].throttled();
+        held.pop();
+        // 2 in flight: still full
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(50),
+            c.acquire_slot("p", &CancellationToken::new()),
+        )
+        .await;
+        assert!(
+            blocked.is_err(),
+            "a third request must wait for the learned cap"
+        );
+        held.pop();
+        // 1 in flight: a slot is free again
+        held.push(acquire(&c, "p").await.unwrap());
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(50),
+            c.acquire_slot("p", &CancellationToken::new()),
+        )
+        .await;
+        assert!(blocked.is_err(), "the learned cap of 2 still holds");
+    }
+
+    #[tokio::test]
+    async fn successes_raise_the_learned_cap_up_to_the_configured_limit() {
+        let c = LlmClient::new();
+        c.set_parallel_limit("q", 3);
+        let held = vec![
+            acquire(&c, "q").await.unwrap(),
+            acquire(&c, "q").await.unwrap(),
+            acquire(&c, "q").await.unwrap(),
+        ];
+        held[0].throttled(); // learned cap 2
+        let gate = c.gates.lock().unwrap().get("q").unwrap().clone();
+        for _ in 0..SUCCESSES_TO_RAISE_CAP {
+            held[1].succeeded();
+        }
+        // raised to the configured 3: the learned cap is dropped
+        assert_eq!(gate.lock().learned, None);
+        drop(held);
+        assert_eq!(gate.lock().in_flight, 0);
+    }
+}
+
+/// Appended to the system prompt of every structured request.
+const ABORT_NOTE: &str = "
+
+如果这项任务确实无法完成（例如材料缺失或无法读取、图片看不见、要求自相矛盾），不要编造内容：在 JSON 根对象里只写一个字符串字段 \"abort_reason\"，说明原因，其余字段可省略。";
+
+/// `schema` with the optional root property `abort_reason` added (when the root lists properties).
+fn with_abort_property(schema: &serde_json::Value) -> serde_json::Value {
+    let mut out = schema.clone();
+    if let Some(props) = out.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        props
+            .entry("abort_reason")
+            .or_insert_with(|| serde_json::json!({"type": "string"}));
+    }
+    out
+}
+
+/// The model's own reason for giving up, when it wrote one.
+fn abort_reason(v: &serde_json::Value) -> Option<String> {
+    let r = v.get("abort_reason")?.as_str()?.trim();
+    (!r.is_empty()).then(|| r.to_string())
+}
+
+#[cfg(test)]
+mod abort_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn abort_property_is_optional_and_detected() {
+        let s = with_abort_property(
+            &json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}),
+        );
+        assert!(s["properties"]["abort_reason"].is_object());
+        assert_eq!(s["required"], json!(["a"]));
+        assert_eq!(
+            abort_reason(&json!({"abort_reason":" 看不到图 "})).as_deref(),
+            Some("看不到图")
+        );
+        assert_eq!(abort_reason(&json!({"abort_reason":"  "})), None);
+        assert_eq!(abort_reason(&json!({"a":1})), None);
     }
 }

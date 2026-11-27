@@ -547,13 +547,13 @@ internal sealed class ImageAttachments
         {
             var arr = new JsonArray();
             foreach (var i in _items.Where(x => x.Kind == kind))
-                arr.Add(new JsonObject { ["name"] = i.Name, ["data_base64"] = Convert.ToBase64String(i.Bytes ?? Array.Empty<byte>()) });
+                arr.Add((JsonNode)new JsonObject { ["name"] = i.Name, ["data_base64"] = Convert.ToBase64String(i.Bytes ?? Array.Empty<byte>()) });
             return arr;
         }
         var images = Files("image");
         var files = Files("file");
         var links = new JsonArray();
-        foreach (var l in _items.Where(x => x.Kind == "link")) links.Add(l.Url);
+        foreach (var l in _items.Where(x => x.Kind == "link")) links.Add((JsonNode?)JsonValue.Create(l.Url));
         if (images.Count > 0) obj["images"] = images;
         if (files.Count > 0) obj["files"] = files;
         if (links.Count > 0) obj["links"] = links;

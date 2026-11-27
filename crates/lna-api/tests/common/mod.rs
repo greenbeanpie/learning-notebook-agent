@@ -447,6 +447,14 @@ fn probe_reply(system: &str, body: &Value) -> Option<Reply> {
     if system == "Reply with OK." {
         return Some(Reply::Text("OK".into()));
     }
+    // the media samples: a model that sees the picture names its colour; the default mock does not
+    // hear audio (tests that need an audio model set it up themselves); the video sample is never
+    // sent to a chat-completion mock
+    if system.starts_with("You are checking which kinds of input reach you.") {
+        let audio = body.to_string().contains("\"input_audio\"");
+        let text = if audio { "NO_AUDIO" } else { "Red." };
+        return Some(Reply::Text(text.into()));
+    }
     None
 }
 
@@ -633,16 +641,37 @@ impl Env {
     }
 
     /// Creates and activates a chat_completion profile that points at the mock.
-    /// Saving runs the capability probe, which the mock answers as a fully capable model.
+    /// Saving starts a background capability probe, which the mock answers as a fully capable
+    /// model; this waits for it so tests see the settled profile.
     pub fn profile(&self, mock: &MockLlm, ctx: u32) -> Value {
-        self.ok(
+        let saved = self.ok(
             "profile.upsert",
             json!({
                 "display_name": "mock", "protocol": "chat_completion",
                 "base_url": mock.base_url(), "model_id": "mock-model", "activate": true,
                 "context_window": ctx, "max_output_tokens": 1000
             }),
-        )
+        );
+        self.wait_probed(saved["id"].as_str().unwrap());
+        self.ok("profile.list", json!({}))["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == saved["id"])
+            .unwrap()
+            .clone()
+    }
+
+    /// Waits until the background probe has stored the capabilities of a profile.
+    pub fn wait_probed(&self, pid: &str) {
+        self.wait(10, || {
+            let l = self.ok("profile.list", json!({}));
+            l["profiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == pid && !p["capabilities"]["probed_at"].is_null())
+        });
     }
 
     pub fn history(&self, nid: &str) -> Vec<Value> {

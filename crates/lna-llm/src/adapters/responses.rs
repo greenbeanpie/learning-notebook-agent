@@ -117,8 +117,11 @@ impl ProtocolAdapter for ResponsesAdapter {
             "input": input,
             "stream": true,
             "store": false,
-            "max_output_tokens": clamp_reasoning_and_output_tokens(req.max_output_tokens),
         });
+        // 0 = no limit: omit the field so the provider applies its own default.
+        if req.max_output_tokens != 0 {
+            body["max_output_tokens"] = json!(req.max_output_tokens);
+        }
 
         if req.reasoning.show_summary || req.reasoning.effort.is_some() {
             let mut r = json!({});

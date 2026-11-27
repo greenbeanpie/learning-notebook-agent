@@ -682,7 +682,7 @@ impl AgentService {
 
         // Context budget calculation (Section 9.4) — tightened for minimal token cost + high precision
         let w = resolved.context_window as usize;
-        let r = (resolved.max_output_tokens as usize).min(w / 4);
+        let r = (resolved.output_budget() as usize).min(w / 4);
         let available = w.saturating_sub(r + 800 + w / 20);
         let evidence_budget = ((available * 60) / 100).min(2800);
         let history_budget = (available * 30) / 100;
@@ -2247,6 +2247,8 @@ impl AgentService {
             capabilities: profile.capabilities.clone(),
             extra_headers: profile.extra_headers.clone(),
             anthropic_version: "2023-06-01".to_string(),
+            preset: profile.preset.clone(),
+            shrink_media: profile.shrink_media,
         })
     }
 

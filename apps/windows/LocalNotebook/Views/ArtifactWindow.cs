@@ -423,8 +423,26 @@ public sealed class ArtifactViewerPane : IDisposable
             await Core("studio.cancel", Args(("artifact_id", _id)), L10n.T("art.cancel_gen"));
             await LoadAsync();
         };
-        Grid.SetColumn(_genCancelBtn, 1);
-        topRow.Children.Add(_genCancelBtn);
+        var pauseBtn = new Button
+        {
+            Content = L10n.T("studio.pause"),
+            Style = (Style)Application.Current.Resources["PillButtonStyle"],
+            MinHeight = 30,
+            Padding = new Thickness(12, 4, 12, 4),
+            FontSize = 12,
+        };
+        pauseBtn.Click += async (_, _) =>
+        {
+            pauseBtn.IsEnabled = false;
+            if (_genCancelBtn != null) _genCancelBtn.IsEnabled = false;
+            await Core("studio.pause", Args(("artifact_id", _id)), L10n.T("studio.pause"));
+            await LoadAsync();
+        };
+        var genButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        genButtons.Children.Add(pauseBtn);
+        genButtons.Children.Add(_genCancelBtn);
+        Grid.SetColumn(genButtons, 1);
+        topRow.Children.Add(genButtons);
         topStack.Children.Add(topRow);
 
         _genProgressBar = new ProgressBar
@@ -1026,15 +1044,16 @@ public sealed class ArtifactViewerPane : IDisposable
     private FrameworkElement BuildCancelledView(JsonElement art)
     {
         var root = new StackPanel { Spacing = 12, Margin = new Thickness(0, 8, 8, 8) };
+        var paused = Str(art, "stage") == "PAUSED";
         root.Children.Add(new TextBlock
         {
-            Text = L10n.T("studio.cancelled"),
+            Text = L10n.T(paused ? "studio.paused" : "studio.cancelled"),
             FontSize = 13,
             Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"],
         });
         var retryBtn = new Button
         {
-            Content = L10n.T("studio.regenerate"),
+            Content = L10n.T(paused ? "studio.resume" : "studio.regenerate"),
             Style = (Style)Application.Current.Resources["PrimaryPillButtonStyle"],
             MinHeight = 32,
             Padding = new Thickness(14, 4, 14, 4),
@@ -2334,7 +2353,7 @@ internal sealed class InteractiveArtifactView : IDisposable
                     var resultsArr = new System.Text.Json.Nodes.JsonArray();
                     foreach (var it in items)
                     {
-                        resultsArr.Add(new System.Text.Json.Nodes.JsonObject
+                        resultsArr.Add((System.Text.Json.Nodes.JsonNode)new System.Text.Json.Nodes.JsonObject
                         {
                             ["question_id"] = it.Id,
                             ["is_correct"] = it.IsCorrect ?? true,

@@ -159,6 +159,16 @@ public sealed partial class MainWindow
         string? profileId = null;
         var keychainRef = "";
         var hasSecret = false;
+        // Apply is enabled only when the form differs from what was last loaded or saved;
+        // `savedForm` is that snapshot. `modelBusy` covers a running apply / test / delete.
+        var savedForm = "";
+        var modelBusy = false;
+        // set while Fill() selects a preset, so the auto-fill handler does not overwrite the loaded profile
+        var suppressPresetFill = false;
+        Action formChanged = () => { };
+        ContentDialog? settingsDialog = null; // its primary button is "Apply" on the models tab
+        var clearKeyBtn = new Button { Content = L10n.T("model.clear_key"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        var testBtn = new Button { Content = L10n.T("model.test_connection"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
 
         var picker = new ComboBox { Header = L10n.T("model.saved_profiles"), HorizontalAlignment = HorizontalAlignment.Stretch };
         var presetBox = new ComboBox
@@ -180,9 +190,24 @@ public sealed partial class MainWindow
         var keyBox = new PasswordBox { Header = L10n.T("tts.api_key") };
         var allowInsecureHttpBox = new CheckBox { Content = L10n.T("settings.allow_non_loopback_plaintext_http") };
         var activateChatBox = new CheckBox { Content = L10n.T("model.set_as_default_chat_model"), IsChecked = true };
-        var visionBox = new CheckBox { Content = L10n.T("settings.use_for_vision_images_scanned") };
-        var audioBox = new CheckBox { Content = L10n.T("settings.use_for_audio") };
-        var videoBox = new CheckBox { Content = L10n.T("settings.use_for_video") };
+        // read-only: the inputs the core detected for this profile (it probes them itself)
+        var detectedBox = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.85 };
+        // MiMo-only: shown when the selected preset is "mimo"
+        var shrinkMediaCheck = new CheckBox { Content = L10n.T("model.shrink_media") };
+        var shrinkMediaHint = new TextBlock { Text = L10n.T("model.shrink_media_hint"), TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.8 };
+        var ffmpegStatusText = new TextBlock { Text = L10n.T("ffmpeg.checking"), TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.85 };
+        var ffmpegDownloadBtn = new Button { Content = L10n.T("ffmpeg.download_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"], IsEnabled = false };
+        var ffmpegRemoveBtn = new Button { Content = L10n.T("ffmpeg.remove_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"], Visibility = Visibility.Collapsed };
+        var ffmpegButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        ffmpegButtons.Children.Add(ffmpegDownloadBtn);
+        ffmpegButtons.Children.Add(ffmpegRemoveBtn);
+        var ffmpegRow = new StackPanel { Spacing = 6 };
+        ffmpegRow.Children.Add(ffmpegStatusText);
+        ffmpegRow.Children.Add(ffmpegButtons);
+        var shrinkMediaPanel = new StackPanel { Spacing = 4, Visibility = Visibility.Collapsed };
+        shrinkMediaPanel.Children.Add(shrinkMediaCheck);
+        shrinkMediaPanel.Children.Add(shrinkMediaHint);
+        shrinkMediaPanel.Children.Add(ffmpegRow);
         var audioVideoToggle = new ToggleSwitch { Header = L10n.T("route.enable_native_audio_video_processing"), IsOn = avEnabled };
         var mediaRoutingSummary = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 12, Opacity = 0.8 };
         var thinkingBox = new ToggleSwitch { Header = L10n.T("model.show_model_thinking_process"), IsOn = true };
@@ -190,9 +215,11 @@ public sealed partial class MainWindow
         foreach (var (label, tag) in new[] { (L10n.T("tts.default_voice"), ""), ("low", "low"), ("medium", "medium"), ("high", "high") })
             effortBox.Items.Add(new ComboBoxItem { Content = label, Tag = tag });
         var ctxBox = new NumberBox { Header = L10n.T("settings.context_window_tokens"), Value = 32000, Minimum = 2000, Maximum = 2_000_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-        var outBox = new NumberBox { Header = L10n.T("settings.max_output_tokens"), Value = 8000, Minimum = 256, Maximum = 200_000, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-        var parBox = new NumberBox { Header = L10n.T("settings.max_parallel"), Value = 4, Minimum = 1, Maximum = 64, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        // empty or 0 = unlimited (sent as 0)
+        var outBox = new NumberBox { Header = L10n.T("settings.max_output_tokens"), Value = double.NaN, Minimum = 0, Maximum = 200_000, PlaceholderText = L10n.T("settings.unlimited_hint"), SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var parBox = new NumberBox { Header = L10n.T("settings.max_parallel"), Value = double.NaN, Minimum = 0, Maximum = 64, PlaceholderText = L10n.T("settings.unlimited_hint"), SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
         ToolTipService.SetToolTip(parBox, L10n.T("settings.max_parallel_tip"));
+        ToolTipService.SetToolTip(outBox, L10n.T("settings.unlimited_hint"));
         var priceIn = new NumberBox { Header = L10n.T("settings.input_price_1m_tokens_optional"), Value = double.NaN, Minimum = 0 };
         var priceOut = new NumberBox { Header = L10n.T("settings.output_price_1m_tokens_optional"), Value = double.NaN, Minimum = 0 };
         var headersRows = new List<(Grid Row, TextBox KeyBox, TextBox ValBox)>();
@@ -227,7 +254,10 @@ public sealed partial class MainWindow
             {
                 headersRows.Remove(entry);
                 headersListPanel.Children.Remove(rowGrid);
+                formChanged();
             };
+            kBox.TextChanged += (_, _) => formChanged();
+            vBox.TextChanged += (_, _) => formChanged();
             Grid.SetColumn(kBox, 0);
             Grid.SetColumn(vBox, 1);
             Grid.SetColumn(delBtn, 2);
@@ -244,6 +274,7 @@ public sealed partial class MainWindow
             if (obj.ValueKind != JsonValueKind.Object) return;
             foreach (var prop in obj.EnumerateObject())
                 AddHeaderRow(prop.Name, prop.Value.GetString() ?? "");
+            formChanged();
         }
         JsonElement BuildHeadersJson()
         {
@@ -281,6 +312,83 @@ public sealed partial class MainWindow
         var status = new TextBlock { TextWrapping = TextWrapping.Wrap };
         var newBtn = new Button { Content = L10n.T("settings.new") };
         var deleteBtn = new Button { Content = L10n.T("settings.delete") };
+
+        // ---- ffmpeg (used by the MiMo shrink option): status, app copy download and removal ----
+        var ffmpegBusy = false;
+        var ffmpegLast = default(JsonElement); // last ffmpeg.status / install / remove result
+        void SyncFfmpegButtons()
+        {
+            var fromApp = Str(ffmpegLast, "source") == "app";
+            ffmpegDownloadBtn.IsEnabled = !ffmpegBusy && !Bool(ffmpegLast, "installed") && Bool(ffmpegLast, "supported");
+            ffmpegRemoveBtn.Visibility = fromApp ? Visibility.Visible : Visibility.Collapsed;
+            ffmpegRemoveBtn.IsEnabled = !ffmpegBusy && fromApp;
+        }
+        void ShowFfmpeg(JsonElement s)
+        {
+            ffmpegLast = s;
+            var installed = Bool(s, "installed");
+            var source = Str(s, "source");
+            var label = !installed ? L10n.T("ffmpeg.not_installed")
+                : source == "app" ? L10n.T("ffmpeg.installed_app")
+                : source == "system" ? L10n.T("ffmpeg.installed_system")
+                : L10n.T("ffmpeg.installed");
+            var version = Str(s, "version");
+            if (installed && version.Length > 0) label += " · " + version;
+            if (!installed && !Bool(s, "supported")) label += " · " + L10n.T("ffmpeg.unsupported");
+            // while a download runs its progress line stays
+            if (!ffmpegBusy) ffmpegStatusText.Text = label;
+            SyncFfmpegButtons();
+        }
+        async Task RefreshFfmpegAsync()
+        {
+            var (s, err) = await Api.CallAsync("ffmpeg.status", Args());
+            if (s is { } st) ShowFfmpeg(st);
+            else ffmpegStatusText.Text = L10n.Fmt("ffmpeg.op_failed", err?.Message ?? "");
+        }
+        async Task InstallFfmpegAsync()
+        {
+            if (ffmpegBusy) return;
+            ffmpegBusy = true;
+            ffmpegStatusText.Text = L10n.T("ffmpeg.downloading_starting");
+            SyncFfmpegButtons();
+            // ffmpeg.install holds the call until the download finishes, so it runs off the UI thread;
+            // progress arrives as "ffmpeg.download_progress" events (OnFfmpegEvent)
+            _ = Task.Run(async () =>
+            {
+                var (s, err) = await Api.CallAsync("ffmpeg.install", Args());
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    ffmpegBusy = false;
+                    if (s is { } st) ShowFfmpeg(st);
+                    else
+                    {
+                        SyncFfmpegButtons();
+                        ffmpegStatusText.Text = L10n.Fmt("ffmpeg.op_failed", err?.Message ?? "");
+                    }
+                });
+            });
+        }
+        void OnFfmpegEvent(Interop.ApiEventDto ev)
+        {
+            if (ev.Event != "ffmpeg.download_progress") return;
+            var done = Int(ev.Data, "downloaded");
+            var total = Int(ev.Data, "total"); // 0 when the size is unknown
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!ffmpegBusy) return;
+                ffmpegStatusText.Text = total > 0
+                    ? L10n.Fmt("ffmpeg.downloading", done / 1_000_000.0, total / 1_000_000.0)
+                    : L10n.Fmt("ffmpeg.downloading_unknown", done / 1_000_000.0);
+            });
+        }
+        ffmpegDownloadBtn.Click += async (_, _) => await InstallFfmpegAsync();
+        ffmpegRemoveBtn.Click += async (_, _) =>
+        {
+            if (ffmpegBusy) return;
+            var (s, err) = await Api.CallAsync("ffmpeg.remove", Args());
+            if (s is { } st) ShowFfmpeg(st);
+            else ffmpegStatusText.Text = L10n.Fmt("ffmpeg.op_failed", err?.Message ?? "");
+        };
 
         void UpdateMediaSummary()
         {
@@ -330,24 +438,69 @@ public sealed partial class MainWindow
                 L10n.T("model.cap_tools") + (Bool(c, "tools") ? " ✓" : " ✗"),
                 L10n.T("model.cap_structured") + (Bool(c, "json_schema") || Bool(c, "json_mode") ? " ✓" : " ✗"),
             };
-            if (Bool(c, "supports_vision")) parts.Add(L10n.T("settings.vision"));
-            if (Bool(c, "supports_audio")) parts.Add(L10n.T("model.audio"));
-            if (Bool(c, "supports_video")) parts.Add(L10n.T("model.video"));
             return string.Join(" · ", parts);
         }
 
+        string CurrentModelId() =>
+            (string.IsNullOrWhiteSpace(modelBox.Text) ? modelBox.SelectedItem as string : modelBox.Text)?.Trim() ?? "";
+        // id of the selected preset, "" when none
+        string PresetId() => (presetBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+        void SetPreset(string id)
+        {
+            suppressPresetFill = true;
+            try { presetBox.SelectedItem = presetBox.Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Tag as string == id); }
+            finally { suppressPresetFill = false; }
+        }
+        void UpdateShrinkVisibility() =>
+            shrinkMediaPanel.Visibility = PresetId() == "mimo" ? Visibility.Visible : Visibility.Collapsed;
+        static string Num(double v) => double.IsNaN(v) ? "" : v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // a limit box: empty, 0 or anything below 1 means unlimited (0); otherwise the value, capped at max
+        static int LimitArg(double v, double max = int.MaxValue) => !double.IsFinite(v) || v < 1 ? 0 : (int)Math.Min(v, max);
+        // a stored limit: 0 (or missing) shows as an empty box
+        static double LimitValue(JsonElement prof, string name) { var v = Int(prof, name, 0); return v > 0 ? v : double.NaN; }
+        string FormSnapshot() => string.Join("", new[]
+        {
+            (protocolBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
+            urlBox.Text.Trim(), CurrentModelId(), keyBox.Password.Length > 0 ? "key" : "",
+            allowInsecureHttpBox.IsChecked == true ? "1" : "0", activateChatBox.IsChecked == true ? "1" : "0",
+            thinkingBox.IsOn ? "1" : "0", (effortBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
+            Num(ctxBox.Value), LimitArg(outBox.Value).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            LimitArg(parBox.Value, 64).ToString(System.Globalization.CultureInfo.InvariantCulture), Num(priceIn.Value), Num(priceOut.Value),
+            BuildHeadersJson().GetRawText(),
+            PresetId(), shrinkMediaCheck.IsChecked == true ? "1" : "0",
+        });
+        bool FormDirty() => profileId == null || FormSnapshot() != savedForm;
+        void SyncModelButtons()
+        {
+            var complete = urlBox.Text.Trim().Length > 0 && CurrentModelId().Length > 0;
+            if (settingsDialog != null) settingsDialog.IsPrimaryButtonEnabled = !modelBusy && complete && FormDirty();
+            testBtn.IsEnabled = !modelBusy && profileId != null;
+            clearKeyBtn.IsEnabled = !modelBusy && profileId != null && hasSecret;
+            deleteBtn.IsEnabled = !modelBusy && profileId != null;
+        }
+        void MarkFormSaved() { savedForm = FormSnapshot(); SyncModelButtons(); }
+        formChanged = SyncModelButtons;
+
         void Fill(JsonElement? p)
+        {
+            FillForm(p);
+            UpdateShrinkVisibility();
+            MarkFormSaved();
+        }
+        void FillForm(JsonElement? p)
         {
             if (p is not { } prof)
             {
                 profileId = null; keychainRef = ""; hasSecret = false;
                 protocolBox.SelectedIndex = 0;
                 urlBox.Text = ""; modelBox.Items.Clear(); modelBox.Text = "";
+                allowInsecureHttpBox.IsChecked = false;
                 activateChatBox.IsChecked = !profiles.Any(x => Bool(x, "is_active"));
-                visionBox.IsChecked = false; audioBox.IsChecked = false; videoBox.IsChecked = false;
+                SetPreset(""); shrinkMediaCheck.IsChecked = false;
                 thinkingBox.IsOn = true; effortBox.SelectedIndex = 0;
-                ctxBox.Value = 32000; outBox.Value = 8000; parBox.Value = 4; priceIn.Value = double.NaN; priceOut.Value = double.NaN;
+                ctxBox.Value = 32000; outBox.Value = double.NaN; parBox.Value = double.NaN; priceIn.Value = double.NaN; priceOut.Value = double.NaN;
                 LoadHeaderRows(default); caps.Text = "";
+                detectedBox.Text = L10n.T("model.detected_not_yet");
                 keyBox.Password = "";
                 keyBox.PlaceholderText = L10n.T("model.enter_api_key_optional_for");
                 status.Text = L10n.T("settings.editing_new_profile_fill_in");
@@ -356,9 +509,14 @@ public sealed partial class MainWindow
             profileId = Str(prof, "id");
             keychainRef = Str(prof, "keychain_ref");
             hasSecret = Bool(prof, "has_secret");
+            SetPreset(Str(prof, "preset"));
+            shrinkMediaCheck.IsChecked = Bool(prof, "shrink_media");
             var proto = Str(prof, "protocol");
             protocolBox.SelectedIndex = Math.Max(0, Array.IndexOf(Protocols, proto));
             urlBox.Text = Str(prof, "base_url");
+            // the profile was saved with this URL, so a plaintext one was confirmed back then
+            allowInsecureHttpBox.IsChecked = urlBox.Text.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !IsLocalEndpoint(urlBox.Text);
             var savedModel = Str(prof, "model_id");
             modelBox.Items.Clear();
             if (savedModel.Length > 0) { modelBox.Items.Add(savedModel); modelBox.SelectedIndex = 0; }
@@ -368,8 +526,8 @@ public sealed partial class MainWindow
             var effort = Str(prof, "effort");
             effortBox.SelectedIndex = Math.Max(0, new[] { "", "low", "medium", "high" }.ToList().IndexOf(effort));
             ctxBox.Value = Int(prof, "context_window", 32000);
-            outBox.Value = Int(prof, "max_output_tokens", 8000);
-            parBox.Value = Int(prof, "max_parallel", 4);
+            outBox.Value = LimitValue(prof, "max_output_tokens");
+            parBox.Value = LimitValue(prof, "max_parallel");
             priceIn.Value = prof.TryGetProperty("input_price_per_m", out var pi) && pi.ValueKind == JsonValueKind.Number ? pi.GetDouble() : double.NaN;
             priceOut.Value = prof.TryGetProperty("output_price_per_m", out var po) && po.ValueKind == JsonValueKind.Number ? po.GetDouble() : double.NaN;
             LoadHeaderRows(Obj(prof, "extra_headers"));
@@ -377,11 +535,8 @@ public sealed partial class MainWindow
             keyBox.PlaceholderText = hasSecret
                 ? (L10n.T("settings.saved_leave_blank_to_keep"))
                 : (L10n.T("model.enter_api_key_optional_for"));
-            var c = Obj(prof, "capabilities");
-            visionBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_vision");
-            audioBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_audio");
-            videoBox.IsChecked = c.ValueKind == JsonValueKind.Object && Bool(c, "supports_video");
             caps.Text = CapsLine(prof);
+            ShowDetected(prof);
             status.Text = hasSecret
                 ? (L10n.T("settings.key_status_saved_in_windows"))
                 : (L10n.T("model.key_status_not_saved"));
@@ -396,21 +551,26 @@ public sealed partial class MainWindow
             try { RebuildPicker(select); }
             finally { rebuildingPicker = false; }
         }
+        // picker label: name, default/disabled tags and the detected input tags
+        string PickerLabel(JsonElement p)
+        {
+            var c = Obj(p, "capabilities");
+            var mods = new List<string>();
+            if (Bool(c, "supports_vision")) mods.Add(L10n.T("model.vision"));
+            if (Bool(c, "supports_audio")) mods.Add(L10n.T("model.audio"));
+            if (Bool(c, "supports_video")) mods.Add(L10n.T("model.video"));
+            var modTag = mods.Count > 0 ? $" [{string.Join("/", mods)}]" : "";
+            var defTag = Bool(p, "is_active") ? (L10n.T("model.default")) : "";
+            if (p.TryGetProperty("eligible", out var el) && el.ValueKind == JsonValueKind.False)
+                defTag += L10n.T("model.disabled_tag");
+            return $"{Str(p, "display_name")}{defTag}{modTag}";
+        }
         void RebuildPicker(string? select)
         {
             picker.Items.Clear();
             foreach (var p in profiles)
             {
-                var c = Obj(p, "capabilities");
-                var mods = new List<string>();
-                if (Bool(c, "supports_vision")) mods.Add(L10n.T("model.vision"));
-                if (Bool(c, "supports_audio")) mods.Add(L10n.T("model.audio"));
-                if (Bool(c, "supports_video")) mods.Add(L10n.T("model.video"));
-                var modTag = mods.Count > 0 ? $" [{string.Join("/", mods)}]" : "";
-                var defTag = Bool(p, "is_active") ? (L10n.T("model.default")) : "";
-                if (p.TryGetProperty("eligible", out var el) && el.ValueKind == JsonValueKind.False)
-                    defTag += L10n.T("model.disabled_tag");
-                var item = new ComboBoxItem { Content = $"{Str(p, "display_name")}{defTag}{modTag}", Tag = Str(p, "id") };
+                var item = new ComboBoxItem { Content = PickerLabel(p), Tag = Str(p, "id") };
                 picker.Items.Add(item);
                 if (Str(p, "id") == select) picker.SelectedItem = item;
             }
@@ -429,12 +589,21 @@ public sealed partial class MainWindow
                 if (p.ValueKind == JsonValueKind.Object) Fill(p);
             }
         };
-        newBtn.Click += (_, _) => { picker.SelectedItem = null; presetBox.SelectedIndex = -1; Fill(null); };
+        newBtn.Click += (_, _) => { picker.SelectedItem = null; Fill(null); };
+        // Picking a preset auto-fills the form but stays selected: it is saved with the profile
+        // and is not cleared by later edits. Selection made by Fill() does not auto-fill.
         presetBox.SelectionChanged += (_, _) =>
         {
-            if (presetBox.SelectedItem is not ComboBoxItem { Tag: string pid }) return;
-            var prItem = presets.FirstOrDefault(x => Str(x, "id") == pid);
-            if (prItem.ValueKind != JsonValueKind.Object) return;
+            UpdateShrinkVisibility();
+            if (suppressPresetFill) return;
+            var prItem = presetBox.SelectedItem is ComboBoxItem { Tag: string pid }
+                ? presets.FirstOrDefault(x => Str(x, "id") == pid)
+                : default;
+            if (prItem.ValueKind == JsonValueKind.Object) ApplyPresetFields(prItem);
+            formChanged();
+        };
+        void ApplyPresetFields(JsonElement prItem)
+        {
             var proto = Str(prItem, "protocol");
             protocolBox.SelectedIndex = Math.Max(0, Array.IndexOf(Protocols, proto));
             urlBox.Text = Str(prItem, "base_url");
@@ -451,24 +620,55 @@ public sealed partial class MainWindow
                 modelBox.Text = defModel;
             }
             ctxBox.Value = Int(prItem, "context_window", 32000);
-            outBox.Value = Int(prItem, "max_output_tokens", 8000);
-            parBox.Value = 4;
-            visionBox.IsChecked = Bool(prItem, "supports_vision");
-            audioBox.IsChecked = Bool(prItem, "supports_audio");
-            videoBox.IsChecked = Bool(prItem, "supports_video");
+            outBox.Value = LimitValue(prItem, "max_output_tokens");
+            parBox.Value = double.NaN;
             LoadHeaderRows(Obj(prItem, "extra_headers"));
             var pname = L10n.IsEnglish ? Str(prItem, "name_en") : Str(prItem, "name");
             status.Text = L10n.Fmt("model.applied_preset_enter_api_key", pname);
-        };
+        }
+        // a second click within a few seconds confirms (no nested dialog inside this one)
+        string? deleteArmedFor = null;
         deleteBtn.Click += async (_, _) =>
         {
-            if (profileId == null) return;
-            if (await CoreAsync("profile.delete", Args(("profile_id", profileId)), L10n.T("common.delete")) == null) return;
-            profiles.RemoveAll(x => Str(x, "id") == profileId);
-            LoadPicker(null);
-            Fill(null);
-            status.Text = L10n.T("model.profile_deleted");
+            if (profileId == null || modelBusy) return;
+            if (deleteArmedFor != profileId)
+            {
+                var armed = deleteArmedFor = profileId;
+                deleteBtn.Content = L10n.T("model.confirm_delete");
+                await Task.Delay(4000);
+                if (deleteArmedFor == armed) { deleteArmedFor = null; deleteBtn.Content = L10n.T("settings.delete"); }
+                return;
+            }
+            deleteArmedFor = null;
+            deleteBtn.Content = L10n.T("settings.delete");
+            modelBusy = true; SyncModelButtons();
+            try
+            {
+                if (await CoreAsync("profile.delete", Args(("profile_id", profileId)), L10n.T("common.delete")) == null) return;
+                profiles.RemoveAll(x => Str(x, "id") == profileId);
+                LoadPicker(null);
+                Fill(null);
+                status.Text = L10n.T("model.profile_deleted");
+            }
+            finally { modelBusy = false; SyncModelButtons(); }
         };
+        // every edit re-evaluates whether there is something to apply
+        urlBox.TextChanged += (_, _) => formChanged();
+        modelBox.SelectionChanged += (_, _) => formChanged();
+        modelBox.TextSubmitted += (_, _) => formChanged();
+        modelBox.KeyUp += (_, _) => formChanged();
+        modelBox.LostFocus += (_, _) => formChanged();
+        keyBox.PasswordChanged += (_, _) => formChanged();
+        protocolBox.SelectionChanged += (_, _) => formChanged();
+        effortBox.SelectionChanged += (_, _) => formChanged();
+        foreach (var cb in new[] { allowInsecureHttpBox, activateChatBox, shrinkMediaCheck })
+        {
+            cb.Checked += (_, _) => formChanged();
+            cb.Unchecked += (_, _) => formChanged();
+        }
+        thinkingBox.Toggled += (_, _) => formChanged();
+        foreach (var nb in new[] { ctxBox, outBox, parBox, priceIn, priceOut })
+            nb.ValueChanged += (_, _) => formChanged();
         discoverBtn.Click += async (_, _) =>
         {
             var baseUrl = urlBox.Text.Trim();
@@ -488,14 +688,65 @@ public sealed partial class MainWindow
             status.Text = L10n.Fmt("settings.found_models", modelBox.Items.Count);
         };
 
-        ContentDialog? settingsDialog = null; // its primary button is "Save" on the models tab
-        var clearKeyBtn = new Button { Content = L10n.T("model.clear_key"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        var testBtn = new Button { Content = L10n.T("model.test_connection"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        // Shows what the core detected for the stored `prof`; "not yet" until it has been probed.
+        void ShowDetected(JsonElement prof)
+        {
+            var c = Obj(prof, "capabilities");
+            if (c.ValueKind != JsonValueKind.Object || !c.TryGetProperty("probed_at", out var pa) || pa.ValueKind != JsonValueKind.Number)
+            {
+                detectedBox.Text = L10n.T("model.detected_not_yet");
+                return;
+            }
+            ShowDetectedFlags(Bool(c, "supports_vision"), Bool(c, "supports_audio"), Bool(c, "supports_video"));
+        }
+        void ShowDetectedFlags(bool vision, bool audio, bool video) =>
+            detectedBox.Text = L10n.Fmt("model.detected_inputs", vision ? "✓" : "✗", audio ? "✓" : "✗", video ? "✓" : "✗");
+
+        async Task ReloadProfilesAsync()
+        {
+            var relist = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
+            if (relist is not { } rl) return;
+            profiles = Arr(rl, "profiles").ToList();
+            LoadPicker(profileId);
+        }
+
+        // profile.updated (the core finished a background probe or profile.test): re-read that one
+        // profile and refresh only read-only views. Form fields, savedForm and dirty state are untouched.
+        async Task RefreshProfileReadOnlyAsync(string id)
+        {
+            var (res, _) = await Api.CallAsync("profile.list", Args());
+            if (res is not { } rl) return;
+            var fresh = Arr(rl, "profiles").FirstOrDefault(x => Str(x, "id") == id);
+            if (fresh.ValueKind != JsonValueKind.Object) return;
+            var idx = profiles.FindIndex(x => Str(x, "id") == id);
+            if (idx < 0) return;
+            profiles[idx] = fresh;
+            // picker tags and the media routing summary; LoadPicker's guard keeps Fill() from running
+            LoadPicker(profileId);
+            // the edited profile's own read-only lines (profileId is read now, after the await)
+            if (id == profileId)
+            {
+                caps.Text = CapsLine(fresh);
+                ShowDetected(fresh);
+            }
+        }
+        void OnProfileUpdatedEvent(Interop.ApiEventDto ev)
+        {
+            if (ev.Event != "profile.updated" || ev.Topic != "profiles") return;
+            var id = Str(ev.Data, "profile_id");
+            if (id.Length == 0) return;
+            DispatcherQueue.TryEnqueue(async () =>
+            {
+                try { await RefreshProfileReadOnlyAsync(id); }
+                catch (Exception ex) { ShowStatus(InfoBarSeverity.Error, L10n.T("app.ui_refresh_failed"), ex.Message); }
+            });
+        }
 
         async Task SaveModelAsync()
         {
+            if (modelBusy) return;
             var url = urlBox.Text.Trim();
-            var modelId = (string.IsNullOrWhiteSpace(modelBox.Text) ? modelBox.SelectedItem as string : modelBox.Text)?.Trim() ?? "";
+            var modelId = CurrentModelId();
             if (url.Length == 0 || modelId.Length == 0)
             {
                 status.Text = L10n.T("model.please_fill_in_base_url");
@@ -512,13 +763,12 @@ public sealed partial class MainWindow
                 ("activate", makeActive),
                 ("allow_insecure_http", allowInsecureHttpBox.IsChecked == true),
                 ("show_thinking", thinkingBox.IsOn),
-                ("context_window", (int)ctxBox.Value),
-                ("max_output_tokens", (int)outBox.Value),
-                ("max_parallel", double.IsNaN(parBox.Value) ? 4 : (int)Math.Clamp(parBox.Value, 1, 64)),
+                ("context_window", double.IsNaN(ctxBox.Value) ? 32000 : (int)ctxBox.Value),
+                ("max_output_tokens", LimitArg(outBox.Value)),
+                ("max_parallel", LimitArg(parBox.Value, 64)),
                 ("extra_headers", BuildHeadersJson()),
-                ("supports_vision", visionBox.IsChecked == true),
-                ("supports_audio", audioBox.IsChecked == true),
-                ("supports_video", videoBox.IsChecked == true),
+                ("preset", PresetId()),
+                ("shrink_media", PresetId() == "mimo" && shrinkMediaCheck.IsChecked == true),
             };
             var effort = (effortBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
             if (effort.Length > 0) up.Add(("effort", effort));
@@ -528,63 +778,99 @@ public sealed partial class MainWindow
             // saving only stores; capabilities are measured by "test connection"
             if (keyBox.Password.Length > 0) up.Add(("api_key", keyBox.Password));
             status.Text = L10n.T("model.probing");
-            if (settingsDialog != null) settingsDialog.IsPrimaryButtonEnabled = false;
-            var (saved, saveErr) = await Api.CallAsync("profile.upsert", Args(up.ToArray()));
-            if (settingsDialog != null) settingsDialog.IsPrimaryButtonEnabled = true;
-            if (saveErr is { } se || saved is not { } sv)
+            modelBusy = true; SyncModelButtons();
+            try
             {
-                status.Text = saveErr is { Code: "CAPABILITY_MISSING" } ce
-                    ? L10n.Fmt("model.refused", L10n.CapabilityMissing(ce.Message))
-                    : L10n.Fmt("model.save_failed", saveErr?.Message ?? "");
-                return;
+                var (saved, saveErr) = await Api.CallAsync("profile.upsert", Args(up.ToArray()));
+                if (saveErr is { } || saved is not { } sv)
+                {
+                    status.Text = saveErr is { Code: "CAPABILITY_MISSING" } ce
+                        ? L10n.Fmt("model.refused", L10n.CapabilityMissing(ce.Message))
+                        : L10n.Fmt("model.save_failed", saveErr?.Message ?? "");
+                    return;
+                }
+                profileId = Str(sv, "id");
+                keychainRef = Str(sv, "keychain_ref");
+                hasSecret = Bool(sv, "has_secret");
+                keyBox.Password = string.Empty;
+                keyBox.PlaceholderText = hasSecret
+                    ? (L10n.T("settings.saved_leave_blank_to_keep"))
+                    : (L10n.T("model.enter_api_key_optional_for"));
+                caps.Text = CapsLine(sv);
+                if (makeActive) await CoreAsync("profile.activate", Args(("profile_id", profileId)), L10n.T("common.apply"));
+                await SaveMediaSettingsAsync();
+                await ReloadProfilesAsync();
+                // the form now matches what is stored; Apply stays off until something changes
+                MarkFormSaved();
+                status.Text = L10n.T("model.saved_checked");
             }
-            profileId = Str(sv, "id");
-            keychainRef = Str(sv, "keychain_ref");
-            keyBox.Password = string.Empty;
-            caps.Text = CapsLine(sv);
-            var ex = await CoreAsync("secret.exists", Args(("keychain_ref", keychainRef)), "API Key");
-            hasSecret = ex is { } er && Bool(er, "exists");
-            keyBox.PlaceholderText = hasSecret
-                ? (L10n.T("settings.saved_leave_blank_to_keep"))
-                : (L10n.T("model.enter_api_key_optional_for"));
-            if (makeActive) await CoreAsync("profile.activate", Args(("profile_id", profileId)), L10n.T("common.save"));
-            await SaveMediaSettingsAsync();
-            status.Text = L10n.T("model.saved_checked");
-            var relist = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
-            if (relist is { } rl)
+            finally
             {
-                profiles = Arr(rl, "profiles").ToList();
-                LoadPicker(profileId);
+                modelBusy = false; SyncModelButtons();
             }
         }
 
         clearKeyBtn.Click += async (_, _) =>
         {
+            if (modelBusy) return;
             if (profileId == null || keychainRef.Length == 0) { status.Text = L10n.T("settings.no_key_to_clear"); return; }
-            if (await CoreAsync("secret.clear", Args(("keychain_ref", keychainRef)), L10n.T("model.clear_key")) == null) return;
-            hasSecret = false;
-            keyBox.PlaceholderText = L10n.T("model.enter_api_key_optional_for");
-            status.Text = L10n.T("model.api_key_cleared");
+            modelBusy = true; SyncModelButtons();
+            try
+            {
+                if (await CoreAsync("secret.clear", Args(("keychain_ref", keychainRef)), L10n.T("model.clear_key")) == null) return;
+                hasSecret = false;
+                keyBox.PlaceholderText = L10n.T("model.enter_api_key_optional_for");
+                status.Text = L10n.T("model.api_key_cleared");
+                await ReloadProfilesAsync();
+            }
+            finally { modelBusy = false; SyncModelButtons(); }
         };
 
         testBtn.Click += async (_, _) =>
         {
+            if (modelBusy) return;
             if (profileId == null) { status.Text = L10n.T("settings.save_the_profile_before_testing"); return; }
+            // the test runs against what is stored, so unapplied edits would not be tested
+            if (FormDirty()) { status.Text = L10n.T("model.apply_before_test"); return; }
             status.Text = L10n.T("model.testing_connection");
-            var (test, testErr) = await Api.CallAsync("profile.test", Args(("profile_id", profileId)));
-            if (test is { } tr)
+            modelBusy = true; SyncModelButtons();
+            try
             {
-                status.Text = L10n.Fmt("model.connected", Str(tr, "reply"));
-                caps.Text = CapsLine(tr);
+                var (test, testErr) = await Api.CallAsync("profile.test", Args(("profile_id", profileId)));
+                var detected = default(JsonElement);
+                if (test is { } tr)
+                {
+                    detected = Obj(tr, "detected");
+                    var msg = L10n.Fmt("model.connected", Str(tr, "reply"));
+                    foreach (var f in Arr(tr, "media_failed"))
+                    {
+                        var kind = Str(f, "kind") switch
+                        {
+                            "vision" => L10n.T("settings.vision"),
+                            "audio" => L10n.T("model.audio"),
+                            _ => L10n.T("model.video"),
+                        };
+                        msg += "\n" + L10n.Fmt("model.media_probe_failed", kind, Str(f, "detail"));
+                    }
+                    status.Text = msg;
+                }
+                else
+                {
+                    status.Text = testErr is { Code: "CAPABILITY_MISSING" } ce
+                        ? L10n.Fmt("model.refused", L10n.CapabilityMissing(ce.Message))
+                        : (L10n.Fmt("model.connection_test_failed", testErr?.Message ?? ""));
+                }
+                // the test result carries what was just detected; otherwise show the stored profile
+                // (the form was unchanged before the test, so it stays "applied")
+                await ReloadProfilesAsync();
+                var p = profiles.FirstOrDefault(x => Str(x, "id") == profileId);
+                if (p.ValueKind == JsonValueKind.Object) caps.Text = CapsLine(p);
+                if (detected.ValueKind == JsonValueKind.Object)
+                    ShowDetectedFlags(Bool(detected, "vision"), Bool(detected, "audio"), Bool(detected, "video"));
+                else if (p.ValueKind == JsonValueKind.Object) ShowDetected(p);
+                MarkFormSaved();
             }
-            else
-            {
-                status.Text = testErr is { Code: "CAPABILITY_MISSING" } ce
-                    ? L10n.Fmt("model.refused", L10n.CapabilityMissing(ce.Message))
-                    : (L10n.Fmt("model.connection_test_failed", testErr?.Message));
-            }
-            var relistT = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
-            if (relistT is { } rt) { profiles = Arr(rt, "profiles").ToList(); LoadPicker(profileId); }
+            finally { modelBusy = false; SyncModelButtons(); }
         };
 
         audioVideoToggle.Toggled += async (_, _) =>
@@ -624,9 +910,8 @@ public sealed partial class MainWindow
         advanced.Children.Add(caps);
 
         var modalityBox = new StackPanel { Spacing = 4 };
-        modalityBox.Children.Add(visionBox);
-        modalityBox.Children.Add(audioBox);
-        modalityBox.Children.Add(videoBox);
+        modalityBox.Children.Add(detectedBox);
+        modalityBox.Children.Add(shrinkMediaPanel);
 
         var mediaSettingsBox = new StackPanel { Spacing = 8, Padding = new Thickness(10), CornerRadius = new CornerRadius(8), Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ElevatedBgBrush"] };
         mediaSettingsBox.Children.Add(audioVideoToggle);
@@ -727,19 +1012,43 @@ public sealed partial class MainWindow
             XamlRoot = Content.XamlRoot,
         };
         settingsDialog = dialog;
-        // "Save" sits with the dialog buttons and only applies to the models tab
-        void SyncSaveButton() => dialog.PrimaryButtonText = pivot.SelectedIndex == 2 ? L10n.T("common.apply") : "";
-        pivot.SelectionChanged += (_, _) => SyncSaveButton();
+        // "Apply" sits with the dialog buttons and only applies to the models tab
+        void SyncSaveButton()
+        {
+            dialog.PrimaryButtonText = pivot.SelectedIndex == 2 ? L10n.T("common.apply") : "";
+            SyncModelButtons();
+        }
+        pivot.SelectionChanged += (_, _) =>
+        {
+            SyncSaveButton();
+            if (pivot.SelectedIndex == 2) _ = RefreshFfmpegAsync(); // models tab
+        };
         SyncSaveButton();
         dialog.PrimaryButtonClick += async (_, args) =>
         {
             args.Cancel = true; // keep the dialog open
             var deferral = args.GetDeferral();
             try { await SaveModelAsync(); }
-            finally { deferral.Complete(); }
+            finally
+            {
+                deferral.Complete();
+                // ContentDialog restores its own button state when the deferral ends
+                DispatcherQueue.TryEnqueue(SyncModelButtons);
+            }
         };
 
-        await dialog.ShowAsync();
+        // ffmpeg download progress arrives as core events while the dialog is open
+        Action<Interop.ApiEventDto> onFfmpegEvent = OnFfmpegEvent;
+        // profile.updated refreshes the read-only model views while the dialog is open
+        Action<Interop.ApiEventDto> onProfileEvent = OnProfileUpdatedEvent;
+        App.Core.EventReceived += onFfmpegEvent;
+        App.Core.EventReceived += onProfileEvent;
+        try { await dialog.ShowAsync(); }
+        finally
+        {
+            App.Core.EventReceived -= onFfmpegEvent;
+            App.Core.EventReceived -= onProfileEvent;
+        }
         _embRefresh = null;
         _embProgress = null; _embStatus = null; _embDownload = null; _embCancel = null;
         await WarnIfNoModelAsync();

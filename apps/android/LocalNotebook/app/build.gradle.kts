@@ -67,5 +67,11 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+    // on-device audio/video shrinking (MiMo oversized media); Android has no ffmpeg
+    val media3Version = "1.11.1"
+    implementation("androidx.media3:media3-common:$media3Version")
+    implementation("androidx.media3:media3-effect:$media3Version")
+    implementation("androidx.media3:media3-transformer:$media3Version")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

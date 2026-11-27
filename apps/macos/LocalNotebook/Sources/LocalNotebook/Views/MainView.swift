@@ -971,6 +971,12 @@ struct MainView: View {
                 renamingArtifact = art
             }
             if art.status == "PENDING" || art.status == "RUNNING" {
+                Button(state.t("studio.pause")) {
+                    Task {
+                        _ = await state.run("studio.pause", ["artifact_id": art.id])
+                        await state.refreshAll()
+                    }
+                }
                 Button(state.t("studio.cancel")) {
                     Task {
                         _ = await state.run("studio.cancel", ["artifact_id": art.id])

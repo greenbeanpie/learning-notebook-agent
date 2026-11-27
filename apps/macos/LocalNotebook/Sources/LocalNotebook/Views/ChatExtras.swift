@@ -217,6 +217,8 @@ struct ChatArtifactCardView: View {
                 Text(L10n.fmt("art.running_hint", en: state.isEnglish, kindLabel(art.artifactType), stageLabel(art.stage)))
                     .font(.system(size: 12)).foregroundColor(p.textSecondary)
                 if art.progress > 0.01 { ProgressView(value: min(1, art.progress)) } else { ProgressView().progressViewStyle(.linear) }
+                Button(state.t("studio.pause")) { Task { _ = await state.run("studio.pause", ["artifact_id": art.id]) } }
+                    .buttonStyle(.bordered).controlSize(.small)
                 Button(state.t("chat.stop")) { Task { _ = await state.run("studio.cancel", ["artifact_id": art.id]) } }
                     .buttonStyle(.bordered).controlSize(.small)
             }
@@ -228,8 +230,9 @@ struct ChatArtifactCardView: View {
             }
         case "CANCELLED":
             VStack(alignment: .leading, spacing: 6) {
-                Text(state.t("studio.cancelled")).font(.system(size: 12)).foregroundColor(p.textMuted)
-                Button(state.t("studio.regenerate")) { Task { await state.retryArtifact(artifactId: art.id) } }.buttonStyle(.bordered).controlSize(.small)
+                let paused = art.stage == "PAUSED"
+                Text(state.t(paused ? "studio.paused" : "studio.cancelled")).font(.system(size: 12)).foregroundColor(p.textMuted)
+                Button(state.t(paused ? "studio.resume" : "studio.regenerate")) { Task { await state.retryArtifact(artifactId: art.id) } }.buttonStyle(.bordered).controlSize(.small)
             }
         default:
             if expanded { ArtifactReadyBody(artifact: art, compact: true, showFeedback: false).frame(maxHeight: 460) }

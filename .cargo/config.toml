@@ -1,0 +1,4 @@
+# Build, check and test stages never fetch or update crates: they must already be in the local
+# cache. To fetch on purpose: `cargo fetch --config net.offline=false`.
+[net]
+offline = true

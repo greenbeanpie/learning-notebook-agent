@@ -39,8 +39,36 @@ struct ModelProfileItem: Identifiable {
     /// false: probed and lacking tool calling or structured output (cannot be used)
     var eligible: Bool = true
     var unsupportedReason: String? = nil
-    /// Most model requests of this profile in flight at once (parallel generation).
-    var maxParallel: Int = 4
+    /// Most model requests of this profile in flight at once; 0 = unlimited.
+    var maxParallel: Int = 0
+    /// Provider preset id (e.g. "mimo"), nil when none.
+    var preset: String? = nil
+    /// Shrink over-limit media with ffmpeg before sending (MiMo only).
+    var shrinkMedia: Bool = false
+    /// Whether the core has auto-detected the inputs yet (capabilities.probed_at is set).
+    var probed: Bool = false
+}
+
+/// Inputs the core detected for a profile (read-only).
+struct DetectedInputs {
+    let vision: Bool
+    let audio: Bool
+    let video: Bool
+}
+
+/// Result of `ffmpeg.status` / `ffmpeg.install` / `ffmpeg.remove`.
+struct FfmpegStatusItem {
+    let installed: Bool
+    let version: String?
+    let source: String?
+    let supported: Bool
+
+    init(_ d: [String: Any]) {
+        installed = d["installed"] as? Bool ?? false
+        version = d["version"] as? String
+        source = d["source"] as? String
+        supported = d["supported"] as? Bool ?? false
+    }
 }
 
 struct UnifiedSettingsSheet: View {
@@ -53,6 +81,9 @@ struct UnifiedSettingsSheet: View {
     @State private var presets: [ProviderPresetItem] = []
     @State private var selectedProfileId: String = ""
     @State private var selectedPresetId: String = ""
+    @State private var shrinkMedia = false
+    @State private var ffmpegStatus: FfmpegStatusItem? = nil
+    @State private var ffmpegErrorMsg = ""
     @State private var profileId: String? = nil
     @State private var keychainRef: String = ""
     @State private var hasSecret: Bool = false
@@ -64,9 +95,8 @@ struct UnifiedSettingsSheet: View {
     @State private var apiKey = ""
     @State private var allowInsecureHttp = false
     @State private var activateChat = true
-    @State private var supportsVision = false
-    @State private var supportsAudio = false
-    @State private var supportsVideo = false
+    /// Inputs the core detected for the loaded profile; nil = not detected yet.
+    @State private var detectedInputs: DetectedInputs? = nil
     @State private var audioVideoEnabled = true
     @State private var visionProfileId = ""
     @State private var audioProfileId = ""
@@ -74,14 +104,20 @@ struct UnifiedSettingsSheet: View {
     @State private var showThinking = true
     @State private var effort = ""
     @State private var contextWindowText = "32000"
-    @State private var maxOutputTokensText = "8000"
-    @State private var maxParallelText = "4"
+    /// Empty or 0 = unlimited.
+    @State private var maxOutputTokensText = ""
+    /// Empty or 0 = unlimited.
+    @State private var maxParallelText = ""
     @State private var priceInText = ""
     @State private var priceOutText = ""
     @State private var extraHeaders: [(id: UUID, key: String, value: String)] = []
     @State private var showAdvanced = false
     @State private var statusMsg = ""
     @State private var isTesting = false
+    @State private var isSaving = false
+    @State private var confirmDelete = false
+    /// The form as last loaded or applied; Apply is enabled only when it differs.
+    @State private var savedForm = ""
     @State private var isDiscovering = false
     @State private var settingsTab = 0
 
@@ -108,6 +144,7 @@ struct UnifiedSettingsSheet: View {
                         Task { await saveCurrentProfile() }
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(!canApply)
                 }
                 Button(state.t("settings.close")) { dismiss() }
                     .buttonStyle(.plain)
@@ -148,6 +185,14 @@ struct UnifiedSettingsSheet: View {
         }
         .onChange(of: state.embeddingDownloadRunning) { _, _ in
             Task { await refreshEmbeddingStatus() }
+        }
+        .onChange(of: state.ffmpegDownloadRunning) { _, running in
+            // the download ended (ok or not): re-read what is installed now
+            if !running { Task { await refreshFfmpegStatus() } }
+        }
+        .onChange(of: state.profilesRevision) { _, _ in
+            // a capability probe or test finished in the core: refresh tags and detected inputs only
+            Task { await refreshProfileCapabilities() }
         }
     }
 
@@ -282,13 +327,13 @@ struct UnifiedSettingsSheet: View {
                         Task { await testCurrentProfile() }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(isTesting || profileId == nil)
+                    .disabled(isTesting || isSaving || profileId == nil)
 
                     Button(L10n.t("model.clear_key", en: state.isEnglish)) {
                         Task { await clearCurrentKey() }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(profileId == nil || keychainRef.isEmpty)
+                    .disabled(isTesting || isSaving || profileId == nil || keychainRef.isEmpty || !hasSecret)
 
                     Spacer()
                 }
@@ -324,24 +369,86 @@ struct UnifiedSettingsSheet: View {
                     .buttonStyle(.bordered)
 
                     Button(L10n.t("common.delete", en: state.isEnglish), role: .destructive) {
-                        Task { await deleteCurrentProfile() }
+                        confirmDelete = true
                     }
                     .buttonStyle(.bordered)
-                    .disabled(profileId == nil)
+                    .disabled(profileId == nil || isTesting || isSaving)
+                    .confirmationDialog(L10n.t("model.confirm_delete", en: state.isEnglish), isPresented: $confirmDelete) {
+                        Button(L10n.t("common.delete", en: state.isEnglish), role: .destructive) {
+                            Task { await deleteCurrentProfile() }
+                        }
+                    }
                 }
 
                 // Provider Preset (Quick Fill)
                 if !presets.isEmpty {
-                    Picker(L10n.t("model.provider_preset", en: state.isEnglish), selection: $selectedPresetId) {
+                    // Applying a preset fills the form, so it runs only when the user picks one;
+                    // loading a saved profile just sets the selection.
+                    Picker(L10n.t("model.provider_preset", en: state.isEnglish), selection: Binding<String>(
+                        get: { selectedPresetId },
+                        set: { (pid: String) in
+                            selectedPresetId = pid
+                            if let pr = presets.first(where: { $0.id == pid }) {
+                                applyPreset(pr)
+                            }
+                        }
+                    )) {
                         Text(L10n.t("model.choose_a_preset_to_auto", en: state.isEnglish)).tag("")
                         ForEach(presets) { pr in
                             Text(state.isEnglish ? pr.nameEn : pr.name).tag(pr.id)
                         }
                     }
-                    .onChange(of: selectedPresetId) { _, pid in
-                        if let pr = presets.first(where: { $0.id == pid }) {
-                            applyPreset(pr)
+                }
+
+                if selectedPresetId == "mimo" {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle(L10n.t("model.shrink_media", en: state.isEnglish), isOn: $shrinkMedia)
+                        Text(L10n.t("model.shrink_media_hint", en: state.isEnglish))
+                            .font(.caption)
+                            .foregroundColor(palette.textSecondary)
+                    }
+                    .font(.callout)
+
+                    // ffmpeg needed by the shrink toggle: status, download (app copy), remove
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(ffmpegErrorText.isEmpty ? ffmpegStatusText : ffmpegErrorText)
+                            .font(.caption)
+                            .foregroundColor(ffmpegErrorText.isEmpty ? palette.textSecondary : Color.red)
+                            .textSelection(.enabled)
+
+                        if state.ffmpegDownloadRunning {
+                            Text(ffmpegProgressText)
+                                .font(.caption)
+                                .foregroundColor(palette.textSecondary)
                         }
+
+                        HStack(spacing: 8) {
+                            Button(state.ffmpegDownloadRunning
+                                   ? L10n.t("ffmpeg.downloading", en: state.isEnglish)
+                                   : L10n.t("ffmpeg.download", en: state.isEnglish)) {
+                                Task { await installFfmpeg() }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(state.ffmpegDownloadRunning
+                                      || ffmpegStatus?.installed == true
+                                      || ffmpegStatus?.supported != true)
+
+                            if ffmpegStatus?.source == "app" {
+                                Button(L10n.t("ffmpeg.remove", en: state.isEnglish), role: .destructive) {
+                                    Task { await removeFfmpeg() }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(state.ffmpegDownloadRunning)
+                            }
+
+                            Spacer()
+                        }
+                    }
+                    .font(.callout)
+                    .task {
+                        ffmpegErrorMsg = ""
+                        state.ffmpegDownloadError = ""
+                        await refreshFfmpegStatus()
                     }
                 }
 
@@ -409,11 +516,10 @@ struct UnifiedSettingsSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle(L10n.t("model.allow_non_loopback_plaintext_http", en: state.isEnglish), isOn: $allowInsecureHttp)
                     Toggle(L10n.t("model.set_as_default_chat_model", en: state.isEnglish), isOn: $activateChat)
-                    HStack(spacing: 16) {
-                        Toggle(L10n.t("model.vision_images_pdf", en: state.isEnglish), isOn: $supportsVision)
-                        Toggle(L10n.t("model.audio", en: state.isEnglish), isOn: $supportsAudio)
-                        Toggle(L10n.t("model.video", en: state.isEnglish), isOn: $supportsVideo)
-                    }
+                    // read-only: the core detects image/audio/video support itself
+                    Text(detectedInputsText)
+                        .font(.caption)
+                        .foregroundColor(palette.textSecondary)
                 }
                 .font(.callout)
 
@@ -439,7 +545,7 @@ struct UnifiedSettingsSheet: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(L10n.t("model.max_output_tokens", en: state.isEnglish))
                                     .font(.caption).foregroundColor(palette.textSecondary)
-                                TextField("8000", text: $maxOutputTokensText)
+                                TextField(L10n.t("model.unlimited_hint", en: state.isEnglish), text: $maxOutputTokensText)
                                     .textFieldStyle(.roundedBorder)
                             }
                         }
@@ -447,7 +553,7 @@ struct UnifiedSettingsSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(L10n.t("model.max_parallel", en: state.isEnglish))
                                 .font(.caption).foregroundColor(palette.textSecondary)
-                            TextField("4", text: $maxParallelText)
+                            TextField(L10n.t("model.unlimited_hint", en: state.isEnglish), text: $maxParallelText)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 120, alignment: .leading)
                             Text(L10n.t("model.max_parallel_tip", en: state.isEnglish))
@@ -701,6 +807,20 @@ struct UnifiedSettingsSheet: View {
         fillProfile(target)
     }
 
+    /// Re-reads the profile list after a core `profile.updated` event. Only `profiles` (the capability tags)
+    /// and `detectedInputs` (the read-only line) change: the form, `savedForm` and the dirty state are untouched.
+    private func refreshProfileCapabilities() async {
+        guard let listRes = try? await state.core.call(method: "profile.list"),
+              let rawProfiles = listRes["profiles"] as? [[String: Any]] else { return }
+        let fresh = rawProfiles.map(parseProfile)
+        profiles = fresh
+        // read after the await, so a profile switched meanwhile is the one that gets the line
+        guard let pid = profileId, let p = fresh.first(where: { $0.id == pid }) else { return }
+        detectedInputs = p.probed
+            ? DetectedInputs(vision: p.supportsVision, audio: p.supportsAudio, video: p.supportsVideo)
+            : nil
+    }
+
     private func parseProfile(_ d: [String: Any]) -> ModelProfileItem {
         let caps = d["capabilities"] as? [String: Any] ?? [:]
         var hdrs: [String: String] = [:]
@@ -720,7 +840,7 @@ struct UnifiedSettingsSheet: View {
             showThinking: (d["show_thinking"] as? Bool) ?? true,
             effort: d["effort"] as? String ?? "",
             contextWindow: d["context_window"] as? Int ?? 32000,
-            maxOutputTokens: d["max_output_tokens"] as? Int ?? 8000,
+            maxOutputTokens: d["max_output_tokens"] as? Int ?? 0,
             inputPricePerM: d["input_price_per_m"] as? Double,
             outputPricePerM: d["output_price_per_m"] as? Double,
             supportsVision: caps["supports_vision"] as? Bool ?? false,
@@ -729,8 +849,31 @@ struct UnifiedSettingsSheet: View {
             extraHeaders: hdrs,
             eligible: d["eligible"] as? Bool ?? true,
             unsupportedReason: d["unsupported_reason"] as? String,
-            maxParallel: d["max_parallel"] as? Int ?? 4
+            maxParallel: d["max_parallel"] as? Int ?? 0,
+            preset: d["preset"] as? String,
+            shrinkMedia: d["shrink_media"] as? Bool ?? false,
+            probed: caps["probed_at"].map { !($0 is NSNull) } ?? false
         )
+    }
+
+    /// Text of a token / parallel limit: 0 (unlimited) shows as an empty field.
+    private static func limitText(_ value: Int) -> String {
+        value > 0 ? String(value) : ""
+    }
+
+    /// Parses a limit field: empty, non-numeric or negative counts as 0 (unlimited).
+    private static func parseLimit(_ text: String) -> Int {
+        max(0, Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
+    }
+
+    /// "Detected inputs: image ✓ / audio ✗ / video ✗", or the not-yet-detected hint.
+    private var detectedInputsText: String {
+        let en = state.isEnglish
+        guard let d = detectedInputs else { return L10n.t("model.detected_none", en: en) }
+        let img: String = d.vision ? "✓" : "✗"
+        let aud: String = d.audio ? "✓" : "✗"
+        let vid: String = d.video ? "✓" : "✗"
+        return L10n.fmt("model.detected_inputs", en: en, img, aud, vid)
     }
 
     private func parsePreset(_ d: [String: Any]) -> ProviderPresetItem {
@@ -747,7 +890,7 @@ struct UnifiedSettingsSheet: View {
             defaultModel: d["default_model"] as? String ?? "",
             suggestedModels: d["suggested_models"] as? [String] ?? [],
             contextWindow: d["context_window"] as? Int ?? 32000,
-            maxOutputTokens: d["max_output_tokens"] as? Int ?? 8000,
+            maxOutputTokens: d["max_output_tokens"] as? Int ?? 0,
             supportsVision: d["supports_vision"] as? Bool ?? false,
             supportsAudio: d["supports_audio"] as? Bool ?? false,
             supportsVideo: d["supports_video"] as? Bool ?? false,
@@ -755,7 +898,36 @@ struct UnifiedSettingsSheet: View {
         )
     }
 
+    /// Everything Apply would send, as one comparable string.
+    private var formSnapshot: String {
+        let trim = { (v: String) in v.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let headers = extraHeaders
+            .map { (trim($0.key), trim($0.value)) }
+            .filter { !$0.0.isEmpty }
+            .sorted { $0.0 < $1.0 }
+            .map { "\($0.0)=\($0.1)" }
+            .joined(separator: "\n")
+        let parts: [String] = [
+            proto, selectedPresetId, trim(baseUrl), trim(modelId), apiKey.isEmpty ? "" : "key",
+            "\(allowInsecureHttp)", "\(activateChat)",
+            "\(showThinking)", effort, "\(shrinkMedia)",
+            trim(contextWindowText), trim(maxOutputTokensText), trim(maxParallelText),
+            trim(priceInText), trim(priceOutText), headers,
+        ]
+        return parts.joined(separator: "\u{1f}")
+    }
+
+    private var formDirty: Bool { profileId == nil || formSnapshot != savedForm }
+
+    private var canApply: Bool {
+        !isSaving && !isTesting && formDirty
+            && !baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !modelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func fillProfile(_ p: ModelProfileItem?) {
+        // whatever was loaded is the applied state
+        defer { savedForm = formSnapshot }
         guard let p else {
             profileId = nil
             keychainRef = ""
@@ -767,17 +939,17 @@ struct UnifiedSettingsSheet: View {
             apiKey = ""
             allowInsecureHttp = false
             activateChat = !profiles.contains(where: { $0.isActive })
-            supportsVision = false
-            supportsAudio = false
-            supportsVideo = false
+            detectedInputs = nil
             showThinking = true
             effort = ""
             contextWindowText = "32000"
-            maxOutputTokensText = "8000"
-            maxParallelText = "4"
+            maxOutputTokensText = ""
+            maxParallelText = ""
             priceInText = ""
             priceOutText = ""
             extraHeaders = []
+            selectedPresetId = ""
+            shrinkMedia = false
             statusMsg = L10n.t("model.editing_new_profile_choose_a", en: state.isEnglish)
             return
         }
@@ -789,22 +961,29 @@ struct UnifiedSettingsSheet: View {
         modelId = p.modelId
         modelCandidates = p.modelId.isEmpty ? [] : [p.modelId]
         apiKey = ""
-        allowInsecureHttp = p.allowInsecureHttp
+        allowInsecureHttp = p.allowInsecureHttp || Self.isPlaintextRemote(p.baseUrl)
         activateChat = p.isActive
-        supportsVision = p.supportsVision
-        supportsAudio = p.supportsAudio
-        supportsVideo = p.supportsVideo
+        detectedInputs = p.probed
+            ? DetectedInputs(vision: p.supportsVision, audio: p.supportsAudio, video: p.supportsVideo)
+            : nil
         showThinking = p.showThinking
         effort = p.effort
         contextWindowText = String(p.contextWindow)
-        maxOutputTokensText = String(p.maxOutputTokens)
-        maxParallelText = String(p.maxParallel)
+        maxOutputTokensText = Self.limitText(p.maxOutputTokens)
+        maxParallelText = Self.limitText(p.maxParallel)
+        selectedPresetId = p.preset ?? ""
+        shrinkMedia = p.shrinkMedia
         priceInText = p.inputPricePerM.map { String($0) } ?? ""
         priceOutText = p.outputPricePerM.map { String($0) } ?? ""
         extraHeaders = p.extraHeaders.sorted(by: { $0.key < $1.key }).map { (UUID(), $0.key, $0.value) }
         statusMsg = p.hasSecret
             ? (L10n.t("model.key_status_saved_in_macos", en: state.isEnglish))
             : (L10n.t("model.key_status_not_saved", en: state.isEnglish))
+    }
+
+    private static func isPlaintextRemote(_ url: String) -> Bool {
+        guard let u = URL(string: url), u.scheme?.lowercased() == "http", let host = u.host?.lowercased() else { return false }
+        return !(host == "localhost" || host == "127.0.0.1" || host == "::1" || host.hasPrefix("127."))
     }
 
     private func applyPreset(_ pr: ProviderPresetItem) {
@@ -817,10 +996,7 @@ struct UnifiedSettingsSheet: View {
             modelId = first
         }
         contextWindowText = String(pr.contextWindow)
-        maxOutputTokensText = String(pr.maxOutputTokens)
-        supportsVision = pr.supportsVision
-        supportsAudio = pr.supportsAudio
-        supportsVideo = pr.supportsVideo
+        maxOutputTokensText = Self.limitText(pr.maxOutputTokens)
         extraHeaders = pr.extraHeaders.sorted(by: { $0.key < $1.key }).map { (UUID(), $0.key, $0.value) }
         let pname = state.isEnglish ? pr.nameEn : pr.name
         statusMsg = L10n.fmt("model.applied_preset_enter_api_key", en: state.isEnglish, pname)
@@ -870,19 +1046,21 @@ struct UnifiedSettingsSheet: View {
             "allow_insecure_http": allowInsecureHttp,
             "show_thinking": showThinking,
             "context_window": Int(contextWindowText) ?? 32000,
-            "max_output_tokens": Int(maxOutputTokensText) ?? 8000,
-            "max_parallel": min(64, max(1, Int(maxParallelText) ?? 4)),
+            "max_output_tokens": Self.parseLimit(maxOutputTokensText),
+            "max_parallel": Self.parseLimit(maxParallelText),
             "extra_headers": hdrDict,
-            "supports_vision": supportsVision,
-            "supports_audio": supportsAudio,
-            "supports_video": supportsVideo,
+            "preset": selectedPresetId,
+            "shrink_media": (selectedPresetId == "mimo" && shrinkMedia),
         ]
         if !effort.isEmpty { params["effort"] = effort }
         if let pi = Double(priceInText) { params["input_price_per_m"] = pi }
         if let po = Double(priceOutText) { params["output_price_per_m"] = po }
         if let pid = profileId { params["id"] = pid }
-        // the core probes tool calling and structured output with this key before saving
+        // saving only stores; capabilities are measured by "test connection"
         if !apiKey.isEmpty { params["api_key"] = apiKey }
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
         statusMsg = L10n.t("model.probing", en: state.isEnglish)
 
         do {
@@ -896,6 +1074,7 @@ struct UnifiedSettingsSheet: View {
                 _ = await state.run("profile.activate", ["profile_id": nid])
             }
             await saveMediaProcessingSettings()
+            // reloads the stored profile into the form, which also marks it applied
             await loadModelsData(selectId: newId)
             statusMsg = L10n.t("model.saved_checked", en: state.isEnglish)
         } catch {
@@ -908,17 +1087,50 @@ struct UnifiedSettingsSheet: View {
     }
 
     private func testCurrentProfile() async {
-        guard let pid = profileId else { return }
+        guard let pid = profileId, !isTesting, !isSaving else { return }
+        // the test runs against what is stored, so unapplied edits would not be tested
+        guard !formDirty else {
+            statusMsg = L10n.t("model.apply_before_test", en: state.isEnglish)
+            return
+        }
         isTesting = true
         statusMsg = L10n.t("model.testing_connection", en: state.isEnglish)
         defer { isTesting = false }
+        var msg: String
+        var detectedFromTest: DetectedInputs? = nil
         do {
             let res = try await state.core.call(method: "profile.test", params: ["profile_id": pid])
             let reply = res["reply"] as? String ?? L10n.t("model.reply_ok", en: state.isEnglish)
-            statusMsg = L10n.fmt("model.connected", en: state.isEnglish, reply)
+            if let d = res["detected"] as? [String: Any] {
+                detectedFromTest = DetectedInputs(
+                    vision: d["vision"] as? Bool ?? false,
+                    audio: d["audio"] as? Bool ?? false,
+                    video: d["video"] as? Bool ?? false
+                )
+            }
+            msg = L10n.fmt("model.connected", en: state.isEnglish, reply)
+            for f in res["media_failed"] as? [[String: Any]] ?? [] {
+                let kind: String
+                switch f["kind"] as? String {
+                case "vision": kind = L10n.t("model.vision", en: state.isEnglish)
+                case "audio": kind = L10n.t("model.audio", en: state.isEnglish)
+                default: kind = L10n.t("model.video", en: state.isEnglish)
+                }
+                msg += "\n" + L10n.fmt("model.media_probe_failed", en: state.isEnglish, kind, f["detail"] as? String ?? "")
+            }
         } catch {
-            statusMsg = L10n.fmt("model.connection_test_failed", en: state.isEnglish, error.localizedDescription)
+            if let ce = error as? CoreError, ce.code == "CAPABILITY_MISSING" {
+                msg = L10n.fmt("model.refused", en: state.isEnglish, ce.message)
+            } else {
+                msg = L10n.fmt("model.connection_test_failed", en: state.isEnglish, error.localizedDescription)
+            }
         }
+        // the test may have switched off inputs the model does not accept; the form was
+        // unchanged before the test, so reloading the stored profile loses nothing
+        await loadModelsData(selectId: pid)
+        // the test result is the freshest detection; the reloaded profile may still be older
+        if let dt = detectedFromTest { detectedInputs = dt }
+        statusMsg = msg
     }
 
     private func clearCurrentKey() async {
@@ -926,6 +1138,7 @@ struct UnifiedSettingsSheet: View {
         do {
             _ = try await state.core.call(method: "secret.clear", params: ["keychain_ref": keychainRef])
             hasSecret = false
+            await loadModelsData(selectId: profileId)
             statusMsg = L10n.t("model.api_key_cleared", en: state.isEnglish)
         } catch {
             statusMsg = error.localizedDescription
@@ -940,6 +1153,74 @@ struct UnifiedSettingsSheet: View {
             statusMsg = L10n.t("model.profile_deleted", en: state.isEnglish)
         } catch {
             statusMsg = error.localizedDescription
+        }
+    }
+
+    // MARK: - ffmpeg (MiMo media shrinking)
+
+    /// Error to show in the ffmpeg status line, empty when none.
+    private var ffmpegErrorText: String {
+        if !ffmpegErrorMsg.isEmpty { return ffmpegErrorMsg }
+        if !state.ffmpegDownloadError.isEmpty {
+            return L10n.fmt("ffmpeg.failed", en: state.isEnglish, state.ffmpegDownloadError)
+        }
+        return ""
+    }
+
+    private var ffmpegStatusText: String {
+        let en = state.isEnglish
+        guard let s = ffmpegStatus else { return L10n.t("ffmpeg.checking", en: en) }
+        var text: String
+        if s.installed {
+            text = L10n.t(s.source == "system" ? "ffmpeg.installed_system" : "ffmpeg.installed_app", en: en)
+            if let v = s.version, !v.isEmpty { text += " · \(v)" }
+        } else {
+            text = L10n.t("ffmpeg.not_installed", en: en)
+            if !s.supported { text += " — " + L10n.t("ffmpeg.unsupported", en: en) }
+        }
+        return text
+    }
+
+    private var ffmpegProgressText: String {
+        func mb(_ bytes: Int) -> String { String(format: "%.1f", Double(bytes) / 1_000_000) }
+        let total = state.ffmpegDownloadTotalBytes.map { mb($0) } ?? "?"
+        return L10n.fmt("ffmpeg.download_progress", en: state.isEnglish, mb(state.ffmpegDownloadedBytes), total)
+    }
+
+    private func refreshFfmpegStatus() async {
+        do {
+            let res = try await state.core.call(method: "ffmpeg.status", params: [:])
+            ffmpegStatus = FfmpegStatusItem(res)
+        } catch {
+            ffmpegErrorMsg = L10n.fmt("ffmpeg.failed", en: state.isEnglish, state.describe(error))
+        }
+    }
+
+    /// Runs the blocking `ffmpeg.install`; progress arrives as `ffmpeg.download_progress` events.
+    private func installFfmpeg() async {
+        guard !state.ffmpegDownloadRunning, ffmpegStatus?.supported == true, ffmpegStatus?.installed != true else { return }
+        ffmpegErrorMsg = ""
+        state.ffmpegDownloadError = ""
+        state.ffmpegDownloadedBytes = 0
+        state.ffmpegDownloadTotalBytes = nil
+        state.ffmpegDownloadRunning = true
+        defer { state.ffmpegDownloadRunning = false }
+        do {
+            let res = try await state.core.call(method: "ffmpeg.install", params: [:])
+            ffmpegStatus = FfmpegStatusItem(res)
+        } catch {
+            ffmpegErrorMsg = L10n.fmt("ffmpeg.failed", en: state.isEnglish, state.describe(error))
+        }
+    }
+
+    private func removeFfmpeg() async {
+        ffmpegErrorMsg = ""
+        state.ffmpegDownloadError = ""
+        do {
+            let res = try await state.core.call(method: "ffmpeg.remove", params: [:])
+            ffmpegStatus = FfmpegStatusItem(res)
+        } catch {
+            ffmpegErrorMsg = L10n.fmt("ffmpeg.failed", en: state.isEnglish, state.describe(error))
         }
     }
 

@@ -1,4 +1,5 @@
 pub mod archive;
+mod probe_media;
 
 use lna_agent::AgentService;
 use lna_embedding::EmbeddingService;
@@ -38,6 +39,8 @@ pub struct CoreRuntime {
     /// The model download in progress, if any: (cancel token, latest progress).
     model_download: Arc<std::sync::Mutex<Option<(CancellationToken, Value)>>>,
     rt: tokio::runtime::Runtime,
+    /// Handle to this runtime for background work started from `&self` (see `spawn_profile_probe`).
+    self_ref: std::sync::Weak<Self>,
 }
 
 impl CoreRuntime {
@@ -48,6 +51,7 @@ impl CoreRuntime {
             .build()
             .map_err(|e| LnaError::internal(format!("Failed to build tokio runtime: {e}")))?;
 
+        lna_ingest::ffmpeg::set_tools_dir(&data_dir);
         let paths = StoragePaths::from_root(data_dir)?;
         let db = Database::open(paths)?;
         db.recover_on_startup()?;
@@ -104,7 +108,7 @@ impl CoreRuntime {
             seq.clone(),
         );
 
-        let core = Arc::new(Self {
+        let core = Arc::new_cyclic(|me| Self {
             db,
             secrets,
             jobs,
@@ -119,6 +123,7 @@ impl CoreRuntime {
             shutdown: CancellationToken::new(),
             model_download: Arc::new(std::sync::Mutex::new(None)),
             rt,
+            self_ref: me.clone(),
         });
 
         core.spawn_background_loops();
@@ -158,13 +163,16 @@ impl CoreRuntime {
         );
     }
 
-    /// Probes streaming, tool calling, JSON schema and JSON mode against the live endpoint.
-    /// Connection/auth failures of the plain ping are returned as errors.
+    /// Probes streaming, tool calling, JSON schema and JSON mode against the live endpoint, and
+    /// detects image / audio / video input with a small sample each (all three, whatever was
+    /// stored). A modality is only set when its sample is understood. The third value lists the
+    /// modalities whose probe failed unexpectedly (server, network, auth), not the ones the model
+    /// simply does not take. Connection/auth failures of the plain ping are returned as errors.
     async fn probe_capabilities(
         &self,
         resolved: &lna_llm::ResolvedProfile,
         base: ModelCapabilities,
-    ) -> LnaResult<(ModelCapabilities, String)> {
+    ) -> LnaResult<(ModelCapabilities, String, Vec<Value>)> {
         let (txt, ping_usage) = self.ping(resolved).await?;
 
         let mut caps = base;
@@ -259,8 +267,146 @@ impl CoreRuntime {
             .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
             .unwrap_or(false);
 
+        // The three samples are independent, so they run together; each is bounded by the client timeout.
+        let (vision, audio, video) = tokio::join!(
+            self.probe_media(resolved, MediaProbe::Image),
+            self.probe_media(resolved, MediaProbe::Audio),
+            self.probe_media(resolved, MediaProbe::Video),
+        );
+        let mut failed = Vec::new();
+        let mut settle = |kind: &str, verdict: Result<bool, String>| match verdict {
+            Ok(seen) => seen,
+            Err(detail) => {
+                failed.push(json!({ "kind": kind, "detail": detail }));
+                false
+            }
+        };
+        caps.supports_vision = settle("vision", vision);
+        caps.supports_audio = settle("audio", audio);
+        caps.supports_video = settle("video", video);
+
         caps.probed_at = Some(lna_types::now_ms());
-        Ok((caps, txt))
+        Ok((caps, txt, failed))
+    }
+
+    /// Sends one media sample and checks the reply describes it. `Ok(true)`: the sample was
+    /// understood. `Ok(false)`: not understood, or the protocol / endpoint does not take this kind
+    /// of input (a clean "not supported"). `Err`: an unexpected failure (server, network, auth).
+    async fn probe_media(
+        &self,
+        resolved: &lna_llm::ResolvedProfile,
+        kind: MediaProbe,
+    ) -> Result<bool, String> {
+        use probe_media as pm;
+        let (question, mime, data, audio_format) = match kind {
+            MediaProbe::Image => (
+                "What single colour fills the attached image? Reply with one word.".to_string(),
+                "image/png",
+                pm::b64(&pm::red_png()),
+                None,
+            ),
+            MediaProbe::Audio => (
+                format!(
+                    "Describe the attached audio in at most five words. If no audio is attached, reply exactly {}.",
+                    pm::NO_AUDIO
+                ),
+                "audio/wav",
+                pm::b64(&pm::tone_wav()),
+                Some("wav".to_string()),
+            ),
+            MediaProbe::Video => (
+                "What single colour fills every frame of the attached video? Reply with one word."
+                    .to_string(),
+                "video/mp4",
+                pm::b64(pm::RED_MP4),
+                None,
+            ),
+        };
+        let req = LlmRequest {
+            system: "You are checking which kinds of input reach you. Answer briefly and honestly; never guess about an attachment you did not receive.".into(),
+            messages: vec![LlmMessage {
+                role: Role::User,
+                parts: vec![
+                    Part::Text(question),
+                    Part::Media {
+                        mime_type: mime.into(),
+                        data_base64: Some(data),
+                        file_uri: None,
+                        audio_format,
+                    },
+                ],
+            }],
+            tools: vec![],
+            tool_mode: ToolMode::None,
+            output: OutputMode::Text,
+            // room for models that think before answering
+            max_output_tokens: 512,
+            reasoning: ReasoningOptions::default(),
+        };
+        let reply = match self
+            .llm
+            .complete_text_strict(resolved, &req, CancellationToken::new())
+            .await
+        {
+            Ok((reply, _)) => reply,
+            // the protocol cannot build this input, or the endpoint rejects it as a bad request
+            Err(e)
+                if matches!(
+                    e.code,
+                    ErrorCode::CapabilityMissing | ErrorCode::ModelBadRequest
+                ) =>
+            {
+                return Ok(false)
+            }
+            Err(e) => return Err(e.message),
+        };
+        Ok(match kind {
+            MediaProbe::Audio => pm::heard_audio(&reply),
+            MediaProbe::Image | MediaProbe::Video => pm::names_sample_color(&reply),
+        })
+    }
+
+    /// Probes a saved profile and stores what the endpoint showed, then tells clients the profile
+    /// changed. Nothing is stored when the probe fails (the profile stays "not checked yet") or when
+    /// its connection was edited while the probe ran, since the result would describe the old one.
+    async fn probe_stored_profile(&self, saved: &ModelProfile) {
+        let Ok(resolved) = self.agent.resolve_profile(saved) else {
+            return;
+        };
+        let Ok((caps, _, _)) = self
+            .probe_capabilities(&resolved, saved.capabilities.clone())
+            .await
+        else {
+            return;
+        };
+        let Ok(now) = lna_storage::get_profile(&self.db, &saved.id) else {
+            return;
+        };
+        let same_connection = now.protocol == saved.protocol
+            && now.base_url == saved.base_url
+            && now.model_id == saved.model_id
+            && now.extra_headers == saved.extra_headers
+            && now.preset == saved.preset;
+        if same_connection
+            && lna_storage::update_profile_capabilities(&self.db, &saved.id, &caps).is_ok()
+        {
+            self.emit(
+                "profiles",
+                "profile.updated",
+                json!({ "profile_id": saved.id }),
+            );
+        }
+    }
+
+    /// Probes a profile that has not been checked yet in the background, so its capabilities show
+    /// up without pressing "test". Runs after a save; the caller has stored the API key already.
+    fn spawn_profile_probe(&self, saved: ModelProfile) {
+        let weak = self.self_ref.clone();
+        self.rt.spawn(async move {
+            if let Some(core) = weak.upgrade() {
+                core.probe_stored_profile(&saved).await;
+            }
+        });
     }
 
     async fn ping(
@@ -316,16 +462,7 @@ impl CoreRuntime {
                 })
                 .collect();
             for prof in pending {
-                let Ok(resolved) = core.agent.resolve_profile(&prof) else {
-                    continue;
-                };
-                // unreachable endpoints stay pending and are probed again on the next start
-                if let Ok((caps, _)) = core
-                    .probe_capabilities(&resolved, prof.capabilities.clone())
-                    .await
-                {
-                    let _ = lna_storage::update_profile_capabilities(&core.db, &prof.id, &caps);
-                }
+                core.probe_stored_profile(&prof).await;
             }
         });
 
@@ -824,8 +961,6 @@ impl CoreRuntime {
             "profile.upsert" => {
                 let mut params_in: ProfileUpsertParams = serde_json::from_value(p.clone())
                     .map_err(|e| LnaError::invalid(e.to_string()))?;
-                params_in.max_output_tokens =
-                    lna_llm::clamp_reasoning_and_output_tokens(params_in.max_output_tokens);
                 let allow_insecure_http = p
                     .get("allow_insecure_http")
                     .and_then(Value::as_bool)
@@ -855,25 +990,8 @@ impl CoreRuntime {
                     .as_ref()
                     .map(|e| e.capabilities.clone())
                     .unwrap_or_default();
-                if let Some(v) = params_in.supports_vision {
-                    base.supports_vision = v;
-                }
-                if let Some(v) = params_in.supports_audio {
-                    base.supports_audio = v;
-                }
-                if let Some(v) = params_in.supports_video {
-                    base.supports_video = v;
-                }
+                // Media inputs (`supports_*`) are never taken from the client: the probe detects them.
                 if let Some(c) = params_in.capabilities.as_ref() {
-                    if params_in.supports_vision.is_none() {
-                        base.supports_vision = c.supports_vision;
-                    }
-                    if params_in.supports_audio.is_none() {
-                        base.supports_audio = c.supports_audio;
-                    }
-                    if params_in.supports_video.is_none() {
-                        base.supports_video = c.supports_video;
-                    }
                     base.max_tokens_field = c.max_tokens_field.clone().or(base.max_tokens_field);
                     base.anthropic_thinking =
                         c.anthropic_thinking.clone().or(base.anthropic_thinking);
@@ -882,19 +1000,23 @@ impl CoreRuntime {
                 if embedding_only && params_in.activate {
                     return Err(LnaError::invalid("仅用于向量化的配置不能设为对话模型"));
                 }
-                // Saving only stores. Nothing is sent to the endpoint here: capabilities are
-                // measured by "test connection" (profile.test) and at start-up for profiles that
-                // were never checked. When the connection changed, the old measurements no longer
-                // describe it, so they are cleared and the profile shows as "not checked yet".
+                // Saving stores the profile and the API key; the endpoint is not contacted here. When
+                // the connection changed, the old measurements no longer describe it, so they are
+                // cleared and the profile is probed again in the background (see below).
                 let mut caps = base;
                 if !embedding_only {
                     let connection_changed = match existing.as_ref() {
                         None => true,
                         Some(e) => {
+                            // an omitted preset keeps the stored one; "" clears it
+                            let preset_changed = params_in.preset.as_deref().is_some_and(|p| {
+                                e.preset.as_deref() != Some(p).filter(|p| !p.is_empty())
+                            });
                             e.protocol != params_in.protocol
                                 || e.base_url != params_in.base_url
                                 || e.model_id != params_in.model_id
                                 || e.extra_headers != params_in.extra_headers
+                                || preset_changed
                                 || api_key.is_some()
                         }
                     };
@@ -906,16 +1028,36 @@ impl CoreRuntime {
                         caps.tools = false;
                         caps.json_schema = false;
                         caps.json_mode = false;
+                        caps.supports_vision = false;
+                        caps.supports_audio = false;
+                        caps.supports_video = false;
                         caps.probed_at = None;
                     }
                 }
                 params_in.capabilities = Some(caps);
+                // Storage would merge the flat flags over the capabilities: clear them so only the probe's result is stored.
+                params_in.supports_vision = None;
+                params_in.supports_audio = None;
+                params_in.supports_video = None;
+                // Shrinking media is a MiMo-only switch: any other resulting preset stores it off.
+                // An omitted preset keeps the stored one.
+                let resulting_is_mimo = match params_in.preset.as_deref() {
+                    Some(preset) => preset == "mimo",
+                    None => existing.as_ref().and_then(|e| e.preset.as_deref()) == Some("mimo"),
+                };
+                if !resulting_is_mimo {
+                    params_in.shrink_media = Some(false);
+                }
                 let mut prof = lna_storage::upsert_profile(&self.db, &params_in)?;
                 self.llm.set_parallel_limit(&prof.id, prof.max_parallel);
                 if let (Some(k), Some(kref)) = (api_key, prof.keychain_ref.as_deref()) {
                     self.secrets.set(kref, SecretString::from(k))?;
                 }
                 self.refresh_has_secret(&mut prof);
+                // A profile not checked yet (new, or its connection changed) is probed in the background.
+                if !prof.capabilities.embedding_only && prof.capabilities.probed_at.is_none() {
+                    self.spawn_profile_probe(prof.clone());
+                }
                 if params_in.activate {
                     self.enqueue_missing_summaries();
                 }
@@ -942,14 +1084,26 @@ impl CoreRuntime {
                         json!({ "ok": true, "reply": txt, "capabilities": prof.capabilities }),
                     );
                 }
-                let (caps, txt) = self
+                let (caps, txt, media_failed) = self
                     .probe_capabilities(&resolved, prof.capabilities.clone())
                     .await?;
                 lna_storage::update_profile_capabilities(&self.db, id, &caps)?;
+                self.emit("profiles", "profile.updated", json!({ "profile_id": id }));
                 if let Some(reason) = caps.chat_missing() {
                     return Err(LnaError::new(ErrorCode::CapabilityMissing, reason));
                 }
-                Ok(json!({ "ok": true, "reply": txt, "capabilities": caps }))
+                Ok(json!({
+                    "ok": true,
+                    "reply": txt,
+                    "capabilities": caps,
+                    // only probes that failed unexpectedly; a modality the model lacks is `false`
+                    "media_failed": media_failed,
+                    "detected": {
+                        "vision": caps.supports_vision,
+                        "audio": caps.supports_audio,
+                        "video": caps.supports_video,
+                    },
+                }))
             }
             "profile.discover_models" => {
                 let resolved = if let Some(id) = p
@@ -1005,6 +1159,8 @@ impl CoreRuntime {
                         capabilities: Default::default(),
                         extra_headers: Default::default(),
                         anthropic_version: "2023-06-01".to_string(),
+                        preset: None,
+                        shrink_media: false,
                     }
                 };
                 let models = self.llm.discover_models(&resolved).await?;
@@ -1231,6 +1387,12 @@ impl CoreRuntime {
                 let id = req_str(p, "artifact_id")?;
                 self.jobs.cancel_by_subject(id)?;
                 self.studio.mark_cancelled(id)?;
+                Ok(json!({ "ok": true }))
+            }
+            "studio.pause" => {
+                let id = req_str(p, "artifact_id")?;
+                self.jobs.cancel_by_subject(id)?;
+                self.studio.mark_paused(id)?;
                 Ok(json!({ "ok": true }))
             }
             "studio.delete" => {
@@ -1644,6 +1806,32 @@ impl CoreRuntime {
                 Ok(json!({ "ok": true, "started": true }))
             }
 
+            // --- ffmpeg: the app-managed copy (lna_ingest::ffmpeg_install) ---
+            "ffmpeg.status" => Ok(json!(lna_ingest::ffmpeg_install::status())),
+            "ffmpeg.install" => {
+                // Runs to completion (the call returns when it is done). Progress goes out on the
+                // `ffmpeg` topic; the caller should not run this on its UI thread.
+                let res = lna_ingest::ffmpeg_install::install(|downloaded, total| {
+                    self.emit(
+                        "ffmpeg",
+                        "ffmpeg.download_progress",
+                        json!({ "downloaded": downloaded, "total": total }),
+                    );
+                })
+                .await;
+                let done = match &res {
+                    Ok(_) => json!({ "ok": true }),
+                    Err(e) => json!({ "ok": false, "error": e }),
+                };
+                self.emit("ffmpeg", "ffmpeg.download_done", done);
+                res?;
+                Ok(json!(lna_ingest::ffmpeg_install::status()))
+            }
+            "ffmpeg.remove" => {
+                lna_ingest::ffmpeg_install::remove()?;
+                Ok(json!(lna_ingest::ffmpeg_install::status()))
+            }
+
             // --- Search / Research (deferred per user request) ---
             m if m.starts_with("research.") => Err(LnaError::new(
                 ErrorCode::CapabilityMissing,
@@ -1695,6 +1883,8 @@ impl CoreRuntime {
             capabilities: prof.capabilities,
             extra_headers: prof.extra_headers,
             anthropic_version: "2023-06-01".into(),
+            preset: prof.preset.clone(),
+            shrink_media: prof.shrink_media,
         };
 
         let (summary_md, sq_json): (Option<String>, Option<String>) = self.db.read(|conn| {
@@ -1738,7 +1928,7 @@ impl CoreRuntime {
             tools: vec![],
             tool_mode: lna_llm::ToolMode::None,
             output: lna_llm::OutputMode::JsonObject,
-            max_output_tokens: 2048.min(resolved.max_output_tokens.max(1024)),
+            max_output_tokens: 2048.min(resolved.output_budget().max(1024)),
             reasoning: lna_llm::ReasoningOptions::default(),
         };
 
@@ -1949,10 +2139,7 @@ fn builtin_provider_presets() -> Value {
             "default_model": "gpt-4.1",
             "suggested_models": ["gpt-4.1", "gpt-4o", "o4-mini"],
             "context_window": 1047576,
-            "max_output_tokens": 16384,
-            "supports_vision": true,
-            "supports_audio": false,
-            "supports_video": false,
+            "max_output_tokens": 0,
             "extra_headers": {}
         },
         {
@@ -1965,10 +2152,7 @@ fn builtin_provider_presets() -> Value {
             "default_model": "claude-sonnet-4-20250514",
             "suggested_models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-7-sonnet-20250219"],
             "context_window": 200000,
-            "max_output_tokens": 16384,
-            "supports_vision": true,
-            "supports_audio": false,
-            "supports_video": false,
+            "max_output_tokens": 0,
             "extra_headers": {}
         },
         {
@@ -1981,10 +2165,7 @@ fn builtin_provider_presets() -> Value {
             "default_model": "gemini-2.5-flash",
             "suggested_models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
             "context_window": 1000000,
-            "max_output_tokens": 8192,
-            "supports_vision": true,
-            "supports_audio": true,
-            "supports_video": true,
+            "max_output_tokens": 0,
             "extra_headers": {}
         },
         {
@@ -1997,10 +2178,7 @@ fn builtin_provider_presets() -> Value {
             "default_model": "deepseek-chat",
             "suggested_models": ["deepseek-chat", "deepseek-reasoner"],
             "context_window": 64000,
-            "max_output_tokens": 8192,
-            "supports_vision": false,
-            "supports_audio": false,
-            "supports_video": false,
+            "max_output_tokens": 0,
             "extra_headers": {}
         },
         {
@@ -2013,10 +2191,7 @@ fn builtin_provider_presets() -> Value {
             "default_model": "glm-4.5",
             "suggested_models": ["glm-4.5", "glm-4.5-air", "glm-4-plus"],
             "context_window": 128000,
-            "max_output_tokens": 8192,
-            "supports_vision": false,
-            "supports_audio": false,
-            "supports_video": false,
+            "max_output_tokens": 0,
             "extra_headers": {}
         },
         {
@@ -2026,13 +2201,10 @@ fn builtin_provider_presets() -> Value {
             "category": "official",
             "protocol": "chat_completion",
             "base_url": "https://api.xiaomimimo.com/v1",
-            "default_model": "mimo-v2-flash",
-            "suggested_models": ["mimo-v2-flash", "mimo-v2.6-pro"],
+            "default_model": "mimo-v2.6-flash",
+            "suggested_models": ["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"],
             "context_window": 128000,
-            "max_output_tokens": 8192,
-            "supports_vision": false,
-            "supports_audio": false,
-            "supports_video": false,
+            "max_output_tokens": 0,
             "extra_headers": {}
         },
         {
@@ -2045,10 +2217,7 @@ fn builtin_provider_presets() -> Value {
             "default_model": "glm-5",
             "suggested_models": ["glm-5", "kimi-k2.5", "minimax-m2.5"],
             "context_window": 128000,
-            "max_output_tokens": 8192,
-            "supports_vision": false,
-            "supports_audio": false,
-            "supports_video": false,
+            "max_output_tokens": 0,
             "extra_headers": {
                 "x-opencode-session": "local-notebook-agent",
                 "User-Agent": "opencode/1.0"
@@ -2074,13 +2243,18 @@ fn builtin_provider_presets() -> Value {
                 "deepseek/deepseek-chat"
             ],
             "context_window": 128000,
-            "max_output_tokens": 8192,
-            "supports_vision": false,
-            "supports_audio": false,
-            "supports_video": false,
+            "max_output_tokens": 0,
             "extra_headers": {
                 "cf-aig-authorization": "Bearer {api_key}"
             }
         }
     ])
+}
+
+/// Which declared input `probe_media` checks.
+#[derive(Clone, Copy)]
+enum MediaProbe {
+    Image,
+    Audio,
+    Video,
 }

@@ -223,6 +223,21 @@ internal sealed class ChatArtifactCard : IDisposable
                 cancelBtn.IsEnabled = false;
                 await Api.CallAsync("studio.cancel", Args(("artifact_id", _artifactId)));
             };
+            var pauseBtn = new Button
+            {
+                Content = L10n.T("studio.pause"),
+                Style = (Style)Application.Current.Resources["PillButtonStyle"],
+                MinHeight = 28,
+                Padding = new Thickness(12, 3, 12, 3),
+                FontSize = 12,
+            };
+            pauseBtn.Click += async (_, _) =>
+            {
+                pauseBtn.IsEnabled = false;
+                cancelBtn.IsEnabled = false;
+                await Api.CallAsync("studio.pause", Args(("artifact_id", _artifactId)));
+            };
+            row.Children.Add(pauseBtn);
             row.Children.Add(cancelBtn);
             sp.Children.Add(row);
             _bodyHost.Content = sp;
@@ -241,7 +256,7 @@ internal sealed class ChatArtifactCard : IDisposable
             var sp = new StackPanel { Spacing = 8 };
             sp.Children.Add(new TextBlock
             {
-                Text = L10n.T("studio.cancelled"),
+                Text = L10n.T(Str(_artifact, "stage") == "PAUSED" ? "studio.paused" : "studio.cancelled"),
                 FontSize = 12,
                 Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
             });

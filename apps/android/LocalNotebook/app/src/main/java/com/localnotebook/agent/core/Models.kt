@@ -116,10 +116,8 @@ data class ProviderPresetItem(
     val baseUrl: String,
     val defaultModel: String,
     val contextWindow: Int,
+    /** 0 = unlimited. */
     val maxOutputTokens: Int,
-    val supportsVision: Boolean,
-    val supportsAudio: Boolean,
-    val supportsVideo: Boolean,
     val extraHeaders: Map<String, String>,
 )
 
@@ -134,13 +132,21 @@ data class ModelProfileItem(
     val isActive: Boolean,
     val allowInsecureHttp: Boolean,
     val contextWindow: Int,
+    /** Max output tokens; 0 = unlimited. */
     val maxOutputTokens: Int,
-    /** Most model requests of this profile in flight at once (parallel generation). */
-    val maxParallel: Int = 4,
+    /** Most model requests of this profile in flight at once; 0 = unlimited. */
+    val maxParallel: Int = 0,
+    /** Auto-detected by the core (read-only here); meaningful only when [probed]. */
     val supportsVision: Boolean,
     val supportsAudio: Boolean,
     val supportsVideo: Boolean,
+    /** The core has detected inputs for this profile (capabilities.probed_at is set). */
+    val probed: Boolean = false,
     val extraHeaders: Map<String, String>,
+    /** Provider preset id the profile was created from (e.g. "mimo"), or null. */
+    val preset: String? = null,
+    /** Re-encode oversized audio/video before import (MiMo): Media3 on Android, ffmpeg on desktop. */
+    val shrinkMedia: Boolean = false,
     /** Supports tool calling and structured output (or is an embedding endpoint). */
     val eligible: Boolean = true,
     val unsupportedReason: String? = null,

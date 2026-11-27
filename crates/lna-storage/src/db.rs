@@ -12,6 +12,9 @@ const MIGRATION_0004: &str = include_str!("../../../migrations/0004_chat_studio_
 const MIGRATION_0005: &str = include_str!("../../../migrations/0005_studio_thoughts_and_logs.sql");
 const MIGRATION_0007: &str = include_str!("../../../migrations/0007_chat_attachments.sql");
 const MIGRATION_0008: &str = include_str!("../../../migrations/0008_profile_max_parallel.sql");
+const MIGRATION_0009: &str = include_str!("../../../migrations/0009_profile_preset_shrink.sql");
+const MIGRATION_0010: &str =
+    include_str!("../../../migrations/0010_profile_unlimited_defaults.sql");
 
 #[derive(Debug, Clone)]
 pub struct StoragePaths {
@@ -361,6 +364,31 @@ fn run_migrations(conn: &Connection, db_path: &Path) -> LnaResult<()> {
             .map_err(map_sql_err)?;
         conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
         tracing::info!("Applied SQLite migration 0008 (profile max_parallel)");
+    }
+
+    if version < 9 {
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(map_sql_err)?;
+        if let Err(e) = conn.execute_batch(MIGRATION_0009) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(map_sql_err(e));
+        }
+        conn.pragma_update(None, "user_version", 9)
+            .map_err(map_sql_err)?;
+        conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
+        tracing::info!("Applied SQLite migration 0009 (profile preset, shrink_media)");
+    }
+    if version < 10 {
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(map_sql_err)?;
+        if let Err(e) = conn.execute_batch(MIGRATION_0010) {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(map_sql_err(e));
+        }
+        conn.pragma_update(None, "user_version", 10)
+            .map_err(map_sql_err)?;
+        conn.execute_batch("COMMIT;").map_err(map_sql_err)?;
+        tracing::info!("Applied SQLite migration 0010 (unlimited output/parallel defaults)");
     }
     Ok(())
 }

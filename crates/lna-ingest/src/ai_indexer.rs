@@ -101,6 +101,8 @@ fn resolve_active_chat_profile(
         capabilities: prof.capabilities,
         extra_headers: prof.extra_headers,
         anthropic_version: "2023-06-01".into(),
+        preset: prof.preset.clone(),
+        shrink_media: prof.shrink_media,
     }))
 }
 
@@ -321,7 +323,7 @@ pub async fn run_ai_index_nodes(
         tools: vec![],
         tool_mode: ToolMode::None,
         output: OutputMode::JsonObject,
-        max_output_tokens: 2048.min(resolved.max_output_tokens.max(1024)),
+        max_output_tokens: 2048.min(resolved.output_budget().max(1024)),
         reasoning: ReasoningOptions::default(),
     };
     let (value, usage) = llm
@@ -388,7 +390,7 @@ pub async fn run_ai_guide(
         tools: vec![],
         tool_mode: ToolMode::None,
         output: OutputMode::JsonObject,
-        max_output_tokens: 1024.min(resolved.max_output_tokens.max(512)),
+        max_output_tokens: 1024.min(resolved.output_budget().max(512)),
         reasoning: ReasoningOptions::default(),
     };
     let (value, usage) = llm
@@ -559,7 +561,7 @@ pub async fn run_ai_vision_toc_index(
         tools: vec![],
         tool_mode: ToolMode::None,
         output: OutputMode::JsonObject,
-        max_output_tokens: resolved.max_output_tokens.clamp(2048, 4096),
+        max_output_tokens: resolved.output_budget().clamp(2048, 4096),
         reasoning: ReasoningOptions::default(),
     };
 

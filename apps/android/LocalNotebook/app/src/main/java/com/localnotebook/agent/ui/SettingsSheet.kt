@@ -40,10 +40,10 @@ fun UnifiedSettingsSheet(
         maxOutputTokens: Int,
         activateChat: Boolean,
         allowInsecureHttp: Boolean,
-        supportsVision: Boolean,
-        supportsAudio: Boolean,
-        supportsVideo: Boolean,
         maxParallel: Int,
+        preset: String,
+        shrinkMedia: Boolean,
+        onFailed: () -> Unit,
     ) -> Unit,
     onDeleteProfile: (String) -> Unit = {},
     onTestProfile: (String) -> Unit = {},
@@ -57,22 +57,43 @@ fun UnifiedSettingsSheet(
     var draftPrefs by remember(prefs) { mutableStateOf(prefs) }
 
     val activeOrFirst = profiles.firstOrNull { it.isActive } ?: profiles.firstOrNull()
-    var selectedProfileId by remember(profiles) { mutableStateOf(activeOrFirst?.id ?: "") }
+    // The form is filled by selectProfile() only; it is not keyed on `profiles`, so a reload
+    // after Apply / Test does not throw the form back to the default model.
+    var selectedProfileId by remember { mutableStateOf("") }
     var selectedPresetId by remember { mutableStateOf("") }
-    var protocol by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.protocol ?: "chat_completion") }
-    var baseUrl by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.baseUrl ?: "") }
-    var modelId by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.modelId ?: "") }
+    var protocol by remember { mutableStateOf("chat_completion") }
+    var baseUrl by remember { mutableStateOf("") }
+    var modelId by remember { mutableStateOf("") }
     var apiKey by remember { mutableStateOf("") }
-    var contextWindow by remember(selectedProfileId) { mutableIntStateOf(activeOrFirst?.contextWindow ?: 32000) }
-    var maxOutputTokens by remember(selectedProfileId) { mutableIntStateOf(activeOrFirst?.maxOutputTokens ?: 8000) }
-    var activateChat by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.isActive ?: true) }
-    var allowInsecureHttp by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.allowInsecureHttp ?: false) }
-    var supportsVision by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsVision ?: false) }
-    var supportsAudio by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsAudio ?: false) }
-    var supportsVideo by remember(selectedProfileId) { mutableStateOf(activeOrFirst?.supportsVideo ?: false) }
-    var maxParallelText by remember(selectedProfileId) { mutableStateOf((activeOrFirst?.maxParallel ?: 4).toString()) }
-    var extraHeaders by remember(selectedProfileId) {
-        mutableStateOf<List<Pair<String, String>>>(activeOrFirst?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList())
+    var contextWindow by remember { mutableIntStateOf(32000) }
+    // text, so that empty can mean "unlimited"; empty or 0 is sent as 0
+    var maxOutputText by remember { mutableStateOf("") }
+    var activateChat by remember { mutableStateOf(true) }
+    var allowInsecureHttp by remember { mutableStateOf(false) }
+    var shrinkMedia by remember { mutableStateOf(false) }
+    var maxParallelText by remember { mutableStateOf("") }
+    var extraHeaders by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    // what was last loaded or applied; Apply is enabled only when the form differs from it
+    var savedForm by remember { mutableStateOf("") }
+    var formLoaded by remember { mutableStateOf(false) }
+    var reloadAfterApply by remember { mutableStateOf(false) }
+    var knownIds by remember { mutableStateOf(emptySet<String>()) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    fun formSnapshot(): String = listOf(
+        protocol, baseUrl.trim(), modelId.trim(), if (apiKey.isEmpty()) "" else "key",
+        contextWindow.toString(), maxOutputText.trim(), activateChat.toString(),
+        allowInsecureHttp.toString(), maxParallelText.trim(),
+        selectedPresetId, (selectedPresetId == "mimo" && shrinkMedia).toString(),
+        extraHeaders.mapNotNull { (k, v) -> k.trim().takeIf { it.isNotEmpty() }?.let { "$it=${v.trim()}" } }
+            .sorted().joinToString("\n"),
+    ).joinToString("\u001f")
+
+    fun isPlaintextRemote(url: String): Boolean {
+        val u = runCatching { java.net.URI(url.trim()) }.getOrNull() ?: return false
+        val host = u.host?.lowercase() ?: return false
+        return u.scheme.equals("http", ignoreCase = true) &&
+            !(host == "localhost" || host == "::1" || host == "[::1]" || host.startsWith("127."))
     }
 
     fun selectProfile(p: ModelProfileItem?) {
@@ -82,14 +103,37 @@ fun UnifiedSettingsSheet(
         modelId = p?.modelId ?: ""
         apiKey = ""
         contextWindow = p?.contextWindow ?: 32000
-        maxOutputTokens = p?.maxOutputTokens ?: 8000
+        // 0 (unlimited) is shown as an empty field
+        maxOutputText = p?.maxOutputTokens?.takeIf { it > 0 }?.toString().orEmpty()
         activateChat = p?.isActive ?: !profiles.any { it.isActive }
-        allowInsecureHttp = p?.allowInsecureHttp ?: false
-        supportsVision = p?.supportsVision ?: false
-        supportsAudio = p?.supportsAudio ?: false
-        supportsVideo = p?.supportsVideo ?: false
-        maxParallelText = (p?.maxParallel ?: 4).toString()
+        // the core does not store this flag; a saved plaintext remote URL was confirmed back then
+        allowInsecureHttp = p != null && (p.allowInsecureHttp || isPlaintextRemote(p.baseUrl))
+        // the preset is stored with the profile; a new profile (p == null) has none
+        selectedPresetId = p?.preset.orEmpty()
+        shrinkMedia = p?.shrinkMedia ?: false
+        maxParallelText = p?.maxParallel?.takeIf { it > 0 }?.toString().orEmpty()
         extraHeaders = p?.extraHeaders?.entries?.map { it.key to it.value } ?: emptyList<Pair<String, String>>()
+        savedForm = formSnapshot()
+    }
+
+    val formDirty = selectedProfileId.isEmpty() || formSnapshot() != savedForm
+
+    // A reload (after Apply, Test, Clear Key or Delete) shows the stored state of the profile
+    // being edited: the newly created one after applying a new profile, the default one when
+    // the edited profile was deleted. Unapplied edits are kept on any other reload.
+    LaunchedEffect(profiles) {
+        val ids = profiles.map { it.id }.toSet()
+        val added = ids - knownIds
+        knownIds = ids
+        val current = profiles.firstOrNull { it.id == selectedProfileId }
+        when {
+            !formLoaded -> { selectProfile(activeOrFirst); formLoaded = profiles.isNotEmpty() }
+            selectedProfileId.isEmpty() && reloadAfterApply && added.size == 1 ->
+                selectProfile(profiles.first { it.id in added })
+            selectedProfileId.isNotEmpty() && current == null -> selectProfile(activeOrFirst)
+            current != null && (reloadAfterApply || !formDirty) -> selectProfile(current)
+        }
+        reloadAfterApply = false
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -192,27 +236,53 @@ fun UnifiedSettingsSheet(
 
                     2 -> {
                         if (selectedProfileId.isNotEmpty()) {
+                            val cur = profiles.firstOrNull { it.id == selectedProfileId }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                // the test runs against what is stored, so it waits for Apply
                                 OutlinedButton(
                                     onClick = { onTestProfile(selectedProfileId) },
+                                    enabled = !formDirty,
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Text(L10n.t("settings.test", en))
                                 }
-                                val curKref = profiles.firstOrNull { it.id == selectedProfileId }?.keychainRef.orEmpty()
+                                val curKref = cur?.keychainRef.orEmpty()
                                 OutlinedButton(
                                     onClick = { if (curKref.isNotEmpty()) onClearKey(curKref) },
-                                    enabled = curKref.isNotEmpty(),
+                                    enabled = curKref.isNotEmpty() && cur?.hasSecret != false,
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Text(L10n.t("model.clear_key", en))
                                 }
                                 OutlinedButton(
-                                    onClick = { onDeleteProfile(selectedProfileId) },
+                                    onClick = { confirmDelete = true },
                                     modifier = Modifier.weight(1f),
                                 ) {
                                     Text(L10n.t("studio.delete", en))
                                 }
+                            }
+                            if (formDirty) {
+                                Text(
+                                    L10n.t("model.apply_before_test", en),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (confirmDelete) {
+                                AlertDialog(
+                                    onDismissRequest = { confirmDelete = false },
+                                    title = { Text(cur?.displayName.orEmpty()) },
+                                    text = { Text(L10n.t("model.confirm_delete", en)) },
+                                    confirmButton = {
+                                        TextButton(onClick = {
+                                            confirmDelete = false
+                                            onDeleteProfile(selectedProfileId)
+                                        }) { Text(L10n.t("studio.delete", en)) }
+                                    },
+                                    dismissButton = {
+                                        TextButton(onClick = { confirmDelete = false }) { Text(L10n.t("common.cancel", en)) }
+                                    },
+                                )
                             }
                         }
                         Text(
@@ -252,10 +322,7 @@ fun UnifiedSettingsSheet(
                                             baseUrl = preset.baseUrl
                                             modelId = preset.defaultModel
                                             contextWindow = preset.contextWindow
-                                            maxOutputTokens = preset.maxOutputTokens
-                                            supportsVision = preset.supportsVision
-                                            supportsAudio = preset.supportsAudio
-                                            supportsVideo = preset.supportsVideo
+                                            maxOutputText = preset.maxOutputTokens.takeIf { it > 0 }?.toString().orEmpty()
                                             extraHeaders = preset.extraHeaders.entries.map { it.key to it.value }
                                         },
                                         label = { Text(if (en) preset.nameEn else preset.name) },
@@ -284,6 +351,15 @@ fun UnifiedSettingsSheet(
                             value = modelId,
                             onValueChange = { modelId = it },
                             label = { Text(L10n.t("model.model_id", en)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = maxOutputText,
+                            onValueChange = { v -> maxOutputText = v.filter { it.isDigit() }.take(7) },
+                            label = { Text(L10n.t("model.max_output_tokens", en)) },
+                            supportingText = { Text(L10n.t("model.unlimited_hint", en)) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -353,21 +429,28 @@ fun UnifiedSettingsSheet(
                             Text(L10n.t("settings.allow_non_loopback_http", en), modifier = Modifier.weight(1f))
                             Switch(checked = allowInsecureHttp, onCheckedChange = { allowInsecureHttp = it })
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            FilterChip(
-                                selected = supportsVision,
-                                onClick = { supportsVision = !supportsVision },
-                                label = { Text(L10n.t("settings.vision", en)) },
-                            )
-                            FilterChip(
-                                selected = supportsAudio,
-                                onClick = { supportsAudio = !supportsAudio },
-                                label = { Text(L10n.t("model.audio", en)) },
-                            )
-                            FilterChip(
-                                selected = supportsVideo,
-                                onClick = { supportsVideo = !supportsVideo },
-                                label = { Text(L10n.t("model.video", en)) },
+                        // inputs are detected by the core; read-only here
+                        val curProfile = profiles.firstOrNull { it.id == selectedProfileId }
+                        val detectedText = curProfile?.takeIf { it.probed }?.let { p ->
+                            L10n.t("model.detected_inputs", en)
+                                .replace("{0}", if (p.supportsVision) "✓" else "✗")
+                                .replace("{1}", if (p.supportsAudio) "✓" else "✗")
+                                .replace("{2}", if (p.supportsVideo) "✓" else "✗")
+                        } ?: L10n.t("model.detect_pending", en)
+                        Text(
+                            detectedText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (selectedPresetId == "mimo") {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Text(L10n.t("model.shrink_media", en), modifier = Modifier.weight(1f))
+                                Switch(checked = shrinkMedia, onCheckedChange = { shrinkMedia = it })
+                            }
+                            Text(
+                                L10n.t("model.shrink_media_hint_android", en),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
 
@@ -473,6 +556,7 @@ fun UnifiedSettingsSheet(
                         val hdrMap = extraHeaders
                             .mapNotNull { (k, v) -> k.trim().takeIf { it.isNotEmpty() }?.let { it to v.trim() } }
                             .toMap()
+                        reloadAfterApply = true
                         onSaveModel(
                             selectedProfileId.ifEmpty { null },
                             protocol,
@@ -481,16 +565,20 @@ fun UnifiedSettingsSheet(
                             apiKey,
                             hdrMap,
                             contextWindow,
-                            maxOutputTokens,
+                            // empty or 0 = unlimited
+                            (maxOutputText.toIntOrNull() ?: 0).coerceAtLeast(0),
                             activateChat,
                             allowInsecureHttp,
-                            supportsVision,
-                            supportsAudio,
-                            supportsVideo,
-                            (maxParallelText.toIntOrNull() ?: 4).coerceIn(1, 64),
+                            // empty or 0 = unlimited; the core is sent 0 either way
+                            (maxParallelText.toIntOrNull() ?: 0).coerceIn(0, 64),
+                            selectedPresetId,
+                            selectedPresetId == "mimo" && shrinkMedia,
+                            // a failed Apply must not leave the reload flag set: a later list
+                            // refresh would then throw the user's edits away
+                            { reloadAfterApply = false },
                         )
                     },
-                    enabled = baseUrl.isNotBlank() && modelId.isNotBlank(),
+                    enabled = baseUrl.isNotBlank() && modelId.isNotBlank() && formDirty,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(L10n.t("settings.apply", en))

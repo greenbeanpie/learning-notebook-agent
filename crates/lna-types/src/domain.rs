@@ -307,14 +307,21 @@ pub struct ModelProfile {
     pub output_price_per_m: Option<f64>,
     pub is_active: bool,
     /// Most requests of this profile in flight at once (parallel Studio executors, indexing, ...).
+    /// 0 = unlimited (the endpoint's own throttling is then waited out).
     #[serde(default = "default_max_parallel")]
     pub max_parallel: u32,
+    /// Provider preset id the profile was created from (e.g. "mimo"); `None` = custom.
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// Trade picture quality for capacity when sending media (only meaningful for MiMo).
+    #[serde(default)]
+    pub shrink_media: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 fn default_max_parallel() -> u32 {
-    4
+    0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

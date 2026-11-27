@@ -19,6 +19,19 @@ impl ProtocolAdapter for ChatCompletionAdapter {
             messages.push(json!({ "role": "system", "content": req.system }));
         }
 
+        // A tool call without a name (some relays and free models emit one) makes the provider
+        // reject the whole request ("tool_calls.function.name is required"), so such calls and
+        // their results are left out of the history.
+        let nameless: std::collections::HashSet<&str> = req
+            .messages
+            .iter()
+            .flat_map(|m| m.parts.iter())
+            .filter_map(|p| match p {
+                Part::ToolCall { id, name, .. } if name.trim().is_empty() => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+
         for m in &req.messages {
             match m.role {
                 Role::User => {
@@ -60,6 +73,11 @@ impl ProtocolAdapter for ChatCompletionAdapter {
                                                 "url": format!("data:{mime_type};base64,{b64}")
                                             }
                                         }));
+                                    } else if profile.is_mimo()
+                                        && (mime_type.starts_with("audio/")
+                                            || mime_type.starts_with("video/"))
+                                    {
+                                        content_parts.push(mimo_media_part(mime_type, b64)?);
                                     } else if mime_type.starts_with("audio/") {
                                         let fmt = audio_format.as_deref().unwrap_or("");
                                         if matches!(fmt, "wav" | "mp3") {
@@ -95,6 +113,7 @@ impl ProtocolAdapter for ChatCompletionAdapter {
                     for p in &m.parts {
                         match p {
                             Part::Text(t) => text.push_str(t),
+                            Part::ToolCall { id, .. } if nameless.contains(id.as_str()) => {}
                             Part::ToolCall {
                                 id,
                                 name,
@@ -112,6 +131,9 @@ impl ProtocolAdapter for ChatCompletionAdapter {
                             Part::Opaque(_) | Part::ToolResult { .. } | Part::Media { .. } => {}
                         }
                     }
+                    if text.is_empty() && tool_calls.is_empty() {
+                        continue;
+                    }
                     let mut msg = json!({ "role": "assistant" });
                     if !text.is_empty() {
                         msg["content"] = json!(text);
@@ -127,6 +149,9 @@ impl ProtocolAdapter for ChatCompletionAdapter {
                             call_id, content, ..
                         } = p
                         {
+                            if nameless.contains(call_id.as_str()) {
+                                continue;
+                            }
                             messages.push(json!({
                                 "role": "tool",
                                 "tool_call_id": call_id,
@@ -149,7 +174,10 @@ impl ProtocolAdapter for ChatCompletionAdapter {
             "messages": messages,
             "stream": true,
         });
-        body[max_field] = json!(clamp_reasoning_and_output_tokens(req.max_output_tokens));
+        // 0 = no limit: omit the field so the provider applies its own default.
+        if req.max_output_tokens != 0 {
+            body[max_field] = json!(req.max_output_tokens);
+        }
 
         if profile.capabilities.stream_usage {
             body["stream_options"] = json!({ "include_usage": true });
@@ -249,12 +277,103 @@ impl ProtocolAdapter for ChatCompletionAdapter {
     }
 }
 
+/// MiMo takes audio and video only as inline Base64 data URLs; the encoded payload may not exceed this.
+const MIMO_MEDIA_MAX_BASE64_BYTES: usize = 50 * 1024 * 1024;
+const MIMO_VIDEO_MIMES: &[&str] = &[
+    "video/mp4",
+    "video/quicktime",
+    "video/x-msvideo",
+    "video/x-ms-wmv",
+];
+const MIMO_AUDIO_MIMES: &[&str] = &[
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/flac",
+    "audio/mp4",
+    "audio/x-m4a",
+    "audio/ogg",
+];
+
+/// The MiMo content part for inline audio or video (images keep the `image_url` form).
+fn mimo_media_part(mime_type: &str, b64: &str) -> LnaResult<Value> {
+    let is_video = mime_type.starts_with("video/");
+    let (label, allowed, names) = if is_video {
+        ("视频", MIMO_VIDEO_MIMES, "MP4、MOV、AVI、WMV")
+    } else {
+        ("音频", MIMO_AUDIO_MIMES, "MP3、WAV、FLAC、M4A、OGG")
+    };
+    if !allowed.contains(&mime_type) {
+        return Err(LnaError::new(
+            ErrorCode::CapabilityMissing,
+            format!("MiMo 模型的{label}输入仅支持 {names} 格式，当前格式（{mime_type}）不受支持，请先转换为支持的格式后再导入。"),
+        ));
+    }
+    if b64.len() > MIMO_MEDIA_MAX_BASE64_BYTES {
+        return Err(LnaError::new(
+            ErrorCode::CapabilityMissing,
+            format!(
+                "MiMo 模型要求{label}的内联 Base64 数据不超过 50 MB（当前约 {:.1} MB）。请压缩或裁剪该文件后再导入。",
+                b64.len() as f64 / (1024.0 * 1024.0)
+            ),
+        ));
+    }
+    let data_url = format!("data:{mime_type};base64,{b64}");
+    Ok(if is_video {
+        json!({
+            "type": "video_url",
+            "video_url": { "url": data_url },
+            "fps": 1,
+            "media_resolution": "default"
+        })
+    } else {
+        json!({
+            "type": "input_audio",
+            "input_audio": { "data": data_url }
+        })
+    })
+}
+
 #[derive(Default)]
 struct ChatCompletionDecoder {
     finished: bool,
     in_think_tag: bool,
     pending_tag_buf: String,
-    active_tool_indices: Vec<u32>,
+    /// Tool calls being streamed, by index. A call is announced to the consumer only once its
+    /// name is known: relays differ in which chunk carries `id` and `function.name`.
+    tool_calls: std::collections::BTreeMap<u32, ToolAcc>,
+}
+
+#[derive(Default)]
+struct ToolAcc {
+    id: String,
+    name: String,
+    started: bool,
+    /// Argument text that arrived before the name did.
+    pending_args: String,
+}
+
+impl ToolAcc {
+    fn start(&mut self, idx: u32, out: &mut Vec<LlmEvent>) {
+        if self.started || self.name.is_empty() {
+            return;
+        }
+        self.started = true;
+        if self.id.is_empty() {
+            self.id = format!("call_{idx}");
+        }
+        out.push(LlmEvent::ToolCallStart {
+            index: idx,
+            id: self.id.clone(),
+            name: self.name.clone(),
+        });
+        if !self.pending_args.is_empty() {
+            out.push(LlmEvent::ToolCallDelta {
+                index: idx,
+                json: std::mem::take(&mut self.pending_args),
+            });
+        }
+    }
 }
 
 impl ChatCompletionDecoder {
@@ -304,6 +423,17 @@ impl ChatCompletionDecoder {
         }
     }
 
+    /// Closes every open tool call. A call that never got a name cannot be executed or sent
+    /// back to the provider (it rejects an empty `function.name`), so it is dropped.
+    fn end_tool_calls(&mut self, out: &mut Vec<LlmEvent>) {
+        for (idx, mut acc) in std::mem::take(&mut self.tool_calls) {
+            acc.start(idx, out);
+            if acc.started {
+                out.push(LlmEvent::ToolCallEnd { index: idx });
+            }
+        }
+    }
+
     fn flush_pending(&mut self, out: &mut Vec<LlmEvent>) {
         if !self.pending_tag_buf.is_empty() {
             let rem = std::mem::take(&mut self.pending_tag_buf);
@@ -322,9 +452,7 @@ impl StreamDecoder for ChatCompletionDecoder {
         if trimmed == "[DONE]" {
             let mut out = Vec::new();
             self.flush_pending(&mut out);
-            for idx in self.active_tool_indices.drain(..) {
-                out.push(LlmEvent::ToolCallEnd { index: idx });
-            }
+            self.end_tool_calls(&mut out);
             if !self.finished {
                 self.finished = true;
                 out.push(LlmEvent::Finished {
@@ -391,29 +519,31 @@ impl StreamDecoder for ChatCompletionDecoder {
                 if let Some(tcs) = delta.get("tool_calls").and_then(|x| x.as_array()) {
                     for tc in tcs {
                         let idx = tc.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                        let acc = self.tool_calls.entry(idx).or_default();
                         if let Some(id) = tc.get("id").and_then(|x| x.as_str()) {
-                            let name = tc
-                                .pointer("/function/name")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if !self.active_tool_indices.contains(&idx) {
-                                self.active_tool_indices.push(idx);
+                            if !id.is_empty() {
+                                acc.id = id.to_string();
                             }
-                            out.push(LlmEvent::ToolCallStart {
-                                index: idx,
-                                id: id.to_string(),
-                                name,
-                            });
                         }
+                        if let Some(n) = tc.pointer("/function/name").and_then(|x| x.as_str()) {
+                            if !acc.started && !n.is_empty() && n != acc.name {
+                                // the name may arrive in a later chunk than the id
+                                acc.name.push_str(n);
+                            }
+                        }
+                        acc.start(idx, &mut out);
                         if let Some(args) =
                             tc.pointer("/function/arguments").and_then(|x| x.as_str())
                         {
                             if !args.is_empty() {
-                                out.push(LlmEvent::ToolCallDelta {
-                                    index: idx,
-                                    json: args.to_string(),
-                                });
+                                if acc.started {
+                                    out.push(LlmEvent::ToolCallDelta {
+                                        index: idx,
+                                        json: args.to_string(),
+                                    });
+                                } else {
+                                    acc.pending_args.push_str(args);
+                                }
                             }
                         }
                     }
@@ -421,9 +551,7 @@ impl StreamDecoder for ChatCompletionDecoder {
             }
             if let Some(fr) = choice.get("finish_reason").and_then(|x| x.as_str()) {
                 self.flush_pending(&mut out);
-                for idx in self.active_tool_indices.drain(..) {
-                    out.push(LlmEvent::ToolCallEnd { index: idx });
-                }
+                self.end_tool_calls(&mut out);
                 let reason = match fr {
                     "stop" => StopReason::EndTurn,
                     "length" => StopReason::MaxTokens,

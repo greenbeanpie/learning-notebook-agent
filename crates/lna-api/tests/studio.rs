@@ -391,7 +391,7 @@ fn studio_calls_are_serialised_per_profile_and_ingest_is_not_blocked() {
     });
     let env = Env::new("serial");
     let nid = small_notebook(&env);
-    env.profile(&mock, 32000);
+    profile_with_limit(&env, &mock, 4);
     let ids: Vec<String> = ["quiz", "flashcards", "mindmap"]
         .iter()
         .map(|t| create(&env, &nid, t, json!({})))
@@ -414,7 +414,7 @@ fn studio_calls_are_serialised_per_profile_and_ingest_is_not_blocked() {
     }
     assert!(
         mock.max_inflight_of(Kind::Studio) <= 4,
-        "Studio requests stay bounded by the profile's max_parallel (default 4)"
+        "Studio requests stay bounded by the profile's max_parallel (4 here)"
     );
 }
 
@@ -434,6 +434,28 @@ fn cancel_during_generation_stays_cancelled() {
     std::thread::sleep(Duration::from_millis(1500));
     let art = env.ok("studio.get", json!({ "artifact_id": id }));
     assert_eq!(art["status"], json!("CANCELLED"), "{art}");
+}
+
+/// Pausing stops the run like cancelling but is marked PAUSED, and retry continues it.
+#[test]
+fn pause_stops_generation_and_retry_continues() {
+    let mock = MockLlm::start(|r| match r.kind {
+        Kind::Studio => Reply::SlowText("x".repeat(400), 200),
+        _ => Reply::Text("OK".into()),
+    });
+    let env = Env::new("studiopause");
+    let nid = small_notebook(&env);
+    env.profile(&mock, 32000);
+    let id = create(&env, &nid, "report", json!({}));
+    env.wait(20, || !mock.of_kind(Kind::Studio).is_empty());
+    env.ok("studio.pause", json!({ "artifact_id": id }));
+    std::thread::sleep(Duration::from_millis(1500));
+    let art = env.ok("studio.get", json!({ "artifact_id": id }));
+    assert_eq!(art["status"], json!("CANCELLED"), "{art}");
+    assert_eq!(art["stage"], json!("PAUSED"), "{art}");
+    env.ok("studio.retry", json!({ "artifact_id": id }));
+    let art = env.ok("studio.get", json!({ "artifact_id": id }));
+    assert_ne!(art["stage"], json!("PAUSED"), "{art}");
 }
 
 /// Finished artifacts do not auto-flag as stale when sources change, and can be regenerated
@@ -740,11 +762,23 @@ fn max_parallel_setting_bounds_parallel_executors() {
         "batches fan out up to the profile limit (saw {inflight})"
     );
 
-    // Out-of-range values are clamped, and a raised limit is picked up at once.
+    // Values above the 1024 bound are clamped to it; 0 means unlimited, and a changed limit is
+    // picked up at once.
     let prof = profile_with_limit(&env, &mock, 500);
-    assert_eq!(prof["max_parallel"], json!(64), "{prof}");
+    assert_eq!(prof["max_parallel"], json!(500), "{prof}");
+    let prof = profile_with_limit(&env, &mock, 5000);
+    assert_eq!(prof["max_parallel"], json!(1024), "{prof}");
     let prof = profile_with_limit(&env, &mock, 0);
-    assert_eq!(prof["max_parallel"], json!(1), "{prof}");
+    assert_eq!(prof["max_parallel"], json!(0), "{prof}");
+}
+
+/// A profile created without `max_parallel` is unlimited.
+#[test]
+fn new_profile_without_a_limit_is_unlimited() {
+    let mock = MockLlm::start(|_| Reply::Text("OK".into()));
+    let env = Env::new("unlimited");
+    let prof = env.profile(&mock, 32000);
+    assert_eq!(prof["max_parallel"], json!(0), "{prof}");
 }
 
 fn common_prefix_chars(a: &str, b: &str) -> usize {
@@ -810,4 +844,152 @@ fn parallel_batches_share_a_long_prompt_prefix() {
                 .collect::<String>()
         );
     }
+}
+
+fn picture(w: u32, h: u32) -> String {
+    use base64::Engine as _;
+    let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        w,
+        h,
+        image::Rgb([30, 90, 200]),
+    ));
+    let mut buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Png).unwrap();
+    base64::engine::general_purpose::STANDARD.encode(buf.into_inner())
+}
+
+/// The mock profile, marked as reading pictures or not (what the capability probe would find).
+fn profile_with_vision(env: &Env, mock: &MockLlm, vision: bool) {
+    let row = env.profile(mock, 4000);
+    let pid = row["id"].as_str().unwrap().to_string();
+    let mut caps: lna_types::ModelCapabilities =
+        serde_json::from_value(row["capabilities"].clone()).unwrap();
+    caps.supports_vision = vision;
+    caps.supports_audio = false;
+    caps.supports_video = false;
+    lna_storage::update_profile_capabilities(&env.core.db, &pid, &caps).unwrap();
+}
+
+/// A model whose on-demand reading rounds (the requests with tools) are answered by `reader`.
+fn reading_mock(reader: impl Fn(&Req) -> Reply + Send + Sync + 'static) -> MockLlm {
+    MockLlm::start(move |r| match r.kind {
+        Kind::Studio if r.has_tools() => reader(r),
+        Kind::Digest => Reply::Text("本章摘要：基与维数的定义与关系。".into()),
+        Kind::Reduce => Reply::Text("全局大纲：向量空间、基、维数。".into()),
+        Kind::Studio => studio_reply(r),
+        _ => Reply::Text("OK".into()),
+    })
+}
+
+fn reader_requests(mock: &MockLlm) -> Vec<Req> {
+    mock.requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.kind == Kind::Studio && r.has_tools())
+        .cloned()
+        .collect()
+}
+
+/// A vision model gets the attached picture itself in the reading request; the prompt only says
+/// that a picture is shown, never the attachment id.
+#[test]
+fn vision_model_reads_the_picture_itself_not_a_text_brief() {
+    let mock = reading_mock(|_| Reply::Text("DONE".into()));
+    let env = Env::new("pics_vision");
+    let nid = big_notebook(&env);
+    profile_with_vision(&env, &mock, true);
+
+    let art = env.ok(
+        "studio.create",
+        json!({
+            "notebook_id": nid, "artifact_type": "quiz", "config": { "topic": "图中的题" },
+            "images": [{ "name": "q.png", "data_base64": picture(40, 40) }]
+        }),
+    );
+    let id = art["id"].as_str().unwrap().to_string();
+    let pic_id = art["config"]["images"][0].as_str().unwrap().to_string();
+    studio_wait(&env, &id, "READY", 60);
+
+    let reads = reader_requests(&mock);
+    let first = reads.first().expect("the on-demand reader was asked");
+    let body = first.body.to_string();
+    assert!(
+        body.contains("data:image/"),
+        "the picture is part of the request: {body}"
+    );
+    assert!(
+        !body.contains(&pic_id),
+        "the attachment id must not reach the prompt: {body}"
+    );
+    assert!(body.contains("shown in this message"), "{body}");
+    assert!(
+        !body.contains("</user_images>"),
+        "no text brief for a vision model: {body}"
+    );
+    // the follow-up rounds carry the same pictures
+    assert!(reads
+        .iter()
+        .all(|r| r.body.to_string().contains("data:image/")));
+}
+
+/// The model stopping the task on purpose fails the job with the refusal code and its reason,
+/// without retrying and without any guessed content.
+#[test]
+fn model_abort_task_fails_the_job_with_its_reason() {
+    let mock = reading_mock(|_| Reply::Tool {
+        id: "call_abort".into(),
+        name: "abort_task".into(),
+        args: json!({ "reason": "附带的图片无法读取" }),
+    });
+    let env = Env::new("pics_abort");
+    let nid = big_notebook(&env);
+    profile_with_vision(&env, &mock, false);
+
+    let id = create(&env, &nid, "quiz", json!({}));
+    let art = studio_wait(&env, &id, "FAILED", 60);
+    assert_eq!(art["error_code"], json!("MODEL_REFUSED"), "{art}");
+    assert!(
+        art["error_detail"]
+            .as_str()
+            .unwrap_or("")
+            .contains("附带的图片无法读取"),
+        "{art}"
+    );
+    assert_eq!(reader_requests(&mock).len(), 1, "no retry after a refusal");
+}
+
+/// A model that cannot read pictures keeps the text brief: the reading request has no pixels, and
+/// the brief travels in <user_images>.
+#[test]
+fn text_only_model_keeps_the_picture_brief() {
+    let mock = reading_mock(|_| Reply::Text("DONE".into()));
+    let env = Env::new("pics_text");
+    let nid = big_notebook(&env);
+    profile_with_vision(&env, &mock, false);
+
+    let art = env.ok(
+        "studio.create",
+        json!({
+            "notebook_id": nid, "artifact_type": "quiz", "config": { "topic": "图中的题" },
+            "images": [{ "name": "q.png", "data_base64": picture(40, 40) }]
+        }),
+    );
+    let id = art["id"].as_str().unwrap().to_string();
+    let pic_id = art["config"]["images"][0].as_str().unwrap().to_string();
+    studio_wait(&env, &id, "READY", 60);
+
+    let reads = reader_requests(&mock);
+    let first = reads.first().expect("the on-demand reader was asked");
+    let body = first.body.to_string();
+    assert!(
+        !body.contains("data:image/"),
+        "a text-only model gets no pixels: {body}"
+    );
+    assert!(
+        body.contains("<user_images>"),
+        "the text brief is used: {body}"
+    );
+    assert!(body.contains("described in <user_images>"), "{body}");
+    assert!(!body.contains(&pic_id), "{body}");
 }

@@ -11,6 +11,7 @@
 
 use super::*;
 use crate::figure::{render_figure, svg_to_png, FIGURE_DSL_GUIDE};
+use crate::material::{config_for_prompt, image_parts, with_images};
 use futures_util::StreamExt as _;
 use std::collections::HashSet;
 
@@ -26,6 +27,12 @@ pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: content that is obviousl
 /// Judgement rules shared by the planner and the authors: how much to say, to whom, and what
 /// never to talk about. They are principles, not page counts, so the model sizes the lecture itself.
 pub(crate) const TEACHING_JUDGEMENT: &str = "TEACHING JUDGEMENT (applies to the plan and to every slide):\n- ECONOMY: every slide must earn its place. Before adding one ask: would a student who already has the prerequisites miss something if it were removed? If not, leave it out. No orientation, agenda, section-divider, recap or \"where we are\" slides unless the lecture truly spans several topics (a recap repeats what was just said; a method summary or extension after a problem adds something and is allowed, see PROBLEMS). A derivation is taught as its sequence of steps in order, pausing only where a step is not obvious (a non-trivial identity, a choice, a physical argument) and moving quickly through routine algebra. Plan the fewest sections that teach the scope: a single derivation or exercise is ONE section.\n- VISUALS (show before you tell): content that is obviously geometric or physical — vectors, forces and torques, coordinate systems and angles, shapes, motion paths, function graphs, surfaces — MUST be shown with a figure (figure_request: diagram, plot or plot3d) while it is explained, and the figure's parts appear step by step (builds on figure:<id>) in step with the equations or bullets, with the laser on the part being spoken about. A page that is only a worked derivation (algebra steps, a proof, a calculation) is SUGGESTED to use visuals or animation: reveal the steps one at a time, highlight the current step, and add a small figure when one truly clarifies; when no figure fits, the step-by-step reveal is enough. Never invent a figure just to have one. A slide that carries a needed figure or a step-by-step build earns its place under ECONOMY. Reasoning about vectors inside a derivation (directions of terms, components along an axis, which cross products vanish, signs of torques) is geometric content, not mere algebra: draw the vectors and the axis.\n- FILL THE SLIDE: a 16:9 slide holding only a short table, two or three bullets or one formula is mostly empty space. Put the figure that shows what that text states beside it (the text — bullets, formula or a compact table — sits left of the figure on the same slide), or merge the text into the neighbouring slide it belongs to. A table that lists directions, components or cases of vectors belongs next to a drawing of those vectors, with each row and its figure part revealed together.\n- LEARNER: infer the learner's level from the material itself (a university student working at this point of the course) and assume the usual prerequisites are known: do not define or re-teach prerequisite concepts, standard operations or notation (for example the cross product, derivatives or vector decomposition in a mechanics derivation). Explain only what is new or non-obvious in the material. If the user's request explicitly asks for background, give it.\n- PROBLEMS (an exercise, an example, a question or a derivation to work through): go straight to the problem and solve it. No slides that review, define or teach concepts, theorems, formulas or methods before the solution (no \"prerequisites\", \"knowledge review\", \"first let's recall ...\" or \"basic concepts\" slides or sections). When a step uses a known result, name it in one short clause at that step as the reason for the step (e.g. \"by the parallel-axis theorem, ...\") and move on; do not derive, prove or illustrate the known result itself. Only the non-obvious idea that unlocks this particular problem deserves explanation, and it is explained inside the step where it is used. AFTER THE SOLUTION (allowed, not required): once the problem is solved you may close with what the learner should take away from it — a method summary (the general approach and when it applies), an extension or generalisation (what changes if a condition changes, a variant, a related problem type), common mistakes, or a quick check of the result. Keep it to what genuinely adds value (usually one slide, at most two) and keep it tied to this problem; this is where connections to the wider topic belong, never before the solution.\n- NEVER TALK ABOUT HOW THIS LECTURE WAS PRODUCED: no OCR, text recognition or scan quality/noise, no image extraction, no outline, plan, section or generation steps, and no navigation such as \"this page sits in the derivation chain\". Speak as the teacher who wrote the lesson, about the content. Mentioning the textbook as a teaching resource (e.g. \"see the book's worked example\") is fine when it helps.";
+
+/// Errors that end an on-demand evidence read instead of falling back to plain retrieval: a
+/// cancelled job, and a model that refused the task (its reason is shown to the user).
+pub(crate) fn ends_evidence_read(code: ErrorCode) -> bool {
+    matches!(code, ErrorCode::Cancelled | ErrorCode::ModelRefused)
+}
 
 /// Mode/detail rules for the lecture author.
 pub(crate) fn lecture_rules(mode: &str, detail: &str) -> String {
@@ -1206,6 +1213,8 @@ impl StudioService {
             capabilities: prof.capabilities,
             extra_headers: prof.extra_headers,
             anthropic_version: "2023-06-01".into(),
+            preset: prof.preset.clone(),
+            shrink_media: prof.shrink_media,
         })
     }
 
@@ -1242,7 +1251,7 @@ impl StudioService {
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: resolved.max_output_tokens.min(4000),
+            max_output_tokens: resolved.output_budget().min(4000),
             reasoning: ReasoningOptions::default(),
         };
         let (mut spec, u) = {
@@ -1313,7 +1322,7 @@ impl StudioService {
                 tools: vec![],
                 tool_mode: ToolMode::None,
                 output: OutputMode::Text,
-                max_output_tokens: resolved.max_output_tokens.min(4000),
+                max_output_tokens: resolved.output_budget().min(4000),
                 reasoning: ReasoningOptions::default(),
             };
             let target = if !problems {
@@ -1525,7 +1534,7 @@ impl StudioService {
         let with_materials = |body: String| format!("{materials}{body}");
         let target_ids = Self::generation_source_ids(art);
         let window = resolved.context_window as usize;
-        let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
+        let reserved_output = (resolved.output_budget() as usize).min(window / 4);
         let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
         let budget = (available_input.saturating_mul(70) / 100).min(16_000);
         match self
@@ -1543,7 +1552,7 @@ impl StudioService {
             .await
         {
             Ok(Some(t)) if !t.trim().is_empty() => Ok(with_materials(t)),
-            Err(e) if e.code == ErrorCode::Cancelled => Err(e),
+            Err(e) if ends_evidence_read(e.code) => Err(e),
             _ => {
                 let queries = vec![focus.to_string()];
                 Ok(with_materials(
@@ -1593,6 +1602,9 @@ impl StudioService {
             .unwrap_or("auto");
         let rules = lecture_rules(mode, detail);
         let schema = section_schema();
+        // the user's pictures go to the section author itself when the model can see them; the
+        // repair requests below are cloned from the same request, so they keep them too
+        let images = image_parts(&self.db.paths().root, art, resolved);
         let system = format!(
             "You are the Local Notebook Studio lecture author producing structured JSON for lecture slides of ONE section of a narrated lesson (a teacher speaking over slides). Output {{\"slides\": [...]}} for this section only. Slide layouts as in a deck (title/section/agenda/bullets/two_column/cards/metrics/timeline/table/quote/formula/summary/figure); keep on-screen text concise and let the narration carry the explanation. Preserve source citation indices [n] in each slide's citations array.\n{NARRATION_RULES}\n{CUES_GUIDE}\n{ELEMENT_IDS_GUIDE}\n{FIGURE_REQUEST_GUIDE}\n{rules}\nStrictly ground every fact in the provided sources. Match the language requested in config or the primary language of the sources. Sections are written separately and played in order: unless the section position below asks for a title or summary slide, do not add an opening or closing slide of your own, only slides that teach this section's focus.{}",
             if has_user_material(&art.config) {
@@ -1605,7 +1617,7 @@ impl StudioService {
             // Everything shared by the sections comes first and what is specific to this section
             // comes last, so parallel sections share a long prompt prefix (provider prompt cache).
             "Parameters: {}\nLecture: {}\nObjectives: {}\nOutline:\n{}\n\nSources:\n{}\n\n=== THIS SECTION ({}): {} ===\nFocus: {}\n{}",
-            art.config,
+            config_for_prompt(&art.config, !images.is_empty()),
             sc.lecture_title,
             sc.objectives.join("; "),
             sc.outline_txt,
@@ -1615,17 +1627,22 @@ impl StudioService {
             sc.section_focus,
             sc.extra
         );
-        let mk_req = |text: String| LlmRequest {
-            system: system.clone(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text(text)],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: resolved.max_output_tokens,
-            reasoning: reasoning.clone(),
+        let mk_req = |text: String| {
+            with_images(
+                LlmRequest {
+                    system: system.clone(),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text(text)],
+                    }],
+                    tools: vec![],
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::Text,
+                    max_output_tokens: resolved.max_output_tokens,
+                    reasoning: reasoning.clone(),
+                },
+                &images,
+            )
         };
         let mut usage = Usage::default();
         let (out, u) = {
@@ -1908,7 +1925,8 @@ impl StudioService {
                     "规划讲解大纲",
                     "第 1 步：确定讲解范围、学习目标与小节；之后逐个小节查阅原文，撰写幻灯片、讲稿与激光/动画提示。",
                 );
-                let req = LlmRequest {
+                let images = image_parts(&self.db.paths().root, art, resolved);
+                let req = with_images(LlmRequest {
                     system: format!(
                         "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. Resolve the requested scope (topic, problem or unit given in config.topic; the user's attached material if any; the whole selection only if neither is given) against the sources, then plan a narrated lesson: title, learning objectives, and ordered sections. Each section has a title and a \"focus\" naming exactly which concepts/problems/source parts (chapters, sections, pages) it covers, plus an optional slides_hint (keep it small: slides are only as many as the section needs). Also give every section \"visual_need\": \"required\" when its content is obviously geometric or physical (vectors, forces, torques, angles, shapes, trajectories, graphs, surfaces) — including a derivation whose steps reason about vector directions, components or cross products, \"suggested\" when it is mainly a worked derivation, proof or calculation, otherwise \"none\"; and \"visual\": what to draw and how its parts are revealed step by step together with the explanation (empty when none). {}\nIf an approved outline is given, follow it. Strictly ground the plan in the sources. Match the language requested in config or the primary language of the sources.{}",
                         lecture_rules(&mode, &detail),
@@ -1922,7 +1940,7 @@ impl StudioService {
                         role: Role::User,
                         parts: vec![Part::Text(format!(
                             "Parameters: {}\nApproved outline: {}\n{}\n\nSources:\n{}",
-                            art.config,
+                            config_for_prompt(&art.config, !images.is_empty()),
                             art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                             kg_hint,
                             evidence_txt
@@ -1931,9 +1949,9 @@ impl StudioService {
                     tools: vec![],
                     tool_mode: ToolMode::None,
                     output: OutputMode::Text,
-                    max_output_tokens: resolved.max_output_tokens.min(6000),
+                    max_output_tokens: resolved.output_budget().min(6000),
                     reasoning: reasoning.clone(),
-                };
+                }, &images);
                 let (outline, u) = {
                     self.run_structured_with_thought(
                         artifact_id,
@@ -2007,14 +2025,22 @@ impl StudioService {
             .collect();
         let limit = self.parallelism(profile).min(pending.len().max(1));
         if pending.len() > 1 {
+            let detail = if profile.max_parallel == 0 {
+                "模型配置的并行请求数不限".to_string()
+            } else {
+                format!(
+                    "取小节数与模型配置中并行请求数上限 {} 中较小的一个",
+                    self.parallelism(profile)
+                )
+            };
             self.append_thought(
                 artifact_id,
                 &art.notebook_id,
                 "stage",
                 "并行撰写小节",
                 &format!(
-                    "共 {} 个小节待撰写，最多同时并行 {limit} 个（模型配置中的并行请求数上限）。",
-                    pending.len()
+                    "共 {} 个小节待撰写，本次同时并行 {limit} 个（{detail}）。",
+                    pending.len(),
                 ),
             );
         }
@@ -2344,7 +2370,7 @@ impl StudioService {
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: resolved.max_output_tokens.min(3000),
+            max_output_tokens: resolved.output_budget().min(3000),
             reasoning: ReasoningOptions::default(),
         };
         let (out, usage) = self
@@ -3201,5 +3227,13 @@ mod prereq_tests {
         assert!(flagged("Prerequisites", "preview"));
         assert!(!flagged("前置知识：叉乘", "review"));
         assert!(!flagged("第一步：写出力矩", "general"));
+    }
+
+    #[test]
+    fn refusal_and_cancel_end_the_evidence_read_other_errors_fall_back() {
+        assert!(ends_evidence_read(ErrorCode::ModelRefused));
+        assert!(ends_evidence_read(ErrorCode::Cancelled));
+        assert!(!ends_evidence_read(ErrorCode::FetchFailed));
+        assert!(!ends_evidence_read(ErrorCode::ModelRateLimited));
     }
 }

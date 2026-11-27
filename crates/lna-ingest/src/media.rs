@@ -84,6 +84,8 @@ pub fn resolve_modality_profile_with_secret(
         capabilities: prof.capabilities,
         extra_headers: prof.extra_headers,
         anthropic_version: "2023-06-01".into(),
+        preset: prof.preset.clone(),
+        shrink_media: prof.shrink_media,
     }))
 }
 
@@ -186,25 +188,152 @@ fn try_wic_transcode(bytes: &[u8], ext: &str, path_hint: Option<&Path>) -> Optio
 }
 
 fn try_ffmpeg_to_mp3(input_path: &Path) -> Option<Vec<u8>> {
-    let out = std::env::temp_dir().join(format!(
-        "lna_aud_{}_{}.mp3",
-        std::process::id(),
-        lna_types::now_ms()
-    ));
-    let mut cmd = std::process::Command::new("ffmpeg");
-    cmd.args(["-y", "-i"])
-        .arg(input_path)
-        .args(["-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k"])
-        .arg(&out);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+    let ff = crate::ffmpeg::ffmpeg_path()?;
+    crate::ffmpeg::encode_to_bytes(
+        &ff,
+        input_path,
+        &["-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k"],
+        "mp3",
+    )
+    .ok()
+}
+
+/// MiMo accepts audio and video only as inline Base64 data URLs (at most 50 MB encoded). A raw
+/// file of up to 35 MiB stays inside that once encoded (about 46.7 MiB of Base64).
+const MIMO_RAW_MAX_BYTES: u64 = 35 * 1024 * 1024;
+const MIMO_VIDEO_EXTS: &[&str] = &["mp4", "mov", "avi", "wmv"];
+const MIMO_AUDIO_EXTS: &[&str] = &["mp3", "wav", "flac", "m4a", "ogg"];
+
+/// MIME type for a file MiMo should receive; falls back to `formats` for the common cases.
+fn mimo_mime_for_ext(ext: &str) -> &'static str {
+    match ext {
+        "mov" => "video/quicktime",
+        "wmv" => "video/x-ms-wmv",
+        "flac" => "audio/flac",
+        other => formats::mime_type_for_ext(other),
     }
-    let ok = matches!(cmd.output(), Ok(o) if o.status.success());
-    let bytes = if ok { std::fs::read(&out).ok() } else { None };
-    let _ = std::fs::remove_file(&out);
-    bytes
+}
+
+fn mimo_size_error(label: &str, size: u64) -> LnaError {
+    LnaError::new(
+        ErrorCode::CapabilityMissing,
+        format!(
+            "{label}文件约 {:.1} MB，超过 MiMo 的大小限制：MiMo 仅接受 Base64 内联数据，编码后不超过 50 MB（约合原文件 35 MB）。可在 MiMo 预设中开启“超限时压缩媒体画质”以降低体积，或先自行压缩该文件。",
+            size as f64 / (1024.0 * 1024.0)
+        ),
+    )
+}
+
+fn mimo_inline_part(mime: &str, bytes: &[u8]) -> Part {
+    Part::Media {
+        mime_type: mime.to_string(),
+        data_base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        file_uri: None,
+        audio_format: None,
+    }
+}
+
+/// The MiMo media part for an audio or video file: the file as-is when its container and size
+/// fit, otherwise converted and/or shrunk with ffmpeg (shrinking only when `shrink_media` is on).
+async fn mimo_media_part(
+    resolved: &ResolvedProfile,
+    path: &Path,
+    ext: &str,
+    kind: SourceKind,
+) -> LnaResult<Part> {
+    let limit = MIMO_RAW_MAX_BYTES;
+    let is_video = kind == SourceKind::Video;
+    let label = if is_video { "视频" } else { "音频" };
+    let e = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    let accepted_exts = if is_video {
+        MIMO_VIDEO_EXTS
+    } else {
+        MIMO_AUDIO_EXTS
+    };
+    let accepted = accepted_exts.contains(&e.as_str());
+    let size = std::fs::metadata(path)
+        .map_err(|err| LnaError::internal(err.to_string()))?
+        .len();
+
+    if accepted && size <= limit {
+        let bytes = std::fs::read(path).map_err(|err| LnaError::internal(err.to_string()))?;
+        return Ok(mimo_inline_part(mimo_mime_for_ext(&e), &bytes));
+    }
+
+    // Too big as-is, or an unsupported container: only ffmpeg can help, and only when the user
+    // has allowed re-encoding (for size) or the container must change.
+    if accepted && !resolved.shrink_media {
+        return Err(mimo_size_error(label, size));
+    }
+    if crate::ffmpeg::ffmpeg_path().is_none() {
+        return Err(if accepted {
+            LnaError::new(
+                ErrorCode::CapabilityMissing,
+                format!(
+                    "{label}文件超过 MiMo 的大小限制（约 35 MB），需要 ffmpeg 压缩。{}后重试。",
+                    crate::ffmpeg::FFMPEG_INSTALL_HINT
+                ),
+            )
+        } else {
+            LnaError::new(
+                ErrorCode::CapabilityMissing,
+                format!(
+                    "MiMo 不直接接受 .{e} 格式的{label}（仅支持 {}），需要 ffmpeg 转换。{}后重试。",
+                    accepted_exts.join("/"),
+                    crate::ffmpeg::FFMPEG_INSTALL_HINT
+                ),
+            )
+        });
+    }
+
+    let (out_mime, converted_to) = if is_video {
+        ("video/mp4", "mp4")
+    } else {
+        ("audio/mpeg", "mp3")
+    };
+    if !accepted {
+        let src = path.to_path_buf();
+        let converted = tokio::task::spawn_blocking(move || {
+            if is_video {
+                crate::ffmpeg::transcode_to_mp4(&src)
+            } else {
+                crate::ffmpeg::transcode_to_mp3(&src)
+            }
+        })
+        .await
+        .map_err(|e| LnaError::internal(e.to_string()))?
+        .map_err(|err| {
+            LnaError::new(
+                ErrorCode::SourceUnsupported,
+                format!("无法将 .{e} {label}转换为 {converted_to} 格式以供 MiMo 处理：{err}"),
+            )
+        })?;
+        if converted.len() as u64 <= limit {
+            return Ok(mimo_inline_part(out_mime, &converted));
+        }
+        if !resolved.shrink_media {
+            return Err(mimo_size_error(label, converted.len() as u64));
+        }
+    }
+
+    // Oversized: shrink from the original file with ffmpeg.
+    let src = path.to_path_buf();
+    let shrunk = tokio::task::spawn_blocking(move || {
+        if is_video {
+            crate::ffmpeg::shrink_video(&src, limit)
+        } else {
+            crate::ffmpeg::shrink_audio(&src, limit)
+        }
+    })
+    .await
+    .map_err(|e| LnaError::internal(e.to_string()))?
+    .map_err(|err| {
+        LnaError::new(
+            ErrorCode::SourceUnsupported,
+            format!("{label}压缩失败，无法满足 MiMo 大小限制：{err}"),
+        )
+    })?;
+    Ok(mimo_inline_part(out_mime, &shrunk))
 }
 
 /// The media part for an audio or video file as `resolved` accepts it: inline or uploaded
@@ -241,6 +370,11 @@ pub async fn media_part_for_file(
                     None,
                 ))
             }
+        }
+        ProtocolKind::ChatCompletion
+            if resolved.is_mimo() && matches!(kind, SourceKind::Audio | SourceKind::Video) =>
+        {
+            Ok((mimo_media_part(resolved, path, ext, kind).await?, None))
         }
         ProtocolKind::ChatCompletion if kind == SourceKind::Audio => {
             let e = ext.trim().trim_start_matches('.').to_ascii_lowercase();
@@ -338,7 +472,7 @@ pub async fn ingest_audio_video(
         tools: vec![],
         tool_mode: ToolMode::None,
         output: OutputMode::Text,
-        max_output_tokens: resolved.max_output_tokens.max(4096),
+        max_output_tokens: resolved.output_budget().max(4096),
         reasoning: ReasoningOptions::default(),
     };
 
@@ -411,7 +545,7 @@ pub async fn ingest_image(
                 tools: vec![],
                 tool_mode: ToolMode::None,
                 output: OutputMode::Text,
-                max_output_tokens: resolved.max_output_tokens.max(4096),
+                max_output_tokens: resolved.output_budget().max(4096),
                 reasoning: ReasoningOptions::default(),
             };
             if let Ok((txt, usage)) = llm
@@ -602,7 +736,7 @@ async fn ocr_pdf_batch(
         tools: vec![],
         tool_mode: ToolMode::None,
         output: OutputMode::Text,
-        max_output_tokens: resolved.max_output_tokens.max(4096),
+        max_output_tokens: resolved.output_budget().max(4096),
         reasoning: ReasoningOptions::default(),
     };
     match llm
@@ -773,7 +907,7 @@ pub async fn vision_inspect_images(
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: resolved.max_output_tokens.max(4096),
+            max_output_tokens: resolved.output_budget().max(4096),
             reasoning: ReasoningOptions::default(),
         };
 
@@ -809,4 +943,143 @@ pub async fn vision_inspect_images(
         out.push_str("未能通过本地 OCR 识别出文字；如需分析图表或复杂版面，请在“模型协议配置”中勾选一个支持“图文”的多模态模型。");
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn profile(preset: Option<&str>, shrink_media: bool) -> ResolvedProfile {
+        ResolvedProfile {
+            id: "p_media".into(),
+            display_name: "media".into(),
+            protocol: ProtocolKind::ChatCompletion,
+            base_url: "https://example.com/v1".into(),
+            model_id: "media-test".into(),
+            api_key: None,
+            show_thinking: false,
+            effort: None,
+            context_window: 32000,
+            max_output_tokens: 1024,
+            capabilities: lna_types::ModelCapabilities::default(),
+            extra_headers: BTreeMap::new(),
+            anthropic_version: "2023-06-01".into(),
+            preset: preset.map(str::to_string),
+            shrink_media,
+        }
+    }
+
+    fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("lna_media_test_{}_{}", std::process::id(), name));
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn mimo_detection_follows_preset() {
+        assert!(profile(Some("mimo"), false).is_mimo());
+        assert!(!profile(None, false).is_mimo());
+        assert!(!profile(Some("gemini"), false).is_mimo());
+    }
+
+    #[tokio::test]
+    async fn mimo_within_limit_passes_bytes_through_as_base64() {
+        let bytes = b"fake mp3 payload";
+        let path = temp_file("pass.mp3", bytes);
+        let part = mimo_media_part(
+            &profile(Some("mimo"), false),
+            &path,
+            "mp3",
+            SourceKind::Audio,
+        )
+        .await
+        .unwrap();
+        let _ = std::fs::remove_file(&path);
+        match part {
+            Part::Media {
+                mime_type,
+                data_base64,
+                file_uri,
+                audio_format,
+            } => {
+                assert_eq!(mime_type, "audio/mpeg");
+                assert_eq!(
+                    data_base64.as_deref(),
+                    Some(
+                        base64::engine::general_purpose::STANDARD
+                            .encode(bytes)
+                            .as_str()
+                    )
+                );
+                assert!(file_uri.is_none());
+                assert!(audio_format.is_none());
+            }
+            other => panic!("unexpected part: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mimo_video_mov_uses_quicktime_mime() {
+        let path = temp_file("pass.mov", b"mov bytes");
+        let part = mimo_media_part(
+            &profile(Some("mimo"), false),
+            &path,
+            ".MOV",
+            SourceKind::Video,
+        )
+        .await
+        .unwrap();
+        let _ = std::fs::remove_file(&path);
+        match part {
+            Part::Media { mime_type, .. } => assert_eq!(mime_type, "video/quicktime"),
+            other => panic!("unexpected part: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mimo_over_limit_without_shrink_reports_size_and_limit() {
+        // Sparse file just over the raw limit: nothing is read, so no real disk use.
+        let path =
+            std::env::temp_dir().join(format!("lna_media_test_{}_big.mp4", std::process::id()));
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(MIMO_RAW_MAX_BYTES + 1).unwrap();
+        drop(f);
+
+        let err = mimo_media_part(
+            &profile(Some("mimo"), false),
+            &path,
+            "mp4",
+            SourceKind::Video,
+        )
+        .await
+        .unwrap_err();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(err.code, ErrorCode::CapabilityMissing);
+        assert!(err.message.contains("35.0 MB"), "{}", err.message);
+        assert!(err.message.contains("50 MB"), "{}", err.message);
+        assert!(
+            err.message.contains("超限时压缩媒体画质"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn mimo_unsupported_container_without_ffmpeg_or_shrink_is_an_error() {
+        // Whether ffmpeg exists on this machine decides the message, not the outcome: either
+        // way a .mkv must not be sent to MiMo unconverted.
+        let path = temp_file("clip.mkv", b"not really mkv");
+        let res = mimo_media_part(
+            &profile(Some("mimo"), false),
+            &path,
+            "mkv",
+            SourceKind::Video,
+        )
+        .await;
+        let _ = std::fs::remove_file(&path);
+        assert!(res.is_err());
+    }
 }

@@ -141,6 +141,13 @@ final class AppState: ObservableObject {
     @Published var embeddingDownloadRunning: Bool = false
     @Published var embeddingDownloadProgress: Double = 0
     @Published var embeddingDownloadStatus: String = ""
+    /// ffmpeg download (`ffmpeg.install`), driven by the `ffmpeg` core events.
+    @Published var ffmpegDownloadRunning: Bool = false
+    @Published var ffmpegDownloadedBytes: Int = 0
+    @Published var ffmpegDownloadTotalBytes: Int? = nil
+    @Published var ffmpegDownloadError: String = ""
+    /// Bumped on every core `profile.updated` event (a profile's capability probe or test finished).
+    @Published var profilesRevision: Int = 0
 
     var isEnglish: Bool { prefs.isEnglish }
     func t(_ key: String) -> String { L10n.t(key, en: isEnglish) }
@@ -197,6 +204,23 @@ final class AppState: ObservableObject {
                                 self?.embeddingDownloadStatus = L10n.t("app.download_cancelled", en: en)
                             }
                         }
+                    } else if ev.event == "ffmpeg.download_progress" {
+                        self?.ffmpegDownloadRunning = true
+                        self?.ffmpegDownloadedBytes = (ev.data["downloaded"] as? Int) ?? 0
+                        self?.ffmpegDownloadTotalBytes = ev.data["total"] as? Int
+                    } else if ev.event == "ffmpeg.download_done" {
+                        self?.ffmpegDownloadRunning = false
+                        if ev.data["ok"] as? Bool ?? false {
+                            self?.ffmpegDownloadError = ""
+                        } else {
+                            let en = self?.isEnglish ?? true
+                            let err = ev.data["error"] as? [String: Any]
+                            let msg = err?["message"] as? String ?? ""
+                            self?.ffmpegDownloadError = msg.isEmpty ? L10n.t("app.download_failed", en: en) : msg
+                        }
+                    } else if ev.event == "profile.updated" {
+                        // the core finished probing a profile's inputs (or a test): views re-read their capability tags
+                        self?.profilesRevision += 1
                     } else if ev.event == "studio.thought" {
                         if let aid = ev.data["artifact_id"] as? String {
                             let kind = ev.data["kind"] as? String ?? "stage"

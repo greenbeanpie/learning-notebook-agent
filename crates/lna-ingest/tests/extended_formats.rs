@@ -429,6 +429,8 @@ async fn audio_video_toggle_and_multimodal_modality_routing_work_end_to_end() {
             supports_video: Some(false),
             activate: true,
             max_parallel: None,
+            preset: None,
+            shrink_media: None,
         },
     )
     .unwrap();
@@ -455,6 +457,8 @@ async fn audio_video_toggle_and_multimodal_modality_routing_work_end_to_end() {
             supports_video: Some(true),
             activate: false,
             max_parallel: None,
+            preset: None,
+            shrink_media: None,
         },
     )
     .unwrap();
@@ -590,6 +594,8 @@ async fn scanned_pdf_triggers_vision_ocr_with_page_numbers() {
             supports_video: Some(false),
             activate: true,
             max_parallel: None,
+            preset: None,
+            shrink_media: None,
         },
     )
     .unwrap();
@@ -640,6 +646,8 @@ fn explicit_per_modality_profile_assignment_overrides_active_chat() {
             supports_video: Some(false),
             activate: true,
             max_parallel: None,
+            preset: None,
+            shrink_media: None,
         },
     )
     .unwrap();
@@ -665,6 +673,8 @@ fn explicit_per_modality_profile_assignment_overrides_active_chat() {
             supports_video: Some(false),
             activate: false,
             max_parallel: None,
+            preset: None,
+            shrink_media: None,
         },
     )
     .unwrap();
@@ -690,6 +700,8 @@ fn explicit_per_modality_profile_assignment_overrides_active_chat() {
             supports_video: Some(true),
             activate: false,
             max_parallel: None,
+            preset: None,
+            shrink_media: None,
         },
     )
     .unwrap();

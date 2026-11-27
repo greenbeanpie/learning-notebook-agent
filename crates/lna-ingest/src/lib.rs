@@ -2,6 +2,8 @@ pub mod ai_indexer;
 pub mod attachments;
 pub mod chunker;
 pub mod context_files;
+pub mod ffmpeg;
+pub mod ffmpeg_install;
 pub mod formats;
 pub mod media;
 pub mod office;

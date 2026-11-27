@@ -28,6 +28,21 @@ pub(crate) fn call_core(core: &Arc<CoreRuntime>, method: &str, params: Value) ->
     Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
 }
 
+/// A plain `http://` URL to anything but this machine.
+fn is_plaintext_remote(url: &str) -> bool {
+    let Some(rest) = url.trim().strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("")
+    } else {
+        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
+    }
+    .to_ascii_lowercase();
+    !(host == "localhost" || host == "::1" || host.starts_with("127."))
+}
+
 fn friendly_err(en: bool, err: (String, String)) -> String {
     // a model refused for missing tool calling / structured output says exactly what it lacks
     if err.0 == "CAPABILITY_MISSING" && !err.1.is_empty() {
@@ -40,6 +55,34 @@ fn friendly_err(en: bool, err: (String, String)) -> String {
     } else {
         tr(en, "studio.failed").to_string()
     }
+}
+
+/// "Detected inputs: image ✓ / audio ✗ / video ✗"
+fn detected_line(en: bool, vision: bool, audio: bool, video: bool) -> String {
+    let mark = |ok: bool| if ok { "✓" } else { "✗" };
+    trf(en, "model.detected_inputs", &[&mark(vision), &mark(audio), &mark(video)])
+}
+
+/// The read-only detected-inputs line for a stored profile (`None` for a new one). The core
+/// writes the detection result into the profile's capabilities once it has probed it.
+fn detected_inputs_text(en: bool, profile: Option<&Value>) -> String {
+    let caps = profile.and_then(|p| p.get("capabilities"));
+    let probed = caps.and_then(|c| c.get("probed_at")).filter(|v| !v.is_null()).is_some();
+    if !probed {
+        return tr(en, "model.detected_not_yet").to_string();
+    }
+    let flag = |k: &str| caps.and_then(|c| c.get(k)).and_then(Value::as_bool).unwrap_or(false);
+    detected_line(en, flag("supports_vision"), flag("supports_audio"), flag("supports_video"))
+}
+
+/// A token limit shown in its entry: empty when unlimited (stored as 0 or missing).
+fn limit_text(v: Option<&Value>) -> String {
+    v.and_then(Value::as_i64).filter(|n| *n > 0).map(|n| n.to_string()).unwrap_or_default()
+}
+
+/// A token limit read from its entry: empty, invalid or negative means 0 = unlimited.
+fn parse_limit(text: &str) -> i64 {
+    text.trim().parse::<i64>().unwrap_or(0).max(0)
 }
 
 /// The user-facing name of a backend progress stage code.
@@ -98,6 +141,10 @@ struct UiState {
     live: RefCell<Option<LiveView>>,
     /// Every streamed thought delta received for the open generating artifact; survives re-fetches.
     thought_streams: RefCell<StreamLog>,
+    /// Receives the `ffmpeg.*` core events (set by the AI model settings page).
+    ffmpeg_hook: RefCell<Option<Rc<dyn Fn(&str, &Value)>>>,
+    /// Receives the `profile.updated` core event (set while the AI model settings page is open).
+    profile_hook: RefCell<Option<Rc<dyn Fn(&str, &Value)>>>,
 }
 
 impl UiState {
@@ -440,6 +487,8 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
         draft_owner: RefCell::new(String::new()),
         live: RefCell::new(None),
         thought_streams: RefCell::new(StreamLog::default()),
+        ffmpeg_hook: RefCell::new(None),
+        profile_hook: RefCell::new(None),
     });
     state.apply_preferences();
     start_event_pump(&state);
@@ -1589,7 +1638,9 @@ fn start_event_pump(st: &Rc<UiState>) {
     std::thread::spawn(move || loop {
         match sub.blocking_recv() {
             Ok(ev) => {
-                if ev.event.starts_with("studio.") && tx.send(ev).is_err() {
+                if (ev.event.starts_with("studio.") || ev.event.starts_with("ffmpeg.") || ev.event == "profile.updated")
+                    && tx.send(ev).is_err()
+                {
                     break;
                 }
             }
@@ -1604,9 +1655,23 @@ fn start_event_pump(st: &Rc<UiState>) {
     let st = st.clone();
     glib::timeout_add_local(Duration::from_millis(50), move || {
         let mut finished: Option<String> = None;
+        let ffmpeg_hook = st.ffmpeg_hook.borrow().clone();
+        let profile_hook = st.profile_hook.borrow().clone();
         {
             let mut guard = st.live.borrow_mut();
             while let Ok(ev) = rx.try_recv() {
+                if ev.event.starts_with("ffmpeg.") {
+                    if let Some(hook) = &ffmpeg_hook {
+                        hook(ev.event.as_str(), &ev.data);
+                    }
+                    continue;
+                }
+                if ev.event == "profile.updated" {
+                    if let Some(hook) = &profile_hook {
+                        hook(ev.event.as_str(), &ev.data);
+                    }
+                    continue;
+                }
                 let Some(live) = guard.as_mut() else { continue };
                 let d = &ev.data;
                 if d.get("artifact_id").and_then(Value::as_str) != Some(live.artifact_id.as_str()) {
@@ -2745,13 +2810,11 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     active_row.append(&active_lbl);
     active_row.append(&active_chat_sw);
 
-    let mod_row = GtkBox::new(Orientation::Horizontal, 14);
-    let vision_chk = CheckButton::with_label(tr(en, "model.vision_images_pdf"));
-    let audio_chk = CheckButton::with_label(tr(en, "model.audio"));
-    let video_chk = CheckButton::with_label(tr(en, "model.video"));
-    mod_row.append(&vision_chk);
-    mod_row.append(&audio_chk);
-    mod_row.append(&video_chk);
+    // read-only: the core detects image/audio/video support by probing the profile
+    let detected_lbl = Label::new(None);
+    detected_lbl.set_xalign(0.0);
+    detected_lbl.set_wrap(true);
+    detected_lbl.add_css_class("lna-muted");
 
     // Advanced Options Expander
     let adv_exp = Expander::new(Some(tr(en, "model.advanced_options")));
@@ -2768,12 +2831,31 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let effort_ids = ["", "low", "medium", "high"];
     let effort_dd = DropDown::from_strings(&[tr(en, "tts.default_voice"), "low", "medium", "high"]);
     let ctx_entry = Entry::builder().text("32000").placeholder_text(tr(en, "ui.context_window")).build();
-    let out_entry = Entry::builder().text("8000").placeholder_text(tr(en, "ui.max_output_tokens")).build();
-    let par_entry = Entry::builder().text("4").placeholder_text(tr(en, "model.max_parallel")).tooltip_text(tr(en, "model.max_parallel_tip")).build();
+    // empty or 0 = unlimited
+    let out_entry = Entry::builder().placeholder_text(tr(en, "model.unlimited_hint")).build();
+    let par_entry = Entry::builder().placeholder_text(tr(en, "model.unlimited_hint")).tooltip_text(tr(en, "model.max_parallel_tip")).build();
+    let out_hint = Label::new(Some(tr(en, "model.unlimited_hint")));
+    out_hint.set_xalign(0.0);
+    out_hint.add_css_class("dim-label");
+    let par_hint = Label::new(Some(tr(en, "model.unlimited_hint")));
+    par_hint.set_xalign(0.0);
+    par_hint.add_css_class("dim-label");
     let price_in_entry = Entry::builder().placeholder_text(tr(en, "ui.input_price")).build();
     let price_out_entry = Entry::builder().placeholder_text(tr(en, "ui.output_price")).build();
 
     let extra_headers_rows: Rc<RefCell<Vec<(Entry, Entry)>>> = Rc::new(RefCell::new(Vec::new()));
+    // "the form changed": re-evaluates whether Apply has anything to apply. Bound further
+    // down, once every field exists.
+    let form_changed_hook: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let notify_changed: Rc<dyn Fn()> = {
+        let hook = form_changed_hook.clone();
+        Rc::new(move || {
+            let f = hook.borrow().clone();
+            if let Some(f) = f {
+                f();
+            }
+        })
+    };
     let headers_list = GtkBox::new(Orientation::Vertical, 6);
     let headers_hdr = GtkBox::new(Orientation::Horizontal, 8);
     let headers_lbl = Label::new(Some(tr(en, "model.extra_headers")));
@@ -2783,6 +2865,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     add_hdr_btn.add_css_class("lna-pill-btn");
     let rows_add = extra_headers_rows.clone();
     let list_add = headers_list.clone();
+    let nc_add = notify_changed.clone();
     add_hdr_btn.connect_clicked(move |_| {
         let row_box = GtkBox::new(Orientation::Horizontal, 6);
         let k_ent = Entry::builder().placeholder_text(tr(en, "model.header_name")).hexpand(true).build();
@@ -2794,12 +2877,18 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         row_box.append(&del_btn);
         list_add.append(&row_box);
         rows_add.borrow_mut().push((k_ent.clone(), v_ent.clone()));
+        for ent in [&k_ent, &v_ent] {
+            let nc = nc_add.clone();
+            ent.connect_changed(move |_| nc());
+        }
         let rows_del = rows_add.clone();
         let list_del = list_add.clone();
         let row_del = row_box.clone();
+        let nc = nc_add.clone();
         del_btn.connect_clicked(move |_| {
             rows_del.borrow_mut().retain(|(k, _)| k != &k_ent);
             list_del.remove(&row_del);
+            nc();
         });
     });
     headers_hdr.append(&headers_lbl);
@@ -2811,8 +2900,10 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     adv_box.append(&Label::new(Some(tr(en, "model.context_window_max_output_tokens"))));
     adv_box.append(&ctx_entry);
     adv_box.append(&out_entry);
+    adv_box.append(&out_hint);
     adv_box.append(&Label::new(Some(tr(en, "model.max_parallel"))));
     adv_box.append(&par_entry);
+    adv_box.append(&par_hint);
     adv_box.append(&price_in_entry);
     adv_box.append(&price_out_entry);
     adv_box.append(&headers_hdr);
@@ -2889,6 +2980,195 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     }
     let preset_label_refs: Vec<&str> = preset_labels.iter().map(String::as_str).collect();
     let preset_dd = DropDown::from_strings(&preset_label_refs);
+    // preset id per dropdown slot; slot 0 is "none" ("")
+    let preset_ids: Rc<Vec<String>> = Rc::new(
+        std::iter::once(String::new())
+            .chain(presets_val.iter().map(|pr| pr.get("id").and_then(Value::as_str).unwrap_or("").to_string()))
+            .collect(),
+    );
+    // set_selected fires the preset handler, which fills provider defaults; this suppresses it
+    // while a stored profile is loaded into the form
+    let preset_quiet: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let shrink_sw = Switch::new();
+    let shrink_row = GtkBox::new(Orientation::Horizontal, 8);
+    let shrink_lbl = Label::new(Some(tr(en, "model.shrink_media")));
+    shrink_lbl.set_hexpand(true);
+    shrink_lbl.set_xalign(0.0);
+    shrink_row.append(&shrink_lbl);
+    shrink_row.append(&shrink_sw);
+    let shrink_hint = Label::new(Some(tr(en, "model.shrink_media_hint")));
+    shrink_hint.set_wrap(true);
+    shrink_hint.set_xalign(0.0);
+    shrink_hint.add_css_class("dim-label");
+    let shrink_box = GtkBox::new(Orientation::Vertical, 4);
+    shrink_box.append(&shrink_row);
+    shrink_box.append(&shrink_hint);
+    shrink_box.set_visible(false);
+
+    // ffmpeg row under the shrink switch: the app-managed copy, its status, download and remove
+    let ffmpeg_status_lbl = Label::new(None);
+    ffmpeg_status_lbl.set_xalign(0.0);
+    ffmpeg_status_lbl.set_wrap(true);
+    let ffmpeg_dl_btn = Button::with_label(tr(en, "ffmpeg.download"));
+    ffmpeg_dl_btn.add_css_class("lna-pill-btn");
+    let ffmpeg_rm_btn = Button::with_label(tr(en, "ffmpeg.remove"));
+    ffmpeg_rm_btn.add_css_class("lna-pill-btn");
+    let ffmpeg_btns = GtkBox::new(Orientation::Horizontal, 8);
+    ffmpeg_btns.append(&ffmpeg_dl_btn);
+    ffmpeg_btns.append(&ffmpeg_rm_btn);
+    let ffmpeg_msg_lbl = Label::new(None);
+    ffmpeg_msg_lbl.set_xalign(0.0);
+    ffmpeg_msg_lbl.set_wrap(true);
+    ffmpeg_msg_lbl.add_css_class("lna-muted");
+    shrink_box.append(&ffmpeg_status_lbl);
+    shrink_box.append(&ffmpeg_btns);
+    shrink_box.append(&ffmpeg_msg_lbl);
+
+    // true while our own ffmpeg.install runs; it disables the buttons and enables progress text
+    let ffmpeg_busy: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let ffmpeg_refresh: Rc<dyn Fn()> = {
+        let core = st.core.clone();
+        let busy = ffmpeg_busy.clone();
+        let status_lbl = ffmpeg_status_lbl.clone();
+        let dl_btn = ffmpeg_dl_btn.clone();
+        let rm_btn = ffmpeg_rm_btn.clone();
+        Rc::new(move || match call_core(&core, "ffmpeg.status", json!({})) {
+            Ok(s) => {
+                let installed = s.get("installed").and_then(Value::as_bool).unwrap_or(false);
+                let from_app = s.get("source").and_then(Value::as_str) == Some("app");
+                let supported = s.get("supported").and_then(Value::as_bool).unwrap_or(false);
+                let is_busy = busy.get();
+                let mut text = if !installed {
+                    tr(en, "ffmpeg.not_installed").to_string()
+                } else if from_app {
+                    tr(en, "ffmpeg.installed_app").to_string()
+                } else {
+                    tr(en, "ffmpeg.installed_system").to_string()
+                };
+                if let Some(v) = s.get("version").and_then(Value::as_str).filter(|v| !v.is_empty()) {
+                    text = format!("{text} · {v}");
+                }
+                if !supported {
+                    text.push('\n');
+                    text.push_str(tr(en, "ffmpeg.unsupported"));
+                }
+                status_lbl.set_text(&text);
+                dl_btn.set_sensitive(!is_busy && !installed && supported);
+                rm_btn.set_visible(installed && from_app);
+                rm_btn.set_sensitive(!is_busy);
+            }
+            Err(e) => status_lbl.set_text(&friendly_err(en, e)),
+        })
+    };
+    // download progress arrives as core events on the "ffmpeg" topic (see start_event_pump)
+    {
+        let busy = ffmpeg_busy.clone();
+        let msg_lbl = ffmpeg_msg_lbl.clone();
+        let hook: Rc<dyn Fn(&str, &Value)> = Rc::new(move |event: &str, data: &Value| {
+            if event != "ffmpeg.download_progress" || !busy.get() {
+                return;
+            }
+            const MIB: f64 = 1024.0 * 1024.0;
+            let done = data.get("downloaded").and_then(Value::as_f64).unwrap_or(0.0) / MIB;
+            let line = match data.get("total").and_then(Value::as_f64).filter(|t| *t > 0.0) {
+                Some(total) => trf(en, "ffmpeg.downloading", &[&format!("{done:.1}"), &format!("{:.1}", total / MIB)]),
+                None => trf(en, "ffmpeg.downloading_unknown", &[&format!("{done:.1}")]),
+            };
+            msg_lbl.set_text(&line);
+        });
+        *st.ffmpeg_hook.borrow_mut() = Some(hook);
+    }
+    // "profile.updated" comes after the core's background capability probe and after profile.test.
+    // Only the cached profile list and the read-only detected-inputs label are refreshed here:
+    // populate_profile_form is deliberately not called, so unsaved edits, saved_form and the
+    // dirty/Save state are left alone.
+    {
+        let core = st.core.clone();
+        let profiles_state = profiles_state.clone();
+        let current_profile_id = current_profile_id.clone();
+        let detected_lbl = detected_lbl.clone();
+        let hook: Rc<dyn Fn(&str, &Value)> = Rc::new(move |_event: &str, _data: &Value| {
+            let fresh = call_core(&core, "profile.list", json!({}))
+                .ok()
+                .and_then(|v| v.get("profiles").and_then(Value::as_array).cloned());
+            let Some(fresh) = fresh else { return };
+            if let Ok(mut cached) = profiles_state.try_borrow_mut() {
+                *cached = fresh;
+            }
+            let Some(pid) = current_profile_id.borrow().clone() else { return };
+            let Ok(cached) = profiles_state.try_borrow() else { return };
+            if let Some(p) = cached.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(pid.as_str())) {
+                detected_lbl.set_text(&detected_inputs_text(en, Some(p)));
+            }
+        });
+        *st.profile_hook.borrow_mut() = Some(hook);
+    }
+    {
+        let core = st.core.clone();
+        let busy = ffmpeg_busy.clone();
+        let msg_lbl = ffmpeg_msg_lbl.clone();
+        let refresh = ffmpeg_refresh.clone();
+        ffmpeg_dl_btn.connect_clicked(move |_| {
+            if busy.get() {
+                return;
+            }
+            busy.set(true);
+            msg_lbl.set_text(&trf(en, "ffmpeg.downloading_unknown", &[&"0.0"]));
+            refresh();
+            // ffmpeg.install blocks until the download ends, so it runs off the GTK thread
+            let (tx, rx) = std::sync::mpsc::channel();
+            let core_w = core.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(call_core(&core_w, "ffmpeg.install", json!({})));
+            });
+            let busy_done = busy.clone();
+            let msg_done = msg_lbl.clone();
+            let refresh_done = refresh.clone();
+            glib::timeout_add_local(Duration::from_millis(250), move || {
+                let res = match rx.try_recv() {
+                    Ok(r) => r,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Err((String::new(), String::new())),
+                };
+                busy_done.set(false);
+                match res {
+                    Ok(_) => msg_done.set_text(tr(en, "ffmpeg.download_ok")),
+                    Err(e) => msg_done.set_text(&trf(en, "ffmpeg.download_failed", &[&friendly_err(en, e)])),
+                }
+                refresh_done();
+                glib::ControlFlow::Break
+            });
+        });
+    }
+    {
+        let core = st.core.clone();
+        let busy = ffmpeg_busy.clone();
+        let msg_lbl = ffmpeg_msg_lbl.clone();
+        let refresh = ffmpeg_refresh.clone();
+        ffmpeg_rm_btn.connect_clicked(move |_| {
+            if busy.get() {
+                return;
+            }
+            match call_core(&core, "ffmpeg.remove", json!({})) {
+                Ok(_) => msg_lbl.set_text(tr(en, "ffmpeg.removed")),
+                Err(e) => msg_lbl.set_text(&friendly_err(en, e)),
+            }
+            refresh();
+        });
+    }
+    ffmpeg_refresh();
+    // the selected preset id ("" when none)
+    let selected_preset: Rc<dyn Fn() -> String> = {
+        let ids = preset_ids.clone();
+        let dd = preset_dd.clone();
+        Rc::new(move || ids.get(dd.selected() as usize).cloned().unwrap_or_default())
+    };
+    // the shrink option only exists for MiMo, which is the only preset that needs it
+    let sync_shrink: Rc<dyn Fn()> = {
+        let selected_preset = selected_preset.clone();
+        let shrink_box = shrink_box.clone();
+        Rc::new(move || shrink_box.set_visible(selected_preset() == "mimo"))
+    };
 
     let refresh_modality_dropdowns = {
         let profiles_state = profiles_state.clone();
@@ -3011,7 +3291,103 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         });
     }
 
+    // What the form held when it was last loaded or applied; Apply is enabled only when the
+    // form differs from it.
+    let saved_form: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let form_snapshot: Rc<dyn Fn() -> String> = {
+        let proto_dd = proto_dd.clone();
+        let url_entry = url_entry.clone();
+        let model_entry = model_entry.clone();
+        let key_entry = key_entry.clone();
+        let insecure_http_sw = insecure_http_sw.clone();
+        let active_chat_sw = active_chat_sw.clone();
+        let thinking_sw = thinking_sw.clone();
+        let effort_dd = effort_dd.clone();
+        let selected_preset = selected_preset.clone();
+        let shrink_sw = shrink_sw.clone();
+        let entries = [
+            ctx_entry.clone(),
+            out_entry.clone(),
+            par_entry.clone(),
+            price_in_entry.clone(),
+            price_out_entry.clone(),
+        ];
+        let rows = extra_headers_rows.clone();
+        Rc::new(move || {
+            let mut headers: Vec<String> = rows
+                .borrow()
+                .iter()
+                .filter_map(|(k, v)| {
+                    let k = k.text().trim().to_string();
+                    (!k.is_empty()).then(|| format!("{k}={}", v.text().trim()))
+                })
+                .collect();
+            headers.sort();
+            let mut parts = vec![
+                proto_dd.selected().to_string(),
+                url_entry.text().trim().to_string(),
+                model_entry.text().trim().to_string(),
+                if key_entry.text().is_empty() { String::new() } else { "key".into() },
+                insecure_http_sw.is_active().to_string(),
+                active_chat_sw.is_active().to_string(),
+                thinking_sw.is_active().to_string(),
+                effort_dd.selected().to_string(),
+                selected_preset(),
+                // what would be sent: shrink only counts for MiMo
+                (selected_preset() == "mimo" && shrink_sw.is_active()).to_string(),
+            ];
+            parts.extend(entries.iter().map(|e| e.text().trim().to_string()));
+            parts.push(headers.join("\n"));
+            parts.join("\u{1f}")
+        })
+    };
+    let form_dirty: Rc<dyn Fn() -> bool> = {
+        let current_profile_id = current_profile_id.clone();
+        let saved_form = saved_form.clone();
+        let form_snapshot = form_snapshot.clone();
+        Rc::new(move || {
+            current_profile_id.borrow().is_none() || form_snapshot() != *saved_form.borrow()
+        })
+    };
+    let sync_model_btns: Rc<dyn Fn()> = {
+        let form_dirty = form_dirty.clone();
+        let current_profile_id = current_profile_id.clone();
+        let current_keychain_ref = current_keychain_ref.clone();
+        let url_entry = url_entry.clone();
+        let model_entry = model_entry.clone();
+        let save_model_btn = save_model_btn.clone();
+        let test_model_btn = test_model_btn.clone();
+        let clear_key_btn = clear_key_btn.clone();
+        let del_prof_btn = del_prof_btn.clone();
+        Rc::new(move || {
+            let complete = !url_entry.text().trim().is_empty() && !model_entry.text().trim().is_empty();
+            let has_profile = current_profile_id.borrow().is_some();
+            save_model_btn.set_sensitive(complete && form_dirty());
+            test_model_btn.set_sensitive(has_profile);
+            clear_key_btn.set_sensitive(has_profile && !current_keychain_ref.borrow().is_empty());
+            del_prof_btn.set_sensitive(has_profile);
+        })
+    };
+    *form_changed_hook.borrow_mut() = Some(sync_model_btns.clone());
+    let mark_form_saved: Rc<dyn Fn()> = {
+        let saved_form = saved_form.clone();
+        let form_snapshot = form_snapshot.clone();
+        let sync = sync_model_btns.clone();
+        Rc::new(move || {
+            let snap = form_snapshot();
+            *saved_form.borrow_mut() = snap;
+            sync();
+        })
+    };
+
     let populate_profile_form = {
+        let mark_form_saved = mark_form_saved.clone();
+        let nc_p = notify_changed.clone();
+        let preset_dd_p = preset_dd.clone();
+        let preset_ids_p = preset_ids.clone();
+        let preset_quiet_p = preset_quiet.clone();
+        let sync_shrink_p = sync_shrink.clone();
+        let shrink_sw_p = shrink_sw.clone();
         let current_profile_id = current_profile_id.clone();
         let current_keychain_ref = current_keychain_ref.clone();
         let proto_dd = proto_dd.clone();
@@ -3020,9 +3396,6 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let key_entry = key_entry.clone();
         let insecure_http_sw = insecure_http_sw.clone();
         let active_chat_sw = active_chat_sw.clone();
-        let vision_chk = vision_chk.clone();
-        let audio_chk = audio_chk.clone();
-        let video_chk = video_chk.clone();
         let thinking_sw = thinking_sw.clone();
         let effort_dd = effort_dd.clone();
         let ctx_entry = ctx_entry.clone();
@@ -3033,6 +3406,8 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let rows_p = extra_headers_rows.clone();
         let list_p = headers_list.clone();
         let model_status_lbl = model_status_lbl.clone();
+        let detected_lbl_p = detected_lbl.clone();
+        let ffmpeg_refresh_p = ffmpeg_refresh.clone();
         move |p_opt: Option<&Value>| {
             rows_p.borrow_mut().clear();
             clear_box(&list_p);
@@ -3042,19 +3417,27 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 *current_keychain_ref.borrow_mut() = p.get("keychain_ref").and_then(Value::as_str).unwrap_or("").to_string();
                 let pr = p.get("protocol").and_then(Value::as_str).unwrap_or("chat_completion");
                 proto_dd.set_selected(proto_ids.iter().position(|&x| x == pr).unwrap_or(0) as u32);
+                let stored_preset = p.get("preset").and_then(Value::as_str).unwrap_or("");
+                preset_quiet_p.set(true);
+                preset_dd_p.set_selected(preset_ids_p.iter().position(|x| x == stored_preset).unwrap_or(0) as u32);
+                preset_quiet_p.set(false);
+                sync_shrink_p();
+                shrink_sw_p.set_active(p.get("shrink_media").and_then(Value::as_bool).unwrap_or(false));
                 url_entry.set_text(p.get("base_url").and_then(Value::as_str).unwrap_or(""));
                 model_entry.set_text(p.get("model_id").and_then(Value::as_str).unwrap_or(""));
-                insecure_http_sw.set_active(p.get("allow_insecure_http").and_then(Value::as_bool).unwrap_or(false));
+                // the core does not store this flag; a saved plaintext remote URL was confirmed back then
+                let saved_url = p.get("base_url").and_then(Value::as_str).unwrap_or("");
+                insecure_http_sw.set_active(
+                    p.get("allow_insecure_http").and_then(Value::as_bool).unwrap_or(false)
+                        || is_plaintext_remote(saved_url),
+                );
                 active_chat_sw.set_active(p.get("is_active").and_then(Value::as_bool).unwrap_or(false));
-                vision_chk.set_active(p.pointer("/capabilities/supports_vision").and_then(Value::as_bool).unwrap_or(false));
-                audio_chk.set_active(p.pointer("/capabilities/supports_audio").and_then(Value::as_bool).unwrap_or(false));
-                video_chk.set_active(p.pointer("/capabilities/supports_video").and_then(Value::as_bool).unwrap_or(false));
                 thinking_sw.set_active(p.get("show_thinking").and_then(Value::as_bool).unwrap_or(true));
                 let eff = p.get("effort").and_then(Value::as_str).unwrap_or("");
                 effort_dd.set_selected(effort_ids.iter().position(|&x| x == eff).unwrap_or(0) as u32);
                 ctx_entry.set_text(&p.get("context_window").and_then(Value::as_i64).unwrap_or(32000).to_string());
-                out_entry.set_text(&p.get("max_output_tokens").and_then(Value::as_i64).unwrap_or(8000).to_string());
-                par_entry.set_text(&p.get("max_parallel").and_then(Value::as_i64).unwrap_or(4).to_string());
+                out_entry.set_text(&limit_text(p.get("max_output_tokens")));
+                par_entry.set_text(&limit_text(p.get("max_parallel")));
                 price_in_entry.set_text(&p.get("input_price_per_m").and_then(Value::as_f64).map(|x| x.to_string()).unwrap_or_default());
                 price_out_entry.set_text(&p.get("output_price_per_m").and_then(Value::as_f64).map(|x| x.to_string()).unwrap_or_default());
                 if let Some(hdrs) = p.get("extra_headers").and_then(Value::as_object) {
@@ -3069,12 +3452,18 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                         row_box.append(&del_btn);
                         list_p.append(&row_box);
                         rows_p.borrow_mut().push((k_ent.clone(), v_ent.clone()));
+                        for ent in [&k_ent, &v_ent] {
+                            let nc = nc_p.clone();
+                            ent.connect_changed(move |_| nc());
+                        }
                         let rows_del = rows_p.clone();
                         let list_del = list_p.clone();
                         let row_del = row_box.clone();
+                        let nc = nc_p.clone();
                         del_btn.connect_clicked(move |_| {
                             rows_del.borrow_mut().retain(|(k, _)| k != &k_ent);
                             list_del.remove(&row_del);
+                            nc();
                         });
                     }
                 }
@@ -3088,24 +3477,42 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                 *current_profile_id.borrow_mut() = None;
                 *current_keychain_ref.borrow_mut() = String::new();
                 proto_dd.set_selected(0);
+                preset_quiet_p.set(true);
+                preset_dd_p.set_selected(0);
+                preset_quiet_p.set(false);
+                sync_shrink_p();
+                shrink_sw_p.set_active(false);
                 url_entry.set_text("");
                 model_entry.set_text("");
                 insecure_http_sw.set_active(false);
                 active_chat_sw.set_active(false);
-                vision_chk.set_active(false);
-                audio_chk.set_active(false);
-                video_chk.set_active(false);
                 thinking_sw.set_active(true);
                 effort_dd.set_selected(0);
                 ctx_entry.set_text("32000");
-                out_entry.set_text("8000");
-                par_entry.set_text("4");
+                out_entry.set_text("");
+                par_entry.set_text("");
                 price_in_entry.set_text("");
                 price_out_entry.set_text("");
                 model_status_lbl.set_text(tr(en, "model.editing_new_profile_choose_a"));
             }
+            detected_lbl_p.set_text(&detected_inputs_text(en, p_opt));
+            ffmpeg_refresh_p();
+            mark_form_saved();
         }
     };
+    // every edit re-evaluates whether there is something to apply
+    for e in [&url_entry, &model_entry, &key_entry, &ctx_entry, &out_entry, &par_entry, &price_in_entry, &price_out_entry] {
+        let s = sync_model_btns.clone();
+        e.connect_changed(move |_| s());
+    }
+    for sw in [&insecure_http_sw, &active_chat_sw, &thinking_sw, &shrink_sw] {
+        let s = sync_model_btns.clone();
+        sw.connect_active_notify(move |_| s());
+    }
+    for dd in [&proto_dd, &effort_dd] {
+        let s = sync_model_btns.clone();
+        dd.connect_selected_notify(move |_| s());
+    }
 
     let reload_profile_dropdown = {
         let profiles_state = profiles_state.clone();
@@ -3183,11 +3590,34 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let core = st.core.clone();
         let current_profile_id = current_profile_id.clone();
         let reload = reload_profile_dropdown.clone();
-        del_prof_btn.connect_clicked(move |_| {
+        let model_status_lbl = model_status_lbl.clone();
+        // a second click within a few seconds confirms the delete
+        let armed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        del_prof_btn.connect_clicked(move |btn| {
             let pid = current_profile_id.borrow().clone();
-            if let Some(id) = pid {
-                let _ = call_core(&core, "profile.delete", json!({ "profile_id": id }));
-                reload(None);
+            let Some(id) = pid else { return };
+            if armed.borrow().as_deref() != Some(id.as_str()) {
+                *armed.borrow_mut() = Some(id.clone());
+                btn.set_label(tr(en, "model.confirm_delete"));
+                let armed2 = armed.clone();
+                let btn2 = btn.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
+                    let still = armed2.borrow().as_deref() == Some(id.as_str());
+                    if still {
+                        *armed2.borrow_mut() = None;
+                        btn2.set_label(tr(en, "studio.delete"));
+                    }
+                });
+                return;
+            }
+            *armed.borrow_mut() = None;
+            btn.set_label(tr(en, "studio.delete"));
+            match call_core(&core, "profile.delete", json!({ "profile_id": id })) {
+                Ok(_) => {
+                    reload(None);
+                    model_status_lbl.set_text(tr(en, "model.profile_deleted"));
+                }
+                Err(e) => model_status_lbl.set_text(&friendly_err(en, e)),
             }
         });
     }
@@ -3198,14 +3628,21 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let model_p = model_entry.clone();
         let ctx_p = ctx_entry.clone();
         let out_p = out_entry.clone();
-        let v_p = vision_chk.clone();
-        let a_p = audio_chk.clone();
-        let vid_p = video_chk.clone();
         let rows_p = extra_headers_rows.clone();
         let list_p = headers_list.clone();
+        let nc_pr = notify_changed.clone();
+        let quiet = preset_quiet.clone();
+        let sync_shrink = sync_shrink.clone();
         preset_dd.connect_selected_notify(move |dd| {
+            // a stored profile is being loaded: its values are already in the form
+            if quiet.get() {
+                return;
+            }
+            // the chosen preset stays selected; editing any field afterwards does not clear it
+            sync_shrink();
             let idx = dd.selected() as usize;
             if idx == 0 {
+                nc_pr();
                 return;
             }
             let Some(pr) = presets_val.get(idx - 1) else {
@@ -3223,12 +3660,9 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
             if let Some(cw) = pr.get("context_window").and_then(Value::as_i64) {
                 ctx_p.set_text(&cw.to_string());
             }
-            if let Some(mo) = pr.get("max_output_tokens").and_then(Value::as_i64) {
-                out_p.set_text(&mo.to_string());
+            if pr.get("max_output_tokens").is_some() {
+                out_p.set_text(&limit_text(pr.get("max_output_tokens")));
             }
-            v_p.set_active(pr.get("supports_vision").and_then(Value::as_bool).unwrap_or(false));
-            a_p.set_active(pr.get("supports_audio").and_then(Value::as_bool).unwrap_or(false));
-            vid_p.set_active(pr.get("supports_video").and_then(Value::as_bool).unwrap_or(false));
             rows_p.borrow_mut().clear();
             clear_box(&list_p);
             if let Some(hdrs) = pr.get("extra_headers").and_then(Value::as_object) {
@@ -3246,15 +3680,22 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                     row_box.append(&del_btn);
                     list_p.append(&row_box);
                     rows_p.borrow_mut().push((k_ent.clone(), v_ent.clone()));
+                    for ent in [&k_ent, &v_ent] {
+                        let nc = nc_pr.clone();
+                        ent.connect_changed(move |_| nc());
+                    }
                     let rows_del = rows_p.clone();
                     let list_del = list_p.clone();
                     let row_del = row_box.clone();
+                    let nc = nc_pr.clone();
                     del_btn.connect_clicked(move |_| {
                         rows_del.borrow_mut().retain(|(k, _)| k != &k_ent);
                         list_del.remove(&row_del);
+                        nc();
                     });
                 }
             }
+            nc_pr();
         });
     }
 
@@ -3312,6 +3753,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     model_box.append(&profile_row);
     model_box.append(&Label::new(Some(tr(en, "model.provider_preset"))));
     model_box.append(&preset_dd);
+    model_box.append(&shrink_box);
     model_box.append(&Label::new(Some(tr(en, "model.protocol"))));
     model_box.append(&proto_dd);
     model_box.append(&Label::new(Some(tr(en, "model.base_url"))));
@@ -3323,7 +3765,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     model_box.append(&key_entry);
     model_box.append(&insecure_row);
     model_box.append(&active_row);
-    model_box.append(&mod_row);
+    model_box.append(&detected_lbl);
     model_box.append(&adv_exp);
     model_box.append(&media_card);
 
@@ -3333,6 +3775,8 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let reload_s = reload_profile_dropdown.clone();
     let save_media_s = save_media_settings.clone();
     let model_status_s = model_status_lbl.clone();
+    let selected_preset_s = selected_preset.clone();
+    let shrink_sw_s2 = shrink_sw.clone();
     save_model_btn.connect_clicked(move |_| {
         let mut hdr_map = serde_json::Map::new();
         for (k_ent, v_ent) in rows_save.borrow().iter() {
@@ -3347,12 +3791,17 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let key = key_entry.text().to_string();
         let eff = effort_ids.get(effort_dd.selected() as usize).copied().unwrap_or("");
         let cw: i64 = ctx_entry.text().trim().parse().unwrap_or(32000);
-        let mo: i64 = out_entry.text().trim().parse().unwrap_or(8000);
-        let mp: i64 = par_entry.text().trim().parse::<i64>().unwrap_or(4).clamp(1, 64);
+        // empty or 0 = unlimited
+        let mo: i64 = parse_limit(&out_entry.text());
+        let mp: i64 = parse_limit(&par_entry.text());
         let en_now = st_m.is_en();
+        let preset = selected_preset_s();
+        let shrink = preset == "mimo" && shrink_sw_s2.is_active();
         let mut payload = json!({
             "display_name": format!("{proto} / {model}"),
             "protocol": proto,
+            "preset": preset,
+            "shrink_media": shrink,
             "base_url": url,
             "model_id": model,
             "allow_insecure_http": insecure_http_sw.is_active(),
@@ -3361,9 +3810,6 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
             "context_window": cw,
             "max_output_tokens": mo,
             "max_parallel": mp,
-            "supports_vision": vision_chk.is_active(),
-            "supports_audio": audio_chk.is_active(),
-            "supports_video": video_chk.is_active(),
             "extra_headers": Value::Object(hdr_map),
         });
         if !eff.is_empty() {
@@ -3378,7 +3824,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         if let Some(pid) = current_profile_id_s.borrow().as_ref() {
             payload["id"] = Value::String(pid.clone());
         }
-        // the core probes tool calling and structured output with this key before saving
+        // saving only stores; capabilities are measured by "test connection"
         if !key.is_empty() {
             payload["api_key"] = Value::String(key.clone());
         }
@@ -3391,8 +3837,9 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
                     }
                 }
                 save_media_s();
+                // reloads the stored profile into the form, which also marks it applied
                 reload_s(new_id.as_deref());
-                model_status_s.set_text(tr(en_now, "settings.saved"));
+                model_status_s.set_text(tr(en_now, "model.saved_checked"));
                 st_m.status_label.set_text(tr(en_now, "settings.saved"));
             }
             Err(e) => model_status_s.set_text(&friendly_err(en_now, e)),
@@ -3403,18 +3850,48 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let core = st.core.clone();
         let current_profile_id = current_profile_id.clone();
         let model_status_lbl = model_status_lbl.clone();
+        let form_dirty = form_dirty.clone();
+        let reload = reload_profile_dropdown.clone();
+        let detected_lbl = detected_lbl.clone();
         test_model_btn.connect_clicked(move |_| {
             let Some(pid) = current_profile_id.borrow().clone() else {
                 model_status_lbl.set_text(tr(en, "model.save_profile_first"));
                 return;
             };
-            match call_core(&core, "profile.test", json!({ "profile_id": pid })) {
+            // the test runs against what is stored, so unapplied edits would not be tested
+            if form_dirty() {
+                model_status_lbl.set_text(tr(en, "model.apply_before_test"));
+                return;
+            }
+            let mut detected: Option<Value> = None;
+            let msg = match call_core(&core, "profile.test", json!({ "profile_id": pid })) {
                 Ok(res) => {
                     let reply = res.get("reply").and_then(Value::as_str).unwrap_or("OK");
-                    model_status_lbl.set_text(&trf(en, "model.connected", &[&reply]));
+                    detected = res.get("detected").cloned();
+                    let mut msg = trf(en, "model.connected", &[&reply]);
+                    for f in res.get("media_failed").and_then(Value::as_array).into_iter().flatten() {
+                        let kind = match f.get("kind").and_then(Value::as_str) {
+                            Some("vision") => tr(en, "model.vision_images_pdf"),
+                            Some("audio") => tr(en, "model.audio"),
+                            _ => tr(en, "model.video"),
+                        };
+                        let detail = f.get("detail").and_then(Value::as_str).unwrap_or("");
+                        msg.push('\n');
+                        msg.push_str(&trf(en, "model.media_probe_failed", &[&kind, &detail]));
+                    }
+                    msg
                 }
-                Err(e) => model_status_lbl.set_text(&friendly_err(en, e)),
+                Err(e) => friendly_err(en, e),
+            };
+            // the test may have switched off inputs the model does not accept; the form was
+            // unchanged before the test, so reloading the stored profile loses nothing
+            reload(Some(pid.as_str()));
+            // the test result is the freshest detection; it overrides what the reload showed
+            if let Some(d) = detected {
+                let flag = |k: &str| d.get(k).and_then(Value::as_bool).unwrap_or(false);
+                detected_lbl.set_text(&detected_line(en, flag("vision"), flag("audio"), flag("video")));
             }
+            model_status_lbl.set_text(&msg);
         });
     }
     {
@@ -3426,8 +3903,9 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
             if kref.is_empty() {
                 return;
             }
-            if call_core(&core, "secret.clear", json!({ "keychain_ref": kref })).is_ok() {
-                model_status_lbl.set_text(tr(en, "model.api_key_cleared"));
+            match call_core(&core, "secret.clear", json!({ "keychain_ref": kref })) {
+                Ok(_) => model_status_lbl.set_text(tr(en, "model.api_key_cleared")),
+                Err(e) => model_status_lbl.set_text(&friendly_err(en, e)),
             }
         });
     }
@@ -3498,6 +3976,14 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     root.append(&tabs);
     root.append(&footer);
     win.set_child(Some(&root));
+    {
+        // the page is gone: stop routing core events into its widgets
+        let st_close = st.clone();
+        win.connect_close_request(move |_| {
+            *st_close.profile_hook.borrow_mut() = None;
+            glib::Propagation::Proceed
+        });
+    }
     win.present();
 }
 

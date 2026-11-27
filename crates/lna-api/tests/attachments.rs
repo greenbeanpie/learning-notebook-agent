@@ -23,16 +23,17 @@ fn notebook(env: &Env) -> String {
     nid
 }
 
+/// A chat profile on the mock, probed like any saved profile. Media support is what the probe
+/// finds; this sets it as each test needs it: pictures when `vision`, and no audio or video model.
 fn profile(env: &Env, mock: &MockLlm, vision: bool) {
-    env.ok(
-        "profile.upsert",
-        json!({
-            "display_name": "mock", "protocol": "chat_completion",
-            "base_url": mock.base_url(), "model_id": "mock-model", "activate": true,
-            "context_window": 32000, "max_output_tokens": 1000,
-            "capabilities": { "streaming": true, "tools": false, "stream_usage": true, "supports_vision": vision }
-        }),
-    );
+    let row = env.profile(mock, 32000);
+    let pid = row["id"].as_str().unwrap().to_string();
+    let mut caps: lna_types::ModelCapabilities =
+        serde_json::from_value(row["capabilities"].clone()).unwrap();
+    caps.supports_vision = vision;
+    caps.supports_audio = false;
+    caps.supports_video = false;
+    lna_storage::update_profile_capabilities(&env.core.db, &pid, &caps).unwrap();
 }
 
 fn chat_body_text(mock: &MockLlm) -> String {
@@ -207,15 +208,16 @@ fn studio_artifact_keeps_picture_ids_not_paths_and_delete_removes_files() {
         .iter()
         .any(|r| r.body.to_string().contains("data:image/"));
     assert!(sent_pixels, "a vision model reads the attached picture");
+    // no separate text transcription is made for a model that sees the picture
     let any_brief = mock
         .requests
         .lock()
         .unwrap()
         .iter()
-        .any(|r| r.body.to_string().contains("user_images"));
+        .any(|r| r.body.to_string().contains("</user_images>"));
     assert!(
-        any_brief,
-        "the picture content is part of the generation material"
+        !any_brief,
+        "a vision model gets no text brief of the picture"
     );
 
     let dir = env.dir.join("attachments");

@@ -117,10 +117,15 @@ impl ProtocolAdapter for AnthropicAdapter {
             }
         }
 
-        let capped_max_tokens = clamp_reasoning_and_output_tokens(req.max_output_tokens);
+        // Anthropic requires max_tokens; 0 (no limit set) sends a large ceiling instead.
+        let max_tokens = if req.max_output_tokens == 0 {
+            UNLIMITED_OUTPUT_FALLBACK_TOKENS
+        } else {
+            req.max_output_tokens
+        };
         let mut body = json!({
             "model": profile.model_id,
-            "max_tokens": capped_max_tokens,
+            "max_tokens": max_tokens,
             "messages": messages,
             "stream": true,
         });
@@ -134,10 +139,10 @@ impl ProtocolAdapter for AnthropicAdapter {
         if use_legacy {
             // The display switch only controls visibility, never reasoning strength or cost.
             let desired: u32 = 4096;
-            let budget = if capped_max_tokens > 1024 {
-                desired.min(capped_max_tokens.saturating_sub(1024).max(1024))
+            let budget = if max_tokens > 1024 {
+                desired.min(max_tokens.saturating_sub(1024).max(1024))
             } else {
-                desired.min(capped_max_tokens)
+                desired.min(max_tokens)
             };
             body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
         } else {

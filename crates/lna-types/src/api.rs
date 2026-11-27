@@ -65,18 +65,28 @@ pub struct ProfileUpsertParams {
     pub output_price_per_m: Option<f64>,
     #[serde(default)]
     pub capabilities: Option<ModelCapabilities>,
+    /// Ignored: image / audio / video support is detected by the probe, never taken from a client.
+    /// Kept so that older clients still deserialize.
     #[serde(default)]
     pub supports_vision: Option<bool>,
+    /// Ignored (see `supports_vision`).
     #[serde(default)]
     pub supports_audio: Option<bool>,
+    /// Ignored (see `supports_vision`).
     #[serde(default)]
     pub supports_video: Option<bool>,
     #[serde(default)]
     pub activate: bool,
-    /// Most requests of this profile in flight at once (1..=64). `None` keeps the stored value
-    /// (4 for a new profile).
+    /// Most requests of this profile in flight at once (0 = unlimited, else 1..=1024). `None`
+    /// keeps the stored value (unlimited for a new profile).
     #[serde(default)]
     pub max_parallel: Option<u32>,
+    /// Provider preset id (e.g. "mimo"). `None` keeps the stored value; `Some("")` clears it.
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// `None` keeps the stored value. Forced to false unless the preset is "mimo".
+    #[serde(default)]
+    pub shrink_media: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -85,6 +95,7 @@ fn default_true() -> bool {
 fn default_ctx() -> u32 {
     32_000
 }
+/// 0 = no output-token limit.
 fn default_out() -> u32 {
-    8_000
+    0
 }

@@ -1009,7 +1009,7 @@ async fn ask_media(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResu
         tools: vec![],
         tool_mode: ToolMode::None,
         output: OutputMode::Text,
-        max_output_tokens: resolved.max_output_tokens.clamp(1024, 4096),
+        max_output_tokens: resolved.output_budget().clamp(1024, 4096),
         reasoning: ReasoningOptions::default(),
     };
     let res = ctx
@@ -1389,7 +1389,7 @@ async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult
         tools: vec![],
         tool_mode: ToolMode::None,
         output: OutputMode::Text,
-        max_output_tokens: ctx.profile.max_output_tokens.clamp(1024, 8192),
+        max_output_tokens: ctx.profile.output_budget().clamp(1024, 8192),
         reasoning: ReasoningOptions::default(),
     };
     let (text, usage) = ctx
@@ -1444,7 +1444,7 @@ pub async fn brief(
             tools: tools.clone(),
             tool_mode: if last { ToolMode::None } else { ToolMode::Auto },
             output: OutputMode::Text,
-            max_output_tokens: ctx.profile.max_output_tokens.clamp(2048, 8192),
+            max_output_tokens: ctx.profile.output_budget().clamp(2048, 8192),
             reasoning: ReasoningOptions::default(),
         };
         let mut text = String::new();

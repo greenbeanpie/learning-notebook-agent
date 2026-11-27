@@ -1,6 +1,7 @@
 pub mod expr;
 pub mod figure;
 pub mod lecture;
+pub(crate) mod material;
 pub mod mdlite;
 pub mod render;
 pub mod texfmt;
@@ -913,6 +914,8 @@ impl StudioService {
             capabilities: profile.capabilities.clone(),
             extra_headers: profile.extra_headers.clone(),
             anthropic_version: "2023-06-01".into(),
+            preset: profile.preset.clone(),
+            shrink_media: profile.shrink_media,
         };
 
         let existing_md = current_draft
@@ -1461,6 +1464,8 @@ User Revision Instruction:
             capabilities: profile.capabilities.clone(),
             extra_headers: profile.extra_headers.clone(),
             anthropic_version: "2023-06-01".to_string(),
+            preset: profile.preset.clone(),
+            shrink_media: profile.shrink_media,
         };
 
         let is_local_test =
@@ -1508,6 +1513,19 @@ User Revision Instruction:
                         message: e.message.clone(),
                     });
 
+                    // the model stopped the task on purpose: no retry, the reason is the error
+                    if e.code == ErrorCode::ModelRefused {
+                        self.append_thought(
+                            artifact_id,
+                            &fresh_art.notebook_id,
+                            "error",
+                            &self.l("任务已被模型终止", "The model stopped the task"),
+                            &e.message,
+                        );
+                        let log = format_error_log(&fresh_art, Some(&profile), &records);
+                        let _ = self.mark_failed_with_log(artifact_id, &e, &log);
+                        return Err(e);
+                    }
                     if is_non_retryable_config_error(e.code) {
                         self.append_thought(
                             artifact_id,
@@ -1599,6 +1617,11 @@ User Revision Instruction:
             show_summary: resolved.show_thinking || resolved.capabilities.reasoning_summary,
             effort: resolved.effort.clone(),
         };
+        // A model that sees images gets the pictures themselves in its requests; then no
+        // separate description is made. Otherwise (or if the pictures cannot be loaded) the
+        // text description carries them.
+        let pictures = material::image_parts(&self.db.paths().root, art, resolved);
+        let direct_pictures = !pictures.is_empty();
 
         *current_stage = "COLLECT".to_string();
         self.set_stage(artifact_id, "RUNNING", "COLLECT", 0.15, &topic)?;
@@ -1633,9 +1656,12 @@ User Revision Instruction:
                 let files = self
                     .file_brief(art, resolved, artifact_id, cancel.clone())
                     .await?;
-                let images = self
-                    .image_brief(art, resolved, artifact_id, cancel.clone())
-                    .await?;
+                let images = if direct_pictures {
+                    None
+                } else {
+                    self.image_brief(art, resolved, artifact_id, cancel.clone())
+                        .await?
+                };
                 let joined = [files, images]
                     .into_iter()
                     .flatten()
@@ -1675,7 +1701,13 @@ User Revision Instruction:
             ),
             None => evidence_txt,
         };
-        let evidence_txt = match self.image_brief(art, resolved, artifact_id, cancel.clone()).await? {
+        let image_brief = if direct_pictures {
+            None
+        } else {
+            self.image_brief(art, resolved, artifact_id, cancel.clone())
+                .await?
+        };
+        let evidence_txt = match image_brief {
             Some(brief) => format!(
                 "<user_images>\n用户附带的图片内容（视为用户直接提供的材料，与来源同等重要；可以引用，但不要编造图片中没有的内容）：\n{brief}\n</user_images>\n\n{evidence_txt}"
             ),
@@ -1734,23 +1766,26 @@ User Revision Instruction:
             } else {
                 "You are a presentation outline planner. Output a clean, human-readable Markdown outline (using `# Title`, `## Slide N: Slide Title`, `- Key points`, and `> Speaker notes`). Match the language requested in config or the primary language of the sources. Be concise and accurate; never output JSON or fenced code blocks."
             };
-            let plan_req = LlmRequest {
-                system: outline_sys.into(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts: vec![Part::Text(format!(
-                        "Artifact type: {}\nConfig: {}\nSources:\n{}",
-                        art.artifact_type.as_str(),
-                        art.config,
-                        evidence_txt
-                    ))],
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::Text,
-                max_output_tokens: 1800,
-                reasoning: reasoning.clone(),
-            };
+            let plan_req = material::with_images(
+                LlmRequest {
+                    system: outline_sys.into(),
+                    messages: vec![LlmMessage {
+                        role: Role::User,
+                        parts: vec![Part::Text(format!(
+                            "Artifact type: {}\nConfig: {}\nSources:\n{}",
+                            art.artifact_type.as_str(),
+                            material::config_for_prompt(&art.config, direct_pictures),
+                            evidence_txt
+                        ))],
+                    }],
+                    tools: vec![],
+                    tool_mode: ToolMode::None,
+                    output: OutputMode::Text,
+                    max_output_tokens: 1800,
+                    reasoning: reasoning.clone(),
+                },
+                &pictures,
+            );
             let (draft_raw, _) = self
                 .run_text_with_thought(
                     artifact_id,
@@ -2043,6 +2078,9 @@ User Revision Instruction:
                 )
                 .await;
         }
+        let pictures = material::image_parts(&self.db.paths().root, art, resolved);
+        let pictures_ref = &pictures;
+        let pictures_shown = !pictures.is_empty();
         let (schema_str, schema_name) = match art.artifact_type {
             ArtifactType::Lecture => (SCHEMA_SLIDES, "lecture_payload"),
             ArtifactType::Quiz => (SCHEMA_QUIZ, "quiz_payload"),
@@ -2081,14 +2119,14 @@ User Revision Instruction:
                 &art.notebook_id,
                 "stage",
                 &self.l(&format!("并行分批生成测验题目（{batches} 批）"), &format!("Generating quiz questions in {batches} parallel batches")),
-                &self.l(&format!("总目标 {total} 道题，拆成 {batches} 批并行撰写，同时最多 {} 个请求。", self.parallelism(profile)), &format!("Target of {total} quiz questions split into {batches} batches written in parallel, at most {} requests at a time.", self.parallelism(profile))),
+                &self.l(&format!("总目标 {total} 道题，拆成 {batches} 批并行撰写，{}。", self.parallel_phrase(profile).0), &format!("Target of {total} quiz questions split into {batches} batches written in parallel, {}.", self.parallel_phrase(profile).1)),
             );
             let limit = self.parallelism(profile).min(batches);
             let schema_ref = &schema;
             let mut running = futures_util::stream::iter(batch_sizes.iter().copied().enumerate().map(|(bi, batch_cnt)| {
                 let (reasoning_c, cancel_c) = (reasoning.clone(), cancel.clone());
                 async move {
-                    let batch_req = LlmRequest {
+                    let batch_req = material::with_images(LlmRequest {
                         system: format!(
                             "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep every prompt, option, and explanation concise and accurate. Format all mathematical expressions and chemical formulas/equations in LaTeX wrapped in $...$ (e.g., $\\\\ce{{H2O}}$, $\\\\ce{{O2}}$, $\\\\ce{{CO2}}$, $\\\\ce{{2H2 + O2 -> 2H2O}}$, $x^2$, $\\\\frac{{a}}{{b}}$); never write bare ASCII formulas without subscripts/LaTeX, and double-escape all LaTeX backslashes in JSON strings so \\\\frac, \\\\times, \\\\text, \\\\ce are not corrupted.",
                             art.artifact_type.as_str()
@@ -2097,7 +2135,7 @@ User Revision Instruction:
                             role: Role::User,
                             parts: vec![Part::Text(format!(
                                 "Parameters: {}\nReference outline: {}\n\nSources:\n{}\n\n=== THIS BATCH (batch {}/{}; everything above is identical for every batch) ===\nGenerate exactly {} quiz questions (this overrides any count in the parameters).\nParallel generation: the other batches are written at the same time by other authors. Draw your quiz questions mainly from portion {} of {} (equal portions of the material, in the order given) and prefer topics the other portions would not cover, so the batches do not overlap.",
-                                art.config,
+                                material::config_for_prompt(&art.config, pictures_shown),
                                 art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                                 evidence_txt,
                                 bi + 1,
@@ -2112,7 +2150,7 @@ User Revision Instruction:
                         output: OutputMode::Text,
                         max_output_tokens: resolved.max_output_tokens,
                         reasoning: reasoning_c,
-                    };
+                    }, pictures_ref);
                     let res = self
                         .run_structured_with_thought(
                             artifact_id,
@@ -2204,14 +2242,14 @@ User Revision Instruction:
                 &art.notebook_id,
                 "stage",
                 &self.l(&format!("并行分批生成学习闪卡（{batches} 批）"), &format!("Generating flashcards in {batches} parallel batches")),
-                &self.l(&format!("总目标 {total} 张卡片，拆成 {batches} 批并行撰写，同时最多 {} 个请求。", self.parallelism(profile)), &format!("Target of {total} flashcards split into {batches} batches written in parallel, at most {} requests at a time.", self.parallelism(profile))),
+                &self.l(&format!("总目标 {total} 张卡片，拆成 {batches} 批并行撰写，{}。", self.parallel_phrase(profile).0), &format!("Target of {total} flashcards split into {batches} batches written in parallel, {}.", self.parallel_phrase(profile).1)),
             );
             let limit = self.parallelism(profile).min(batches);
             let schema_ref = &schema;
             let mut running = futures_util::stream::iter(batch_sizes.iter().copied().enumerate().map(|(bi, batch_cnt)| {
                 let (reasoning_c, cancel_c) = (reasoning.clone(), cancel.clone());
                 async move {
-                    let batch_req = LlmRequest {
+                    let batch_req = material::with_images(LlmRequest {
                         system: format!(
                             "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. Keep each flashcard front and back crisp and focused on core definitions or takeaways. Flashcards are drawn as plain text: write mathematics as compact Unicode (e.g. ℝⁿ, Aᵀ, x₁, N(A), dim C(A)=r, n−r, Ax=0), never LaTeX or `$` delimiters.",
                             art.artifact_type.as_str()
@@ -2220,7 +2258,7 @@ User Revision Instruction:
                             role: Role::User,
                             parts: vec![Part::Text(format!(
                                 "Parameters: {}\nReference outline: {}\n\nSources:\n{}\n\n=== THIS BATCH (batch {}/{}; everything above is identical for every batch) ===\nGenerate exactly {} flashcards (this overrides any count in the parameters).\nParallel generation: the other batches are written at the same time by other authors. Draw your flashcards mainly from portion {} of {} (equal portions of the material, in the order given) and prefer topics the other portions would not cover, so the batches do not overlap.",
-                                art.config,
+                                material::config_for_prompt(&art.config, pictures_shown),
                                 art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                                 evidence_txt,
                                 bi + 1,
@@ -2235,7 +2273,7 @@ User Revision Instruction:
                         output: OutputMode::Text,
                         max_output_tokens: resolved.max_output_tokens,
                         reasoning: reasoning_c,
-                    };
+                    }, pictures_ref);
                     let res = self
                         .run_structured_with_thought(
                             artifact_id,
@@ -2328,13 +2366,13 @@ User Revision Instruction:
                 &self.l("规划演示文稿视觉主题与逐页版式", "Planning the visual theme and per-slide layouts"),
                 &self.l(&format!("正在围绕来源内容设计约 {target_pages} 页演示文稿的叙事节奏、主题配色与多样化版式组合…"), &format!("Designing the narrative pacing, color theme and varied layout mix for a deck of about {target_pages} slides…")),
             );
-            let plan_req = LlmRequest {
+            let plan_req = material::with_images(LlmRequest {
                 system: "You are an executive presentation architect and visual designer. Given the source material and user parameters, design a concise slide-by-slide visual storyboard (NOT raw JSON yet). Choose the best theme from [executive_navy, editorial_slate, academic_sage, warm_terracotta, midnight_aurora]. Plan an engaging narrative arc starting with `title` and `agenda`, ending with `summary`, and using DIVERSE visual layouts across content slides (`cards`, `two_column`, `metrics`, `timeline`, `table`, `formula`, `quote`, `section`, `bullets`) — NEVER use plain `bullets` on more than 25% of slides and never repeat the same content layout twice in a row. For each slide, specify: page number, layout, crisp headline, key facts/numbers/equations/comparisons from the sources, and visual structure. Match the requested language or primary source language.".into(),
                 messages: vec![LlmMessage {
                     role: Role::User,
                     parts: vec![Part::Text(format!(
                         "Target slide count: ~{target_pages}\nParameters: {}\nApproved outline (if any): {}\n\nResearched Sources:\n{}",
-                        art.config,
+                                material::config_for_prompt(&art.config, pictures_shown),
                         art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                         evidence_txt
                     ))],
@@ -2347,7 +2385,7 @@ User Revision Instruction:
                     show_summary: profile.show_thinking,
                     effort: profile.effort.clone(),
                 },
-            };
+            }, pictures_ref);
             let mut usage_sum = Usage::default();
             let storyboard = {
                 match self
@@ -2385,7 +2423,7 @@ User Revision Instruction:
                 &self.l("撰写高颜值演示文稿内容与版式数据", "Writing slide content and layout data"),
                 &self.l("正在基于版式蓝图生成完整结构化幻灯片（含卡片、对比表、流程图、关键指标、核心公式与演讲备注）…", "Generating the full structured slides from the layout blueprint (cards, comparison tables, flow charts, key metrics, core formulas and speaker notes)…"),
             );
-            let author_base = LlmRequest {
+            let author_base = material::with_images(LlmRequest {
                 system: "You are a world-class presentation designer for Local Notebook Studio. Produce a publication-grade SlidesPayload JSON strictly grounded in the provided sources.\n\
 Design rules:\n\
 1. Set top-level `theme` (one of: executive_navy, editorial_slate, academic_sage, warm_terracotta, midnight_aurora) and `subtitle`.\n\
@@ -2399,7 +2437,7 @@ Design rules:\n\
                     role: Role::User,
                     parts: vec![Part::Text(format!(
                         "Target slide count: ~{target_pages}\nParameters: {}\nVisual Storyboard:\n{}\n\nReference outline: {}\n\nResearched Sources:\n{}",
-                        art.config,
+                                material::config_for_prompt(&art.config, pictures_shown),
                         if storyboard.is_empty() { "Design a rich, visually varied deck." } else { &storyboard },
                         art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                         evidence_txt
@@ -2410,7 +2448,7 @@ Design rules:\n\
                 output: OutputMode::Text,
                 max_output_tokens: resolved.max_output_tokens,
                 reasoning: reasoning.clone(),
-            };
+            }, pictures_ref);
             // Orchestrator: the storyboard is the plan; a longer deck is written by several
             // executors at once, each owning a contiguous range of pages, then merged in order.
             let deck_parts = if target_pages >= 8 {
@@ -2425,7 +2463,7 @@ Design rules:\n\
                     &art.notebook_id,
                     "stage",
                     &self.l(&format!("并行撰写演示文稿（{deck_parts} 段）"), &format!("Writing the deck in {deck_parts} parallel parts")),
-                    &self.l(&format!("按版式蓝图把约 {target_pages} 页拆成 {deck_parts} 段并行撰写，同时最多 {} 个请求。", self.parallelism(profile)), &format!("Splitting about {target_pages} slides into {deck_parts} parts written in parallel, at most {} requests at a time.", self.parallelism(profile))),
+                    &self.l(&format!("按版式蓝图把约 {target_pages} 页拆成 {deck_parts} 段并行撰写，{}。", self.parallel_phrase(profile).0), &format!("Splitting about {target_pages} slides into {deck_parts} parts written in parallel, {}.", self.parallel_phrase(profile).1)),
                 );
             }
             let results = self
@@ -2715,7 +2753,7 @@ Design rules:\n\
         } else {
             ", preserving source citation indices [n] in the citations array"
         };
-        let gen_req = LlmRequest {
+        let gen_req = material::with_images(LlmRequest {
             system: format!(
                 "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}{}.{} Match the language requested in config or the primary language of the sources. Keep content concise, accurate, and well-structured without filler.",
                 art.artifact_type.as_str(),
@@ -2726,7 +2764,7 @@ Design rules:\n\
                 role: Role::User,
                 parts: vec![Part::Text(format!(
                     "Parameters: {}\nReference outline: {}\n\nSources:\n{}",
-                    art.config,
+                                material::config_for_prompt(&art.config, pictures_shown),
                     art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                     evidence_txt
                 ))],
@@ -2736,7 +2774,7 @@ Design rules:\n\
             output: OutputMode::Text,
             max_output_tokens: resolved.max_output_tokens,
             reasoning,
-        };
+        }, pictures_ref);
         // Long reports / long audio scripts: planner + parallel part writers.
         let multi_kind = match art.artifact_type {
             ArtifactType::Report
@@ -2846,7 +2884,7 @@ Design rules:\n\
                 "PLANNING TASK (do not write the {kind} itself): split the requested work into 3-6 {what} that can be written independently and in parallel, in reading order, covering the requested scope without overlap. For each give a short `heading` and a `focus` naming exactly which concepts / source parts it covers. Output the structured JSON requested below only."
             ),
         );
-        plan_req.max_output_tokens = resolved.max_output_tokens.min(2000);
+        plan_req.max_output_tokens = resolved.output_budget().min(2000);
         let (plan, u) = self
             .run_structured_with_thought(
                 artifact_id,
@@ -3032,6 +3070,23 @@ Design rules:\n\
         Ok(())
     }
 
+    /// Stops generation like `mark_cancelled`, but records that the user meant to come back:
+    /// the checkpoints stay and `retry` continues from them. Shown as stage `PAUSED`.
+    pub fn mark_paused(&self, id: &str) -> LnaResult<()> {
+        let changed = self.db.write(|conn| {
+            conn.execute(
+                "UPDATE studio_artifacts SET status='CANCELLED', stage='PAUSED', updated_at=?1
+                 WHERE id=?2 AND status IN ('PENDING','RUNNING','DRAFT_REVIEW')",
+                params![now_ms(), id],
+            )
+            .map_err(map_sql_err)
+        })?;
+        if changed > 0 {
+            self.emit_status_event(id, "CANCELLED", "PAUSED", 0.0, None, None);
+        }
+        Ok(())
+    }
+
     pub fn delete(&self, id: &str) -> LnaResult<()> {
         let art = self.get(id)?;
         self.db.write(|conn| {
@@ -3127,7 +3182,10 @@ Design rules:\n\
         let task = format!(
             "为生成学习成品「{}」收集材料。用户要求（config）：{}",
             art.artifact_type.as_str(),
-            art.config
+            material::config_for_prompt(
+                &art.config,
+                !material::image_parts(&self.db.paths().root, art, resolved).is_empty()
+            )
         );
         let ctx = context_files::ToolCtx {
             db: &self.db,
@@ -3168,7 +3226,14 @@ Design rules:\n\
                 .and_then(Value::as_array)
                 .map(|v| v.iter().filter_map(Value::as_str).eq(ids.iter().copied()))
                 .unwrap_or(false);
-            if same {
+            // a brief made by local OCR (no vision model then) is not reused once the active
+            // model can read images: its text is far better
+            let stale_ocr = !saved
+                .get("vision")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && resolved.capabilities.supports_vision;
+            if same && !stale_ocr {
                 if let Some(t) = saved.get("text").and_then(Value::as_str) {
                     return Ok(Some(t.to_string()));
                 }
@@ -3208,7 +3273,7 @@ Design rules:\n\
         self.save_checkpoint(
             artifact_id,
             "image_brief",
-            json!({ "ids": ids, "text": text }),
+            json!({ "ids": ids, "text": text, "vision": resolved.capabilities.supports_vision }),
         )?;
         Ok(Some(text))
     }
@@ -3463,10 +3528,31 @@ Design rules:\n\
         Ok(out.into_iter().flatten().collect())
     }
 
-    /// Requests in flight allowed for the profile: the number of executors the orchestrators of
-    /// the Studio types fan out to (the client gate enforces it for every request anyway).
+    /// Executors the orchestrators of the Studio types fan out to for the profile: its request
+    /// limit, or `MAX_PARALLEL_REQUESTS` when the profile is unlimited (the client gate enforces
+    /// the real limit for every request anyway).
     fn parallelism(&self, profile: &ModelProfile) -> usize {
-        profile.max_parallel.clamp(1, 64) as usize
+        if profile.max_parallel == 0 {
+            MAX_PARALLEL_REQUESTS as usize
+        } else {
+            profile.max_parallel.clamp(1, 64) as usize
+        }
+    }
+
+    /// The request limit of the profile as a (Chinese, English) phrase for progress messages.
+    fn parallel_phrase(&self, profile: &ModelProfile) -> (String, String) {
+        if profile.max_parallel == 0 {
+            (
+                "同时请求数不限".into(),
+                "with no limit on requests at a time".into(),
+            )
+        } else {
+            let n = self.parallelism(profile);
+            (
+                format!("同时最多 {n} 个请求"),
+                format!("at most {n} requests at a time"),
+            )
+        }
     }
 
     fn get_checkpoint(&self, artifact_id: &str, step_key: &str) -> LnaResult<Option<Value>> {
@@ -3850,7 +3936,7 @@ Design rules:\n\
             .map_err(map_sql_err)
         })?;
         let window = resolved.context_window as usize;
-        let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
+        let reserved_output = (resolved.output_budget() as usize).min(window / 4);
         let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
         let budget = available_input.saturating_mul(70) / 100;
         Ok(tokens.max(0) as usize <= budget.min(12_000))
@@ -3878,6 +3964,8 @@ Design rules:\n\
             capabilities: profile.capabilities.clone(),
             extra_headers: profile.extra_headers.clone(),
             anthropic_version: "2023-06-01".into(),
+            preset: profile.preset.clone(),
+            shrink_media: profile.shrink_media,
         };
         Ok((profile, resolved))
     }
@@ -3899,6 +3987,8 @@ Design rules:\n\
         cancel: CancellationToken,
     ) -> LnaResult<(Value, Usage)> {
         let is_kg = art.config.get("mode").and_then(Value::as_str) == Some("knowledge_graph");
+        let pictures = material::image_parts(&self.db.paths().root, art, resolved);
+        let pictures_shown = !pictures.is_empty();
         let detail = art
             .config
             .get("detail")
@@ -3957,7 +4047,7 @@ Design rules:\n\
                     &self.l("初始化图谱骨架", "Initializing the graph skeleton"),
                     &self.l("第 1 步：搭建根节点与全部一级分支；之后逐个分支重新查阅原文，追加更细的知识点节点。", "Step 1: build the root node and all first-level branches; then revisit the source for each branch and add finer knowledge-point nodes."),
                 );
-                let req = LlmRequest {
+                let req = material::with_images(LlmRequest {
                     system: format!(
                         "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}), built in several passes. THIS IS PASS 1 (initialization): output ONLY the skeleton as structured JSON — the root node and the top-level branches (3-7 major themes of the requested scope that together cover all of it; omit nothing, but merge thin chapters into one theme and split none just because the book has many chapters). Do NOT output any deeper nodes: later passes re-read the sources branch by branch and add the topics and knowledge points. Each top-level branch is a reorganized theme, not a copy of a chapter title; its \"summary\" states in one or two sentences what the theme is about and which chapters / pages it draws from. Use short ids such as \"b1\", \"b2\".{rules} Strictly ground the structure in the provided sources. Match the language requested in config or the primary language of the sources."
                     ),
@@ -3965,7 +4055,7 @@ Design rules:\n\
                         role: Role::User,
                         parts: vec![Part::Text(format!(
                             "Parameters: {}\n\nSources:\n{}",
-                            art.config, evidence_txt
+                            material::config_for_prompt(&art.config, pictures_shown), evidence_txt
                         ))],
                     }],
                     tools: vec![],
@@ -3973,7 +4063,7 @@ Design rules:\n\
                     output: OutputMode::Text,
                     max_output_tokens: resolved.max_output_tokens,
                     reasoning: reasoning.clone(),
-                };
+                }, &pictures);
                 let (mut skeleton, u) = self
                     .run_structured_with_thought(
                         artifact_id,
@@ -4177,7 +4267,9 @@ Design rules:\n\
                     );
                 }
             }
-            Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+            Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
+                return Err(e)
+            }
             Err(_) => {}
         }
         mm_mark_expandable(&mut payload);
@@ -4334,7 +4426,9 @@ Design rules:\n\
                     add_usage(&mut usage, &u);
                     regrouped += n;
                 }
-                Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+                Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
+                    return Err(e)
+                }
                 Err(_) => {}
             }
         }
@@ -4362,6 +4456,8 @@ Design rules:\n\
         max_repairs: usize,
         cancel: CancellationToken,
     ) -> LnaResult<(NodeExpansion, Usage)> {
+        let pictures = material::image_parts(&self.db.paths().root, art, resolved);
+        let pictures_shown = !pictures.is_empty();
         let nodes = mm_nodes(payload);
         let node = nodes
             .iter()
@@ -4407,7 +4503,7 @@ Design rules:\n\
             None => {
                 let target_ids = Self::generation_source_ids(art);
                 let window = resolved.context_window as usize;
-                let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
+                let reserved_output = (resolved.output_budget() as usize).min(window / 4);
                 let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
                 let budget = (available_input.saturating_mul(70) / 100).min(16_000);
                 match self
@@ -4425,7 +4521,9 @@ Design rules:\n\
                     .await
                 {
                     Ok(Some(t)) => t,
-                    Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+                    Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
+                        return Err(e)
+                    }
                     _ => {
                         let mut queries = vec![label.clone()];
                         if let Some(parent) = path.last() {
@@ -4476,7 +4574,7 @@ Design rules:\n\
                 "THIS IS AN APPEND PASS for the top-level branch \"{label}\" of a {kind} whose skeleton already exists. Using the source excerpts, output ONLY the NEW descendant nodes of this branch, in AT MOST TWO LEVELS: topic nodes directly under the branch, and knowledge-point nodes under each topic, at the requested detail level. Anything finer goes into facets; the learner can expand a knowledge point later on demand. Do not repeat nodes listed under \"Existing subtree\" and do not cover material that belongs to the other top-level branches."
             )
         };
-        let req = LlmRequest {
+        let req = material::with_images(LlmRequest {
             // The system prompt is the same for every branch of the map; what is specific to this
             // branch (task, node, subtree) goes at the end of the user message, after the shared
             // parameters and the sources, so parallel branches share the longest possible prefix.
@@ -4487,7 +4585,7 @@ Design rules:\n\
                 role: Role::User,
                 parts: vec![Part::Text(format!(
                     "Parameters: {}\n\nSources:\n{evidence}\n\n=== TASK ===\n{task} Every new node needs a unique new \"id\" and a \"parent_id\" that is either \"{node_id}\", an id from the existing subtree, or the id of another new node you output.\nPath: {}\nNode: [{node_id}] {label}\nSummary: {summary}\nFacets: {}\nExisting subtree:\n{outline}\nOther top-level branches (out of scope): {}",
-                    art.config,
+                                material::config_for_prompt(&art.config, pictures_shown),
                     if path.is_empty() { "(root)".to_string() } else { path.join(" > ") },
                     if facets.is_empty() { "(none)".to_string() } else { facets.join("; ") },
                     if others.is_empty() { "(none)".to_string() } else { others.join("; ") },
@@ -4498,7 +4596,7 @@ Design rules:\n\
             output: OutputMode::Text,
             max_output_tokens: resolved.max_output_tokens,
             reasoning,
-        };
+        }, &pictures);
         let (out, usage) = self
             .run_structured_with_thought_ex(
                 artifact_id,
@@ -4597,7 +4695,7 @@ Design rules:\n\
             tools: vec![],
             tool_mode: ToolMode::None,
             output: OutputMode::Text,
-            max_output_tokens: resolved.max_output_tokens.min(2000),
+            max_output_tokens: resolved.output_budget().min(2000),
             reasoning,
         };
         let (out, usage) = self
@@ -5082,9 +5180,39 @@ Design rules:\n\
                     "required": ["source_id", "page_start", "page_end"]
                 }),
             },
+            ToolDef {
+                name: "abort_task".into(),
+                description: "Call this only when the task cannot be done faithfully — e.g. the user's attached picture or material is unreadable or missing, or the request contradicts the sources. It stops the whole job and shows the reason to the user. Never guess or invent content instead.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "reason": { "type": "string", "description": "Why the task cannot be done faithfully" }
+                    },
+                    "required": ["reason"]
+                }),
+            },
         ];
 
         let user_material = has_user_material(&art.config);
+        // a model that sees images gets the pictures in its requests; the text briefs are for the
+        // others (a picture brief from an earlier non-vision run is not shown to a vision model)
+        let pictures = material::image_parts(&self.db.paths().root, art, resolved);
+        // the readers must see what the user's material says, or they cannot tell what to read
+        let mut material_txt = String::new();
+        for (key, tag) in [("file_brief", "user_files"), ("image_brief", "user_images")] {
+            if key == "image_brief" && !pictures.is_empty() {
+                continue;
+            }
+            if let Ok(Some(saved)) = self.get_checkpoint(artifact_id, key) {
+                if let Some(t) = saved
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|t| !t.trim().is_empty())
+                {
+                    material_txt.push_str(&format!("<{tag}>\n{t}\n</{tag}>\n\n"));
+                }
+            }
+        }
         let planner_instruction = if branch_focus {
             "Focus ONLY on the branch/topic given above (other branches are handled separately). Using the reading tools, read the parts of the sources that cover this branch in depth: read_index_node for its outline nodes, read_source_pages for its page ranges, search_sources for specific methods, theorems, formulas or cases. Make several rounds of calls when needed so that every sub-topic, method, theorem and formula of this branch is backed by actual source text, not just outline titles. Reply \"DONE\" only when the branch is fully covered."
         } else if is_mindmap {
@@ -5097,15 +5225,19 @@ Design rules:\n\
         } else {
             planner_instruction.to_string()
         };
+        let planner_instruction = format!(
+            "{planner_instruction}\n\nIf the user's attached material or the sources cannot support this task faithfully (for example a picture is unreadable or missing, or the request contradicts the sources), you may call abort_task with the reason instead of guessing."
+        );
         let mut messages = vec![LlmMessage {
             role: Role::User,
             parts: vec![Part::Text(format!(
                 // the catalog is the same for every reader of these sources: it goes before the
                 // topic/focus, which differs per section or branch (prompt-cache prefix)
-                "Artifact type: {}\nUser config: {}\n\nSource Catalog & Outline:\n{}\n\nUser topic/focus: {}\n\n{}",
+                "Artifact type: {}\nUser config: {}\n\nSource Catalog & Outline:\n{}\n\n{}User topic/focus: {}\n\n{}",
                 art.artifact_type.as_str(),
-                art.config,
+                material::config_for_prompt(&art.config, !pictures.is_empty()),
                 catalog_text,
+                material_txt,
                 topic_query.unwrap_or("Full selected scope (balanced coverage)"),
                 planner_instruction
             ))],
@@ -5155,20 +5287,24 @@ Design rules:\n\
             if cancel.is_cancelled() {
                 return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled"));
             }
-            let req = LlmRequest {
-                system: planner_system.into(),
-                messages: messages.clone(),
-                tools: tools.clone(),
-                tool_mode: ToolMode::Auto,
-                output: OutputMode::Text,
-                // Reasoning models spend output tokens on thinking before emitting tool calls;
-                // a small cap silently ended the reading loop after the first round.
-                max_output_tokens: resolved.max_output_tokens.clamp(2048, 8192),
-                reasoning: ReasoningOptions {
-                    show_summary: profile.show_thinking,
-                    effort: profile.effort.clone(),
+            // the pictures ride in the first user message of every round (the same prefix)
+            let req = material::with_images(
+                LlmRequest {
+                    system: planner_system.into(),
+                    messages: messages.clone(),
+                    tools: tools.clone(),
+                    tool_mode: ToolMode::Auto,
+                    output: OutputMode::Text,
+                    // Reasoning models spend output tokens on thinking before emitting tool calls;
+                    // a small cap silently ended the reading loop after the first round.
+                    max_output_tokens: resolved.output_budget().clamp(2048, 8192),
+                    reasoning: ReasoningOptions {
+                        show_summary: profile.show_thinking,
+                        effort: profile.effort.clone(),
+                    },
                 },
-            };
+                &pictures,
+            );
             let mut calls: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
             let mut round_usage = Usage::default();
             let mut thought_seq: Option<i32> = None;
@@ -5272,6 +5408,8 @@ Design rules:\n\
                 round_usage.cached_tokens as i64,
                 false,
             );
+            // a call without a name can be neither run nor echoed back to the model: dropped
+            calls.retain(|_, (_, name, _)| !name.trim().is_empty());
             if calls.is_empty() {
                 break;
             }
@@ -5448,6 +5586,20 @@ Design rules:\n\
                             summary_note =
                                 format!("Loaded {added_here} excerpts from pages {pstart}-{pend}.");
                         }
+                    }
+                    "abort_task" => {
+                        // the model found the task cannot be done faithfully: the whole job
+                        // stops with its reason (never a guessed result)
+                        let reason = args
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("(no reason given)");
+                        return Err(LnaError::new(
+                            ErrorCode::ModelRefused,
+                            format!("模型主动终止任务：{reason}"),
+                        ));
                     }
                     _ => {
                         summary_note = "Unsupported tool.".into();
@@ -5654,7 +5806,7 @@ Design rules:\n\
                 .map_err(map_sql_err)
             })?;
             let window = resolved.context_window as usize;
-            let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
+            let reserved_output = (resolved.output_budget() as usize).min(window / 4);
             let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
             let kg_budget = available_input.saturating_mul(70) / 100;
             if target_tokens.max(0) as usize > kg_budget.min(12_000) {
@@ -5673,7 +5825,9 @@ Design rules:\n\
                     .await
                 {
                     Ok(Some(on_demand_text)) => return Ok(on_demand_text),
-                    Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+                    Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
+                        return Err(e)
+                    }
                     _ => {}
                 }
             } else {
@@ -5865,7 +6019,7 @@ Core Topics: {}",
             ).map_err(map_sql_err)
         })?;
         let window = resolved.context_window as usize;
-        let reserved_output = (resolved.max_output_tokens as usize).min(window / 4);
+        let reserved_output = (resolved.output_budget() as usize).min(window / 4);
         let available_input = window.saturating_sub(reserved_output + 800 + window / 20);
         let evidence_budget = available_input.saturating_mul(70) / 100;
         // Only pass full source text directly for compact sources (<= 12,000 tokens).
@@ -5885,7 +6039,7 @@ Core Topics: {}",
 
         // On-demand AI reading: present compact source catalog & outline, let the AI call
         // search_sources / read_index_node / read_source_pages only for sections it needs.
-        if let Ok(Some(on_demand_text)) = self
+        let on_demand = self
             .gather_evidence_on_demand(
                 art,
                 profile,
@@ -5906,9 +6060,13 @@ Core Topics: {}",
                 false,
                 cancel.clone(),
             )
-            .await
-        {
-            return Ok(on_demand_text);
+            .await;
+        match on_demand {
+            Ok(Some(on_demand_text)) => return Ok(on_demand_text),
+            Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
+                return Err(e)
+            }
+            _ => {}
         }
 
         let language = art
@@ -6511,6 +6669,7 @@ fn is_non_retryable_config_error(code: ErrorCode) -> bool {
             | ErrorCode::ModelNotConfigured
             | ErrorCode::ModelAuthFailed
             | ErrorCode::ModelNotFound
+            | ErrorCode::ModelRefused
             | ErrorCode::StorageFull
             | ErrorCode::KeychainUnavailable
     )

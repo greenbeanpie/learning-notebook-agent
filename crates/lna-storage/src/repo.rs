@@ -493,7 +493,7 @@ pub fn list_profiles(db: &Database) -> LnaResult<Vec<ModelProfile>> {
                         show_thinking, effort, context_window, max_output_tokens,
                         capabilities_json, extra_headers_json, token_ratio,
                         input_price_per_m, output_price_per_m, is_active, created_at, updated_at,
-                        max_parallel
+                        max_parallel, preset, shrink_media
                  FROM model_profiles ORDER BY updated_at DESC",
             )
             .map_err(map_sql_err)?;
@@ -528,7 +528,7 @@ pub fn get_active_profile_unchecked(db: &Database) -> LnaResult<Option<ModelProf
                     show_thinking, effort, context_window, max_output_tokens,
                     capabilities_json, extra_headers_json, token_ratio,
                     input_price_per_m, output_price_per_m, is_active, created_at, updated_at,
-                        max_parallel
+                        max_parallel, preset, shrink_media
              FROM model_profiles WHERE is_active = 1 LIMIT 1",
             [],
             map_profile_row,
@@ -545,7 +545,7 @@ pub fn get_profile(db: &Database, id: &str) -> LnaResult<ModelProfile> {
                     show_thinking, effort, context_window, max_output_tokens,
                     capabilities_json, extra_headers_json, token_ratio,
                     input_price_per_m, output_price_per_m, is_active, created_at, updated_at,
-                        max_parallel
+                        max_parallel, preset, shrink_media
              FROM model_profiles WHERE id = ?1",
             [id],
             map_profile_row,
@@ -588,7 +588,9 @@ fn map_profile_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelProfile> {
         is_active: r.get::<_, i64>(15)? == 1,
         created_at: r.get(16)?,
         updated_at: r.get(17)?,
-        max_parallel: r.get::<_, i64>(18)?.clamp(1, 64) as u32,
+        max_parallel: r.get::<_, i64>(18)?.clamp(0, 1024) as u32,
+        preset: r.get::<_, Option<String>>(19)?.filter(|p| !p.is_empty()),
+        shrink_media: r.get::<_, i64>(20)? == 1,
     })
 }
 
@@ -655,7 +657,9 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                  show_thinking=?5, effort=?6, context_window=?7, max_output_tokens=?8,
                  extra_headers_json=?9, input_price_per_m=?10, output_price_per_m=?11,
                  capabilities_json=COALESCE(?15, capabilities_json), is_active=CASE WHEN ?12=1 THEN 1 ELSE is_active END, updated_at=?13,
-                 max_parallel=COALESCE(?16, max_parallel)
+                 max_parallel=COALESCE(?16, max_parallel),
+                 preset=CASE WHEN ?17 IS NULL THEN preset WHEN ?17 = '' THEN NULL ELSE ?17 END,
+                 shrink_media=COALESCE(?18, shrink_media)
                  WHERE id=?14",
                 params![
                     params_in.display_name,
@@ -673,7 +677,9 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                     now,
                     id,
                     merged_caps_json,
-                    params_in.max_parallel.map(|n| n.clamp(1, 64) as i64),
+                    params_in.max_parallel.map(|n| n.min(1024) as i64),
+                    params_in.preset.as_deref(),
+                    params_in.shrink_media.map(|b| if b { 1i64 } else { 0 }),
                 ],
             )
             .map_err(map_sql_err)?;
@@ -683,8 +689,9 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                 "INSERT INTO model_profiles
                  (id, display_name, protocol, base_url, model_id, keychain_ref, show_thinking,
                   effort, context_window, max_output_tokens, capabilities_json, extra_headers_json,
-                  input_price_per_m, output_price_per_m, is_active, created_at, updated_at, max_parallel)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                  input_price_per_m, output_price_per_m, is_active, created_at, updated_at, max_parallel,
+                  preset, shrink_media)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
                 params![
                     id,
                     params_in.display_name,
@@ -703,7 +710,9 @@ pub fn upsert_profile(db: &Database, params_in: &ProfileUpsertParams) -> LnaResu
                     if params_in.activate { 1 } else { 0 },
                     now,
                     now,
-                    params_in.max_parallel.unwrap_or(4).clamp(1, 64) as i64,
+                    params_in.max_parallel.unwrap_or(0).min(1024) as i64,
+                    params_in.preset.as_deref().filter(|p| !p.is_empty()),
+                    if params_in.shrink_media.unwrap_or(false) { 1i64 } else { 0 },
                 ],
             )
             .map_err(map_sql_err)?;

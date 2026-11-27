@@ -4,18 +4,9 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Hard upper bound on combined reasoning + output tokens per single LLM API request.
-pub const MAX_SINGLE_REQUEST_TOKENS: u32 = 8_192;
-
-/// Clamps a requested token budget so a single request's reasoning + output never exceeds 8192 tokens.
-#[inline]
-pub fn clamp_reasoning_and_output_tokens(requested: u32) -> u32 {
-    if requested == 0 {
-        MAX_SINGLE_REQUEST_TOKENS
-    } else {
-        requested.min(MAX_SINGLE_REQUEST_TOKENS)
-    }
-}
+/// Output-token limit used when a provider requires `max_tokens` and the profile has no limit
+/// (`max_output_tokens == 0`).
+pub const UNLIMITED_OUTPUT_FALLBACK_TOKENS: u32 = 32_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -164,10 +155,15 @@ pub struct ResolvedProfile {
     pub show_thinking: bool,
     pub effort: Option<String>,
     pub context_window: u32,
+    /// 0 = no output limit (the provider decides).
     pub max_output_tokens: u32,
     pub capabilities: ModelCapabilities,
     pub extra_headers: BTreeMap<String, String>,
     pub anthropic_version: String,
+    /// Provider preset id the profile was created from (e.g. "mimo"); `None` = custom.
+    pub preset: Option<String>,
+    /// Trade picture quality for capacity when sending media.
+    pub shrink_media: bool,
 }
 
 /// Placeholder an extra-header value may contain; it is replaced by the profile's API key.
@@ -176,6 +172,21 @@ pub const API_KEY_PLACEHOLDER: &str = "{api_key}";
 impl ResolvedProfile {
     pub fn trimmed_base(&self) -> &str {
         self.base_url.trim_end_matches('/')
+    }
+
+    /// True when the profile was created from the MiMo preset.
+    pub fn is_mimo(&self) -> bool {
+        self.preset.as_deref() == Some("mimo")
+    }
+
+    /// Output-token budget for prompt sizing and chunking. `max_output_tokens == 0` means no
+    /// limit was set, so budget a quarter of the context window (at most 32000, at least 1024).
+    pub fn output_budget(&self) -> u32 {
+        if self.max_output_tokens != 0 {
+            self.max_output_tokens
+        } else {
+            (self.context_window / 4).clamp(1024, UNLIMITED_OUTPUT_FALLBACK_TOKENS)
+        }
     }
 
     /// True when some extra header carries the key itself (e.g. `cf-aig-authorization: Bearer

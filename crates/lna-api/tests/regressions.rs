@@ -213,8 +213,8 @@ fn profile_upsert_ignores_client_capability_flags() {
     assert_eq!(caps["json_schema"], json!(false));
     assert_eq!(
         caps["supports_vision"],
-        json!(true),
-        "media flags are still the user's choice"
+        json!(false),
+        "media flags are never taken from the client"
     );
     drop(core);
     let _ = std::fs::remove_dir_all(&dir);

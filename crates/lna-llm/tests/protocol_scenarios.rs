@@ -88,6 +88,8 @@ fn profile(kind: ProtocolKind) -> ResolvedProfile {
         capabilities: ModelCapabilities::default(),
         extra_headers: Default::default(),
         anthropic_version: "2023-06-01".into(),
+        preset: None,
+        shrink_media: false,
     }
 }
 
@@ -582,13 +584,159 @@ fn d5_rejected_tools_or_structured_output_are_errors_not_downgrades() {
     assert!(capability_rejection("messages must not be empty", &req).is_none());
 }
 
+fn with_output_limit(limit: u32) -> LlmRequest {
+    let mut req = request(vec![user("hi")]);
+    req.max_output_tokens = limit;
+    req
+}
+
 #[test]
-fn hard_caps_reasoning_and_output_tokens_at_8192() {
-    use lna_llm::{clamp_reasoning_and_output_tokens, MAX_SINGLE_REQUEST_TOKENS};
-    assert_eq!(MAX_SINGLE_REQUEST_TOKENS, 8192);
-    assert_eq!(clamp_reasoning_and_output_tokens(0), 8192);
-    assert_eq!(clamp_reasoning_and_output_tokens(512), 512);
-    assert_eq!(clamp_reasoning_and_output_tokens(8192), 8192);
-    assert_eq!(clamp_reasoning_and_output_tokens(16384), 8192);
-    assert_eq!(clamp_reasoning_and_output_tokens(65536), 8192);
+fn zero_output_limit_omits_the_field_and_nonzero_is_sent_unclamped() {
+    let token_keys = ["max_completion_tokens", "max_tokens"];
+    for field in token_keys {
+        let mut p = profile(ProtocolKind::ChatCompletion);
+        p.capabilities.max_tokens_field = Some(field.into());
+        let (b, _) = build_body(ProtocolKind::ChatCompletion, &p, &with_output_limit(0));
+        assert!(b.get("max_completion_tokens").is_none(), "{field}: {b}");
+        assert!(b.get("max_tokens").is_none(), "{field}: {b}");
+
+        let (b, _) = build_body(ProtocolKind::ChatCompletion, &p, &with_output_limit(20_000));
+        assert_eq!(b[field], json!(20_000), "{field}");
+    }
+    // Responses: same rule for max_output_tokens.
+    let (b, _) = build_body(
+        ProtocolKind::Responses,
+        &profile(ProtocolKind::Responses),
+        &with_output_limit(0),
+    );
+    assert!(b.get("max_output_tokens").is_none());
+    let (b, _) = build_body(
+        ProtocolKind::Responses,
+        &profile(ProtocolKind::Responses),
+        &with_output_limit(20_000),
+    );
+    assert_eq!(b["max_output_tokens"], json!(20_000));
+}
+
+#[test]
+fn anthropic_sends_a_large_max_tokens_when_no_limit_is_set() {
+    let p = profile(ProtocolKind::Anthropic);
+    let (b, _) = build_body(ProtocolKind::Anthropic, &p, &with_output_limit(0));
+    assert_eq!(b["max_tokens"], json!(32_000));
+    let (b, _) = build_body(ProtocolKind::Anthropic, &p, &with_output_limit(20_000));
+    assert_eq!(b["max_tokens"], json!(20_000));
+}
+
+#[test]
+fn gemini_omits_max_output_tokens_when_no_limit_is_set() {
+    let p = profile(ProtocolKind::Gemini);
+    let (b, _) = build_body(ProtocolKind::Gemini, &p, &with_output_limit(0));
+    assert!(
+        b["generationConfig"].get("maxOutputTokens").is_none(),
+        "{b}"
+    );
+    let (b, _) = build_body(ProtocolKind::Gemini, &p, &with_output_limit(20_000));
+    assert_eq!(b["generationConfig"]["maxOutputTokens"], json!(20_000));
+}
+
+#[test]
+fn output_budget_falls_back_to_a_context_fraction_when_unlimited() {
+    let mut p = profile(ProtocolKind::ChatCompletion);
+    p.max_output_tokens = 0;
+    p.context_window = 32_000;
+    assert_eq!(p.output_budget(), 8_000);
+    p.context_window = 400_000;
+    assert_eq!(p.output_budget(), 32_000);
+    p.context_window = 2_000;
+    assert_eq!(p.output_budget(), 1_024);
+    p.max_output_tokens = 6_000;
+    assert_eq!(p.output_budget(), 6_000);
+}
+
+fn tool_starts(ev: &[LlmEvent]) -> Vec<(u32, String, String)> {
+    ev.iter()
+        .filter_map(|e| match e {
+            LlmEvent::ToolCallStart { index, id, name } => Some((*index, id.clone(), name.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn d1_tool_call_name_in_a_later_chunk_than_the_id_is_not_lost() {
+    // some relays send `id` with an empty name first and the name (or the arguments) afterwards
+    let raw = concat!(
+        r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"","arguments":""}}]}}]}"#,
+        "\n\n",
+        r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":"}}]}}]}"#,
+        "\n\n",
+        r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"search_sources","arguments":"1}"}}]}}]}"#,
+        "\n\n",
+        r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+        "\n\n",
+        "data: [DONE]\n\n",
+    );
+    let ev = decode(ProtocolKind::ChatCompletion, raw).unwrap();
+    assert_eq!(
+        tool_starts(&ev),
+        vec![(0, "c1".into(), "search_sources".into())]
+    );
+    assert_eq!(tool_args(&ev, 0), r#"{"q":1}"#);
+    assert_eq!(finished(&ev), Some(StopReason::ToolUse));
+}
+
+#[test]
+fn d1_tool_call_without_id_gets_one_and_without_name_is_dropped() {
+    let raw = concat!(
+        r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"list_sources","arguments":"{}"}},{"index":1,"function":{"arguments":"{}"}}]}}]}"#,
+        "\n\n",
+        r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+        "\n\n",
+    );
+    let ev = decode(ProtocolKind::ChatCompletion, raw).unwrap();
+    assert_eq!(
+        tool_starts(&ev),
+        vec![(0, "call_0".into(), "list_sources".into())]
+    );
+    assert_eq!(
+        ev.iter()
+            .filter(|e| matches!(e, LlmEvent::ToolCallEnd { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn d1_nameless_tool_calls_and_their_results_are_not_replayed() {
+    let mut req = request(vec![
+        user("go"),
+        LlmMessage {
+            role: Role::Assistant,
+            parts: vec![Part::ToolCall {
+                id: "call_x".into(),
+                name: String::new(),
+                arguments: json!({}),
+            }],
+        },
+        LlmMessage {
+            role: Role::Tool,
+            parts: vec![Part::ToolResult {
+                call_id: "call_x".into(),
+                content: "Unsupported tool.".into(),
+                is_error: false,
+            }],
+        },
+    ]);
+    req.tools = vec![];
+    let (body, _) = build_body(
+        ProtocolKind::ChatCompletion,
+        &profile(ProtocolKind::ChatCompletion),
+        &req,
+    );
+    let msgs = body["messages"].as_array().unwrap();
+    assert!(
+        msgs.iter()
+            .all(|m| m["role"] == "user" || m["role"] == "system"),
+        "{body}"
+    );
 }

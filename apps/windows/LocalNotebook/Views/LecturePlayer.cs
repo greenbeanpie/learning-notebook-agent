@@ -182,7 +182,7 @@ internal sealed class LecturePlayer : IDisposable
         };
         _askImages = new ImageAttachments(
             hwnd,
-            () => Root.XamlRoot,
+            () => Root!.XamlRoot,
             msg => notify(InfoBarSeverity.Warning, L10n.T("img.title"), msg));
         var send = new Button { Content = L10n.T("lec.send"), HorizontalAlignment = HorizontalAlignment.Right };
         send.Click += async (_, _) => await SendQuestionAsync();

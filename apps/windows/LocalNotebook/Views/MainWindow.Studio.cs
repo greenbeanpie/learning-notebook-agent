@@ -202,6 +202,7 @@ public sealed partial class MainWindow
             if (!string.IsNullOrWhiteSpace(name)) await CoreAsync("studio.rename", Args(("artifact_id", id), ("title", name.Trim())), L10n.T("studio.rename"));
         });
         if (status is "PENDING" or "RUNNING") Add(L10n.T("studio.cancel"), async () => { await CoreAsync("studio.cancel", Args(("artifact_id", id)), L10n.T("studio.cancel")); });
+        if (status is "PENDING" or "RUNNING") Add(L10n.T("studio.pause"), async () => { await CoreAsync("studio.pause", Args(("artifact_id", id)), L10n.T("studio.pause")); });
         if (status is "FAILED" or "CANCELLED") Add(L10n.T("studio.retry"), async () => { await CoreAsync("studio.retry", Args(("artifact_id", id)), L10n.T("studio.retry")); });
         if (status is "READY" or "FAILED" or "CANCELLED")
         {

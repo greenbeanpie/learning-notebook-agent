@@ -308,6 +308,10 @@ struct ArtifactViewerView: View {
                 Text(L10n.fmt("art.running_hint", en: state.isEnglish, state.t("studio.\(artifact.artifactType)"), stageLabel(artifact.stage)))
                     .font(.caption).foregroundColor(.secondary)
                 Spacer()
+                Button(state.t("studio.pause")) {
+                    Task { _ = await state.run("studio.pause", ["artifact_id": artifact.id]); await state.refreshAll() }
+                }
+                .buttonStyle(.bordered).controlSize(.small)
                 Button(state.t("art.cancel_gen")) {
                     Task { _ = await state.run("studio.cancel", ["artifact_id": artifact.id]); await state.refreshAll() }
                 }
@@ -323,8 +327,9 @@ struct ArtifactViewerView: View {
 
     private var cancelledBody: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(state.t("studio.cancelled")).font(.callout).foregroundColor(.secondary)
-            Button(state.t("studio.regenerate")) { Task { await state.retryArtifact(artifactId: artifact.id) } }
+            let paused = artifact.stage == "PAUSED"
+            Text(state.t(paused ? "studio.paused" : "studio.cancelled")).font(.callout).foregroundColor(.secondary)
+            Button(state.t(paused ? "studio.resume" : "studio.regenerate")) { Task { await state.retryArtifact(artifactId: artifact.id) } }
                 .buttonStyle(.bordered)
         }
     }
