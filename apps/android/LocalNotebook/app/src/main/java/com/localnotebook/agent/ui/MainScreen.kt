@@ -167,7 +167,7 @@ fun MainScreen(vm: AppViewModel) {
                             onOpenSource = { s -> vm.openSourcePreview(if (state.activeSourcePreview?.id == s.id) null else s) },
                             onOpenPdf = vm::openPdfAtPage,
                             onBuildKnowledgeGraph = { s -> vm.createStudio("knowledge_graph", topic = s.title, sourceId = s.id) },
-                            onAskTopic = { s, t -> vm.sendChat("Explain '$t' from ${s.title}") },
+                            onAskTopic = { s, t -> vm.sendChat(String.format(L10n.t("main.explain_topic", en), t, s.title)) },
                             modifier = Modifier.width(300.dp),
                         )
                         ChatScreen(
@@ -211,7 +211,7 @@ fun MainScreen(vm: AppViewModel) {
                             onOpenSource = { s -> vm.openSourcePreview(if (state.activeSourcePreview?.id == s.id) null else s) },
                             onOpenPdf = vm::openPdfAtPage,
                             onBuildKnowledgeGraph = { s -> vm.createStudio("knowledge_graph", topic = s.title, sourceId = s.id); selectedTab = 2 },
-                            onAskTopic = { s, t -> vm.sendChat("Explain '$t' from ${s.title}"); selectedTab = 1 },
+                            onAskTopic = { s, t -> vm.sendChat(String.format(L10n.t("main.explain_topic", en), t, s.title)); selectedTab = 1 },
                             modifier = Modifier.weight(1f),
                         )
                         1 -> ChatScreen(

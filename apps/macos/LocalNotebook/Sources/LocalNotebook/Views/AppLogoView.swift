@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Crisp vector rendering of the cross-platform Local Notebook Agent logo (`assets/logo.svg`).
 struct AppLogoView: View {
+    @EnvironmentObject var state: AppState
     var size: CGFloat = 30
     var accent: Color = Color(red: 0xA8/255, green: 0xC7/255, blue: 0xFA/255)
 
@@ -134,6 +135,6 @@ struct AppLogoView: View {
             ctx.fill(micro, with: .color(Color.white.opacity(0.9)))
         }
         .frame(width: size, height: size)
-        .accessibilityLabel("Local Notebook Agent Logo")
+        .accessibilityLabel(state.t("app.logo_label"))
     }
 }

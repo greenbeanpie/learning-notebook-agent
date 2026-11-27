@@ -19,20 +19,20 @@ const FIGURE_REVIEW_ROUNDS: usize = 2;
 
 pub(crate) const ELEMENT_IDS_GUIDE: &str = "ELEMENT IDS (laser targets and build targets) on a slide: \"title\", \"subtitle\", \"b1\"..\"bN\" (bullets, 1-based), \"card1\".., \"metric1\".., \"step1\".. (timeline steps), \"col1\"/\"col2\" (whole column) and \"col1.i2\" (item 2 of column 1), \"table\" and \"table.r1\" (row 1), \"formula\", \"callout\", \"figure\" (the whole figure) and \"figure:<part id>\" (one part of the figure, e.g. \"figure:V\", \"figure:F1\"). Only ids of elements that exist on that slide are valid.";
 
-pub(crate) const CUES_GUIDE: &str = "CUES (attached to the narration sentence during which they happen):\n- Laser pointer: {\"type\":\"laser\",\"target\":<element id>,\"shape\":\"circle\"|\"ellipse\",\"scale\":1.0-1.6 (ring size relative to the element),\"speed\":0.3-1.5 (revolutions per second),\"duration_ms\":800-6000, \"angle_deg\": -90..90 (optional ellipse tilt to align with a slanted element such as an incline, a slanted vector or a rotated block; omit for horizontal)}. Use it only for genuinely key points (about 1-3 per slide), never decoratively.\n- Step reveal: {\"type\":\"step\",\"n\":k} shows build step k of this slide.\nBUILDS (step-by-step animation): \"builds\": [{\"step\":1,\"targets\":[ids],\"effect\":\"appear\"|\"fade\"|\"fly_up\"|\"draw\"|\"emphasis\"|\"dim_others\"}]. Steps are numbered 1..K consecutively; elements not listed are visible from the start. Every step must be revealed by exactly one {\"type\":\"step\"} cue, in increasing order, on the sentence where that content is first explained. Use builds for derivations, procedures, comparisons and lists explained one item at a time; keep simple slides static. \"draw\" suits figure curves/arrows; \"emphasis\"/\"dim_others\" highlight something already visible.";
+pub(crate) const CUES_GUIDE: &str = "CUES (attached to the narration sentence during which they happen):\n- Laser pointer: {\"type\":\"laser\",\"target\":<element id>,\"shape\":\"circle\"|\"ellipse\",\"scale\":1.0-1.6 (ring size relative to the element),\"speed\":0.3-1.5 (revolutions per second),\"duration_ms\":800-6000, \"angle_deg\": -90..90 (optional ellipse tilt to align with a slanted element such as an incline, a slanted vector or a rotated block; omit for horizontal), \"at\": <optional: the exact words of this sentence at which pointing starts>, \"style\": <optional: \"glow\" (the figure part flashes in colour; default for figure parts), \"marker\" (a highlighter sweep; default for wide text such as a table row), \"ring\" (a circling dot; default for small text)>}. Use it for the things the sentence is about, never decoratively. ONE POINTER PER THING NAMED: when a sentence names two or more things on the slide (e.g. \"the part perpendicular to the axis is r-perp, the part along the axis is z times k\"), give each its own laser cue, in the order they are spoken, each with \"at\" set to the words where it is named; the pointer then moves from one to the next as they are spoken. Point at the precise thing (one figure part, one bullet, one table row), not at a whole figure or table.\n- Step reveal: {\"type\":\"step\",\"n\":k} shows build step k of this slide.\nBUILDS (step-by-step animation): \"builds\": [{\"step\":1,\"targets\":[ids],\"effect\":\"appear\"|\"fade\"|\"fly_up\"|\"draw\"|\"emphasis\"|\"dim_others\"}]. Steps are numbered 1..K consecutively; elements not listed are visible from the start. Every step must be revealed by exactly one {\"type\":\"step\"} cue, in increasing order, on the sentence where that content is first explained. Use builds for derivations, procedures, comparisons and lists explained one item at a time; keep simple slides static. \"draw\" suits figure curves/arrows; \"emphasis\"/\"dim_others\" highlight something already visible. A figure part never appears before what it hangs on: projection or guide lines, labels, angle marks and components appear in the same step as (or after) the vector, line or point they belong to — put them in that step's targets (parts left out of every build are visible from the start).";
 
-pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: content that is obviously geometric or physical (vectors, forces, torques, coordinate systems, angles, shapes, trajectories, function graphs, surfaces) MUST have a figure; for anything else add one when a function graph, implicit curve, 3-D surface, geometric figure or physics diagram genuinely helps. Add \"figure_request\": {\"kind\":\"plot\"|\"plot3d\"|\"diagram\",\"purpose\":\"what it must show\",\"details\":\"exact functions, ranges, points, forces, angles, labels AND the part ids you will reference\"} to the slide (normally with layout \"figure\"). A separate drawing step turns it into a precise figure. In details, name each part you reference with an explicit id (e.g. \"curve id f: y=x^2-2x on [-1,3]; point id V at (1,-1) labelled 顶点; vector id G downward labelled G\") and use exactly those ids as figure:<id> in cues and builds. FIGURE + TEXT TOGETHER (important): a figure must never sit alone on a slide. The slide that shows a figure also carries the text that explains it — 2-3 very short (under ~16 Chinese characters or ~8 English words each) \"bullets\" and/or a \"formula\" stating the problem or claim and the key result, shown left of the figure — and the figure's labels use the same symbols as that text. Put the example's statement and its figure on the SAME slide; do not state an example on one slide and show its figure on the next, and do not use \"display_only\" for a figure slide. Narrate the text and the figure together: in each sentence point the laser at the figure part (figure:<id>) or bullet (b1..) being spoken about, and use builds so each bullet and its matching figure part appear in the same step.";
+pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: content that is obviously geometric or physical (vectors, forces, torques, coordinate systems, angles, shapes, trajectories, function graphs, surfaces) MUST have a figure; for anything else add one when a function graph, implicit curve, 3-D surface, geometric figure or physics diagram genuinely helps. Add \"figure_request\": {\"kind\":\"plot\"|\"plot3d\"|\"diagram\",\"purpose\":\"what it must show\",\"details\":\"exact functions, ranges, points, forces, angles, labels AND the part ids you will reference\"} to the slide (normally with layout \"figure\"). A separate drawing step turns it into a precise figure. In details, name each part you reference with an explicit id (e.g. \"curve id f: y=x^2-2x on [-1,3]; point id V at (1,-1) labelled 顶点; vector id G downward labelled G\") and use exactly those ids as figure:<id> in cues and builds. FIGURE + TEXT TOGETHER (important): a figure must never sit alone on a slide. The slide that shows a figure also carries the text that explains it — 2-3 very short (under ~16 Chinese characters or ~8 English words each) \"bullets\", a \"formula\" and/or a compact \"table\" (at most 4 rows, 2-3 short columns) stating the problem or claim and the key result, shown left of the figure — and the figure's labels use the same symbols as that text. Put the example's statement and its figure on the SAME slide; do not state an example on one slide and show its figure on the next, and do not use \"display_only\" for a figure slide. Narrate the text and the figure together: in each sentence point the laser at the figure part (figure:<id>) or bullet (b1..) being spoken about, and use builds so each bullet and its matching figure part appear in the same step.";
 
 /// Judgement rules shared by the planner and the authors: how much to say, to whom, and what
 /// never to talk about. They are principles, not page counts, so the model sizes the lecture itself.
-pub(crate) const TEACHING_JUDGEMENT: &str = "TEACHING JUDGEMENT (applies to the plan and to every slide):\n- ECONOMY: every slide must earn its place. Before adding one ask: would a student who already has the prerequisites miss something if it were removed? If not, leave it out. No orientation, agenda, section-divider, recap or \"where we are\" slides unless the lecture truly spans several topics. A derivation is taught as its sequence of steps in order, pausing only where a step is not obvious (a non-trivial identity, a choice, a physical argument) and moving quickly through routine algebra. Plan the fewest sections that teach the scope: a single derivation or exercise is ONE section.\n- VISUALS (show before you tell): content that is obviously geometric or physical — vectors, forces and torques, coordinate systems and angles, shapes, motion paths, function graphs, surfaces — MUST be shown with a figure (figure_request: diagram, plot or plot3d) while it is explained, and the figure's parts appear step by step (builds on figure:<id>) in step with the equations or bullets, with the laser on the part being spoken about. A page that is only a worked derivation (algebra steps, a proof, a calculation) is SUGGESTED to use visuals or animation: reveal the steps one at a time, highlight the current step, and add a small figure when one truly clarifies; when no figure fits, the step-by-step reveal is enough. Never invent a figure just to have one. A slide that carries a needed figure or a step-by-step build earns its place under ECONOMY.\n- LEARNER: infer the learner's level from the material itself (a university student working at this point of the course) and assume the usual prerequisites are known: do not define or re-teach prerequisite concepts, standard operations or notation (for example the cross product, derivatives or vector decomposition in a mechanics derivation). Explain only what is new or non-obvious in the material. If the user's request explicitly asks for background, give it.\n- NEVER TALK ABOUT HOW THIS LECTURE WAS PRODUCED: no OCR, text recognition or scan quality/noise, no image extraction, no outline, plan, section or generation steps, and no navigation such as \"this page sits in the derivation chain\". Speak as the teacher who wrote the lesson, about the content. Mentioning the textbook as a teaching resource (e.g. \"see the book's worked example\") is fine when it helps.";
+pub(crate) const TEACHING_JUDGEMENT: &str = "TEACHING JUDGEMENT (applies to the plan and to every slide):\n- ECONOMY: every slide must earn its place. Before adding one ask: would a student who already has the prerequisites miss something if it were removed? If not, leave it out. No orientation, agenda, section-divider, recap or \"where we are\" slides unless the lecture truly spans several topics (a recap repeats what was just said; a method summary or extension after a problem adds something and is allowed, see PROBLEMS). A derivation is taught as its sequence of steps in order, pausing only where a step is not obvious (a non-trivial identity, a choice, a physical argument) and moving quickly through routine algebra. Plan the fewest sections that teach the scope: a single derivation or exercise is ONE section.\n- VISUALS (show before you tell): content that is obviously geometric or physical — vectors, forces and torques, coordinate systems and angles, shapes, motion paths, function graphs, surfaces — MUST be shown with a figure (figure_request: diagram, plot or plot3d) while it is explained, and the figure's parts appear step by step (builds on figure:<id>) in step with the equations or bullets, with the laser on the part being spoken about. A page that is only a worked derivation (algebra steps, a proof, a calculation) is SUGGESTED to use visuals or animation: reveal the steps one at a time, highlight the current step, and add a small figure when one truly clarifies; when no figure fits, the step-by-step reveal is enough. Never invent a figure just to have one. A slide that carries a needed figure or a step-by-step build earns its place under ECONOMY. Reasoning about vectors inside a derivation (directions of terms, components along an axis, which cross products vanish, signs of torques) is geometric content, not mere algebra: draw the vectors and the axis.\n- FILL THE SLIDE: a 16:9 slide holding only a short table, two or three bullets or one formula is mostly empty space. Put the figure that shows what that text states beside it (the text — bullets, formula or a compact table — sits left of the figure on the same slide), or merge the text into the neighbouring slide it belongs to. A table that lists directions, components or cases of vectors belongs next to a drawing of those vectors, with each row and its figure part revealed together.\n- LEARNER: infer the learner's level from the material itself (a university student working at this point of the course) and assume the usual prerequisites are known: do not define or re-teach prerequisite concepts, standard operations or notation (for example the cross product, derivatives or vector decomposition in a mechanics derivation). Explain only what is new or non-obvious in the material. If the user's request explicitly asks for background, give it.\n- PROBLEMS (an exercise, an example, a question or a derivation to work through): go straight to the problem and solve it. No slides that review, define or teach concepts, theorems, formulas or methods before the solution (no \"prerequisites\", \"knowledge review\", \"first let's recall ...\" or \"basic concepts\" slides or sections). When a step uses a known result, name it in one short clause at that step as the reason for the step (e.g. \"by the parallel-axis theorem, ...\") and move on; do not derive, prove or illustrate the known result itself. Only the non-obvious idea that unlocks this particular problem deserves explanation, and it is explained inside the step where it is used. AFTER THE SOLUTION (allowed, not required): once the problem is solved you may close with what the learner should take away from it — a method summary (the general approach and when it applies), an extension or generalisation (what changes if a condition changes, a variant, a related problem type), common mistakes, or a quick check of the result. Keep it to what genuinely adds value (usually one slide, at most two) and keep it tied to this problem; this is where connections to the wider topic belong, never before the solution.\n- NEVER TALK ABOUT HOW THIS LECTURE WAS PRODUCED: no OCR, text recognition or scan quality/noise, no image extraction, no outline, plan, section or generation steps, and no navigation such as \"this page sits in the derivation chain\". Speak as the teacher who wrote the lesson, about the content. Mentioning the textbook as a teaching resource (e.g. \"see the book's worked example\") is fine when it helps.";
 
 /// Mode/detail rules for the lecture author.
 pub(crate) fn lecture_rules(mode: &str, detail: &str) -> String {
     let mode_rule = match mode {
         "preview" => "MODE preview (first-time learning of a unit): state the learning goals first, then teach concepts in a gentle order — concept → intuition → example → common pitfalls; highlight each new term with the laser the first time it appears.",
         "review" => "MODE review (consolidation of material already learned): recap key points, connect and contrast related ideas, interleave topics, call out common mistakes, end with a compact summary. Give extra time to the weak concepts listed below and pass quickly over mastered ones. Do not re-teach from scratch.",
-        "practice" => "MODE practice (problem solving): build the lecture around problems. For each problem: one slide presenting the problem, with checkpoint {\"kind\":\"attempt\",\"question\":<the task>,\"expect\":<final answer>} so the learner solves it first; then worked-solution slides revealed step by step with builds and laser cues on each step; then a variant problem with less guidance (fading). Draw figures for problems that need them.",
+        "practice" => "MODE practice (problem solving): build the lecture around problems. Start with the first problem — no concept-review slides before it. For each problem: one slide presenting the problem, with checkpoint {\"kind\":\"attempt\",\"question\":<the task>,\"expect\":<final answer>} so the learner solves it first; then worked-solution slides revealed step by step with builds and laser cues on each step; then a variant problem with less guidance (fading). Draw figures for problems that need them.",
         _ => "MODE general: explain the requested material clearly for any kind of content (textbook, paper, article, a question, a derivation): lead with what the material says and how it works; add why it matters or a summary only where they genuinely help. Do not assume a textbook structure, and do not force a what → why → how template onto a short or purely technical piece of material.",
     };
     let detail_rule = match detail {
@@ -70,7 +70,9 @@ pub(crate) fn cue_schema() -> Value {
             "angle_deg": { "type": "number" },
             "speed": { "type": "number" },
             "duration_ms": { "type": "integer" },
-            "n": { "type": "integer" }
+            "n": { "type": "integer" },
+            "at": { "type": "string" },
+            "style": { "type": "string", "enum": ["auto", "ring", "glow", "marker"] }
         }
     })
 }
@@ -308,6 +310,28 @@ fn num_in(v: &Value, k: &str, lo: f64, hi: f64) -> Result<(), String> {
 /// Phrases that show the text is about how the lecture was produced (reading the scan, the
 /// plan, "this page" in a chain) instead of about the subject. Mentions of the book as a
 /// teaching resource are deliberately not in the list.
+/// Slide titles of a prerequisite/review detour (taught before getting to the actual problem).
+/// Checked outside review mode only, where recapping is the point.
+const PREREQ_TITLES: &[&str] = &[
+    "前置知识",
+    "预备知识",
+    "知识回顾",
+    "知识复习",
+    "基础回顾",
+    "基础知识",
+    "概念回顾",
+    "先复习",
+    "先回顾",
+    "prerequisite",
+    "background knowledge",
+    "review of basics",
+];
+
+fn prereq_title(title: &str) -> Option<&'static str> {
+    let lower = title.to_lowercase();
+    PREREQ_TITLES.iter().find(|p| lower.contains(**p)).copied()
+}
+
 const PROCESS_PHRASES: &[&str] = &[
     "ocr",
     "识别噪声",
@@ -335,6 +359,79 @@ fn process_talk(text: &str) -> Option<&'static str> {
         .iter()
         .find(|p| lower.contains(**p))
         .copied()
+}
+
+fn has_figure(slide: &Value) -> bool {
+    slide.get("figure_request").is_some_and(Value::is_object)
+        || slide.get("figure").is_some_and(Value::is_object)
+}
+
+/// A content slide that shows only a little text (a short table, a few bullets or one formula)
+/// and no figure: on a 16:9 slide that leaves most of the page empty.
+pub(crate) fn sparse_text_only(slide: &Value) -> bool {
+    if has_figure(slide) || slide.get("display_only").is_some_and(Value::is_object) {
+        return false;
+    }
+    let layout = sv(slide, "layout");
+    if ["title", "summary", "section", "agenda", "quote"].contains(&layout.as_str()) {
+        return false;
+    }
+    let table_rows = arr_len(slide.get("table").unwrap_or(&Value::Null), "rows");
+    if layout == "table" && table_rows > 0 {
+        return table_rows <= 4;
+    }
+    let col_items: usize = slide
+        .get("columns")
+        .and_then(Value::as_array)
+        .map(|c| c.iter().map(|c| arr_len(c, "items")).sum())
+        .unwrap_or(0);
+    let items = arr_len(slide, "bullets")
+        + arr_len(slide, "cards")
+        + arr_len(slide, "metrics")
+        + arr_len(slide, "steps")
+        + col_items
+        + table_rows
+        + usize::from(!sv(slide, "formula").is_empty());
+    items <= 3
+}
+
+/// Section-level visual checks: a geometric section needs figures on its slides, not one
+/// figure somewhere; a derivation section should at least reveal short slides step by step.
+pub(crate) fn check_section_visuals(slides: &[Value], visual_need: &str) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    if visual_need == "required" && !slides.iter().any(has_figure) {
+        issues.push(Issue {
+            slide: 0,
+            msg: "this section is obviously geometric or physical but no slide has a \"figure_request\"; give the slide that introduces it a figure (layout \"figure\", with the explaining bullets/formula/table beside it) and reveal its parts step by step with builds on figure:<id> in step with the narration".into(),
+            fix: Fix::None,
+        });
+    }
+    for (si, s) in slides.iter().enumerate() {
+        if !sparse_text_only(s) {
+            continue;
+        }
+        match visual_need {
+            "required" => issues.push(Issue {
+                slide: si,
+                msg: "shows only a short table/list with no figure, so most of the slide is empty, in a section that is geometric or physical; add a \"figure_request\" that draws what this text describes (for a table of directions, components or products of vectors: draw those vectors and the axis), keep the table/bullets/formula on the same slide beside the figure, and reveal each row/bullet together with its figure part (builds on table.rN or bN plus figure:<id>, laser on the part being spoken about)".into(),
+                fix: Fix::None,
+            }),
+            "suggested" if slide_builds_empty(s) => issues.push(Issue {
+                slide: si,
+                msg: "shows only a short table/list with no figure and no step-by-step reveal, so the slide is static and mostly empty; reveal its rows/bullets one at a time with builds and step cues in step with the narration, and add a \"figure_request\" (with the text kept beside the figure) if a diagram genuinely shows what it states".into(),
+                fix: Fix::None,
+            }),
+            _ => {}
+        }
+    }
+    issues
+}
+
+fn slide_builds_empty(slide: &Value) -> bool {
+    slide
+        .get("builds")
+        .and_then(Value::as_array)
+        .is_none_or(|b| b.is_empty())
 }
 
 /// Checks lecture slides (one section or a whole lecture). `label(i)` names slide i in messages.
@@ -393,10 +490,22 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
             });
         }
 
+        // a detour through prerequisites before the actual material (review mode recaps on purpose)
+        if mode != "review" {
+            if let Some(term) = prereq_title(&sv(slide, "title")) {
+                issues.push(Issue {
+                    slide: si,
+                    msg: format!("is a prerequisite/review slide (\"{term}\"); the learner already knows the prerequisites, so do not teach known concepts here: go straight to the material and, where a step needs a known result, name it in one clause at that step (unless the user's request explicitly asked for background)"),
+                    fix: Fix::None,
+                });
+            }
+        }
+
         // a figure never stands alone: the text that explains it sits on the same slide
         if (slide.get("figure_request").is_some_and(Value::is_object)
             || slide.get("figure").is_some_and(Value::is_object))
             && sv(slide, "formula").is_empty()
+            && arr_len(slide.get("table").unwrap_or(&Value::Null), "rows") == 0
             && !slide
                 .get("bullets")
                 .and_then(Value::as_array)
@@ -704,6 +813,151 @@ pub fn sanitize_deck_builds(slides: &mut [Value]) -> Vec<String> {
         renumber_builds(slide);
     }
     log
+}
+
+const ENTRANCE_EFFECTS: [&str; 4] = ["appear", "fade", "fly_up", "draw"];
+
+/// Keeps a figure part from appearing before what it hangs on: a projection line drawn from
+/// an arrow tip, the label of a vector or an angle mark between two lines waits for them.
+/// Uses the attachment groups the figure engine reports (`figure.meta.parts[].anchors`): a
+/// part may appear only once every attachment point of it is drawn by something already
+/// visible. Parts the narration points at earlier stay where they are. Returns the moved
+/// part ids.
+pub(crate) fn order_figure_builds(slide: &mut Value) -> Vec<String> {
+    let parts = slide
+        .pointer("/figure/meta/parts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let builds = slide
+        .get("builds")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if parts.is_empty() || builds.is_empty() {
+        return Vec::new();
+    }
+    let is_entrance = |b: &Value| {
+        ENTRANCE_EFFECTS.contains(&b.get("effect").and_then(Value::as_str).unwrap_or("fade"))
+    };
+    let mut step: HashMap<String, i64> = parts.iter().map(|p| (sv(p, "id"), 0)).collect();
+    for b in builds.iter().filter(|b| is_entrance(b)) {
+        let s = b.get("step").and_then(Value::as_i64).unwrap_or(0);
+        for t in b
+            .get("targets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let t = t.as_str().unwrap_or("");
+            if t == "figure" {
+                return Vec::new(); // the whole figure is one build: nothing to order inside it
+            }
+            if let Some(e) = t.strip_prefix("figure:").and_then(|id| step.get_mut(id)) {
+                *e = if *e == 0 { s } else { (*e).min(s) };
+            }
+        }
+    }
+    // the step during which the narration first points at each part
+    let mut pointed: HashMap<String, i64> = HashMap::new();
+    let mut cur = 0;
+    for n in slide
+        .get("narration")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for c in n
+            .get("cues")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if sv(c, "type") == "step" {
+                cur = cur.max(c.get("n").and_then(Value::as_i64).unwrap_or(0));
+            }
+        }
+        for c in n
+            .get("cues")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if sv(c, "type") == "laser" {
+                if let Some(id) = sv(c, "target").strip_prefix("figure:") {
+                    pointed.entry(id.to_string()).or_insert(cur);
+                }
+            }
+        }
+    }
+    let anchors: Vec<(String, Vec<Vec<String>>)> = parts
+        .iter()
+        .filter_map(|p| {
+            let groups: Vec<Vec<String>> =
+                serde_json::from_value(p.get("anchors")?.clone()).ok()?;
+            Some((sv(p, "id"), groups))
+        })
+        .collect();
+    let mut moved: Vec<String> = Vec::new();
+    for _ in 0..=parts.len() {
+        let mut changed = false;
+        for (id, groups) in &anchors {
+            let need = groups
+                .iter()
+                .map(|g| {
+                    g.iter()
+                        .map(|m| step.get(m).copied().unwrap_or(0))
+                        .min()
+                        .unwrap_or(0)
+                })
+                .max()
+                .unwrap_or(0);
+            let have = step.get(id).copied().unwrap_or(0);
+            if have < need && pointed.get(id).is_none_or(|p| *p >= need) {
+                step.insert(id.clone(), need);
+                if !moved.contains(id) {
+                    moved.push(id.clone());
+                }
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    if moved.is_empty() {
+        return moved;
+    }
+    let Some(bs) = slide.get_mut("builds").and_then(Value::as_array_mut) else {
+        return Vec::new();
+    };
+    for id in &moved {
+        let target = format!("figure:{id}");
+        for b in bs.iter_mut().filter(|b| is_entrance(b)) {
+            if let Some(t) = b.get_mut("targets").and_then(Value::as_array_mut) {
+                t.retain(|x| x.as_str() != Some(target.as_str()));
+            }
+        }
+        let k = step[id];
+        match bs
+            .iter_mut()
+            .find(|b| is_entrance(b) && b.get("step").and_then(Value::as_i64) == Some(k))
+        {
+            Some(b) => {
+                if let Some(t) = b.get_mut("targets").and_then(Value::as_array_mut) {
+                    t.push(json!(target));
+                }
+            }
+            None => bs.push(json!({"step": k, "targets": [target], "effect": "fade"})),
+        }
+    }
+    bs.retain(|b| {
+        b.get("targets")
+            .and_then(Value::as_array)
+            .is_some_and(|t| !t.is_empty())
+    });
+    renumber_builds(slide);
+    moved
 }
 
 fn renumber_builds(slide: &mut Value) {
@@ -1415,19 +1669,7 @@ impl StudioService {
 
         for round in 0..=LECTURE_REPAIR_ROUNDS {
             let mut issues = check_lecture_slides(&slides, mode);
-            // an obviously geometric or physical section without any figure: ask for one
-            if sc.visual_need == "required"
-                && !slides.iter().any(|s| {
-                    s.get("figure_request").is_some_and(Value::is_object)
-                        || s.get("figure").is_some_and(Value::is_object)
-                })
-            {
-                issues.push(Issue {
-                    slide: 0,
-                    msg: "this section is obviously geometric or physical but no slide has a \"figure_request\"; give the slide that introduces it a figure (layout \"figure\", with the explaining bullets/formula beside it) and reveal its parts step by step with builds on figure:<id> in step with the narration".into(),
-                    fix: Fix::None,
-                });
-            }
+            issues.extend(check_section_visuals(&slides, sc.visual_need));
             if issues.is_empty() {
                 break;
             }
@@ -1537,10 +1779,27 @@ impl StudioService {
                 }
             }
         }
-        for s in slides.iter_mut() {
+        let mut moved_log = Vec::new();
+        for (i, s) in slides.iter_mut().enumerate() {
             if let Some(o) = s.as_object_mut() {
                 o.remove("figure_request");
             }
+            let moved = order_figure_builds(s);
+            if !moved.is_empty() {
+                moved_log.push(format!("第 {} 页：{}", i + 1, moved.join("、")));
+            }
+        }
+        if !moved_log.is_empty() {
+            self.append_thought(
+                artifact_id,
+                &art.notebook_id,
+                "stage",
+                &format!("图形出现顺序：{}", sc.section_title),
+                &format!(
+                    "以下图形部件依附于后出现的部件，已改为与其一同出现：\n{}",
+                    moved_log.join("\n")
+                ),
+            );
         }
         Ok((slides, usage))
     }
@@ -1651,10 +1910,10 @@ impl StudioService {
                 );
                 let req = LlmRequest {
                     system: format!(
-                        "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. Resolve the requested scope (topic, problem or unit given in config.topic; the user's attached material if any; the whole selection only if neither is given) against the sources, then plan a narrated lesson: title, learning objectives, and ordered sections. Each section has a title and a \"focus\" naming exactly which concepts/problems/source parts (chapters, sections, pages) it covers, plus an optional slides_hint (keep it small: slides are only as many as the section needs). Also give every section \"visual_need\": \"required\" when its content is obviously geometric or physical (vectors, forces, torques, angles, shapes, trajectories, graphs, surfaces), \"suggested\" when it is mainly a worked derivation, proof or calculation, otherwise \"none\"; and \"visual\": what to draw and how its parts are revealed step by step together with the explanation (empty when none). {}\nIf an approved outline is given, follow it. Strictly ground the plan in the sources. Match the language requested in config or the primary language of the sources.{}",
+                        "You are the Local Notebook Studio lecture planner producing structured JSON for lecture outline. Resolve the requested scope (topic, problem or unit given in config.topic; the user's attached material if any; the whole selection only if neither is given) against the sources, then plan a narrated lesson: title, learning objectives, and ordered sections. Each section has a title and a \"focus\" naming exactly which concepts/problems/source parts (chapters, sections, pages) it covers, plus an optional slides_hint (keep it small: slides are only as many as the section needs). Also give every section \"visual_need\": \"required\" when its content is obviously geometric or physical (vectors, forces, torques, angles, shapes, trajectories, graphs, surfaces) — including a derivation whose steps reason about vector directions, components or cross products, \"suggested\" when it is mainly a worked derivation, proof or calculation, otherwise \"none\"; and \"visual\": what to draw and how its parts are revealed step by step together with the explanation (empty when none). {}\nIf an approved outline is given, follow it. Strictly ground the plan in the sources. Match the language requested in config or the primary language of the sources.{}",
                         lecture_rules(&mode, &detail),
                         if has_user_material(&art.config) {
-                            format!("\n{USER_MATERIAL_SCOPE} A single exercise needs only a few sections (the problem, its solution steps, and at most the one concept it hinges on), never the whole chapter.")
+                            format!("\n{USER_MATERIAL_SCOPE} A single exercise needs only a few sections (the problem and its solution steps), never the whole chapter and never a concept-review or prerequisites section before the solution; a short closing part after the solution (method summary, extension, common mistakes) is fine when it adds value.")
                         } else {
                             String::new()
                         }
@@ -2804,5 +3063,143 @@ mod texify_tests {
         let mut s = json!({"title": "纯文本", "bullets": ["a", "b"], "table": {"headers": ["h"], "rows": [["c"]]}});
         texify_slide_text(&mut s);
         assert!(s.get("_src").is_none());
+    }
+}
+
+#[cfg(test)]
+mod visual_tests {
+    use super::*;
+
+    fn table_slide(rows: usize) -> Value {
+        json!({"layout": "table", "title": "t", "narration": [{"text": "x"}],
+               "table": {"headers": ["项", "方向"], "rows": vec![json!(["a", "b"]); rows]}})
+    }
+
+    #[test]
+    fn short_table_without_figure_is_sparse() {
+        assert!(sparse_text_only(&table_slide(4)));
+        assert!(!sparse_text_only(&table_slide(6)));
+        let mut with_fig = table_slide(4);
+        with_fig["figure_request"] = json!({"kind": "diagram", "purpose": "p", "details": "d"});
+        assert!(!sparse_text_only(&with_fig));
+        assert!(!sparse_text_only(&json!({"layout": "title", "title": "t"})));
+        assert!(sparse_text_only(
+            &json!({"layout": "bullets", "title": "t", "bullets": ["a", "b"]})
+        ));
+    }
+
+    #[test]
+    fn geometric_section_flags_each_sparse_slide() {
+        let mut fig = table_slide(2);
+        fig["figure"] = json!({"meta": {"parts": []}});
+        let slides = vec![fig, table_slide(4)];
+        let issues = check_section_visuals(&slides, "required");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].slide, 1);
+
+        // a derivation section only asks for a step reveal, and is satisfied by one
+        assert_eq!(
+            check_section_visuals(&[table_slide(3)], "suggested").len(),
+            1
+        );
+        let mut built = table_slide(3);
+        built["builds"] = json!([{"step": 1, "targets": ["table.r1"]}]);
+        assert!(check_section_visuals(&[built], "suggested").is_empty());
+        assert!(check_section_visuals(&[table_slide(3)], "none").is_empty());
+    }
+
+    #[test]
+    fn table_counts_as_text_beside_a_figure() {
+        let mut s = table_slide(2);
+        s["figure"] = json!({"meta": {"parts": []}});
+        let issues = check_lecture_slides(&[s], "general");
+        assert!(!issues.iter().any(|i| i.msg.contains("no on-screen text")));
+    }
+}
+
+#[cfg(test)]
+mod figure_order_tests {
+    use super::*;
+
+    fn slide(h_anchors: Value, h_laser_first: bool) -> Value {
+        let first_cues = if h_laser_first {
+            json!([{"type": "step", "n": 1}, {"type": "laser", "target": "figure:h"}])
+        } else {
+            json!([{"type": "step", "n": 1}])
+        };
+        json!({
+            "layout": "figure", "title": "t", "bullets": ["a", "b"],
+            "figure": {"meta": {"parts": [
+                {"id": "P", "bbox": [0, 0, 0, 0]},
+                {"id": "V", "bbox": [0, 0, 0, 0]},
+                {"id": "h", "bbox": [0, 0, 0, 0], "anchors": h_anchors},
+                {"id": "lbl", "bbox": [0, 0, 0, 0], "anchors": [["h"]]}
+            ]}},
+            "builds": [
+                {"step": 1, "targets": ["b1"], "effect": "fade"},
+                {"step": 2, "targets": ["b2", "figure:V"], "effect": "draw"}
+            ],
+            "narration": [
+                {"text": "一", "cues": first_cues},
+                {"text": "二", "cues": [{"type": "step", "n": 2}]}
+            ]
+        })
+    }
+
+    fn step_of(s: &Value, target: &str) -> Option<i64> {
+        s["builds"].as_array().unwrap().iter().find_map(|b| {
+            b["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == target)
+                .then(|| b["step"].as_i64().unwrap())
+        })
+    }
+
+    #[test]
+    fn helper_and_its_label_wait_for_the_vector() {
+        let mut s = slide(json!([["V"]]), false);
+        let moved = order_figure_builds(&mut s);
+        assert_eq!(moved, vec!["h".to_string(), "lbl".to_string()]);
+        assert_eq!(step_of(&s, "figure:h"), Some(2));
+        assert_eq!(step_of(&s, "figure:lbl"), Some(2));
+        assert!(check_lecture_slides(std::slice::from_ref(&s), "general")
+            .iter()
+            .all(|i| !i.msg.contains("step")));
+    }
+
+    #[test]
+    fn point_already_drawn_or_pointed_at_keeps_order() {
+        // the shared point is also on the static P: nothing to wait for
+        let mut s = slide(json!([["P", "V"]]), false);
+        assert!(order_figure_builds(&mut s).is_empty());
+        // the narration points at h before V appears: leave it visible
+        let mut s = slide(json!([["V"]]), true);
+        let moved = order_figure_builds(&mut s);
+        assert!(!moved.contains(&"h".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod prereq_tests {
+    use super::*;
+
+    fn slide(title: &str) -> Value {
+        json!({"layout": "bullets", "title": title, "bullets": ["a", "b", "c", "d"], "narration": [{"text": "讲解"}]})
+    }
+
+    #[test]
+    fn prerequisite_detours_are_flagged_outside_review_mode() {
+        let flagged = |t: &str, mode: &str| {
+            check_lecture_slides(&[slide(t)], mode)
+                .iter()
+                .any(|i| i.msg.contains("prerequisite/review slide"))
+        };
+        assert!(flagged("前置知识：叉乘", "general"));
+        assert!(flagged("先回顾一下转动惯量", "practice"));
+        assert!(flagged("Prerequisites", "preview"));
+        assert!(!flagged("前置知识：叉乘", "review"));
+        assert!(!flagged("第一步：写出力矩", "general"));
     }
 }

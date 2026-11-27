@@ -276,7 +276,7 @@ private fun ChatMessageCard(
                         modifier = Modifier.clickable { onClickCitation(c.no) },
                     ) {
                         Text(
-                            text = if (c.pageStart > 0) "${c.no} · p.${c.pageStart}" else "${c.no}",
+                            text = if (c.pageStart > 0) "${c.no} · ${String.format(L10n.t("main.page_short", en), c.pageStart)}" else "${c.no}",
                             color = Color(0xFFC6CEDC),
                             fontSize = 11.5.sp,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),

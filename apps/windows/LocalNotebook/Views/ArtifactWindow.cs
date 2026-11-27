@@ -1064,7 +1064,8 @@ public sealed class ArtifactViewerPane : IDisposable
         var cfg = Obj(art, "config");
         var promptText = Str(cfg, "topic").Trim();
         var srcRefs = Arr(art, "source_refs").ToList();
-        var srcCount = srcRefs.Count > 0 ? srcRefs.Count : Arr(art, "source_ids").Count();
+        // only the notebook sources the generation actually read (the core works this out)
+        var srcCount = srcRefs.Count;
 
         _promptSourcesBtn.Content = srcCount > 0
             ? L10n.Fmt("studio.view_prompt_sources", srcCount)
@@ -1116,6 +1117,34 @@ public sealed class ArtifactViewerPane : IDisposable
             Foreground = (Brush)Application.Current.Resources[promptText.Length > 0 ? "TextPrimaryBrush" : "TextMutedBrush"],
         });
 
+        // The user's own pictures and files given with the request
+        var atts = Arr(art, "attachments").ToList();
+        if (atts.Count > 0)
+        {
+            flyoutBody.Children.Add(new TextBlock { Text = L10n.T("studio.attachments_header"), FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = (Brush)Application.Current.Resources["TextSecondaryBrush"], Margin = new Thickness(0, 4, 0, 0) });
+            var pics = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var files = new StackPanel { Spacing = 4 };
+            foreach (var a in atts)
+            {
+                var path = Str(a, "path");
+                var name = Str(a, "name");
+                var isImage = Str(a, "kind") is "image" or "" && Str(a, "mime").StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+                if (isImage && File.Exists(path))
+                {
+                    var img = new Image { Source = new BitmapImage(new Uri(path)), Stretch = Stretch.UniformToFill, Width = 96, Height = 96 };
+                    var frame = new Border { CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1), BorderBrush = (Brush)Application.Current.Resources["StrongBorderBrush"], Child = img };
+                    ToolTipService.SetToolTip(frame, new Image { Source = new BitmapImage(new Uri(path)), MaxWidth = 480, MaxHeight = 480 });
+                    pics.Children.Add(frame);
+                }
+                else
+                {
+                    files.Children.Add(new TextBlock { Text = (isImage ? "🖼 " : "📄 ") + name, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis });
+                }
+            }
+            if (pics.Children.Count > 0) flyoutBody.Children.Add(new ScrollViewer { Content = pics, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollMode = ScrollMode.Disabled });
+            if (files.Children.Count > 0) flyoutBody.Children.Add(files);
+        }
+
         // Sources section
         var srcTitleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 4, 0, 0) };
         srcTitleRow.Children.Add(new Viewbox
@@ -1143,7 +1172,7 @@ public sealed class ArtifactViewerPane : IDisposable
                     "DOCX" or "DOC" => Windows.UI.Color.FromArgb(255, 76, 141, 246),
                     _ => Windows.UI.Color.FromArgb(255, 130, 140, 155),
                 };
-                var badgeTag = skind.Length > 4 ? skind[..4] : (skind.Length > 0 ? skind : "FILE");
+                var badgeTag = skind.Length > 4 ? skind[..4] : (skind.Length > 0 ? skind : L10n.T("src.badge_file"));
                 var chipRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
                 chipRow.Children.Add(new Border
                 {
@@ -1185,7 +1214,7 @@ public sealed class ArtifactViewerPane : IDisposable
         {
             flyoutBody.Children.Add(new TextBlock
             {
-                Text = srcCount > 0 ? L10n.Fmt("studio.view_prompt_sources", srcCount) : L10n.T("studio.sources_empty"),
+                Text = L10n.T("studio.sources_empty"),
                 FontSize = 12,
                 Foreground = (Brush)Application.Current.Resources["TextMutedBrush"],
             });
@@ -3040,7 +3069,7 @@ internal sealed class InteractiveArtifactView : IDisposable
         foreach (var t in turns)
         {
             var who = Str(t, "speaker");
-            var tb = new TextBlock { Text = $"{(roles.TryGetValue(who, out var r) ? r : who)}：{Str(t, "text")}", TextWrapping = TextWrapping.Wrap, FontSize = 14, IsTextSelectionEnabled = true, Opacity = 0.9 };
+            var tb = new TextBlock { Text = L10n.Fmt("artifact.speaker_line", roles.TryGetValue(who, out var r) ? r : who, Str(t, "text")), TextWrapping = TextWrapping.Wrap, FontSize = 14, IsTextSelectionEnabled = true, Opacity = 0.9 };
             lines.Add(tb);
             root.Children.Add(tb);
         }

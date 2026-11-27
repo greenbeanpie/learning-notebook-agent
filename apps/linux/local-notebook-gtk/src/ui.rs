@@ -22,7 +22,7 @@ pub(crate) fn call_core(core: &Arc<CoreRuntime>, method: &str, params: Value) ->
     let parsed: Value = serde_json::from_str(&raw).map_err(|e| (String::new(), e.to_string()))?;
     if let Some(err) = parsed.get("error") {
         let code = err.get("code").and_then(Value::as_str).unwrap_or("").to_string();
-        let msg = err.get("message").and_then(Value::as_str).unwrap_or("Error").to_string();
+        let msg = err.get("message").and_then(Value::as_str).unwrap_or("").to_string();
         return Err((code, msg));
     }
     Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
@@ -40,6 +40,20 @@ fn friendly_err(en: bool, err: (String, String)) -> String {
     } else {
         tr(en, "studio.failed").to_string()
     }
+}
+
+/// The user-facing name of a backend progress stage code.
+fn stage_label(en: bool, stage: &str) -> &'static str {
+    tr(
+        en,
+        match stage {
+            "COLLECT" => "studio.stage_collect",
+            "PLAN" => "studio.stage_plan",
+            "GENERATE" => "studio.stage_generate",
+            "RENDER" => "studio.stage_render",
+            _ => "studio.stage_processing",
+        },
+    )
 }
 
 struct UiState {
@@ -335,7 +349,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
     studio_stack.set_vexpand(true);
 
     let studio_home = GtkBox::new(Orientation::Vertical, 10);
-    let st_hdr = Label::new(Some("Studio"));
+    let st_hdr = Label::new(Some(tr(en, "studio.title")));
     st_hdr.set_halign(gtk4::Align::Start);
     studio_home.append(&st_hdr);
 
@@ -1623,7 +1637,7 @@ fn start_event_pump(st: &Rc<UiState>) {
                             live.stage_lbl.set_text(&format!(
                                 "{} · {} ({pct}%)",
                                 tr(live.en, "art.ai_workflow_in_progress"),
-                                stage
+                                stage_label(live.en, stage)
                             ));
                         }
                     }
@@ -1817,11 +1831,8 @@ fn build_prompt_sources_button(st: &Rc<UiState>, art: &Value, artifact_id: &str)
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let src_count = if !src_refs.is_empty() {
-        src_refs.len()
-    } else {
-        art.get("source_ids").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0)
-    };
+    // only the notebook sources the generation actually read (the core works this out)
+    let src_count = src_refs.len();
 
     let pill_label = if src_count > 0 {
         trf(en, "studio.view_prompt_sources", &[&src_count])
@@ -1892,6 +1903,35 @@ fn build_prompt_sources_button(st: &Rc<UiState>, art: &Value, artifact_id: &str)
     p_body.set_selectable(true);
     body.append(&p_body);
 
+    // The user's own pictures and files given with the request
+    let atts = art.get("attachments").and_then(Value::as_array).cloned().unwrap_or_default();
+    if !atts.is_empty() {
+        let a_title = Label::new(Some(tr(en, "studio.attachments_header")));
+        a_title.set_xalign(0.0);
+        a_title.add_css_class("lna-muted");
+        body.append(&a_title);
+        let pics = GtkBox::new(Orientation::Horizontal, 8);
+        for a in &atts {
+            let path = a.get("path").and_then(Value::as_str).unwrap_or("");
+            let name = a.get("name").and_then(Value::as_str).unwrap_or("");
+            let mime = a.get("mime").and_then(Value::as_str).unwrap_or("");
+            if mime.starts_with("image/") && std::path::Path::new(path).exists() {
+                let pic = gtk4::Picture::for_filename(path);
+                pic.set_size_request(96, 96);
+                pic.set_tooltip_text(Some(name));
+                pics.append(&pic);
+            } else {
+                let l = Label::new(Some(&format!("📄 {name}")));
+                l.set_xalign(0.0);
+                l.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                body.append(&l);
+            }
+        }
+        if pics.first_child().is_some() {
+            body.append(&ScrolledWindow::builder().child(&pics).vscrollbar_policy(gtk4::PolicyType::Never).min_content_height(100).build());
+        }
+    }
+
     // Sources section
     let s_title = Label::new(Some(tr(en, "studio.sources_header")));
     s_title.set_xalign(0.0);
@@ -1902,7 +1942,11 @@ fn build_prompt_sources_button(st: &Rc<UiState>, art: &Value, artifact_id: &str)
     if !src_refs.is_empty() {
         for sr in &src_refs {
             let stitle = sr.get("title").and_then(Value::as_str).unwrap_or("");
-            let skind = sr.get("kind").and_then(Value::as_str).unwrap_or("file").to_uppercase();
+            let skind = sr
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|k| k.to_uppercase())
+                .unwrap_or_else(|| tr(en, "ctx.file").to_uppercase());
             let chip = Label::new(Some(&format!("[{skind}] {stitle}")));
             chip.add_css_class("lna-source-chip");
             chip.set_xalign(0.0);
@@ -1973,12 +2017,50 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         st_cl.inner_paned.set_position(660);
     });
 
+    let status = art.get("status").and_then(Value::as_str).unwrap_or("");
+
     hdr.append(&title_col);
+    if matches!(status, "READY" | "FAILED" | "CANCELLED") {
+        // same requirements, same sources, from scratch; confirmed in a popover because the
+        // current content is replaced
+        let confirm = GtkBox::new(Orientation::Vertical, 8);
+        confirm.set_margin_top(10);
+        confirm.set_margin_bottom(10);
+        confirm.set_margin_start(10);
+        confirm.set_margin_end(10);
+        let msg = Label::new(Some(&trf(en, "studio.regenerate_confirm", &[&title])));
+        msg.set_wrap(true);
+        msg.set_max_width_chars(36);
+        msg.set_xalign(0.0);
+        let go = Button::with_label(tr(en, "studio.regenerate"));
+        go.add_css_class("lna-primary-btn");
+        go.set_halign(gtk4::Align::End);
+        confirm.append(&msg);
+        confirm.append(&go);
+        let pop = Popover::new();
+        pop.set_child(Some(&confirm));
+        let regen = MenuButton::new();
+        regen.set_label("↻");
+        regen.set_tooltip_text(Some(tr(en, "studio.regenerate")));
+        regen.set_popover(Some(&pop));
+        let st_rg = st.clone();
+        let aid_rg = artifact_id.to_string();
+        go.connect_clicked(move |_| {
+            pop.popdown();
+            let _ = call_core(
+                &st_rg.core,
+                "studio.regenerate",
+                json!({ "artifact_id": aid_rg, "use_selected_sources": false }),
+            );
+            refresh_all(&st_rg);
+            open_artifact_inline(&st_rg, &aid_rg);
+        });
+        hdr.append(&regen);
+    }
     hdr.append(&fs_btn);
     hdr.append(&close_btn);
     st.studio_detail_box.append(&hdr);
 
-    let status = art.get("status").and_then(Value::as_str).unwrap_or("");
     let kind = art.get("artifact_type").and_then(Value::as_str).unwrap_or("");
 
     if status == "READY" && art.get("thoughts").and_then(Value::as_array).map(|a| !a.is_empty()).unwrap_or(false) {
@@ -1995,7 +2077,7 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
         let hdr_lbl = Label::new(Some(&format!(
             "{} · {} ({pct}%)",
             tr(en, "art.ai_workflow_in_progress"),
-            stage
+            stage_label(en, stage)
         )));
         hdr_lbl.set_xalign(0.0);
         prog_box.append(&hdr_lbl);
@@ -2229,20 +2311,20 @@ fn open_artifact_inline(st: &Rc<UiState>, artifact_id: &str) {
                 "quiz" => {
                     let _ = call_core(&st_link.core, "studio.create", json!({
                         "notebook_id": nid2, "artifact_type": "quiz",
-                        "title": format!("Quiz: {concept}"),
+                        "title": trf(st_link.is_en(), "ui.kg_quiz_title", &[&concept]),
                         "config": { "topic": concept, "count": 5 }
                     }));
                 }
                 "mindmap" => {
                     let _ = call_core(&st_link.core, "studio.create", json!({
                         "notebook_id": nid2, "artifact_type": "mindmap",
-                        "title": format!("Mind Map: {concept}"),
+                        "title": trf(st_link.is_en(), "ui.kg_mindmap_title", &[&concept]),
                         "config": { "topic": concept }
                     }));
                 }
                 _ => {
                     let _ = call_core(&st_link.core, "chat.send", json!({
-                        "notebook_id": nid2, "text": format!("Explain: {concept}")
+                        "notebook_id": nid2, "text": trf(st_link.is_en(), "ui.kg_explain_prompt", &[&concept])
                     }));
                 }
             }
@@ -2576,7 +2658,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let out_path = out_dir.join("local-notebook-diagnostics.zip");
         if call_core(&st_diag.core, "diagnostics.export", json!({ "output_path": out_path.to_string_lossy() })).is_ok() {
-            st_diag.status_label.set_text(&format!("Diagnostics: {}", out_path.display()));
+            st_diag.status_label.set_text(&trf(st_diag.is_en(), "art.diagnostics_exported_to", &[&out_path.display()]));
         }
     });
     gen_extra_row.append(&gen_privacy_btn);
@@ -2628,10 +2710,10 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
         "gemini (Gemini GenerateContent)",
     ]);
     let url_entry = Entry::builder()
-        .placeholder_text("Base URL (e.g. https://api.openai.com/v1)")
+        .placeholder_text(tr(en, "ui.base_url_placeholder"))
         .build();
     let model_row = GtkBox::new(Orientation::Horizontal, 8);
-    let model_entry = Entry::builder().placeholder_text("Model ID").hexpand(true).build();
+    let model_entry = Entry::builder().placeholder_text(tr(en, "model.model_id")).hexpand(true).build();
     let discover_btn = Button::with_label(tr(en, "model.fetch_models"));
     discover_btn.add_css_class("lna-pill-btn");
     model_row.append(&model_entry);
@@ -2642,7 +2724,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     discovered_dd.set_visible(false);
 
     let key_entry = Entry::builder()
-        .placeholder_text("API Key")
+        .placeholder_text(tr(en, "ui.api_key"))
         .visibility(false)
         .build();
 
@@ -2685,11 +2767,11 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
 
     let effort_ids = ["", "low", "medium", "high"];
     let effort_dd = DropDown::from_strings(&[tr(en, "tts.default_voice"), "low", "medium", "high"]);
-    let ctx_entry = Entry::builder().text("32000").placeholder_text("Context Window").build();
-    let out_entry = Entry::builder().text("8000").placeholder_text("Max Output Tokens").build();
+    let ctx_entry = Entry::builder().text("32000").placeholder_text(tr(en, "ui.context_window")).build();
+    let out_entry = Entry::builder().text("8000").placeholder_text(tr(en, "ui.max_output_tokens")).build();
     let par_entry = Entry::builder().text("4").placeholder_text(tr(en, "model.max_parallel")).tooltip_text(tr(en, "model.max_parallel_tip")).build();
-    let price_in_entry = Entry::builder().placeholder_text("Input price ($/1M)").build();
-    let price_out_entry = Entry::builder().placeholder_text("Output price ($/1M)").build();
+    let price_in_entry = Entry::builder().placeholder_text(tr(en, "ui.input_price")).build();
+    let price_out_entry = Entry::builder().placeholder_text(tr(en, "ui.output_price")).build();
 
     let extra_headers_rows: Rc<RefCell<Vec<(Entry, Entry)>>> = Rc::new(RefCell::new(Vec::new()));
     let headers_list = GtkBox::new(Orientation::Vertical, 6);
@@ -3236,7 +3318,7 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     model_box.append(&Label::new(Some(tr(en, "model.model_id"))));
     model_box.append(&model_row);
     model_box.append(&discovered_dd);
-    model_box.append(&Label::new(Some("API Key")));
+    model_box.append(&Label::new(Some(tr(en, "ui.api_key"))));
     model_box.append(&key_entry);
     model_box.append(&insecure_row);
     model_box.append(&active_row);

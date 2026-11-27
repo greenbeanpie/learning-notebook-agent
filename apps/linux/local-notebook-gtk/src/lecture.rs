@@ -3,7 +3,7 @@
 //! espeak-ng) or the core's cached cloud voice, plus captions, checkpoints, interruption
 //! questions and adaptations of the slides ahead.
 use crate::attach::AttachBar;
-use crate::i18n::tr;
+use crate::i18n::{tr, trf};
 use crate::lecture_model::{
     build_sequence, deck_html, js_string, next_rate, payload_with_figures, step_before, LecSentence,
 };
@@ -122,11 +122,17 @@ fn save_progress(p: &Shared) {
 }
 
 /// Calls the core off the GTK thread.
-async fn core_call(core: Arc<CoreRuntime>, method: &'static str, params: Value) -> Result<Value, String> {
+async fn core_call(en: bool, core: Arc<CoreRuntime>, method: &'static str, params: Value) -> Result<Value, String> {
     match gio::spawn_blocking(move || call_core(&core, method, params)).await {
         Ok(Ok(v)) => Ok(v),
-        Ok(Err((code, msg))) => Err(if msg.is_empty() { code } else { msg }),
-        Err(_) => Err("call failed".into()),
+        Ok(Err((code, msg))) => Err(if !msg.is_empty() {
+            msg
+        } else if !code.is_empty() {
+            code
+        } else {
+            tr(en, "err.unknown").to_string()
+        }),
+        Err(_) => Err(tr(en, "err.unknown").to_string()),
     }
 }
 
@@ -193,8 +199,11 @@ async fn speak(p: &Shared, text: &str, gen: u64) -> bool {
         return p.borrow().generation == gen;
     }
     if p.borrow().engine == "cloud" {
-        let core = p.borrow().core.clone();
-        if let Ok(r) = core_call(core, "tts.synthesize", json!({ "text": text })).await {
+        let (core, en) = {
+            let pl = p.borrow();
+            (pl.core.clone(), pl.en)
+        };
+        if let Ok(r) = core_call(en, core, "tts.synthesize", json!({ "text": text })).await {
             if let Some(path) = r.get("path").and_then(Value::as_str).filter(|s| !s.is_empty()) {
                 return speak_file(p, path, gen).await;
             }
@@ -264,13 +273,11 @@ async fn run_loop(p: Shared, gen: u64) {
             }
         }
         caption(&p, &s.text);
-        let p_laser = p.clone();
-        glib::spawn_future_local(async move {
-            glib::timeout_future(Duration::from_millis(250)).await;
-            for l in lasers {
-                js(&p_laser, &format!("lecture.laser({l})"));
-            }
-        });
+        // the page times each pointer cue by where its words fall in the sentence
+        if !lasers.is_empty() {
+            let rate = p.borrow().rate;
+            js(&p, &format!("lecture.lasers([{}],{},{rate})", lasers.join(","), js_string(&s.text)));
+        }
         let ok = speak(&p, &s.text, gen).await;
         if !ok || p.borrow().generation != gen {
             return;
@@ -431,7 +438,7 @@ fn render_qa(p: &Shared) {
             col.append(&speak_btn);
             if !e.suggest_kind.is_empty() {
                 let kind_label = format!("lec.kind_{}", e.suggest_kind);
-                let head = Label::new(Some(&format!("{}：{}", tr(en, "lec.adapt_suggest"), tr(en, &kind_label))));
+                let head = Label::new(Some(&trf(en, "lecture.label_value", &[&tr(en, "lec.adapt_suggest"), &tr(en, &kind_label)])));
                 head.set_xalign(0.0);
                 head.add_css_class("heading");
                 col.append(&head);
@@ -540,7 +547,7 @@ fn show_adaptation_details(p: &Shared) {
     v.set_margin_start(16);
     v.set_margin_end(16);
     if let Some(reason) = a.get("reason").and_then(Value::as_str).filter(|r| !r.is_empty()) {
-        let l = Label::new(Some(&format!("{}：{reason}", tr(en, "lec.reason"))));
+        let l = Label::new(Some(&trf(en, "lecture.label_value", &[&tr(en, "lec.reason"), &reason])));
         l.set_wrap(true);
         l.set_xalign(0.0);
         v.append(&l);
@@ -580,7 +587,7 @@ fn show_adaptation_details(p: &Shared) {
         h.add_css_class("heading");
         v.append(&h);
         let names: Vec<&str> = removed.iter().filter_map(Value::as_str).collect();
-        let l = Label::new(Some(&names.join("、")));
+        let l = Label::new(Some(&names.join(tr(en, "lecture.list_sep"))));
         l.set_wrap(true);
         l.set_xalign(0.0);
         v.append(&l);
@@ -608,13 +615,14 @@ fn adapt(p: &Shared, slide_id: String, kind: String, reason: String, question: S
         p.borrow_mut().adapting = true;
     }
     render_adaptation(p);
-    let (core, id) = {
+    let (core, id, en) = {
         let pl = p.borrow();
-        (pl.core.clone(), pl.artifact_id.clone())
+        (pl.core.clone(), pl.artifact_id.clone(), pl.en)
     };
     let p2 = p.clone();
     glib::spawn_future_local(async move {
         let res = core_call(
+            en,
             core,
             "lecture.adapt",
             json!({ "artifact_id": id, "slide_id": slide_id, "kind": kind, "reason": reason, "question": question }),
@@ -628,7 +636,7 @@ fn adapt(p: &Shared, slide_id: String, kind: String, reason: String, question: S
                 p2.borrow_mut().adaptation = r.get("adaptation").filter(|a| a.is_object()).cloned();
             }
             Err(e) => {
-                let msg = format!("{}: {e}", t(&p2, "lec.adapt_failed"));
+                let msg = trf(p2.borrow().en, "lecture.label_value", &[&t(&p2, "lec.adapt_failed"), &e]);
                 set_status(&p2, &msg);
             }
         }
@@ -638,11 +646,12 @@ fn adapt(p: &Shared, slide_id: String, kind: String, reason: String, question: S
 }
 
 fn undo(p: &Shared, all: bool) {
-    let (core, id, adaptation_id) = {
+    let (core, id, en, adaptation_id) = {
         let pl = p.borrow();
         (
             pl.core.clone(),
             pl.artifact_id.clone(),
+            pl.en,
             pl.adaptation.as_ref().and_then(|a| a.get("id")).and_then(Value::as_str).map(String::from),
         )
     };
@@ -652,7 +661,7 @@ fn undo(p: &Shared, all: bool) {
     }
     let p2 = p.clone();
     glib::spawn_future_local(async move {
-        match core_call(core, "lecture.undo", params).await {
+        match core_call(en, core, "lecture.undo", params).await {
             Ok(r) => {
                 if let Some(art) = r.get("artifact") {
                     apply_artifact(&p2, art);
@@ -700,9 +709,9 @@ fn ask(p: &Shared, question: String, allow_adapt: bool, attach: Option<&AttachBa
             ]
         })
         .collect();
-    let (core, id) = {
+    let (core, id, en) = {
         let pl = p.borrow();
-        (pl.core.clone(), pl.artifact_id.clone())
+        (pl.core.clone(), pl.artifact_id.clone(), pl.en)
     };
     let mut params = json!({
         "artifact_id": id, "slide_id": s.slide_id, "sentence_id": s.id,
@@ -713,7 +722,7 @@ fn ask(p: &Shared, question: String, allow_adapt: bool, attach: Option<&AttachBa
     }
     let p2 = p.clone();
     glib::spawn_future_local(async move {
-        let res = core_call(core, "lecture.ask", params).await;
+        let res = core_call(en, core, "lecture.ask", params).await;
         let mut adapt_args: Option<(String, String, String)> = None;
         {
             let mut pl = p2.borrow_mut();
@@ -913,6 +922,7 @@ pub fn build_lecture_player(core: &Arc<CoreRuntime>, window: &gtk4::Window, art:
             let core = p2.borrow().core.clone();
             glib::spawn_future_local(async move {
                 let _ = core_call(
+                    en,
                     core,
                     "settings.set",
                     json!({ "key": "lecture.prefs", "value": { "adapt_policy": code } }),
@@ -1011,10 +1021,10 @@ pub fn build_lecture_player(core: &Arc<CoreRuntime>, window: &gtk4::Window, art:
         let p2 = p.clone();
         let (core2, web2) = (core.clone(), web.clone());
         glib::spawn_future_local(async move {
-            if let Ok(s) = core_call(core2.clone(), "tts.get_settings", json!({})).await {
+            if let Ok(s) = core_call(en, core2.clone(), "tts.get_settings", json!({})).await {
                 p2.borrow_mut().engine = if s.get("engine").and_then(Value::as_str) == Some("cloud") { "cloud" } else { "system" }.into();
             }
-            if let Ok(r) = core_call(core2, "settings.get", json!({ "key": "lecture.prefs" })).await {
+            if let Ok(r) = core_call(en, core2, "settings.get", json!({ "key": "lecture.prefs" })).await {
                 if let Some(pol) = r.pointer("/value/adapt_policy").and_then(Value::as_str).filter(|x| !x.is_empty()) {
                     p2.borrow_mut().policy = pol.to_string();
                 }

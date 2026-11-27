@@ -170,9 +170,55 @@ pub struct ResolvedProfile {
     pub anthropic_version: String,
 }
 
+/// Placeholder an extra-header value may contain; it is replaced by the profile's API key.
+pub const API_KEY_PLACEHOLDER: &str = "{api_key}";
+
 impl ResolvedProfile {
     pub fn trimmed_base(&self) -> &str {
         self.base_url.trim_end_matches('/')
+    }
+
+    /// True when some extra header carries the key itself (e.g. `cf-aig-authorization: Bearer
+    /// {api_key}`). Such a profile must not also send the key in the protocol's default auth
+    /// header: a gateway would forward it to the upstream provider as that provider's key.
+    pub fn key_in_extra_headers(&self) -> bool {
+        self.extra_headers
+            .values()
+            .any(|v| v.contains(API_KEY_PLACEHOLDER))
+    }
+
+    /// The key to send in the protocol's default auth header (none when it travels in a custom one).
+    pub fn default_auth_key(&self) -> Option<&str> {
+        use secrecy::ExposeSecret;
+        if self.key_in_extra_headers() {
+            return None;
+        }
+        self.api_key
+            .as_ref()
+            .map(|k| k.expose_secret())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Extra headers with `{api_key}` substituted (values with the placeholder are skipped when
+    /// no key is set).
+    pub fn resolved_extra_headers(&self) -> Vec<(String, String)> {
+        use secrecy::ExposeSecret;
+        let key = self
+            .api_key
+            .as_ref()
+            .map(|k| k.expose_secret().to_string())
+            .filter(|s| !s.is_empty());
+        self.extra_headers
+            .iter()
+            .filter_map(|(k, v)| {
+                if v.contains(API_KEY_PLACEHOLDER) {
+                    key.as_ref()
+                        .map(|key| (k.clone(), v.replace(API_KEY_PLACEHOLDER, key)))
+                } else {
+                    Some((k.clone(), v.clone()))
+                }
+            })
+            .collect()
     }
 }
 

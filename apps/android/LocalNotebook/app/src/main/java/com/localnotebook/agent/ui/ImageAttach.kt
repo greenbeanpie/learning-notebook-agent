@@ -152,7 +152,7 @@ class ImageAttachState {
                     val resolver = context.contentResolver
                     val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                         if (c.moveToFirst()) c.getString(0) else null
-                    } ?: "file"
+                    } ?: L10n.t("ctx.file", en)
                     val raw = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching null
                     if (raw.isEmpty() || raw.size > MAX_FILE_BYTES) return@runCatching null
                     AttachedImage(name, Base64.encodeToString(raw, Base64.NO_WRAP), null, kind = "file", size = raw.size.toLong())
@@ -178,7 +178,7 @@ class ImageAttachState {
                 warn = String.format(L10n.t("img.too_many", en), MAX_ATTACHED_IMAGES)
                 break
             }
-            val loaded = withContext(Dispatchers.IO) { runCatching { load(context, uri) }.getOrNull() }
+            val loaded = withContext(Dispatchers.IO) { runCatching { load(context, uri, en) }.getOrNull() }
             if (loaded == null) {
                 warn = L10n.t("img.read_failed", en)
                 continue
@@ -188,11 +188,11 @@ class ImageAttachState {
         return warn
     }
 
-    private fun load(context: Context, uri: Uri): AttachedImage? {
+    private fun load(context: Context, uri: Uri, en: Boolean): AttachedImage? {
         val resolver = context.contentResolver
         val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0) else null
-        } ?: "image"
+        } ?: L10n.t("ctx.image", en)
         val raw = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
         if (raw.isEmpty() || raw.size > MAX_INPUT_BYTES) return null
 

@@ -203,10 +203,11 @@ fn upsert_params(mock: &MockLlm) -> Value {
     })
 }
 
-/// Saving a profile probes tools / JSON Schema / JSON mode / stream usage and stores the result;
-/// `profile.test` measures them again.
+/// Saving a profile only stores it (the endpoint is not contacted and client-sent capability
+/// flags are ignored); `profile.test` probes tools / JSON Schema / JSON mode / stream usage and
+/// stores the result.
 #[test]
-fn saving_a_profile_probes_capabilities_and_persists_them() {
+fn saving_a_profile_does_not_probe_but_testing_does() {
     let env = Env::new("probe");
     for (schema_ok, json_mode_ok) in [(true, true), (false, true)] {
         let mock = probe_mock(true, schema_ok);
@@ -214,15 +215,42 @@ fn saving_a_profile_probes_capabilities_and_persists_them() {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let prof = env.ok("profile.upsert", upsert_params(&mock));
         let pid = prof["id"].as_str().unwrap().to_string();
+        assert_eq!(mock.total(), 0, "saving must not contact the endpoint");
         let caps = &prof["capabilities"];
-        assert_eq!(caps["tools"], json!(true), "{prof}");
-        assert_eq!(caps["json_schema"], json!(schema_ok));
-        assert_eq!(caps["json_mode"], json!(json_mode_ok));
-        assert_eq!(caps["stream_usage"], json!(true));
-        assert!(caps["probed_at"].is_i64());
+        assert_eq!(caps["tools"], json!(false), "{prof}");
+        assert_eq!(caps["json_schema"], json!(false));
+        assert!(caps["probed_at"].is_null(), "{prof}");
+        let listed = env.ok("profile.list", json!({}));
+        let row = listed["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == pid)
+            .unwrap();
+        assert_eq!(row["probe_pending"], json!(true), "{row}");
 
         let r = env.ok("profile.test", json!({ "profile_id": pid }));
+        assert!(mock.total() > 0);
+        assert_eq!(r["capabilities"]["tools"], json!(true), "{r}");
         assert_eq!(r["capabilities"]["json_schema"], json!(schema_ok));
+        assert_eq!(r["capabilities"]["json_mode"], json!(json_mode_ok));
+        assert_eq!(r["capabilities"]["stream_usage"], json!(true));
+        assert!(r["capabilities"]["probed_at"].is_i64());
+
+        // saving again without touching the connection keeps the measurements
+        let mut again = upsert_params(&mock);
+        again["id"] = json!(pid);
+        let prof = env.ok("profile.upsert", again);
+        assert_eq!(prof["capabilities"]["tools"], json!(true), "{prof}");
+        assert!(prof["capabilities"]["probed_at"].is_i64());
+        // changing the model makes them stale
+        let mut changed = upsert_params(&mock);
+        changed["id"] = json!(pid);
+        changed["model_id"] = json!("another-model");
+        let prof = env.ok("profile.upsert", changed);
+        assert_eq!(prof["capabilities"]["tools"], json!(false), "{prof}");
+        assert!(prof["capabilities"]["probed_at"].is_null());
+        env.ok("profile.test", json!({ "profile_id": pid }));
         let stored = env.ok("profile.list", json!({}));
         let found = stored["profiles"]
             .as_array()
@@ -234,15 +262,36 @@ fn saving_a_profile_probes_capabilities_and_persists_them() {
     }
 }
 
-/// A model without tool calling, or without any structured output, cannot be saved.
+/// A model without tool calling, or without any structured output, is saved but refused once
+/// tested: it is not eligible and cannot be activated.
 #[test]
 fn models_without_tools_or_structured_output_are_refused() {
     let env = Env::new("probe_refuse");
+    let refuse = |params: Value| -> Value {
+        let mut p = params;
+        p["activate"] = json!(false);
+        let saved = env.ok("profile.upsert", p);
+        let pid = saved["id"].clone();
+        let r = env.raw("profile.test", json!({ "profile_id": pid }));
+        let listed = env.ok("profile.list", json!({}));
+        let row = listed["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == pid)
+            .unwrap()
+            .clone();
+        assert_eq!(row["eligible"], json!(false), "{row}");
+        let a = env.raw("profile.activate", json!({ "profile_id": pid }));
+        assert_eq!(a["error"]["code"], json!("CAPABILITY_MISSING"), "{a}");
+        let _ = env.ok("profile.delete", json!({ "profile_id": pid }));
+        r
+    };
     // no tool calling
     let mock = probe_mock(false, true);
     mock.raw_probe
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let r = env.raw("profile.upsert", upsert_params(&mock));
+    let r = refuse(upsert_params(&mock));
     assert_eq!(r["error"]["code"], json!("CAPABILITY_MISSING"), "{r}");
     assert!(
         r["error"]["message"].as_str().unwrap().contains("工具调用"),
@@ -267,7 +316,7 @@ fn models_without_tools_or_structured_output_are_refused() {
     });
     mock.raw_probe
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let r = env.raw("profile.upsert", upsert_params(&mock));
+    let r = refuse(upsert_params(&mock));
     assert_eq!(r["error"]["code"], json!("CAPABILITY_MISSING"), "{r}");
     assert!(
         r["error"]["message"]
@@ -276,7 +325,7 @@ fn models_without_tools_or_structured_output_are_refused() {
             .contains("结构化输出"),
         "{r}"
     );
-    // nothing was stored
+    // nothing is left over
     let stored = env.ok("profile.list", json!({}));
     assert!(
         stored["profiles"].as_array().unwrap().is_empty(),
@@ -370,14 +419,14 @@ fn a_model_rejecting_tools_at_run_time_is_reported_not_downgraded() {
         chat.iter().all(|c| c.body.get("tools").is_some()),
         "never retried without tools"
     );
-    // the stored profile still says what the probe found; the user re-checks it in the settings
+    // saving never probed it, so the profile is still "not checked yet"; the user tests it in
+    // the settings
     let stored = env.ok("profile.list", json!({}));
     assert_eq!(
-        stored["profiles"][0]["capabilities"]["tools"],
+        stored["profiles"][0]["probe_pending"],
         json!(true),
         "{stored}"
     );
-    assert_eq!(stored["profiles"][0]["eligible"], json!(true), "{stored}");
 }
 
 #[test]
@@ -411,6 +460,17 @@ fn builtin_provider_presets_include_official_and_opencode_go_headers() {
         "local-notebook-agent"
     );
     assert_eq!(opencode["extra_headers"]["User-Agent"], "opencode/1.0");
+
+    let cf = presets
+        .iter()
+        .find(|p| p["id"] == "cloudflare_ai_gateway")
+        .expect("cloudflare_ai_gateway preset");
+    assert_eq!(cf["protocol"], "chat_completion");
+    assert!(cf["base_url"].as_str().unwrap().ends_with("/compat"));
+    assert_eq!(
+        cf["extra_headers"]["cf-aig-authorization"],
+        "Bearer {api_key}"
+    );
 }
 
 /// Profiles saved before the rule: once probed and found lacking, they are refused for chat,

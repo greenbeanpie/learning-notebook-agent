@@ -275,7 +275,7 @@ fun UnifiedSettingsSheet(
                         OutlinedTextField(
                             value = apiKey,
                             onValueChange = { apiKey = it },
-                            label = { Text("API Key") },
+                            label = { Text(L10n.t("tts.api_key", en)) },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),

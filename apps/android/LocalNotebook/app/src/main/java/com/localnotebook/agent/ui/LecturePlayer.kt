@@ -113,6 +113,16 @@ private fun deckHtml(context: Context, payload: JSONObject, en: Boolean): String
         .replace("__T_PLAY_JSON__", q(L10n.t("slides.play", en)))
         .replace("__T_PAUSE_JSON__", q(L10n.t("slides.pause", en)))
         .replace("__T_NONOTES_JSON__", q(""))
+        .replace("__T_DECK_TITLE_JSON__", q(L10n.t("slides.default_title", en)))
+        .replace("__T_SLIDE_PATTERN_JSON__", q(L10n.t("slides.slide_n", en)))
+        .replace("__T_KICKER_SUMMARY_JSON__", q(L10n.t("slides.kicker_summary", en)))
+        .replace("__T_KICKER_COVER_JSON__", q(L10n.t("slides.kicker_cover", en)))
+        .replace("__T_EYE_AGENDA_JSON__", q(L10n.t("slides.eye_agenda", en)))
+        .replace("__T_EYE_METRICS_JSON__", q(L10n.t("slides.eye_metrics", en)))
+        .replace("__T_EYE_TIMELINE_JSON__", q(L10n.t("slides.eye_timeline", en)))
+        .replace("__T_EYE_COMPARE_JSON__", q(L10n.t("slides.eye_compare", en)))
+        .replace("__T_EYE_FORMULA_JSON__", q(L10n.t("slides.eye_formula", en)))
+        .replace("__T_EYE_INSIGHT_JSON__", q(L10n.t("slides.eye_insight", en)))
         .replace(Regex("__T_[A-Z]+__"), "")
         .replace("__PAYLOAD__", payload.toString().replace("</", "<\\/"))
 }
@@ -284,9 +294,9 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
                     seq.getOrNull(pos + 1)?.text?.takeIf { it.isNotBlank() }?.let { cloudAudio(it) }
                     seq.getOrNull(pos + 2)?.text?.takeIf { it.isNotBlank() }?.let { cloudAudio(it) }
                 }
-                val laserJob = launch { delay(250); lasers.forEach { js("lecture.laser($it)") } }
+                // the page times each pointer cue by where its words fall in the sentence
+                if (lasers.isNotEmpty()) js("lecture.lasers([${lasers.joinToString(",")}],${jsStr(s.text)},$rate)")
                 val ok = speak(s.text)
-                laserJob.join()
                 if (!ok || !isActive) return@launch
                 if (s.lastOfSlide && s.checkpoint != null) {
                     playing = false
@@ -529,7 +539,7 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
                                             playJob = scope.launch { speak(e.speak.ifEmpty { e.answer }) }
                                         }) { Text(L10n.t("lec.speak_answer", en), fontSize = 12.sp) }
                                         if (e.suggestKind.isNotEmpty()) {
-                                            Text("${L10n.t("lec.adapt_suggest", en)}：${L10n.t("lec.kind_${e.suggestKind}", en)}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                            Text("${L10n.t("lec.adapt_suggest", en)}${L10n.t("studio.colon", en)}${L10n.t("lec.kind_${e.suggestKind}", en)}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                             if (e.suggestReason.isNotEmpty()) Text(e.suggestReason, fontSize = 12.sp)
                                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                                 Button(onClick = {
@@ -574,7 +584,7 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
             title = { Text(L10n.t("lec.kind_${a?.optString("kind") ?: ""}", en)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    a?.optString("reason")?.takeIf { it.isNotEmpty() }?.let { Text("${L10n.t("lec.reason", en)}：$it") }
+                    a?.optString("reason")?.takeIf { it.isNotEmpty() }?.let { Text("${L10n.t("lec.reason", en)}${L10n.t("studio.colon", en)}$it") }
                     val ins = a?.optJSONArray("inserted") ?: JSONArray()
                     val insT = a?.optJSONArray("inserted_titles") ?: JSONArray()
                     if (ins.length() > 0) Text(L10n.t("lec.inserted", en), fontWeight = FontWeight.SemiBold)
@@ -588,7 +598,7 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
                     val rem = a?.optJSONArray("removed_titles") ?: JSONArray()
                     if (rem.length() > 0) {
                         Text(L10n.t("lec.replaced", en), fontWeight = FontWeight.SemiBold)
-                        Text((0 until rem.length()).joinToString("、") { rem.optString(it) })
+                        Text((0 until rem.length()).joinToString(L10n.t("studio.list_sep", en)) { rem.optString(it) })
                     }
                 }
             },

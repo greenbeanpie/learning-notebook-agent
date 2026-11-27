@@ -437,8 +437,12 @@ pub struct StudioArtifact {
     pub progress: f64,
     pub config: serde_json::Value,
     pub source_ids: Vec<String>,
+    /// The notebook sources the generation actually read (all selected ones until that is known).
     #[serde(default)]
     pub source_refs: Vec<ArtifactSourceRef>,
+    /// The user's own pictures and files given with the request (`config.images` / `config.files`).
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
     pub sources_fingerprint: String,
     pub profile_id: Option<String>,
     pub draft: Option<serde_json::Value>,

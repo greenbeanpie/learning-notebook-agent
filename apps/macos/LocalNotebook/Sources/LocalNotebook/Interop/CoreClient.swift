@@ -50,7 +50,7 @@ public final class CoreClient {
         }
 
         if rc != 0 {
-            let msg = outErr.map { String(cString: $0) } ?? "lna_open failed"
+            let msg = outErr.map { String(cString: $0) } ?? L10n.t("core.open_failed", en: L10n.systemEnglish)
             if let outErr { lna_string_free(outErr) }
             throw NSError(domain: "LocalNotebook", code: Int(rc), userInfo: [NSLocalizedDescriptionKey: msg])
         }
@@ -85,7 +85,7 @@ public final class CoreClient {
                     client.lock.unlock()
 
                     if let err = obj["error"] as? [String: Any] {
-                        let msg = err["message"] as? String ?? "Unknown error"
+                        let msg = err["message"] as? String ?? L10n.t("core.unknown_error", en: L10n.systemEnglish)
                         continuation?.resume(throwing: CoreError(code: err["code"] as? String ?? "", message: msg))
                     } else {
                         continuation?.resume(returning: obj["result"] as? [String: Any] ?? [:])

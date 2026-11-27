@@ -882,37 +882,33 @@ impl CoreRuntime {
                 if embedding_only && params_in.activate {
                     return Err(LnaError::invalid("仅用于向量化的配置不能设为对话模型"));
                 }
-                let caps = if embedding_only {
-                    base
-                } else {
-                    let key = match api_key.as_ref() {
-                        Some(k) => Some(SecretString::from(k.clone())),
-                        None => match existing.as_ref().and_then(|e| e.keychain_ref.clone()) {
-                            Some(kref) => self.secrets.get(&kref)?,
-                            None => None,
-                        },
+                // Saving only stores. Nothing is sent to the endpoint here: capabilities are
+                // measured by "test connection" (profile.test) and at start-up for profiles that
+                // were never checked. When the connection changed, the old measurements no longer
+                // describe it, so they are cleared and the profile shows as "not checked yet".
+                let mut caps = base;
+                if !embedding_only {
+                    let connection_changed = match existing.as_ref() {
+                        None => true,
+                        Some(e) => {
+                            e.protocol != params_in.protocol
+                                || e.base_url != params_in.base_url
+                                || e.model_id != params_in.model_id
+                                || e.extra_headers != params_in.extra_headers
+                                || api_key.is_some()
+                        }
                     };
-                    let probe_target = lna_llm::ResolvedProfile {
-                        id: params_in.id.clone().unwrap_or_default(),
-                        display_name: params_in.display_name.clone(),
-                        protocol: params_in.protocol,
-                        base_url: params_in.base_url.clone(),
-                        model_id: params_in.model_id.clone(),
-                        api_key: key,
-                        show_thinking: params_in.show_thinking,
-                        effort: params_in.effort.clone(),
-                        context_window: params_in.context_window,
-                        max_output_tokens: params_in.max_output_tokens,
-                        capabilities: base.clone(),
-                        extra_headers: params_in.extra_headers.clone(),
-                        anthropic_version: "2023-06-01".to_string(),
-                    };
-                    let (caps, _) = self.probe_capabilities(&probe_target, base).await?;
-                    if let Some(reason) = caps.chat_missing() {
-                        return Err(LnaError::new(ErrorCode::CapabilityMissing, reason));
+                    if connection_changed {
+                        // optimistic: streaming with usage is tried, and relaxed at run time
+                        // when the endpoint rejects `stream_options`
+                        caps.streaming = true;
+                        caps.stream_usage = true;
+                        caps.tools = false;
+                        caps.json_schema = false;
+                        caps.json_mode = false;
+                        caps.probed_at = None;
                     }
-                    caps
-                };
+                }
                 params_in.capabilities = Some(caps);
                 let mut prof = lna_storage::upsert_profile(&self.db, &params_in)?;
                 self.llm.set_parallel_limit(&prof.id, prof.max_parallel);
@@ -2056,6 +2052,34 @@ fn builtin_provider_presets() -> Value {
             "extra_headers": {
                 "x-opencode-session": "local-notebook-agent",
                 "User-Agent": "opencode/1.0"
+            }
+        },
+        {
+            // Provider keys are stored in the Cloudflare dashboard (BYOK / Unified Billing), so
+            // the only secret filled in here is the gateway's token. It travels in
+            // cf-aig-authorization; no Authorization header is sent (the gateway would forward it
+            // to the provider). Replace {account_id} / {gateway_id} in the address ("default" is
+            // a valid gateway id); models are named {provider}/{model}.
+            "id": "cloudflare_ai_gateway",
+            "name": "Cloudflare AI Gateway (云端托管密钥)",
+            "name_en": "Cloudflare AI Gateway (keys stored in Cloudflare)",
+            "category": "relay",
+            "protocol": "chat_completion",
+            "base_url": "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/compat",
+            "default_model": "openai/gpt-4.1",
+            "suggested_models": [
+                "openai/gpt-4.1",
+                "anthropic/claude-sonnet-4-5",
+                "google-ai-studio/gemini-2.5-flash",
+                "deepseek/deepseek-chat"
+            ],
+            "context_window": 128000,
+            "max_output_tokens": 8192,
+            "supports_vision": false,
+            "supports_audio": false,
+            "supports_video": false,
+            "extra_headers": {
+                "cf-aig-authorization": "Bearer {api_key}"
             }
         }
     ])

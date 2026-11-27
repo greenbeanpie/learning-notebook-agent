@@ -990,6 +990,17 @@ struct MainView: View {
                     studioConfig = StudioConfigRequest(kind: art.artifactType, initial: art.config, isUpdate: true, artifactId: art.id)
                 }
             }
+            if art.status == "READY" || art.status == "FAILED" || art.status == "CANCELLED" {
+                // same requirements, same sources, from scratch (the current content is replaced)
+                Button(state.t("studio.regenerate")) {
+                    guard Confirm.ask(title: state.t("studio.regenerate"), message: L10n.fmt("studio.regenerate_confirm", en: state.isEnglish, art.title),
+                                      primary: state.t("studio.regenerate"), cancel: state.t("common.cancel"), destructive: false) else { return }
+                    Task {
+                        _ = await state.run("studio.regenerate", ["artifact_id": art.id, "use_selected_sources": false])
+                        await state.refreshAll()
+                    }
+                }
+            }
             Divider()
             Button(state.t("common.delete"), role: .destructive) {
                 guard Confirm.ask(title: state.t("studio.delete_title"), message: L10n.fmt("studio.delete_confirm", en: state.isEnglish, art.title),
@@ -1170,7 +1181,7 @@ struct MainView: View {
                         _ = await state.run("note.save", [
                             "notebook_id": state.activeNotebookId,
                             "note_id": nid,
-                            "title": t.isEmpty ? "Note" : t,
+                            "title": t.isEmpty ? L10n.t("main.note", en: state.isEnglish) : t,
                             "body_md": b
                         ])
                         _ = await state.run("note.to_source", ["note_id": nid])
@@ -1203,7 +1214,7 @@ struct MainView: View {
                         _ = await state.run("note.save", [
                             "notebook_id": state.activeNotebookId,
                             "note_id": nid,
-                            "title": t.isEmpty ? "Note" : t,
+                            "title": t.isEmpty ? L10n.t("main.note", en: state.isEnglish) : t,
                             "body_md": b
                         ])
                         await state.refreshAll()

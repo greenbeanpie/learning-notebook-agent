@@ -98,6 +98,9 @@ struct StudioArtifactItem: Identifiable {
     var progress: Double = 0
     /// Unix milliseconds.
     var createdAt: Int64 = 0
+    /// The user's own pictures (local paths) and file names given with the request.
+    var imagePaths: [String] = []
+    var fileNames: [String] = []
 }
 
 @MainActor
@@ -417,7 +420,7 @@ final class AppState: ObservableObject {
                 notes = (noteRes["notes"] as? [[String: Any]] ?? []).map {
                     NoteItem(
                         id: $0["id"] as? String ?? "",
-                        title: $0["title"] as? String ?? "Note",
+                        title: $0["title"] as? String ?? L10n.t("note.dialog_title", en: isEnglish),
                         bodyMd: $0["body_md"] as? String ?? ""
                     )
                 }
@@ -554,12 +557,14 @@ final class AppState: ObservableObject {
                 kind: $0["kind"] as? String ?? "file"
             )
         }
-        let srcCount = refs.isEmpty ? ((a["source_ids"] as? [Any])?.count ?? 0) : refs.count
-        return StudioArtifactItem(
+        let srcCount = refs.count // only the sources the generation actually read
+        let atts = a["attachments"] as? [[String: Any]] ?? []
+        let isImage: ([String: Any]) -> Bool = { ($0["mime"] as? String ?? "").hasPrefix("image/") }
+        var item = StudioArtifactItem(
             id: a["id"] as? String ?? "",
             notebookId: a["notebook_id"] as? String ?? "",
             artifactType: a["artifact_type"] as? String ?? "report",
-            title: a["title"] as? String ?? "Artifact",
+            title: a["title"] as? String ?? L10n.t("appstate.artifact_fallback_title", en: en),
             status: a["status"] as? String ?? "PENDING",
             sourceCount: srcCount,
             sourceRefs: refs,
@@ -576,6 +581,9 @@ final class AppState: ObservableObject {
             progress: (a["progress"] as? NSNumber)?.doubleValue ?? 0,
             createdAt: (a["created_at"] as? NSNumber)?.int64Value ?? 0
         )
+        item.imagePaths = atts.filter(isImage).compactMap { $0["path"] as? String }.filter { FileManager.default.fileExists(atPath: $0) }
+        item.fileNames = atts.filter { !isImage($0) }.compactMap { $0["name"] as? String }
+        return item
     }
 
     private func chatIndex(_ id: String) -> Int? { messages.firstIndex(where: { $0.id == id }) }

@@ -378,6 +378,32 @@ fn d3_thinking_signature_is_captured_and_replayed_with_configurable_version() {
     assert_eq!(b["thinking"]["type"], json!("enabled"));
 }
 
+/// A gateway token that travels in a custom header (Cloudflare AI Gateway): `{api_key}` is
+/// substituted and the default `Authorization` header is NOT sent.
+#[test]
+fn key_placeholder_header_replaces_the_default_auth_header() {
+    let req = request(vec![user("hi")]);
+    let mut p = profile(ProtocolKind::ChatCompletion);
+    p.extra_headers
+        .insert("cf-aig-authorization".into(), "Bearer {api_key}".into());
+    let (_, r) = build_body(ProtocolKind::ChatCompletion, &p, &req);
+    assert_eq!(r.headers()["cf-aig-authorization"], "Bearer sk-test-key");
+    assert!(r.headers().get("authorization").is_none());
+
+    // Without the placeholder the key keeps going out as a bearer token.
+    p.extra_headers.clear();
+    let (_, r) = build_body(ProtocolKind::ChatCompletion, &p, &req);
+    assert_eq!(r.headers()["authorization"], "Bearer sk-test-key");
+
+    // No key set: neither header carries anything.
+    p.extra_headers
+        .insert("cf-aig-authorization".into(), "Bearer {api_key}".into());
+    p.api_key = None;
+    let (_, r) = build_body(ProtocolKind::ChatCompletion, &p, &req);
+    assert!(r.headers().get("cf-aig-authorization").is_none());
+    assert!(r.headers().get("authorization").is_none());
+}
+
 // ---------------------------------------------------------------- D4 Gemini
 
 #[test]

@@ -53,6 +53,9 @@ struct UiPreferences {
 }
 
 enum L10n {
+    /// For code that has no access to the app state (the core bridge): the system-language default.
+    static var systemEnglish: Bool { UiPreferences().isEnglish }
+
     static func t(_ key: String, en: Bool) -> String {
         if en {
             return enMap[key] ?? zhMap[key] ?? key
@@ -83,6 +86,7 @@ enum L10n {
         case "URL_BLOCKED": key = "err.url_blocked"
         case "CAPABILITY_MISSING": key = "err.capability_missing"
         case "OUTPUT_INVALID": key = "err.output_invalid"
+        case "NOT_READY": key = "core.not_ready"
         default: return nil
         }
         return t(key, en: en)
@@ -184,6 +188,9 @@ enum L10n {
         "lec.play": "播放",
         "lec.pause": "暂停",
         "lec.resume": "继续",
+        "lecture.player_missing": "缺少讲解播放器资源（deck_player.html）",
+        "lecture.list_sep": "、",
+        "appstate.artifact_fallback_title": "产物",
         "lec.prev_slide": "上一页",
         "lec.next_slide": "下一页",
         "lec.prev_sentence": "上一句",
@@ -450,10 +457,10 @@ enum L10n {
         "err.source_limit_reached": "单个笔记本最多支持 300 个来源。",
         "err.url_blocked": "出于安全原因，不能导入本机或内网地址。",
         "err.capability_missing": "缺少所需组件，请检查相关设置。",
-        "model.probing": "正在检测模型是否支持工具调用和结构化输出…",
+        "model.probing": "正在保存…",
         "model.refused": "未保存：{0} 本应用只支持具备工具调用和结构化输出（JSON Schema 或 JSON 模式）的模型。",
         "model.save_failed": "保存失败：{0}",
-        "model.saved_checked": "已通过能力检测并保存。",
+        "model.saved_checked": "已保存。能力尚未检测，可点击“测试连接”。",
         "model.disabled_tag": "（不支持，已停用）",
         "model.cap_tools": "工具调用",
         "model.cap_structured": "结构化输出",
@@ -465,6 +472,19 @@ enum L10n {
         "app.ui_refresh_failed": "界面更新失败",
         "core.not_ready": "核心尚未就绪，请稍候再试",
         "core.closed": "核心已关闭",
+        "core.unknown_error": "未知错误",
+        "core.open_failed": "核心启动失败",
+        "model.reply_ok": "正常",
+        "app.logo_label": "Local Notebook Agent 徽标",
+        "slides.slide_n": "第{n}页",
+        "slides.kicker_summary": "要点总结",
+        "slides.kicker_cover": "演示",
+        "slides.eye_agenda": "议程",
+        "slides.eye_metrics": "关键指标",
+        "slides.eye_timeline": "时间线与流程",
+        "slides.eye_compare": "对比",
+        "slides.eye_formula": "核心公式",
+        "slides.eye_insight": "核心观点",
         "math.rendering": "正在渲染公式…",
         "math.disposed": "公式渲染器已释放",
         "math.empty": "公式内容为空",
@@ -559,7 +579,9 @@ enum L10n {
         "studio.update_from_sources": "按当前来源与要求更新",
         "studio.op_update": "更新产物",
         "studio.delete_title": "删除产物",
+        "studio.attachments_header": "附带的图片与文件",
         "studio.delete_confirm": "确定删除“{0}”吗？",
+        "studio.regenerate_confirm": "按原来的要求和来源重新生成“{0}”？当前内容会被替换。",
         "studio.more_actions": "产物操作",
         "studio.review_outline": "先审核大纲",
         "studio.cfg.update_hint": "将按以下要求与当前已勾选的来源重新生成此产物。",
@@ -990,6 +1012,9 @@ enum L10n {
         "lec.play": "Play",
         "lec.pause": "Pause",
         "lec.resume": "Resume",
+        "lecture.player_missing": "The lecture player resource (deck_player.html) is missing",
+        "lecture.list_sep": ", ",
+        "appstate.artifact_fallback_title": "Artifact",
         "lec.prev_slide": "Previous slide",
         "lec.next_slide": "Next slide",
         "lec.prev_sentence": "Previous sentence",
@@ -1256,10 +1281,10 @@ enum L10n {
         "err.source_limit_reached": "A notebook can hold up to 300 sources.",
         "err.url_blocked": "Local or private network URLs cannot be imported for security reasons.",
         "err.capability_missing": "A required component is missing.",
-        "model.probing": "Checking that the model supports tool calling and structured output…",
+        "model.probing": "Saving…",
         "model.refused": "Not saved: {0} This app only works with models that support tool calling and structured output (JSON Schema or JSON mode).",
         "model.save_failed": "Save failed: {0}",
-        "model.saved_checked": "Capabilities verified; profile saved.",
+        "model.saved_checked": "Saved. Capabilities not checked yet; press Test Connection when you want to.",
         "model.disabled_tag": " (unsupported, disabled)",
         "model.cap_tools": "Tool calling",
         "model.cap_structured": "Structured output",
@@ -1271,6 +1296,19 @@ enum L10n {
         "app.ui_refresh_failed": "Failed to refresh UI",
         "core.not_ready": "Core is not ready yet. Please wait a moment.",
         "core.closed": "Core has shut down",
+        "core.unknown_error": "Unknown error",
+        "core.open_failed": "Core failed to start",
+        "model.reply_ok": "OK",
+        "app.logo_label": "Local Notebook Agent logo",
+        "slides.slide_n": "Slide {n}",
+        "slides.kicker_summary": "KEY TAKEAWAYS & SUMMARY",
+        "slides.kicker_cover": "PRESENTATION",
+        "slides.eye_agenda": "Agenda",
+        "slides.eye_metrics": "Key Metrics",
+        "slides.eye_timeline": "Timeline & Process",
+        "slides.eye_compare": "Comparison",
+        "slides.eye_formula": "Core Formula",
+        "slides.eye_insight": "Key Insight",
         "math.rendering": "Rendering formula...",
         "math.disposed": "Formula renderer was disposed",
         "math.empty": "Formula is empty",
@@ -1365,7 +1403,9 @@ enum L10n {
         "studio.update_from_sources": "Regenerate from selected sources",
         "studio.op_update": "Update artifact",
         "studio.delete_title": "Delete Artifact",
+        "studio.attachments_header": "Attached pictures and files",
         "studio.delete_confirm": "Delete \"{0}\"?",
+        "studio.regenerate_confirm": "Regenerate \"{0}\" with its original requirements and sources? The current content will be replaced.",
         "studio.more_actions": "Artifact actions",
         "studio.review_outline": "Review outline",
         "studio.cfg.update_hint": "Regenerate this artifact with the options below and currently selected sources.",

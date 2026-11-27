@@ -218,12 +218,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching {
             val res = core.call("settings.get", JSONObject().put("key", "ui.preferences"))
             val prefs = UiPreferences.fromJson(res.optJSONObject("value"))
+            core.english = prefs.isEnglish
             _ui.update { it.copy(prefs = prefs) }
         }
     }
 
     fun updatePreferences(newPrefs: UiPreferences) {
         val prevEn = _ui.value.prefs.isEnglish
+        core.english = newPrefs.isEnglish
         _ui.update { it.copy(prefs = newPrefs) }
         viewModelScope.launch {
             runCatching {
@@ -411,7 +413,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     val r = refArr.getJSONObject(j)
                     ArtifactSourceRef(r.optString("id"), r.optString("title"), r.optString("kind", "file"))
                 }
-                val srcCount = if (refs.isNotEmpty()) refs.size else (a.optJSONArray("source_ids")?.length() ?: 0)
+                val srcCount = refs.size // only the sources the generation actually read
+                val attArr = a.optJSONArray("attachments") ?: JSONArray()
+                val atts = (0 until attArr.length()).map { attArr.getJSONObject(it) }
+                val (imgAtts, fileAtts) = atts.partition { it.optString("mime").startsWith("image/") }
                 StudioArtifactItem(
                     id = a.optString("id"),
                     artifactType = a.optString("artifact_type", "report"),
@@ -423,6 +428,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     isKnowledgeGraph = cfg.optString("mode") == "knowledge_graph" || payload.optString("kind") == "knowledge_graph",
                     sourceRefs = refs,
                     sourceCount = srcCount,
+                    imagePaths = imgAtts.map { it.optString("path") }.filter { java.io.File(it).exists() },
+                    fileNames = fileAtts.map { it.optString("name") },
                     draftMarkdown = a.optString("draft", ""),
                     payload = payload,
                     config = cfg,
@@ -656,16 +663,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun regenerateArtifact(art: StudioArtifactItem) {
+    /** [fresh]: same requirements and the artifact's own sources, from scratch; otherwise the
+     *  notebook's currently selected sources. */
+    fun regenerateArtifact(art: StudioArtifactItem, fresh: Boolean = false) {
         viewModelScope.launch {
             runCatching {
-                core.call(
-                    "studio.regenerate",
-                    JSONObject()
-                        .put("artifact_id", art.id)
-                        .put("config", art.config)
-                        .put("use_selected_sources", true),
-                )
+                val params = JSONObject().put("artifact_id", art.id).put("use_selected_sources", !fresh)
+                if (!fresh) params.put("config", art.config)
+                core.call("studio.regenerate", params)
                 refreshAll()
             }.onFailure { reportError(it) }
         }
@@ -706,7 +711,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Splits a mind-map / knowledge-graph node into finer points; the core may decline atomic nodes. */
     fun refineNode(artifactId: String, nodeId: String, label: String) {
         val en = _ui.value.prefs.isEnglish
-        _ui.update { it.copy(statusBanner = "${L10n.t("kg.refining", en)}：$label") }
+        _ui.update { it.copy(statusBanner = "${L10n.t("kg.refining", en)}${L10n.t("studio.colon", en)}$label") }
         viewModelScope.launch {
             runCatching {
                 val res = core.call(

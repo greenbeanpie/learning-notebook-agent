@@ -62,6 +62,10 @@ pub struct PartGeom {
     pub bbox: [f64; 4],
     /// Natural orientation on screen in degrees (clockwise positive, screen coordinates).
     pub angle_deg: f64,
+    /// What the part hangs on: one group per attachment point (an end of a line, a corner,
+    /// an arrow tip) listing the other parts drawn through that point; a lone text part has
+    /// one group with its nearest part. Used to keep a part from appearing before them.
+    pub anchors: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,11 +88,17 @@ impl FigureOutput {
         json!({
             "width": self.width,
             "height": self.height,
-            "parts": self.parts.iter().map(|p| json!({
-                "id": p.id,
-                "bbox": p.bbox.iter().map(|v| (v * 10000.0).round() / 10000.0).collect::<Vec<_>>(),
-                "angle_deg": (p.angle_deg * 10.0).round() / 10.0,
-            })).collect::<Vec<_>>(),
+            "parts": self.parts.iter().map(|p| {
+                let mut o = json!({
+                    "id": p.id,
+                    "bbox": p.bbox.iter().map(|v| (v * 10000.0).round() / 10000.0).collect::<Vec<_>>(),
+                    "angle_deg": (p.angle_deg * 10.0).round() / 10.0,
+                });
+                if !p.anchors.is_empty() {
+                    o["anchors"] = json!(p.anchors);
+                }
+                o
+            }).collect::<Vec<_>>(),
         })
     }
 
@@ -357,6 +367,175 @@ fn palette(name: &str) -> &'static str {
         "teal" => "#00897b",
         _ => "#1a56db",
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// attachment (which parts a part hangs on), in screen coordinates so 2-D and 3-D work alike
+
+/// A point of one part closer than this to another part's stroke touches it.
+const TOUCH_PX: f64 = 3.0;
+/// A lone text part farther than this from every drawn part belongs to none.
+const TEXT_NEAR_PX: f64 = 20.0;
+
+#[derive(Default)]
+struct AttachShape {
+    /// Points the part is attached by: open line ends, corners of small polygons, dot centres.
+    keypts: Vec<(f64, f64)>,
+    segs: Vec<((f64, f64), (f64, f64))>,
+    dots: Vec<((f64, f64), f64)>,
+    /// Centre and half the smaller side of the text box, for parts made only of text.
+    text: Option<((f64, f64), f64)>,
+}
+
+fn path_subpaths(d: &str) -> Vec<Vec<(f64, f64)>> {
+    let mut subs: Vec<Vec<(f64, f64)>> = Vec::new();
+    for tok in d.split_whitespace() {
+        let (cmd, rest) = match tok.chars().next() {
+            Some(c) if c.is_ascii_alphabetic() => (Some(c), &tok[1..]),
+            _ => (None, tok),
+        };
+        let Some((x, y)) = rest.split_once(',') else {
+            continue;
+        };
+        let (Ok(x), Ok(y)) = (x.parse::<f64>(), y.parse::<f64>()) else {
+            continue;
+        };
+        if cmd == Some('M') || subs.is_empty() {
+            subs.push(Vec::new());
+        }
+        if let Some(s) = subs.last_mut() {
+            s.push((x, y));
+        }
+    }
+    subs
+}
+
+fn shape_of(p: &Part) -> AttachShape {
+    let mut sh = AttachShape::default();
+    let mut text_box: Option<(f64, f64, f64, f64)> = None;
+    for prim in &p.prims {
+        match prim {
+            Prim::Path { d, .. } => {
+                let closed = d.trim_end().ends_with('Z');
+                for sub in path_subpaths(d) {
+                    for w in sub.windows(2) {
+                        sh.segs.push((w[0], w[1]));
+                    }
+                    if closed && sub.len() > 2 {
+                        sh.segs.push((sub[sub.len() - 1], sub[0]));
+                        // small polygons (arrow heads, planes, blocks) attach by their corners;
+                        // many-sided ones are areas or round shapes
+                        if sub.len() <= 8 {
+                            sh.keypts.extend(sub.iter().copied());
+                        }
+                    } else if let (Some(a), Some(b)) = (sub.first(), sub.last()) {
+                        sh.keypts.push(*a);
+                        sh.keypts.push(*b);
+                    }
+                }
+            }
+            Prim::Circle { c, r, .. } => {
+                sh.dots.push((*c, *r));
+                sh.keypts.push(*c);
+            }
+            Prim::Text {
+                at,
+                text,
+                size,
+                anchor,
+                ..
+            } => {
+                let w = text_width(text, *size);
+                let x0 = match *anchor {
+                    "middle" => at.0 - w / 2.0,
+                    "end" => at.0 - w,
+                    _ => at.0,
+                };
+                let (y0, y1) = (at.1 - size * 0.8, at.1 + size * 0.25);
+                text_box = Some(match text_box {
+                    None => (x0, y0, x0 + w, y1),
+                    Some(b) => (b.0.min(x0), b.1.min(y0), b.2.max(x0 + w), b.3.max(y1)),
+                });
+            }
+        }
+    }
+    if sh.segs.is_empty() && sh.dots.is_empty() {
+        if let Some((x0, y0, x1, y1)) = text_box {
+            sh.text = Some((
+                ((x0 + x1) / 2.0, (y0 + y1) / 2.0),
+                ((x1 - x0).min(y1 - y0)) / 2.0,
+            ));
+        }
+    }
+    sh
+}
+
+fn seg_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 < 1e-9 {
+        0.0
+    } else {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0)
+    };
+    let (qx, qy) = (a.0 + t * dx, a.1 + t * dy);
+    ((p.0 - qx).powi(2) + (p.1 - qy).powi(2)).sqrt()
+}
+
+/// Distance from a point to the drawn geometry of a shape (infinite when it has none).
+fn shape_dist(sh: &AttachShape, p: (f64, f64)) -> f64 {
+    let s = sh
+        .segs
+        .iter()
+        .map(|(a, b)| seg_dist(p, *a, *b))
+        .fold(f64::INFINITY, f64::min);
+    let d = sh
+        .dots
+        .iter()
+        .map(|(c, r)| (((p.0 - c.0).powi(2) + (p.1 - c.1).powi(2)).sqrt() - r).max(0.0))
+        .fold(f64::INFINITY, f64::min);
+    s.min(d)
+}
+
+/// For every part, the groups of other parts it hangs on (see [`PartGeom::anchors`]).
+fn part_anchors(parts: &[&Part]) -> HashMap<String, Vec<Vec<String>>> {
+    let shapes: Vec<AttachShape> = parts.iter().map(|p| shape_of(p)).collect();
+    let mut out = HashMap::new();
+    for (i, sh) in shapes.iter().enumerate() {
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        if let Some((c, half)) = sh.text {
+            let near = shapes
+                .iter()
+                .enumerate()
+                .filter(|(j, o)| *j != i && o.text.is_none())
+                .map(|(j, o)| (j, shape_dist(o, c) - half))
+                .filter(|(_, d)| *d <= TEXT_NEAR_PX)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((j, _)) = near {
+                groups.push(vec![parts[j].id.clone()]);
+            }
+        } else {
+            for kp in &sh.keypts {
+                let mut g: Vec<String> = shapes
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, o)| {
+                        *j != i && parts[*j].id != parts[i].id && shape_dist(o, *kp) <= TOUCH_PX
+                    })
+                    .map(|(j, _)| parts[j].id.clone())
+                    .collect();
+                g.sort();
+                g.dedup();
+                if !g.is_empty() && !groups.contains(&g) {
+                    groups.push(g);
+                }
+            }
+        }
+        if !groups.is_empty() {
+            out.insert(parts[i].id.clone(), groups);
+        }
+    }
+    out
 }
 
 const AUTO_COLORS: [&str; 6] = [
@@ -784,6 +963,12 @@ impl Ctx {
             svg.push_str("</g>");
         }
         svg.push_str("</svg>");
+        let visible: Vec<&Part> = self
+            .parts
+            .iter()
+            .filter(|p| p.has_extent() && !hidden.contains(&p.id))
+            .collect();
+        let mut anchors = part_anchors(&visible);
         let parts = self
             .parts
             .iter()
@@ -797,6 +982,7 @@ impl Ctx {
                     id: p.id.clone(),
                     bbox: [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)],
                     angle_deg: p.angle,
+                    anchors: anchors.remove(&p.id).unwrap_or_default(),
                 }
             })
             .collect();
@@ -2817,6 +3003,46 @@ mod tests {
             "{:?}",
             out.warnings
         );
+    }
+
+    #[test]
+    fn parts_report_what_they_hang_on() {
+        let spec = json!({"kind": "diagram", "elements": [
+            {"id": "O", "type": "point", "at": [0, 0]},
+            {"id": "V", "type": "vector", "from": "O", "to": [3, 0]},
+            {"id": "h", "type": "segment", "from": [3, 0], "to": [3, -2], "dashed": true},
+            {"id": "far", "type": "segment", "from": [-2, 2], "to": [-1, 2]},
+            {"id": "t", "type": "text", "at": [3, -2.15], "text": "h"}
+        ]});
+        let out = render_figure(&spec, &none());
+        let anchors = |id: &str| {
+            out.parts
+                .iter()
+                .find(|p| p.id == id)
+                .unwrap()
+                .anchors
+                .clone()
+        };
+        // the dashed line starts at the arrow tip
+        assert!(
+            anchors("h").iter().any(|g| g.contains(&"V".to_string())),
+            "{:?}",
+            anchors("h")
+        );
+        // the vector's tail sits on the point O
+        assert!(
+            anchors("V").iter().any(|g| g.contains(&"O".to_string())),
+            "{:?}",
+            anchors("V")
+        );
+        assert!(anchors("far").is_empty(), "{:?}", anchors("far"));
+        // a lone text belongs to the part nearest to it
+        assert_eq!(anchors("t"), vec![vec!["h".to_string()]]);
+        assert!(out.meta_json()["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.get("anchors").is_some()));
     }
 
     #[test]

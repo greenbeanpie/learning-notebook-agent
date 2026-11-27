@@ -86,6 +86,9 @@ data class StudioArtifactItem(
     val isKnowledgeGraph: Boolean,
     val sourceRefs: List<ArtifactSourceRef>,
     val sourceCount: Int,
+    /** The user's own pictures (local paths) and file names given with the request. */
+    val imagePaths: List<String> = emptyList(),
+    val fileNames: List<String> = emptyList(),
     val draftMarkdown: String,
     val payload: JSONObject,
     val config: JSONObject,

@@ -119,7 +119,7 @@ final class LectureController: ObservableObject {
         if settingsOnly { return }
         guard let url = Bundle.module.url(forResource: "deck_player", withExtension: "html"),
               let template = try? String(contentsOf: url, encoding: .utf8) else {
-            status = "deck_player.html is missing"
+            status = L10n.t("lecture.player_missing", en: en)
             return
         }
         let bridge = "<script>window.chrome={webview:{postMessage:function(m){window.webkit.messageHandlers.lna.postMessage(m)}}};</script>"
@@ -292,12 +292,11 @@ final class LectureController: ObservableObject {
                     }
                 }
             }
-            let laserTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                for l in lasers { self?.js("lecture.laser(\(l))") }
+            // the page times each pointer cue by where its words fall in the sentence
+            if !lasers.isEmpty {
+                js("lecture.lasers([\(lasers.joined(separator: ","))],\(Lecture.jsString(s.text)),\(rate))")
             }
             let ok = await speak(s.text)
-            await laserTask.value
             if !ok || Task.isCancelled { return }
             if s.lastOfSlide, s.checkpoint != nil {
                 playing = false
@@ -731,7 +730,7 @@ struct LecturePlayerView: View {
             }
             if !removed.isEmpty {
                 Text(t("lec.replaced")).font(.subheadline.weight(.semibold))
-                Text(removed.joined(separator: "、"))
+                Text(removed.joined(separator: L10n.t("lecture.list_sep", en: en)))
             }
             HStack {
                 Button(t("lec.restore_original")) {

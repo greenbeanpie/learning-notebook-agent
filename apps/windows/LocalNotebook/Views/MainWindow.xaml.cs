@@ -55,7 +55,7 @@ public sealed partial class MainWindow : Window
         {
             var advice = Advice(e.Code);
             // a model refused for missing tool calling / structured output says exactly what is missing
-            var detail = e.Code == "CAPABILITY_MISSING" && e.Message.Length > 0 ? e.Message : (advice.Length > 0 ? advice : e.Message);
+            var detail = e.Code == "CAPABILITY_MISSING" && e.Message.Length > 0 ? L10n.CapabilityMissing(e.Message) : (advice.Length > 0 ? advice : e.Message);
             ShowStatus(InfoBarSeverity.Error, L10n.Fmt("common.failed", what), detail);
             return null;
         }
@@ -253,6 +253,7 @@ public sealed partial class MainWindow : Window
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(NotebookPicker, L10n.T("nb.switch"));
         if (_activeNotebookId == null) NotebookPickerText.Text = L10n.T("nb.switch");
         NewNotebookBtn.Content = L10n.T("nb.new");
+        StudioHomeTitleText.Text = L10n.T("studio.title");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(SettingsBtn, L10n.T("settings.title"));
         SettingsBtnText.Text = L10n.T("settings.title");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(NotebookMenuBtn, L10n.T("nb.menu"));

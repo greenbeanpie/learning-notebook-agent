@@ -133,7 +133,17 @@ pub fn deck_html(template: &str, payload: &Value, en: bool, bridge: &str) -> Str
         .replace("__LECTURE__", "true")
         .replace("__T_PLAY_JSON__", &js_string(tr(en, "slides.play")))
         .replace("__T_PAUSE_JSON__", &js_string(tr(en, "slides.pause")))
-        .replace("__T_NONOTES_JSON__", &js_string(""));
+        .replace("__T_NONOTES_JSON__", &js_string(""))
+        .replace("__T_DECK_TITLE_JSON__", &js_string(tr(en, "slides.default_title")))
+        .replace("__T_SLIDE_PATTERN_JSON__", &js_string(tr(en, "slides.slide_n")))
+        .replace("__T_KICKER_SUMMARY_JSON__", &js_string(tr(en, "slides.kicker_summary")))
+        .replace("__T_KICKER_COVER_JSON__", &js_string(tr(en, "slides.kicker_cover")))
+        .replace("__T_EYE_AGENDA_JSON__", &js_string(tr(en, "slides.eye_agenda")))
+        .replace("__T_EYE_METRICS_JSON__", &js_string(tr(en, "slides.eye_metrics")))
+        .replace("__T_EYE_TIMELINE_JSON__", &js_string(tr(en, "slides.eye_timeline")))
+        .replace("__T_EYE_COMPARE_JSON__", &js_string(tr(en, "slides.eye_compare")))
+        .replace("__T_EYE_FORMULA_JSON__", &js_string(tr(en, "slides.eye_formula")))
+        .replace("__T_EYE_INSIGHT_JSON__", &js_string(tr(en, "slides.eye_insight")));
     // the remaining plain-text labels belong to the stand-alone slide viewer
     let mut cleaned = String::with_capacity(html.len());
     let mut rest = html.as_str();

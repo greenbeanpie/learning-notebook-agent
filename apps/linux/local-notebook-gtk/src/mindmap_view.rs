@@ -641,7 +641,7 @@ pub fn build_mindmap_widget(
                     fb.set_child(Some(&fl));
                     fb.add_css_class("lna-ghost-btn");
                     let cb = on_action.clone();
-                    let concept = format!("{lbl}：{facet}");
+                    let concept = format!("{lbl}{}{facet}", tr(en, "mm.concept_sep"));
                     let p_c = pop.clone();
                     fb.connect_clicked(move |_| {
                         p_c.popdown();

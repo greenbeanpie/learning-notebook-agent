@@ -24,6 +24,10 @@ class CoreCallException(
 
 class CoreClient(private val context: Context) {
     private var handle: Long = 0L
+
+    /** UI language for messages raised here; kept in step with the preferences by the view model. */
+    @Volatile
+    var english: Boolean = UiPreferences().isEnglish
     private val reqSeq = AtomicLong(1L)
     private val _events = MutableSharedFlow<ApiEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<ApiEvent> = _events
@@ -97,7 +101,7 @@ class CoreClient(private val context: Context) {
             if (handle == 0L) {
                 throw CoreCallException(
                     "CORE_UNAVAILABLE",
-                    "Native core library (liblna_ffi.so) is not loaded. Run build-android-rust.sh first.",
+                    L10n.t("core.unavailable", english),
                 )
             }
             val req = JSONObject()
@@ -110,7 +114,7 @@ class CoreClient(private val context: Context) {
             if (err != null) {
                 throw CoreCallException(
                     code = err.optString("code", "INTERNAL"),
-                    message = err.optString("message", "Unknown error"),
+                    message = err.optString("message", L10n.t("error.unknown", english)),
                 )
             }
             parsed.optJSONObject("result") ?: JSONObject()

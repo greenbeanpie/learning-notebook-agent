@@ -203,6 +203,15 @@ public sealed partial class MainWindow
         });
         if (status is "PENDING" or "RUNNING") Add(L10n.T("studio.cancel"), async () => { await CoreAsync("studio.cancel", Args(("artifact_id", id)), L10n.T("studio.cancel")); });
         if (status is "FAILED" or "CANCELLED") Add(L10n.T("studio.retry"), async () => { await CoreAsync("studio.retry", Args(("artifact_id", id)), L10n.T("studio.retry")); });
+        if (status is "READY" or "FAILED" or "CANCELLED")
+        {
+            // same requirements, same sources, from scratch (the current content is replaced)
+            Add(L10n.T("studio.regenerate"), async () =>
+            {
+                if (await ConfirmAsync(L10n.T("studio.regenerate"), L10n.Fmt("studio.regenerate_confirm", title), L10n.T("studio.regenerate")))
+                    await CoreAsync("studio.regenerate", Args(("artifact_id", id), ("use_selected_sources", false)), L10n.T("studio.regenerate"));
+            });
+        }
         if (status == "READY")
         {
             var existingCfg = a.TryGetProperty("config", out var cfgEl) && cfgEl.ValueKind == JsonValueKind.Object ? cfgEl : (JsonElement?)null;

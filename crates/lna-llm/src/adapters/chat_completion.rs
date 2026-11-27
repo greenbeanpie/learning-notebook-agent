@@ -1,7 +1,6 @@
 use crate::types::*;
 use async_trait::async_trait;
 use lna_types::{ErrorCode, LnaError, LnaResult};
-use secrecy::ExposeSecret;
 use serde_json::{json, Value};
 
 pub struct ChatCompletionAdapter;
@@ -194,13 +193,10 @@ impl ProtocolAdapter for ChatCompletionAdapter {
         }
 
         let mut builder = client.post(url).json(&body);
-        if let Some(ref key) = profile.api_key {
-            let s = key.expose_secret();
-            if !s.is_empty() {
-                builder = builder.bearer_auth(s);
-            }
+        if let Some(s) = profile.default_auth_key() {
+            builder = builder.bearer_auth(s);
         }
-        for (k, v) in &profile.extra_headers {
+        for (k, v) in profile.resolved_extra_headers() {
             builder = builder.header(k, v);
         }
         builder
@@ -219,11 +215,11 @@ impl ProtocolAdapter for ChatCompletionAdapter {
     ) -> LnaResult<Vec<ModelInfo>> {
         let url = format!("{}/models", profile.trimmed_base());
         let mut req = client.get(url);
-        if let Some(ref key) = profile.api_key {
-            let s = key.expose_secret();
-            if !s.is_empty() {
-                req = req.bearer_auth(s);
-            }
+        if let Some(s) = profile.default_auth_key() {
+            req = req.bearer_auth(s);
+        }
+        for (k, v) in profile.resolved_extra_headers() {
+            req = req.header(k, v);
         }
         let resp = req
             .send()

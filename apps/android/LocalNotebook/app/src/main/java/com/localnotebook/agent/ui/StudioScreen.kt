@@ -43,6 +43,22 @@ internal fun timeAgo(createdMs: Long, nowMs: Long, en: Boolean): String {
     return String.format(L10n.t("time.years", en), days / 365)
 }
 
+private fun artifactStatusLabel(art: StudioArtifactItem, en: Boolean): String = when (art.status) {
+    "PENDING" -> L10n.t("studio.status_pending", en)
+    "RUNNING" -> when (art.stage) {
+        "COLLECT" -> L10n.t("studio.status_collect", en)
+        "PLAN" -> L10n.t("studio.status_plan", en)
+        "GENERATE" -> L10n.t("studio.status_generate", en)
+        "RENDER" -> L10n.t("studio.status_render", en)
+        else -> L10n.t("studio.status_processing", en)
+    }
+    "DRAFT_REVIEW" -> L10n.t("studio.status_draft", en)
+    "READY" -> L10n.t("studio.status_ready", en)
+    "FAILED" -> L10n.t("studio.status_failed", en)
+    "CANCELLED" -> L10n.t("studio.status_cancelled", en)
+    else -> art.status
+}
+
 @Composable
 fun StudioScreen(
     state: AppUiState,
@@ -50,7 +66,7 @@ fun StudioScreen(
     onOpenArtifact: (StudioArtifactItem?) -> Unit,
     onToggleFullscreen: () -> Unit,
     onRetryArtifact: (String) -> Unit,
-    onRegenerateArtifact: (StudioArtifactItem) -> Unit,
+    onRegenerateArtifact: (StudioArtifactItem, Boolean) -> Unit,
     onApproveDraft: (String, String) -> Unit,
     onReviseDraft: (String, String, String, org.json.JSONArray?, (String) -> Unit) -> Unit = { _, _, _, _, _ -> },
     onFeedback: (String, Int) -> Unit,
@@ -82,7 +98,8 @@ fun StudioScreen(
             onClose = { onOpenArtifact(null) },
             onToggleFullscreen = onToggleFullscreen,
             onRetry = { onRetryArtifact(openArt.id) },
-            onRegenerate = { onRegenerateArtifact(openArt) },
+            onRegenerate = { onRegenerateArtifact(openArt, false) },
+            onRegenerateFresh = { onRegenerateArtifact(openArt, true) },
             onApproveDraft = { md -> onApproveDraft(openArt.id, md) },
             onReviseDraft = { instr, cur, im, cb -> onReviseDraft(openArt.id, instr, cur, im, cb) },
             onFeedback = { v -> onFeedback(openArt.id, v) },
@@ -162,7 +179,7 @@ fun StudioScreen(
                         Text(art.title, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val age = timeAgo(art.createdAt, now, en)
                         Text(
-                            "${L10n.t("studio.${if (art.isKnowledgeGraph) "knowledge_graph" else art.artifactType}", en)} · ${art.status}${if (age.isNotEmpty()) " · $age" else ""}",
+                            "${L10n.t("studio.${if (art.isKnowledgeGraph) "knowledge_graph" else art.artifactType}", en)} · ${artifactStatusLabel(art, en)}${if (age.isNotEmpty()) " · $age" else ""}",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -281,6 +298,7 @@ private fun ArtifactViewerScreen(
     onToggleFullscreen: () -> Unit,
     onRetry: () -> Unit,
     onRegenerate: () -> Unit,
+    onRegenerateFresh: () -> Unit,
     onApproveDraft: (String) -> Unit,
     onReviseDraft: (String, String, org.json.JSONArray?, (String) -> Unit) -> Unit,
     onFeedback: (Int) -> Unit,
@@ -292,6 +310,7 @@ private fun ArtifactViewerScreen(
     core: com.localnotebook.agent.core.CoreClient? = null,
 ) {
     var showPromptDialog by remember { mutableStateOf(false) }
+    var confirmRegenerate by remember { mutableStateOf(false) }
     var showDiagLog by remember { mutableStateOf(false) }
     var showThoughts by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
@@ -321,6 +340,11 @@ private fun ArtifactViewerScreen(
             }
             TextButton(onClick = { showThoughts = !showThoughts }) {
                 Text(L10n.t("studio.process", en), fontSize = 12.sp)
+            }
+            if (artifact.status == "READY" || artifact.status == "FAILED" || artifact.status == "CANCELLED") {
+                IconButton(onClick = { confirmRegenerate = true }) {
+                    Icon(Icons.Default.Refresh, contentDescription = L10n.t("studio.regenerate", en))
+                }
             }
             IconButton(onClick = onToggleFullscreen) {
                 Icon(if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, contentDescription = null)
@@ -470,6 +494,20 @@ private fun ArtifactViewerScreen(
         }
     }
 
+    if (confirmRegenerate) {
+        AlertDialog(
+            onDismissRequest = { confirmRegenerate = false },
+            title = { Text(L10n.t("studio.regenerate", en)) },
+            text = { Text(L10n.t("studio.regenerate_confirm", en).format(artifact.title)) },
+            confirmButton = {
+                TextButton(onClick = { confirmRegenerate = false; onRegenerateFresh() }) { Text(L10n.t("studio.regenerate", en)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRegenerate = false }) { Text(L10n.t("common.cancel", en)) }
+            },
+        )
+    }
+
     if (showPromptDialog) {
         AlertDialog(
             onDismissRequest = { showPromptDialog = false },
@@ -489,7 +527,17 @@ private fun ArtifactViewerScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(artifact.promptTopic.ifEmpty { L10n.t("studio.prompt_empty", en) })
+                    if (artifact.imagePaths.isNotEmpty() || artifact.fileNames.isNotEmpty()) {
+                        Text(L10n.t("studio.attachments_header", en), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        AttachmentGallery(artifact.imagePaths)
+                        for (name in artifact.fileNames) {
+                            Text("📄 $name", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
                     Text(L10n.t("studio.sources_header", en), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (artifact.sourceRefs.isEmpty()) {
+                        Text(L10n.t("studio.sources_empty", en), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (src in artifact.sourceRefs) {
                             Surface(

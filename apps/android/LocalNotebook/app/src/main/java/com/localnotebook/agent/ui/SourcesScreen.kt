@@ -147,7 +147,7 @@ fun SourcesScreen(
                                 if (src.id in state.indexingSourceIds) {
                                     CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                                 } else if (src.status != "READY") {
-                                    Text(src.status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(sourceStatusLabel(src.status, en), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                             if (src.status == "READY") {
@@ -335,4 +335,13 @@ private fun SourceGuideDetailCard(
             }
         }
     }
+}
+
+private fun sourceStatusLabel(status: String, en: Boolean): String = when (status) {
+    "QUEUED" -> L10n.t("main.source_status_queued", en)
+    "PARSING" -> L10n.t("main.source_status_parsing", en)
+    "CHUNKING" -> L10n.t("main.source_status_chunking", en)
+    "EMBEDDING" -> L10n.t("main.source_status_embedding", en)
+    "FAILED" -> L10n.t("main.source_status_failed", en)
+    else -> status
 }

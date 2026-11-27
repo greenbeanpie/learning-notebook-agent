@@ -185,6 +185,11 @@
   .ppt-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-body); background: var(--card-bg); }
   .ppt-table tr:nth-child(even) td { background: var(--card-alt); }
   .ppt-table td:first-child { font-weight: 700; color: var(--text-dark); }
+  .ppt-table.roomy { font-size: clamp(13px, 1.6vw, 20px); }
+  .ppt-table.roomy th { padding: 12px 16px; }
+  .ppt-table.roomy td { padding: 16px; }
+  .fig-text .ppt-table, .fig-text .ppt-table.roomy { font-size: clamp(10.5px, 1.12vw, 14px); flex-shrink: 0; }
+  .fig-text .ppt-table th, .fig-text .ppt-table td { padding: 6px 8px; }
 
   /* Hero Formula / Quote */
   .hero-box {
@@ -280,6 +285,27 @@
 
   /* Laser pointer + captions */
   #laserLayer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 25; }
+  /* Pointing styles: a figure part flashes in colour, wide text gets a highlighter sweep,
+     a large block a pulsing outline; whatever was revealed with it gets a softer hint */
+  #hlLayer { position: absolute; inset: 0; pointer-events: none; z-index: 24; overflow: hidden; }
+  @keyframes hlPulse { 0%, 100% { filter: drop-shadow(0 0 2px rgba(255,45,45,.95)) drop-shadow(0 0 6px rgba(255,45,45,.55)); }
+                       50% { filter: drop-shadow(0 0 4px rgba(255,170,0,.95)) drop-shadow(0 0 11px rgba(255,140,0,.7)); } }
+  @keyframes hlStroke { 0%, 100% { stroke: #e3262f; } 50% { stroke: #ff9500; } }
+  @keyframes hlFill { 0%, 100% { fill: #e3262f; } 50% { fill: #ff9500; } }
+  #slideMount g.hl-glow { animation: hlPulse .8s ease-in-out infinite; }
+  #slideMount g.hl-glow path { animation: hlStroke .8s ease-in-out infinite; stroke-width: 3.6px; }
+  #slideMount g.hl-glow path[fill-opacity="1.00"]:not([fill="none"]), #slideMount g.hl-glow circle[fill]:not([fill="#ffffff"]), #slideMount g.hl-glow text { animation: hlFill .8s ease-in-out infinite; }
+  #slideMount g.hl-glow text { font-weight: 700; }
+  #slideMount g.hl-fade { opacity: .32; }
+  #slideMount g.hl-soft { filter: drop-shadow(0 0 3px rgba(255,170,0,.9)); }
+  #slideMount .hl-soft:not(g) { background-color: rgba(255,214,10,.22) !important; border-radius: 6px; }
+  @keyframes hlIntro { 0% { filter: none; } 35% { filter: drop-shadow(0 0 5px rgba(255,150,0,.95)) drop-shadow(0 0 2px rgba(255,150,0,.9)); } 100% { filter: none; } }
+  #slideMount g.hl-intro { animation: hlIntro 1.3s ease-out 1; }
+  .hl-marker { position: absolute; border-radius: 6px; background: rgba(255,214,10,.36); mix-blend-mode: multiply;
+    box-shadow: inset 4px 0 0 #ff9500; animation: hlSweep .45s ease-out both; }
+  @keyframes hlSweep { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+  .hl-box { position: absolute; border-radius: 10px; border: 3px solid #ff9500; animation: hlBox .9s ease-in-out infinite; }
+  @keyframes hlBox { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,149,0,.55); } 50% { box-shadow: 0 0 0 6px rgba(255,149,0,.18); } }
   /* Captions sit in their own strip under the slide so they never cover its content */
   .caption { display: none; flex-shrink: 0; max-height: 5.2em; overflow-y: auto; user-select: text;
     background: var(--ui-panel); border: 1px solid var(--ui-border); color: var(--ui-text);
@@ -327,6 +353,7 @@
       <div class="edge-nav left" id="edgePrev"><div class="edge-pill">‹</div></div>
       <div class="edge-nav right" id="edgeNext"><div class="edge-pill">›</div></div>
       <div id="slideMount" class="slide-layer"></div>
+      <div id="hlLayer"></div>
       <canvas id="laserLayer"></canvas>
     </div>
   </div>
@@ -361,6 +388,16 @@ const LECTURE = __LECTURE__;
 const T_PLAY = __T_PLAY_JSON__;
 const T_PAUSE = __T_PAUSE_JSON__;
 const T_NO_NOTES = __T_NONOTES_JSON__;
+const T_DECK_TITLE = __T_DECK_TITLE_JSON__;
+const T_SLIDE_PATTERN = __T_SLIDE_PATTERN_JSON__;
+const T_KICKER_SUMMARY = __T_KICKER_SUMMARY_JSON__;
+const T_KICKER_COVER = __T_KICKER_COVER_JSON__;
+const T_EYE_AGENDA = __T_EYE_AGENDA_JSON__;
+const T_EYE_METRICS = __T_EYE_METRICS_JSON__;
+const T_EYE_TIMELINE = __T_EYE_TIMELINE_JSON__;
+const T_EYE_COMPARE = __T_EYE_COMPARE_JSON__;
+const T_EYE_FORMULA = __T_EYE_FORMULA_JSON__;
+const T_EYE_INSIGHT = __T_EYE_INSIGHT_JSON__;
 
 const THEMES = {
   executive_navy:  { darkBg:'#0f172a', darkSurf:'#1e293b', lightBg:'#f8fafc', cardBg:'#ffffff', cardAlt:'#f1f5f9', primary:'#1d4ed8', accent:'#0ea5e9', warm:'#d97706', border:'#e2e8f0', textDark:'#0f172a', textBody:'#334155', textMuted:'#64748b', textOnDark:'#f8fafc', textOnDarkSub:'#cbd5e1' },
@@ -371,7 +408,7 @@ const THEMES = {
 };
 
 const theme = THEMES[(PAYLOAD.theme || 'executive_navy').toLowerCase()] || THEMES.executive_navy;
-const deckTitle = PAYLOAD.title || 'Presentation';
+const deckTitle = PAYLOAD.title || T_DECK_TITLE;
 let slides = Array.isArray(PAYLOAD.slides) && PAYLOAD.slides.length ? PAYLOAD.slides : [{ layout:'title', title: deckTitle, bullets:[] }];
 if (LECTURE) document.body.classList.add('lecture');
 
@@ -458,6 +495,14 @@ function mathText(h) {
     .replace(/(^|[^A-Za-z0-9_])((?:<span class="vec">.<\/span>)|[A-Za-z\u0391-\u03c9])_([A-Za-z0-9])(?![A-Za-z0-9_])/g, '$1$2<sub>$3</sub>')
     .replace(/(^|[^A-Za-z0-9^])((?:<span class="vec">.<\/span>)|[A-Za-z\u0391-\u03c9])\^([A-Za-z0-9])(?![A-Za-z0-9^])/g, '$1$2<sup>$3</sup>');
 }
+// A short table spreads over the slide (taller rows, larger type) instead of hugging the top.
+function tableHtml(s, maxRows) {
+  if (!s.table || !Array.isArray(s.table.headers) || !s.table.headers.length) return '';
+  const rows = (s.table.rows || []).slice(0, maxRows);
+  const ths = s.table.headers.map(h => `<th>${fmt(h)}</th>`).join('');
+  const trs = rows.map((r, ri) => `<tr class="stagger"${el('table.r' + (ri + 1))} ${stagger(ri+1)}>${s.table.headers.map((_, ci) => `<td>${fmt(r[ci] || '')}</td>`).join('')}</tr>`).join('');
+  return `<table class="ppt-table${rows.length <= 4 ? ' roomy' : ''}"${el('table')}><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+}
 function stagger(i) { return `style="animation-delay:${Math.min(i * 75, 450)}ms"`; }
 // element ids (same scheme as the core's lecture::slide_element_ids) for laser targets and builds
 function el(id) { return id ? ` data-el="${esc(id)}"` : ''; }
@@ -465,7 +510,7 @@ function el(id) { return id ? ` data-el="${esc(id)}"` : ''; }
 function renderSlideHtml(s, idx) {
   s = withSrc(s);
   const layout = (s.layout || 'bullets').toLowerCase();
-  const title = s.title || `Slide ${idx + 1}`;
+  const title = s.title || T_SLIDE_PATTERN.replace('{n}', String(idx + 1));
   const ownSub = s.subtitle || '';
   const sub = ownSub || (idx === 0 ? (PAYLOAD.subtitle || '') : '');
   const subEl = ownSub ? 'subtitle' : '';
@@ -475,7 +520,8 @@ function renderSlideHtml(s, idx) {
 
   if (s.figure_svg) {
     const textHtml = (s.formula ? `<div class="hero-box hero-formula"${el('formula')}>${fmt(s.formula, true)}</div>` : '') +
-      bl.slice(0, 6).map(b => `<div class="bullet-row"${el(b.id)}>${fmt(b.text)}</div>`).join('');
+      bl.slice(0, 6).map(b => `<div class="bullet-row"${el(b.id)}>${fmt(b.text)}</div>`).join('') +
+      tableHtml(s, 4);
     return `<div class="slide-layer" style="background:var(--light-bg)">
       <div class="s-top-bar"></div>
       <div class="s-pad">
@@ -492,7 +538,7 @@ function renderSlideHtml(s, idx) {
   }
 
   if (layout === 'title' || layout === 'summary') {
-    const kicker = layout === 'summary' ? 'KEY TAKEAWAYS & SUMMARY' : 'PRESENTATION';
+    const kicker = layout === 'summary' ? T_KICKER_SUMMARY : T_KICKER_COVER;
     const items = bl.slice(0,5).map((b, i) => `<div class="s-cover-item stagger"${el(b.id)} ${stagger(i+2)}>▸ ${fmt(b.text)}</div>`).join('');
     return `<div class="slide-layer s-dark">
       <div class="s-dark-rail"></div>
@@ -531,7 +577,7 @@ function renderSlideHtml(s, idx) {
   });
 
   if (layout === 'agenda') {
-    eyebrow = 'Agenda';
+    eyebrow = T_EYE_AGENDA;
     const steps = Array.isArray(s.steps) && s.steps.length ? s.steps.map((st, i) => ({ ...st, id: 'step' + (i + 1) })) : fromBullets();
     const cls = steps.length > 3 ? 'grid-cards grid-2' : 's-body';
     bodyHtml = `<div class="${cls}">${steps.slice(0,6).map((st, i) => `
@@ -562,7 +608,7 @@ function renderSlideHtml(s, idx) {
         ${c.items.slice(0,6).map(it => `<div class="col-item"${el(it.id)}>▸ ${fmt(it.text)}</div>`).join('')}
       </div>`).join('')}</div>`;
   } else if (layout === 'metrics') {
-    eyebrow = 'Key Metrics';
+    eyebrow = T_EYE_METRICS;
     const ms = Array.isArray(s.metrics) && s.metrics.length ? s.metrics.slice(0,4).map((m, i) => ({ ...m, id: 'metric' + (i + 1) })) : bl.slice(0,3).map(b => ({ id: b.id, value: String(b.text).slice(0,10), label: b.text, detail: '' }));
     const colsCss = `grid-template-columns:repeat(${Math.max(ms.length,1)},1fr)`;
     const extra = Array.isArray(s.metrics) && s.metrics.length ? bl.slice(0,3) : [];
@@ -574,7 +620,7 @@ function renderSlideHtml(s, idx) {
       </div>`).join('')}</div>` +
       (extra.length ? `<div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">${extra.map((b,i) => `<div class="bullet-row stagger"${el(b.id)} ${stagger(i+3)}>${fmt(b.text)}</div>`).join('')}</div>` : '');
   } else if (layout === 'timeline') {
-    eyebrow = 'Timeline & Process';
+    eyebrow = T_EYE_TIMELINE;
     const steps = Array.isArray(s.steps) && s.steps.length ? s.steps.slice(0,5).map((st, i) => ({ ...st, id: 'step' + (i + 1) })) : fromBullets().slice(0,5);
     bodyHtml = `<div class="timeline-row">${steps.map((st, i) => `
       <div class="tl-step stagger"${el(st.id)} ${stagger(i+1)}>
@@ -585,12 +631,10 @@ function renderSlideHtml(s, idx) {
         </div>
       </div>`).join('')}</div>`;
   } else if (layout === 'table' && s.table && Array.isArray(s.table.headers) && s.table.headers.length) {
-    eyebrow = 'Comparison';
-    const ths = s.table.headers.map(h => `<th>${fmt(h)}</th>`).join('');
-    const trs = (s.table.rows || []).slice(0,7).map((r, ri) => `<tr class="stagger"${el('table.r' + (ri + 1))} ${stagger(ri+1)}>${s.table.headers.map((_, ci) => `<td>${fmt(r[ci] || '')}</td>`).join('')}</tr>`).join('');
-    bodyHtml = `<table class="ppt-table"${el('table')}><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+    eyebrow = T_EYE_COMPARE;
+    bodyHtml = tableHtml(s, 7) + bl.slice(0,3).map((b, i) => `<div class="bullet-row stagger"${el(b.id)} ${stagger(i+5)}>${fmt(b.text)}</div>`).join('');
   } else if (layout === 'formula' || layout === 'quote') {
-    eyebrow = layout === 'formula' ? 'Core Formula' : 'Key Insight';
+    eyebrow = layout === 'formula' ? T_EYE_FORMULA : T_EYE_INSIGHT;
     const useFormula = layout === 'formula' && s.formula;
     const hero = useFormula ? s.formula : (bl[0] ? bl[0].text : '');
     const heroId = useFormula ? 'formula' : (bl[0] ? bl[0].id : '');
@@ -650,6 +694,7 @@ function applyStep(k, animate) {
   const s = slides[current];
   const max = maxStep(s);
   if (!stepsEnabled()) k = max;
+  if (!animate) clearHighlights();
   stepIdx = Math.max(0, Math.min(max, k));
   document.querySelectorAll('#slideMount .bld-hidden, #slideMount .bld-emph, #slideMount .bld-dim').forEach(e => {
     e.classList.remove('bld-hidden', 'bld-emph', 'bld-dim', 'bld-fade', 'bld-appear', 'bld-fly_up', 'bld-draw');
@@ -666,6 +711,11 @@ function applyStep(k, animate) {
           void e.getBoundingClientRect();
           e.classList.remove('bld-hidden');
           if (eff === 'draw') drawIn(e);
+          // a figure part flashes once as it appears, so the eye finds it
+          if (e.matches('g[data-part]')) {
+            e.classList.add('hl-intro');
+            setTimeout(() => e.classList.remove('hl-intro'), 1400);
+          }
         });
       }
     } else if (b.step === stepIdx) {
@@ -701,8 +751,131 @@ function partAngle(id) {
   const p = parts.find(x => x.id === String(id).slice(7));
   return p && typeof p.angle_deg === 'number' ? p.angle_deg : 0;
 }
-// cfg: { target, shape: circle|ellipse, scale, angle_deg (math, counter-clockwise), speed (rev/s), duration_ms }
+// ---- pointing: glow (figure parts), marker (wide text), box (large blocks), ring (small text)
+const hlLayer = document.getElementById('hlLayer');
+let hlTimers = [];
+let hlCleanup = null;
+function endPoint() {
+  if (hlCleanup) { const f = hlCleanup; hlCleanup = null; f(); }
+  stopLaser();
+}
+function clearHighlights() {
+  hlTimers.forEach(clearTimeout);
+  hlTimers = [];
+  endPoint();
+  legacyChainEnd = 0;
+}
+function unionRect(els) {
+  const frame = deckFrameEl.getBoundingClientRect();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  els.forEach(e => { const r = e.getBoundingClientRect(); x0 = Math.min(x0, r.left); y0 = Math.min(y0, r.top); x1 = Math.max(x1, r.right); y1 = Math.max(y1, r.bottom); });
+  return { x: x0 - frame.left, y: y0 - frame.top, w: x1 - x0, h: y1 - y0, fw: frame.width, fh: frame.height };
+}
+// text elements revealed in the same step as a figure part (and the other way round)
+function partnersOf(id) {
+  const isFig = String(id).startsWith('figure:');
+  for (const b of buildsOf(slides[current])) {
+    if (!ENTRANCE.has(b.effect || 'fade')) continue;
+    const t = (b.targets || []).map(String);
+    if (!t.includes(id)) continue;
+    const other = t.filter(x => x !== id && x !== 'figure' && x.startsWith('figure:') !== isFig);
+    return other.length <= 2 ? other : [];
+  }
+  return [];
+}
+function pickStyle(cfg, els) {
+  const want = cfg.style && cfg.style !== 'auto' ? cfg.style : '';
+  const isPart = String(cfg.target).startsWith('figure:');
+  const r = unionRect(els);
+  const big = r.w * r.h > 0.2 * r.fw * r.fh;
+  if (want === 'glow' || (!want && isPart)) return isPart ? 'glow' : 'box';
+  if (want === 'marker') return big ? 'box' : 'marker';
+  if (want === 'ring') return 'ring';
+  if (big) return 'box';
+  return r.w / Math.max(1, r.h) > 3.5 ? 'marker' : 'ring';
+}
+// Points at one element for `dur` ms (replacing whatever was pointed at before).
+function pointAt(cfg, dur) {
+  const els = targetEls(cfg.target).filter(e => !e.classList.contains('bld-hidden'));
+  if (!els.length) return false;
+  endPoint();
+  dur = dur || (typeof cfg.duration_ms === 'number' ? cfg.duration_ms : 2500);
+  const style = pickStyle(cfg, els);
+  const undo = [];
+  if (style === 'ring') {
+    ringLaser(Object.assign({}, cfg, { duration_ms: dur }));
+  } else if (style === 'glow') {
+    els.forEach(e => e.classList.add('hl-glow'));
+    undo.push(() => els.forEach(e => e.classList.remove('hl-glow')));
+    const others = [...document.querySelectorAll('#slideMount [data-el="figure"] [data-part]')]
+      .filter(e => !els.includes(e) && !els.some(x => x.contains(e) || e.contains(x)));
+    others.forEach(e => e.classList.add('hl-fade'));
+    undo.push(() => others.forEach(e => e.classList.remove('hl-fade')));
+  } else {
+    const r = unionRect(els);
+    const d = document.createElement('div');
+    d.className = style === 'box' ? 'hl-box' : 'hl-marker';
+    const pad = style === 'box' ? 4 : 2;
+    Object.assign(d.style, { left: (r.x - pad) + 'px', top: (r.y - pad) + 'px', width: (r.w + 2 * pad) + 'px', height: (r.h + 2 * pad) + 'px' });
+    hlLayer.appendChild(d);
+    undo.push(() => d.remove());
+  }
+  const partners = partnersOf(String(cfg.target)).flatMap(targetEls).filter(e => !e.classList.contains('bld-hidden'));
+  partners.forEach(e => e.classList.add('hl-soft'));
+  undo.push(() => partners.forEach(e => e.classList.remove('hl-soft')));
+  const cleanup = () => undo.forEach(f => f());
+  hlCleanup = cleanup;
+  hlTimers.push(setTimeout(() => { if (hlCleanup === cleanup) endPoint(); }, dur));
+  return true;
+}
+function estimateMs(text, rate) {
+  const t = String(text || '');
+  const cjk = (t.match(/[㐀-鿿]/g) || []).length;
+  const words = (t.replace(/[㐀-鿿]/g, ' ').match(/[A-Za-z0-9]+/g) || []).length;
+  return Math.max(1500, (cjk / 4.3 + words / 2.6) * 1000 / (rate > 0 ? rate : 1));
+}
+// All pointer cues of one spoken sentence: each starts where its `at` words are spoken
+// (estimated from their position in the text), cues without `at` share the rest in order.
+function lasers(cfgs, text, rate, durMs) {
+  clearHighlights();
+  const list = (Array.isArray(cfgs) ? cfgs : []).filter(c => c && c.target);
+  if (!list.length) return;
+  const t = String(text || '');
+  const total = durMs > 0 ? durMs : estimateMs(t, rate);
+  const MIN = 900;
+  const starts = list.map((c, i) => {
+    const at = c.at ? t.indexOf(String(c.at)) : -1;
+    return at >= 0 ? at / Math.max(1, t.length) * total : i / list.length * total;
+  });
+  for (let i = 0; i < starts.length; i++) {
+    starts[i] = Math.max(starts[i], i === 0 ? 250 : starts[i - 1] + MIN);
+  }
+  list.forEach((c, i) => {
+    const end = i + 1 < list.length ? starts[i + 1] : Math.max(starts[i] + MIN, total);
+    const cap = typeof c.duration_ms === 'number' ? Math.max(MIN, c.duration_ms) : Infinity;
+    const dur = Math.max(MIN, Math.min(end - starts[i], i + 1 < list.length ? Infinity : cap));
+    hlTimers.push(setTimeout(() => pointAt(c, dur), starts[i]));
+  });
+}
+// Older hosts call laser() once per cue, all at once: queue them instead of overwriting.
+let legacyLastCall = 0, legacyChainEnd = 0;
 function laser(cfg) {
+  if (!targetEls(cfg.target).length) return false;
+  const now = performance.now();
+  const dur = typeof cfg.duration_ms === 'number' ? cfg.duration_ms : 2500;
+  if (now - legacyLastCall < 300 && legacyChainEnd > now) {
+    const wait = legacyChainEnd - now;
+    hlTimers.push(setTimeout(() => pointAt(cfg, dur), wait));
+    legacyChainEnd += dur;
+  } else {
+    pointAt(cfg, dur);
+    legacyChainEnd = now + dur;
+  }
+  legacyLastCall = now;
+  return true;
+}
+// cfg: { target, shape: circle|ellipse, scale, angle_deg (math, counter-clockwise), speed (rev/s), duration_ms }
+function ringLaser(cfg) {
   const els = targetEls(cfg.target);
   if (!els.length) return false;
   const frame = deckFrameEl.getBoundingClientRect();
@@ -771,7 +944,7 @@ function drawLaser(now) {
 
 function go(nextIdx, dir = 1, step = 0) {
   current = Math.max(0, Math.min(slides.length - 1, nextIdx));
-  stopLaser();
+  clearHighlights();
   const mount = document.getElementById('slideMount');
   const mode = document.getElementById('selAnim').value;
   const animCls = mode === 'fade' ? 'anim-fade' : mode === 'zoom' ? 'anim-zoom' : (dir >= 0 ? 'anim-slide-next' : 'anim-slide-prev');
@@ -877,7 +1050,10 @@ window.lecture = {
   show(i, step) { stopAutoPlay(); if (i !== current) go(i, i >= current ? 1 : -1, step || 0); else applyStep(step || 0, false); },
   step(k) { if (k > stepIdx) applyStep(k, true); },
   laser(cfg) { return laser(cfg); },
-  stopLaser() { stopLaser(); },
+  // all pointer cues of one sentence, timed by their `at` words; rate = speech speed (1 = normal),
+  // durMs = the sentence's real length when the host knows it
+  lasers(cfgs, text, rate, durMs) { lasers(cfgs, text, rate, durMs); },
+  stopLaser() { clearHighlights(); },
   caption(text) { const c = document.getElementById('captionBox'); c.textContent = text || ''; c.style.display = text ? 'block' : 'none'; },
   setSlides(arr, i, step) { if (Array.isArray(arr) && arr.length) { slides = arr; go(Math.min(i, slides.length - 1), 0, step || 0); } },
   current() { return current; },

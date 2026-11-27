@@ -600,7 +600,7 @@ impl StudioService {
             Ok(out)
         })?;
         for art in &mut out {
-            art.source_refs = self.load_source_refs(&art.source_ids)?;
+            self.fill_refs(art)?;
         }
         Ok(out)
     }
@@ -622,7 +622,7 @@ impl StudioService {
             Ok(out)
         })?;
         for art in &mut out {
-            art.source_refs = self.load_source_refs(&art.source_ids)?;
+            self.fill_refs(art)?;
         }
         Ok(out)
     }
@@ -645,7 +645,7 @@ impl StudioService {
                 .map_err(map_sql_err)
         })?;
         art.thoughts = self.list_thoughts(id)?;
-        art.source_refs = self.load_source_refs(&art.source_ids)?;
+        self.fill_refs(&mut art)?;
         art.progress_state = self.load_progress_state(id)?;
         // infographics made before the PNG existed get it the first time they are opened
         if art.artifact_type == ArtifactType::Infographic && art.status == ArtifactStatus::Ready {
@@ -671,6 +671,38 @@ impl StudioService {
                 .map_err(map_sql_err)?;
             Ok(raw.and_then(|s| serde_json::from_str::<Value>(&s).ok()))
         })
+    }
+
+    /// Sources shown with an artifact: the ones its generation actually read once that is known
+    /// (older artifacts: worked out once from their saved evidence), otherwise all selected ones.
+    /// Also resolves the user's attached pictures and files.
+    fn fill_refs(&self, art: &mut StudioArtifact) -> LnaResult<()> {
+        let all = self.load_source_refs(&art.source_ids)?;
+        let used: Option<Vec<String>> = match self.get_checkpoint(&art.id, "used_sources")? {
+            Some(v) => serde_json::from_value(v).ok(),
+            None => match self.get_checkpoint(&art.id, "collect")? {
+                Some(c) => {
+                    let ids = sources_used_in(
+                        c.get("evidence_text").and_then(Value::as_str).unwrap_or(""),
+                        &all,
+                    );
+                    self.save_checkpoint(&art.id, "used_sources", json!(ids))?;
+                    Some(ids)
+                }
+                None => None,
+            },
+        };
+        art.source_refs = match used {
+            Some(ids) => all.into_iter().filter(|r| ids.contains(&r.id)).collect(),
+            None => all,
+        };
+        let root = &self.db.paths().root;
+        art.attachments = ["images", "files"]
+            .iter()
+            .filter_map(|k| art.config.get(*k))
+            .flat_map(|ids| attachments::resolve(root, ids))
+            .collect();
+        Ok(())
     }
 
     fn load_source_refs(&self, source_ids: &[String]) -> LnaResult<Vec<ArtifactSourceRef>> {
@@ -1633,6 +1665,9 @@ User Revision Instruction:
             )?;
             text
         };
+        // which notebook sources the evidence actually came from (shown with the artifact)
+        let used = sources_used_in(&evidence_txt, &self.load_source_refs(&art.source_ids)?);
+        self.save_checkpoint(artifact_id, "used_sources", json!(used))?;
 
         let evidence_txt = match self.file_brief(art, resolved, artifact_id, cancel.clone()).await? {
             Some(brief) => format!(
@@ -7411,6 +7446,7 @@ fn map_artifact_row(r: &rusqlite::Row<'_>, _cur_fp: &str) -> rusqlite::Result<St
         config: serde_json::from_str(&cfg_s).unwrap_or_else(|_| json!({})),
         source_ids: serde_json::from_str(&sids_s).unwrap_or_default(),
         source_refs: Vec::new(),
+        attachments: Vec::new(),
         sources_stale: false,
         in_studio: in_studio != 0,
         origin_message_id,
@@ -7511,7 +7547,33 @@ fn score_kg_node_match(label: &str, summary: &str, quiz_text: &str, topic_hint: 
 /// Scope discipline for generation that starts from the user's own material (a photo of one
 /// exercise, a file, a link). Without it the model maps the material to the chapter that contains
 /// it and covers the whole chapter.
-pub(crate) const USER_MATERIAL_SCOPE: &str = "USER MATERIAL FIRST: the user attached their own material (<user_images> / <user_files>, or described in the topic above). The scope of this artifact is EXACTLY what that material shows or asks, e.g. one exercise means that one exercise. Do NOT widen it to the chapter, section or neighbouring topics that contain it, and do NOT cover related material the user did not mention. The user's material comes first; relate it to the sources only when that actually helps (a definition, theorem or formula it relies on that you must get right, or a connection worth pointing out): read just those passages, and never produce slides whose only purpose is to locate the material in the book, list prerequisites or recap the chapter.";
+/// Ids of the sources whose content is in `evidence`. Evidence blocks are labelled with their
+/// source's title; the catalog of every source that on-demand reading puts first is not use.
+/// Longer titles are matched first so "A" is not counted because "A 第二版" was read.
+pub(crate) fn sources_used_in(evidence: &str, refs: &[ArtifactSourceRef]) -> Vec<String> {
+    let mut body = evidence
+        .split_once("On-Demand Retrieved Excerpts:")
+        .map(|(_, b)| b)
+        .unwrap_or(evidence)
+        .to_string();
+    let mut by_len: Vec<&ArtifactSourceRef> =
+        refs.iter().filter(|r| !r.title.trim().is_empty()).collect();
+    by_len.sort_by_key(|r| std::cmp::Reverse(r.title.chars().count()));
+    let mut used = Vec::new();
+    for r in by_len {
+        if body.contains(r.title.as_str()) {
+            used.push(r.id.clone());
+            body = body.replace(r.title.as_str(), "\u{0}");
+        }
+    }
+    // keep the artifact's own order
+    refs.iter()
+        .filter(|r| used.contains(&r.id))
+        .map(|r| r.id.clone())
+        .collect()
+}
+
+pub(crate) const USER_MATERIAL_SCOPE: &str = "USER MATERIAL FIRST: the user attached their own material (<user_images> / <user_files>, or described in the topic above). The scope of this artifact is EXACTLY what that material shows or asks, e.g. one exercise means that one exercise. Do NOT widen it to the chapter, section or neighbouring topics that contain it, and do NOT cover related material the user did not mention. The user's material comes first; relate it to the sources only when that actually helps (a definition, theorem or formula it relies on that you must get right, or a connection worth pointing out): read just those passages, and never produce slides whose only purpose is to locate the material in the book, list prerequisites or recap the chapter. After the material itself is fully covered, a short closing part that grows out of it — a method summary, an extension or variant, common mistakes — is welcome when it adds value.";
 
 fn has_user_material(config: &Value) -> bool {
     ["images", "files"].iter().any(|k| {
@@ -7757,5 +7819,36 @@ mod ui_language_tests {
         assert_eq!(lna_llm::pick_status_lang(&msg, true), "English");
         assert_eq!(lna_llm::pick_status_lang(&msg, false), "中文");
         assert_eq!(lna_llm::pick_status_lang("plain", true), "plain");
+    }
+}
+
+#[cfg(test)]
+mod used_sources_tests {
+    use super::*;
+
+    fn r(id: &str, title: &str) -> ArtifactSourceRef {
+        ArtifactSourceRef {
+            id: id.into(),
+            title: title.into(),
+            kind: "pdf".into(),
+        }
+    }
+
+    #[test]
+    fn only_sources_with_read_excerpts_count() {
+        let refs = [
+            r("a", "大学物理"),
+            r("b", "大学物理 第二版"),
+            r("c", "线性代数"),
+        ];
+        let ev = "Source Outline:\n大学物理\n线性代数\n大学物理 第二版\n\nOn-Demand Retrieved Excerpts:\n[1] (大学物理 第二版, p.3) 力矩……";
+        assert_eq!(sources_used_in(ev, &refs), vec!["b".to_string()]);
+        // evidence without a catalog: every labelled block counts
+        let ev = "[1] (线性代数, p.1) 矩阵\n[2] (大学物理, p.9) 转动";
+        assert_eq!(
+            sources_used_in(ev, &refs),
+            vec!["a".to_string(), "c".to_string()]
+        );
+        assert!(sources_used_in("", &refs).is_empty());
     }
 }

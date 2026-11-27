@@ -460,6 +460,25 @@ fn artifacts_regenerate_on_demand_with_selected_sources_and_config() {
     assert_eq!(regen["source_ids"].as_array().map(|a| a.len()), Some(2));
     let ready = studio_wait(&env, &id, "READY", 30);
     assert_eq!(ready["status"], json!("READY"));
+
+    // the "regenerate" button: same requirements and the artifact's own sources, even when
+    // the notebook's selection has changed since
+    env.ok(
+        "source.set_all_selected",
+        json!({ "notebook_id": nid, "selected": false }),
+    );
+    let before = mock.of_kind(Kind::Studio).len();
+    let again = env.ok(
+        "studio.regenerate",
+        json!({ "artifact_id": id, "use_selected_sources": false }),
+    );
+    assert_eq!(again["config"]["topic"], json!("新要求"));
+    assert_eq!(again["source_ids"].as_array().map(|a| a.len()), Some(2));
+    studio_wait(&env, &id, "READY", 30);
+    assert!(
+        mock.of_kind(Kind::Studio).len() > before,
+        "a fresh run calls the model again"
+    );
 }
 
 /// E2: grade_answer through the API for each question type.

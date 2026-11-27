@@ -174,15 +174,15 @@ fn source_retry_resets_status_and_errors_and_emits_event() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Tool / JSON flags come only from the probe: what a client sends is ignored, and a chat
-/// profile whose endpoint cannot be probed is not saved at all.
+/// Tool / JSON flags come only from the probe: what a client sends is ignored, and saving a chat
+/// profile never contacts its endpoint (an unreachable one is stored as "not checked yet").
 #[test]
 fn profile_upsert_ignores_client_capability_flags() {
     let dir = temp_dir("caps");
     let core = CoreRuntime::open(dir.clone(), true).unwrap();
     let claimed =
         json!({ "streaming": true, "tools": true, "json_schema": true, "supports_vision": true });
-    let refused = call(
+    let chat = call(
         &core,
         "profile.upsert",
         json!({
@@ -191,13 +191,13 @@ fn profile_upsert_ignores_client_capability_flags() {
         }),
     );
     assert!(
-        !refused["error"].is_null(),
-        "unreachable chat endpoint must not be saved: {refused}"
+        chat["error"].is_null(),
+        "saving must not need the endpoint: {chat}"
     );
-    assert!(call(&core, "profile.list", json!({}))["result"]["profiles"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    let ccaps = &chat["result"]["capabilities"];
+    assert_eq!(ccaps["tools"], json!(false), "{chat}");
+    assert_eq!(ccaps["json_schema"], json!(false), "{chat}");
+    assert!(ccaps["probed_at"].is_null(), "{chat}");
 
     let saved = call(
         &core,

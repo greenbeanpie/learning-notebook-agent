@@ -620,7 +620,10 @@ impl LlmClient {
             .map_err(|e| LnaError::invalid(format!("Invalid JSON schema: {e}")))?;
 
         let mut req = base_req.clone();
-        if profile.capabilities.json_schema {
+        // A profile that was never checked (saving does not probe) is tried with JSON Schema;
+        // once checked, what the probe found decides.
+        let unchecked = profile.capabilities.probed_at.is_none() && !profile.capabilities.json_mode;
+        if profile.capabilities.json_schema || unchecked {
             req.output = OutputMode::JsonSchema {
                 name: schema_name.to_string(),
                 schema: schema.clone(),

@@ -177,7 +177,7 @@ public sealed partial class MainWindow
         var urlBox = new TextBox { Header = L10n.T("model.base_url"), PlaceholderText = "https://api.example.com/v1" };
         var modelBox = new ComboBox { Header = L10n.T("model.model_id"), IsEditable = true, HorizontalAlignment = HorizontalAlignment.Stretch };
         var discoverBtn = new Button { Content = L10n.T("model.fetch_models") };
-        var keyBox = new PasswordBox { Header = "API Key" };
+        var keyBox = new PasswordBox { Header = L10n.T("tts.api_key") };
         var allowInsecureHttpBox = new CheckBox { Content = L10n.T("settings.allow_non_loopback_plaintext_http") };
         var activateChatBox = new CheckBox { Content = L10n.T("model.set_as_default_chat_model"), IsChecked = true };
         var visionBox = new CheckBox { Content = L10n.T("settings.use_for_vision_images_scanned") };
@@ -387,7 +387,16 @@ public sealed partial class MainWindow
                 : (L10n.T("model.key_status_not_saved"));
         }
 
+        // Rebuilding the list re-selects the current profile; that must not run Fill() and
+        // overwrite whatever has been typed into the form since the profile was loaded.
+        var rebuildingPicker = false;
         void LoadPicker(string? select)
+        {
+            rebuildingPicker = true;
+            try { RebuildPicker(select); }
+            finally { rebuildingPicker = false; }
+        }
+        void RebuildPicker(string? select)
         {
             picker.Items.Clear();
             foreach (var p in profiles)
@@ -413,6 +422,7 @@ public sealed partial class MainWindow
         Fill(initial.ValueKind == JsonValueKind.Object ? initial : null);
         picker.SelectionChanged += (_, _) =>
         {
+            if (rebuildingPicker) return;
             if (picker.SelectedItem is ComboBoxItem { Tag: string id })
             {
                 var p = profiles.FirstOrDefault(x => Str(x, "id") == id);
@@ -469,7 +479,7 @@ public sealed partial class MainWindow
             }
             var protocol = (protocolBox.SelectedItem as ComboBoxItem)?.Tag as string ?? Protocols[0];
             var apiKey = keyBox.Password.Trim();
-            var res = await CoreAsync("profile.discover_models", Args(("profile_id", profileId ?? ""), ("base_url", baseUrl), ("protocol", protocol), ("api_key", apiKey)), "Fetch Models");
+            var res = await CoreAsync("profile.discover_models", Args(("profile_id", profileId ?? ""), ("base_url", baseUrl), ("protocol", protocol), ("api_key", apiKey)), L10n.T("model.fetch_models"));
             if (res is not { } r) return;
             var current = modelBox.Text;
             modelBox.Items.Clear();
@@ -515,7 +525,7 @@ public sealed partial class MainWindow
             if (!double.IsNaN(priceIn.Value)) up.Add(("input_price_per_m", priceIn.Value));
             if (!double.IsNaN(priceOut.Value)) up.Add(("output_price_per_m", priceOut.Value));
             if (profileId != null) up.Add(("id", profileId));
-            // the core probes tool calling and structured output with this key before saving
+            // saving only stores; capabilities are measured by "test connection"
             if (keyBox.Password.Length > 0) up.Add(("api_key", keyBox.Password));
             status.Text = L10n.T("model.probing");
             saveModelBtn.IsEnabled = false;
@@ -524,7 +534,7 @@ public sealed partial class MainWindow
             if (saveErr is { } se || saved is not { } sv)
             {
                 status.Text = saveErr is { Code: "CAPABILITY_MISSING" } ce
-                    ? L10n.Fmt("model.refused", ce.Message)
+                    ? L10n.Fmt("model.refused", L10n.CapabilityMissing(ce.Message))
                     : L10n.Fmt("model.save_failed", saveErr?.Message ?? "");
                 return;
             }
@@ -551,7 +561,7 @@ public sealed partial class MainWindow
         clearKeyBtn.Click += async (_, _) =>
         {
             if (profileId == null || keychainRef.Length == 0) { status.Text = L10n.T("settings.no_key_to_clear"); return; }
-            if (await CoreAsync("secret.clear", Args(("keychain_ref", keychainRef)), "Clear Key") == null) return;
+            if (await CoreAsync("secret.clear", Args(("keychain_ref", keychainRef)), L10n.T("model.clear_key")) == null) return;
             hasSecret = false;
             keyBox.PlaceholderText = L10n.T("model.enter_api_key_optional_for");
             status.Text = L10n.T("model.api_key_cleared");
@@ -570,7 +580,7 @@ public sealed partial class MainWindow
             else
             {
                 status.Text = testErr is { Code: "CAPABILITY_MISSING" } ce
-                    ? L10n.Fmt("model.refused", ce.Message)
+                    ? L10n.Fmt("model.refused", L10n.CapabilityMissing(ce.Message))
                     : (L10n.Fmt("model.connection_test_failed", testErr?.Message));
             }
             var relistT = await CoreAsync("profile.list", Args(), L10n.T("settings.tab_models"));
@@ -744,20 +754,10 @@ public sealed partial class MainWindow
     private async Task<bool> ShowPrivacyAsync(bool needConfirm)
     {
         var panel = new StackPanel { Spacing = 8, MaxWidth = 480 };
-        if (L10n.IsEnglish)
-        {
-            panel.Children.Add(Line("• Your sources, notes, and conversations are stored locally on this computer."));
-            panel.Children.Add(Line("• When asking questions or generating Studio artifacts, selected excerpts and prompts are sent to your configured model provider."));
-            panel.Children.Add(Line("• API keys are stored securely in Windows Credential Manager and never written to plain files."));
-            panel.Children.Add(Line("• Diagnostic exports contain only counts, statuses, and error codes—never document contents or keys."));
-        }
-        else
-        {
-            panel.Children.Add(Line("• 你的来源、笔记和对话保存在这台电脑上。"));
-            panel.Children.Add(Line("• 提问、生成产物时，被选中的来源片段、你的问题和相关对话会发送给你配置的模型服务商（接口地址不在本机时）。"));
-            panel.Children.Add(Line("• API Key 只保存在 Windows 凭据管理器，不会写入文件或日志。"));
-            panel.Children.Add(Line("• 诊断包只含数量、状态和错误码，不含文档内容、提示词、回答或密钥。"));
-        }
+        panel.Children.Add(Line(L10n.T("privacy.local_storage")));
+        panel.Children.Add(Line(L10n.T("privacy.provider_send")));
+        panel.Children.Add(Line(L10n.T("privacy.api_keys")));
+        panel.Children.Add(Line(L10n.T("privacy.diagnostics")));
         var dlg = new ContentDialog
         {
             Title = L10n.T("nb.privacy"),
@@ -780,20 +780,10 @@ public sealed partial class MainWindow
         var seen = await Api.CallAsync("settings.get", Args(("key", "onboarding.done")));
         if (seen.Result is { } s && s.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.True) return;
         var panel = new StackPanel { Spacing = 10, MaxWidth = 460 };
-        if (L10n.IsEnglish)
-        {
-            panel.Children.Add(Line("Welcome to Local Notebook Agent. Get started in 3 steps:"));
-            panel.Children.Add(Line("1. Configure a model: Open Settings → AI Models to enter your protocol, Base URL, model ID, and API key."));
-            panel.Children.Add(Line("2. Add sources: Click '+ Add source' on the left to import PDFs, Markdown, Office docs, images, audio/video, or web URLs."));
-            panel.Children.Add(Line("3. Ask or generate: Ask questions with clickable citations in the center, or generate quizzes, flashcards, mind maps, and reports in Studio."));
-        }
-        else
-        {
-            panel.Children.Add(Line("欢迎使用 Local Notebook Agent。三步开始："));
-            panel.Children.Add(Line("1. 配置模型：点击右上角“设置”→“AI 模型”，选择协议并填写接口地址、模型和 API Key，点“保存”。"));
-            panel.Children.Add(Line("2. 添加来源：左侧“+ 添加来源”可导入 PDF、Markdown、文档、图片、音视频及网页，并勾选要使用的来源。"));
-            panel.Children.Add(Line("3. 提问或生成：在中间提问（回答带可点击的引用），或在右侧 Studio 生成测验、闪卡、思维导图、报告等。"));
-        }
+        panel.Children.Add(Line(L10n.T("onboarding.welcome")));
+        panel.Children.Add(Line(L10n.T("onboarding.step1")));
+        panel.Children.Add(Line(L10n.T("onboarding.step2")));
+        panel.Children.Add(Line(L10n.T("onboarding.step3")));
         var dlg = new ContentDialog
         {
             Title = L10n.T("dlg.quick_start"),

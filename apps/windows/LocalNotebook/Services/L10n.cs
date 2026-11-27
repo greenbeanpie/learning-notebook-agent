@@ -72,6 +72,24 @@ public static class L10n
         }
     }
 
+    /// <summary>
+    /// The core words "model lacks tool calling / structured output" in Chinese only. In English
+    /// the missing abilities are named from it; other languages keep the core's wording.
+    /// </summary>
+    public static string CapabilityMissing(string coreMessage)
+    {
+        if (!IsEnglish) return coreMessage;
+        var tools = coreMessage.Contains("工具调用");
+        var structured = coreMessage.Contains("结构化输出");
+        if (!tools && !structured) return coreMessage.Contains("向量化")
+            ? "This profile is only for embeddings and cannot be the chat model."
+            : coreMessage;
+        var what = tools && structured
+            ? "tool calling and structured output (JSON Schema / JSON mode)"
+            : tools ? "tool calling (tool / function call)" : "structured output (JSON Schema / JSON mode)";
+        return $"This model does not support {what} and cannot be used.";
+    }
+
     public static string T(string key)
     {
         var dict = IsEnglish ? En : Zh;
@@ -314,6 +332,7 @@ public static class L10n
         ["studio.prompt_empty"] = "基于所选来源自动生成",
         ["studio.sources_header"] = "来源",
         ["studio.sources_empty"] = "无关联来源",
+        ["studio.attachments_header"] = "附带的图片与文件",
         ["studio.copy_prompt"] = "复制提示",
         ["studio.prompt_copied"] = "已复制提示",
         ["studio.regenerate"] = "重新生成",
@@ -443,10 +462,10 @@ public static class L10n
         ["err.source_limit_reached"] = "单个笔记本最多支持 300 个来源。",
         ["err.url_blocked"] = "出于安全原因，不能导入本机或内网地址。",
         ["err.capability_missing"] = "缺少所需组件，请检查相关设置。",
-        ["model.probing"] = "正在检测模型是否支持工具调用和结构化输出…",
-        ["model.refused"] = "未保存：{0} 本应用只支持具备工具调用和结构化输出（JSON Schema 或 JSON 模式）的模型。",
+        ["model.probing"] = "正在保存…",
+        ["model.refused"] = "模型不可用：{0} 本应用只支持具备工具调用和结构化输出（JSON Schema 或 JSON 模式）的模型。",
         ["model.save_failed"] = "保存失败：{0}",
-        ["model.saved_checked"] = "已通过能力检测并保存。",
+        ["model.saved_checked"] = "已保存。能力尚未检测，可点击“测试连接”。",
         ["model.disabled_tag"] = "（不支持，已停用）",
         ["model.cap_tools"] = "工具调用",
         ["model.cap_structured"] = "结构化输出",
@@ -571,6 +590,7 @@ public static class L10n
         ["studio.op_update"] = "更新产物",
         ["studio.delete_title"] = "删除产物",
         ["studio.delete_confirm"] = "确定删除“{0}”吗？",
+        ["studio.regenerate_confirm"] = "按原来的要求和来源重新生成“{0}”？当前内容会被替换。",
         ["studio.more_actions"] = "产物操作",
         ["studio.review_outline"] = "先审核大纲",
         ["studio.cfg.update_hint"] = "将按以下要求与当前已勾选的来源重新生成此产物。",
@@ -734,6 +754,7 @@ public static class L10n
         ["art.slide_heading"] = "## 第 {0} 页：{1}",
         ["art.slide_fallback_title"] = "主题 {0}",
         ["art.slide_notes_quote"] = "> 讲稿提示：{0}",
+        ["artifact.speaker_line"] = "{0}：{1}",
         ["art.outline_empty"] = "（暂无提纲内容）",
         ["art.outline_edit_header"] = "编辑 Markdown 提纲（修改后点击“预览提纲”可实时查看渲染效果）",
         ["art.outline_preview_btn"] = "预览提纲",
@@ -868,6 +889,25 @@ public static class L10n
         ["settings.semantic_search_finds_relevant_passages"] = "语义检索让提问和来源语言不同、或措辞不同时也能找到相关内容。它使用本地嵌入模型，不会上传你的内容。",
         ["dlg.got_it_continue"] = "我知道了，继续",
         ["dlg.quick_start"] = "快速开始",
+        ["privacy.local_storage"] = "• 你的来源、笔记和对话保存在这台电脑上。",
+        ["privacy.provider_send"] = "• 提问、生成产物时，被选中的来源片段、你的问题和相关对话会发送给你配置的模型服务商（接口地址不在本机时）。",
+        ["privacy.api_keys"] = "• API Key 只保存在 Windows 凭据管理器，不会写入文件或日志。",
+        ["privacy.diagnostics"] = "• 诊断包只含数量、状态和错误码，不含文档内容、提示词、回答或密钥。",
+        ["onboarding.welcome"] = "欢迎使用 Local Notebook Agent。三步开始：",
+        ["onboarding.step1"] = "1. 配置模型：点击右上角“设置”→“AI 模型”，选择协议并填写接口地址、模型和 API Key，点“保存”。",
+        ["onboarding.step2"] = "2. 添加来源：左侧“+ 添加来源”可导入 PDF、Markdown、文档、图片、音视频及网页，并勾选要使用的来源。",
+        ["onboarding.step3"] = "3. 提问或生成：在中间提问（回答带可点击的引用），或在右侧 Studio 生成测验、闪卡、思维导图、报告等。",
+        ["src.badge_file"] = "文件",
+        ["slides.default_title"] = "演示文稿",
+        ["slides.slide_n"] = "第{n}页",
+        ["slides.kicker_summary"] = "要点总结",
+        ["slides.kicker_cover"] = "演示",
+        ["slides.eye_agenda"] = "议程",
+        ["slides.eye_metrics"] = "关键指标",
+        ["slides.eye_timeline"] = "时间线与流程",
+        ["slides.eye_compare"] = "对比",
+        ["slides.eye_formula"] = "核心公式",
+        ["slides.eye_insight"] = "核心观点",
         ["dlg.open_settings"] = "打开设置",
         ["dlg.later"] = "稍后",
         ["deck.steps"] = "\u5206\u6b65\u52a8\u753b",
@@ -1066,6 +1106,7 @@ public static class L10n
         ["studio.prompt_empty"] = "Generated from selected sources",
         ["studio.sources_header"] = "Sources",
         ["studio.sources_empty"] = "No linked sources",
+        ["studio.attachments_header"] = "Attached pictures and files",
         ["studio.copy_prompt"] = "Copy prompt",
         ["studio.prompt_copied"] = "Prompt copied",
         ["studio.regenerate"] = "Regenerate",
@@ -1195,10 +1236,10 @@ public static class L10n
         ["err.source_limit_reached"] = "A notebook can hold up to 300 sources.",
         ["err.url_blocked"] = "Local or private network URLs cannot be imported for security reasons.",
         ["err.capability_missing"] = "A required component is missing.",
-        ["model.probing"] = "Checking that the model supports tool calling and structured output…",
-        ["model.refused"] = "Not saved: {0} This app only works with models that support tool calling and structured output (JSON Schema or JSON mode).",
+        ["model.probing"] = "Saving…",
+        ["model.refused"] = "Model unusable: {0} This app only works with models that support tool calling and structured output (JSON Schema or JSON mode).",
         ["model.save_failed"] = "Save failed: {0}",
-        ["model.saved_checked"] = "Capabilities verified; profile saved.",
+        ["model.saved_checked"] = "Saved. Capabilities not checked yet; press Test Connection when you want to.",
         ["model.disabled_tag"] = " (unsupported, disabled)",
         ["model.cap_tools"] = "Tool calling",
         ["model.cap_structured"] = "Structured output",
@@ -1323,6 +1364,7 @@ public static class L10n
         ["studio.op_update"] = "Update artifact",
         ["studio.delete_title"] = "Delete Artifact",
         ["studio.delete_confirm"] = "Delete \"{0}\"?",
+        ["studio.regenerate_confirm"] = "Regenerate \"{0}\" with its original requirements and sources? The current content will be replaced.",
         ["studio.more_actions"] = "Artifact actions",
         ["studio.review_outline"] = "Review outline",
         ["studio.cfg.update_hint"] = "Regenerate this artifact with the options below and currently selected sources.",
@@ -1486,6 +1528,7 @@ public static class L10n
         ["art.slide_heading"] = "## Slide {0}: {1}",
         ["art.slide_fallback_title"] = "Topic {0}",
         ["art.slide_notes_quote"] = "> Speaker notes: {0}",
+        ["artifact.speaker_line"] = "{0}: {1}",
         ["art.outline_empty"] = "(No outline content)",
         ["art.outline_edit_header"] = "Edit Markdown outline (click \"Preview\" to see rendered result)",
         ["art.outline_preview_btn"] = "Preview",
@@ -1620,6 +1663,25 @@ public static class L10n
         ["settings.semantic_search_finds_relevant_passages"] = "Semantic search finds relevant passages across different phrasings or languages using a local embedding model.",
         ["dlg.got_it_continue"] = "Got it, continue",
         ["dlg.quick_start"] = "Quick Start",
+        ["privacy.local_storage"] = "• Your sources, notes, and conversations are stored locally on this computer.",
+        ["privacy.provider_send"] = "• When asking questions or generating Studio artifacts, selected excerpts and prompts are sent to your configured model provider.",
+        ["privacy.api_keys"] = "• API keys are stored securely in Windows Credential Manager and never written to plain files.",
+        ["privacy.diagnostics"] = "• Diagnostic exports contain only counts, statuses, and error codes—never document contents or keys.",
+        ["onboarding.welcome"] = "Welcome to Local Notebook Agent. Get started in 3 steps:",
+        ["onboarding.step1"] = "1. Configure a model: Open Settings → AI Models to enter your protocol, Base URL, model ID, and API key.",
+        ["onboarding.step2"] = "2. Add sources: Click '+ Add source' on the left to import PDFs, Markdown, Office docs, images, audio/video, or web URLs.",
+        ["onboarding.step3"] = "3. Ask or generate: Ask questions with clickable citations in the center, or generate quizzes, flashcards, mind maps, and reports in Studio.",
+        ["src.badge_file"] = "FILE",
+        ["slides.default_title"] = "Presentation",
+        ["slides.slide_n"] = "Slide {n}",
+        ["slides.kicker_summary"] = "KEY TAKEAWAYS & SUMMARY",
+        ["slides.kicker_cover"] = "PRESENTATION",
+        ["slides.eye_agenda"] = "Agenda",
+        ["slides.eye_metrics"] = "Key Metrics",
+        ["slides.eye_timeline"] = "Timeline & Process",
+        ["slides.eye_compare"] = "Comparison",
+        ["slides.eye_formula"] = "Core Formula",
+        ["slides.eye_insight"] = "Key Insight",
         ["dlg.open_settings"] = "Open Settings",
         ["dlg.later"] = "Later",
         ["deck.steps"] = "Steps",

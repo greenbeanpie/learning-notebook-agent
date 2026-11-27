@@ -421,10 +421,9 @@ internal sealed class LecturePlayer : IDisposable
             var lasers = Cues(s).Where(c => Str(c, "type") == "laser").Select(c => c.GetRawText()).ToList();
             var ok = await SpeakAsync(s.Text, gen, async () =>
             {
-                // lasers start just after the sentence begins
-                await Task.Delay(250);
-                if (gen == _gen)
-                    foreach (var l in lasers) await Js($"lecture.laser({l})");
+                // the page times each pointer cue by where its words fall in the sentence
+                if (gen == _gen && lasers.Count > 0)
+                    await Js($"lecture.lasers([{string.Join(",", lasers)}],{JsStr(s.Text)},{_rate.ToString(System.Globalization.CultureInfo.InvariantCulture)})");
             });
             if (!ok || gen != _gen || !_playing) return;
             if (s.LastOfSlide && s.Checkpoint is { } cp)
@@ -702,7 +701,7 @@ internal sealed class LecturePlayer : IDisposable
         }
         // ask: show the suggestion with its reason
         var sug = new StackPanel { Spacing = 6 };
-        sug.Children.Add(new TextBlock { Text = $"{L10n.T("lec.adapt_suggest")}：{KindLabel(kind)}", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+        sug.Children.Add(new TextBlock { Text = $"{L10n.T("lec.adapt_suggest")}{(L10n.IsEnglish ? ": " : "：")}{KindLabel(kind)}", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
         if (reason.Length > 0) sug.Children.Add(new TextBlock { Text = reason, Opacity = 0.75, TextWrapping = TextWrapping.Wrap });
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var apply = new Button { Content = L10n.T("lec.adapt_apply") };
@@ -752,7 +751,7 @@ internal sealed class LecturePlayer : IDisposable
         var panel = new StackPanel { Spacing = 8, MaxWidth = 360 };
         panel.Children.Add(new TextBlock { Text = KindLabel(Str(a, "kind")), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         if (Str(a, "reason") is { Length: > 0 } reason)
-            panel.Children.Add(new TextBlock { Text = $"{L10n.T("lec.reason")}：{reason}", TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(new TextBlock { Text = $"{L10n.T("lec.reason")}{(L10n.IsEnglish ? ": " : "：")}{reason}", TextWrapping = TextWrapping.Wrap });
         var flyout = new Flyout { Content = panel };
         var inserted = Arr(a, "inserted").Select(x => x.GetString() ?? "").ToList();
         var insertedTitles = Arr(a, "inserted_titles").Select(x => x.GetString() ?? "").ToList();
@@ -771,7 +770,7 @@ internal sealed class LecturePlayer : IDisposable
         if (removed.Count > 0)
         {
             panel.Children.Add(new TextBlock { Text = L10n.T("lec.replaced"), Opacity = 0.75 });
-            panel.Children.Add(new TextBlock { Text = string.Join("、", removed), TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(new TextBlock { Text = string.Join(L10n.IsEnglish ? ", " : "、", removed), TextWrapping = TextWrapping.Wrap });
         }
         var undo = new Button { Content = L10n.T("lec.undo") };
         var aid = Str(a, "id");

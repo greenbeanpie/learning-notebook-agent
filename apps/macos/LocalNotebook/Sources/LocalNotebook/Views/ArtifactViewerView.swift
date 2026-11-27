@@ -135,6 +135,29 @@ struct ArtifactViewerView: View {
                 .foregroundColor(artifact.promptTopic.isEmpty ? .secondary : .primary)
                 .textSelection(.enabled)
 
+            if !artifact.imagePaths.isEmpty || !artifact.fileNames.isEmpty {
+                Label(state.t("studio.attachments_header"), systemImage: "photo")
+                    .font(.caption.bold())
+                    .foregroundColor(.secondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(artifact.imagePaths, id: \.self) { p in
+                            if let img = NSImage(contentsOfFile: p) {
+                                Image(nsImage: img)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 96, height: 96)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .help((p as NSString).lastPathComponent)
+                            }
+                        }
+                    }
+                }
+                ForEach(artifact.fileNames, id: \.self) { n in
+                    Text("📄 " + n).font(.caption).lineLimit(1)
+                }
+            }
+
             Label(state.t("studio.sources_header"), systemImage: "folder")
                 .font(.caption.bold())
                 .foregroundColor(.secondary)

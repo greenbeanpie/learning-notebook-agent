@@ -908,7 +908,7 @@ struct UnifiedSettingsSheet: View {
         defer { isTesting = false }
         do {
             let res = try await state.core.call(method: "profile.test", params: ["profile_id": pid])
-            let reply = res["reply"] as? String ?? "OK"
+            let reply = res["reply"] as? String ?? L10n.t("model.reply_ok", en: state.isEnglish)
             statusMsg = L10n.fmt("model.connected", en: state.isEnglish, reply)
         } catch {
             statusMsg = L10n.fmt("model.connection_test_failed", en: state.isEnglish, error.localizedDescription)
