@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -62,7 +63,8 @@ private fun artifactStatusLabel(art: StudioArtifactItem, en: Boolean): String = 
 @Composable
 fun StudioScreen(
     state: AppUiState,
-    onCreateStudio: (kind: String, topic: String, detail: String, images: org.json.JSONArray?) -> Unit,
+    onCreateStudio: (kind: String, topic: String, detail: String, images: org.json.JSONArray?, refArtifactIds: List<String>) -> Unit,
+    onAddToSources: (String) -> Unit = {},
     onOpenArtifact: (StudioArtifactItem?) -> Unit,
     onToggleFullscreen: () -> Unit,
     onRetryArtifact: (String) -> Unit,
@@ -73,6 +75,7 @@ fun StudioScreen(
     onQuizConcept: (String) -> Unit,
     onExpandMindmap: (String) -> Unit,
     onAskConcept: (String) -> Unit,
+    onAddToSources: () -> Unit = {},
     modifier: Modifier = Modifier,
     onRefineNode: (artifactId: String, nodeId: String, label: String) -> Unit = { _, _, _ -> },
     core: com.localnotebook.agent.core.CoreClient? = null,
@@ -106,6 +109,7 @@ fun StudioScreen(
             onQuizConcept = onQuizConcept,
             onExpandMindmap = onExpandMindmap,
             onAskConcept = onAskConcept,
+            onAddToSources = { onAddToSources(openArt.id) },
             modifier = modifier,
             onRefineNode = { nodeId, label -> onRefineNode(openArt.id, nodeId, label) },
             core = core,
@@ -197,6 +201,7 @@ fun StudioScreen(
         var detailLevel by remember(kind) { mutableStateOf(if (kind == "lecture") "auto" else "standard") }
         var lectureMode by remember(kind) { mutableStateOf("general") }
         var confirmScope by remember(kind) { mutableStateOf(true) }
+        var selectedRefIds by remember(kind) { mutableStateOf<Set<String>>(emptySet()) }
         val cfgImages = rememberImageAttachState()
         AlertDialog(
             onDismissRequest = { pendingKind = null },
@@ -234,8 +239,8 @@ fun StudioScreen(
                         }
                     } else if (kind == "lecture") {
                         Text(L10n.t("studio.cfg.lecture_mode_header", en), style = MaterialTheme.typography.labelMedium)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf("general", "preview", "review", "practice").forEach { code ->
+                        Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("general", "preview", "review", "problem").forEach { code ->
                                 FilterChip(selected = lectureMode == code, onClick = { lectureMode = code }, label = { Text(L10n.t("studio.cfg.lecture_mode_$code", en)) })
                             }
                         }
@@ -267,11 +272,25 @@ fun StudioScreen(
                             }
                         }
                     }
+                    val readyArtifacts = state.artifacts.filter { it.status == "READY" }
+                    if (readyArtifacts.isNotEmpty()) {
+                        Text(L10n.t("studio.cfg.ref_artifacts", en), style = MaterialTheme.typography.labelMedium)
+                        Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            readyArtifacts.forEach { art ->
+                                val picked = art.id in selectedRefIds
+                                FilterChip(
+                                    selected = picked,
+                                    onClick = { selectedRefIds = if (picked) selectedRefIds - art.id else selectedRefIds + art.id },
+                                    label = { Text(art.title, maxLines = 1) },
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(onClick = {
-                    onCreateStudio(kind, topicInput.trim(), if (kind == "lecture") "$lectureMode|$detailLevel|${if (confirmScope) 1 else 0}" else detailLevel, cfgImages.toJson())
+                    onCreateStudio(kind, topicInput.trim(), if (kind == "lecture") "$lectureMode|$detailLevel|${if (confirmScope) 1 else 0}" else detailLevel, cfgImages.toJson(), selectedRefIds.toList())
                     pendingKind = null
                 }) {
                     Text(L10n.t("studio.generate", en))
@@ -340,6 +359,11 @@ private fun ArtifactViewerScreen(
             }
             TextButton(onClick = { showThoughts = !showThoughts }) {
                 Text(L10n.t("studio.process", en), fontSize = 12.sp)
+            }
+            if (artifact.status == "READY") {
+                TextButton(onClick = onAddToSources) {
+                    Text(L10n.t("studio.add_to_sources", en), fontSize = 12.sp)
+                }
             }
             if (artifact.status == "READY" || artifact.status == "FAILED" || artifact.status == "CANCELLED") {
                 IconButton(onClick = { confirmRegenerate = true }) {

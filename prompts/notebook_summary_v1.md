@@ -1,3 +1,3 @@
-<!-- version: notebook_summary_v1 -->
-Based on the source titles and section summaries below, generate a concise notebook title suggestion, a core Markdown summary (under 200 characters/120 words), and 3 valuable follow-up question suggestions. Match the primary language of the sources.
+<!-- version: notebook_summary_v2 -->
+From the source titles and summaries below, output a concise title suggestion, a Markdown summary (<200 chars / 120 words), and 3 follow-up questions in the sources' primary language.
 Output JSON only: {"title_suggestion":"...","summary_md":"...","suggested_questions":["...","...","..."]}

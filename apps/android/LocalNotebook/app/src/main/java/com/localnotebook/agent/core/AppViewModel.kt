@@ -651,13 +651,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createStudio(kind: String, topic: String = "", sourceId: String? = null, detail: String = "standard", images: JSONArray? = null) {
+    fun addArtifactToSources(artifactId: String) {
+        viewModelScope.launch {
+            runCatching {
+                core.call("studio.add_to_sources", JSONObject().put("artifact_id", artifactId))
+                refreshAll()
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun createStudio(kind: String, topic: String = "", sourceId: String? = null, detail: String = "standard", images: JSONArray? = null, refArtifactIds: List<String> = emptyList()) {
         viewModelScope.launch {
             runCatching {
                 val en = _ui.value.prefs.isEnglish
                 val actualType = if (kind == "knowledge_graph") "mindmap" else kind
                 val cfg = JSONObject().put("lang", _ui.value.prefs.defaultStudioLang.ifEmpty { _ui.value.prefs.targetLangCode })
                 if (topic.isNotBlank()) cfg.put("topic", topic)
+                if (refArtifactIds.isNotEmpty()) cfg.put("ref_artifact_ids", JSONArray(refArtifactIds))
                 if (kind == "mindmap" || kind == "knowledge_graph") cfg.put("detail", detail)
                 if (kind == "report") cfg.put("depth", detail)
                 if (kind == "lecture") {

@@ -137,20 +137,32 @@ const WARM_WAIT: Duration = Duration::from_secs(20);
 /// Shorter prompts are not cached by providers (the unit is about 64 tokens, the minimum about 1k).
 const WARM_MIN_CHARS: usize = 3000;
 
+/// Exact structural identity of a cacheable shared prefix (avoids blind truncation hashes):
+/// matches on profile, model, declared tools, exact system prompt, and the shared material
+/// prefix of the first user message (before per-batch / per-section / per-task suffixes).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PrefixKey {
+    profile_id: String,
+    model_id: String,
+    tool_names: Vec<String>,
+    system: String,
+    shared_material: String,
+}
+
 enum WarmEntry {
     /// The first request with this prefix is in flight; `true` is sent once its first bytes arrived.
     Warming(tokio::sync::watch::Receiver<bool>),
     Warm(std::time::Instant),
 }
 
-type WarmMap = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, WarmEntry>>>;
+type WarmMap = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PrefixKey, WarmEntry>>>;
 
-/// Held by the first request of a prompt prefix. Provider prompt caches are filled while the first
-/// request is processed, so parallel siblings sent at the same instant would all miss; they wait
-/// on this instead (released at the first response bytes, or when the request ends either way).
+/// Held by the first request (or dedicated lightweight warm-up probe) of a prompt prefix.
+/// Parallel siblings sharing the exact `PrefixKey` wait on this until the provider has filled
+/// its prompt cache, then proceed concurrently.
 struct WarmLeader {
     map: WarmMap,
-    key: u64,
+    key: PrefixKey,
     tx: tokio::sync::watch::Sender<bool>,
     done: bool,
 }
@@ -162,7 +174,7 @@ impl WarmLeader {
         }
         self.done = true;
         if let Ok(mut m) = self.map.lock() {
-            m.insert(self.key, WarmEntry::Warm(std::time::Instant::now()));
+            m.insert(self.key.clone(), WarmEntry::Warm(std::time::Instant::now()));
         }
         let _ = self.tx.send(true);
     }
@@ -180,33 +192,46 @@ enum WarmRole {
     Free,
 }
 
-/// Identifies the shared head of a request: provider/model, system prompt, tool names and the
-/// start of the first message. None when the prompt is too short to be cached at all.
-fn prefix_key(profile: &ResolvedProfile, req: &LlmRequest) -> Option<u64> {
-    use std::hash::{Hash, Hasher};
-    let mut head = String::new();
-    head.push_str(&req.system);
+/// Extracts the shared material head from the first user message by trimming any trailing
+/// per-batch / per-section / per-task suffix marker.
+fn shared_material_slice(text: &str) -> &str {
+    const MARKERS: &[&str] = &[
+        "\n\n=== THIS ",
+        "\n\n=== TASK ===",
+        "\n\nPART ",
+        "\n\nPLANNING TASK",
+    ];
+    let cut = MARKERS
+        .iter()
+        .filter_map(|m| text.find(m))
+        .min()
+        .unwrap_or(text.len());
+    &text[..cut]
+}
+
+/// Identifies the exact shared prefix of a request (system + tools + shared material).
+/// Returns `None` when the shared prefix is too short to be cached by providers.
+fn prefix_key(profile: &ResolvedProfile, req: &LlmRequest) -> Option<PrefixKey> {
+    let mut first_msg = String::new();
     for m in req.messages.iter().take(1) {
         for p in &m.parts {
             if let Part::Text(t) = p {
-                head.push_str(t);
+                first_msg.push_str(t);
             }
         }
     }
-    if head.chars().count() < WARM_MIN_CHARS {
+    let shared_material = shared_material_slice(&first_msg).to_string();
+    let total_chars = req.system.chars().count() + shared_material.chars().count();
+    if total_chars < WARM_MIN_CHARS {
         return None;
     }
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    profile.id.hash(&mut h);
-    profile.model_id.hash(&mut h);
-    for t in &req.tools {
-        t.name.hash(&mut h);
-    }
-    head.chars()
-        .take(WARM_MIN_CHARS)
-        .collect::<String>()
-        .hash(&mut h);
-    Some(h.finish())
+    Some(PrefixKey {
+        profile_id: profile.id.clone(),
+        model_id: profile.model_id.clone(),
+        tool_names: req.tools.iter().map(|t| t.name.clone()).collect(),
+        system: req.system.clone(),
+        shared_material,
+    })
 }
 
 #[derive(Clone)]
@@ -272,7 +297,7 @@ impl LlmClient {
         self
     }
 
-    fn warm_role(&self, key: Option<u64>) -> WarmRole {
+    fn warm_role(&self, key: Option<PrefixKey>) -> WarmRole {
         let Some(key) = key else {
             return WarmRole::Free;
         };
@@ -287,13 +312,54 @@ impl LlmClient {
         // forget entries that are long expired so the map stays small
         m.retain(|_, e| !matches!(e, WarmEntry::Warm(t) if t.elapsed() >= WARM_TTL));
         let (tx, rx) = tokio::sync::watch::channel(false);
-        m.insert(key, WarmEntry::Warming(rx));
+        m.insert(key.clone(), WarmEntry::Warming(rx));
         WarmRole::Leader(WarmLeader {
             map: self.warm.clone(),
             key,
             tx,
             done: false,
         })
+    }
+
+    /// Sends a minimal prefill-only warm-up request (`max_output_tokens = 1`, or `16` for OpenAI
+    /// Responses API) for a shared prefix before parallel sibling requests fan out, so every
+    /// parallel worker hits a warm provider KV cache immediately. Best-effort: errors are ignored.
+    pub async fn warm_prefix(
+        &self,
+        profile: &ResolvedProfile,
+        sample_req: &LlmRequest,
+        cancel: &CancellationToken,
+    ) {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let key = prefix_key(profile, sample_req);
+        match self.warm_role(key) {
+            WarmRole::Free => {}
+            WarmRole::Follower(mut rx) => {
+                tokio::select! {
+                    _ = cancel.cancelled() => {}
+                    _ = tokio::time::sleep(WARM_WAIT) => {}
+                    _ = rx.wait_for(|done| *done) => {}
+                }
+            }
+            WarmRole::Leader(mut leader) => {
+                let mut probe = sample_req.clone();
+                // 0 means unlimited in LlmRequest; use minimal positive cap (1 token; 16 on Responses API)
+                probe.max_output_tokens = if profile.protocol == ProtocolKind::Responses {
+                    16
+                } else {
+                    1
+                };
+                probe.reasoning = ReasoningOptions::default();
+                let _ = tokio::time::timeout(
+                    WARM_WAIT,
+                    self.stream_with(profile, &probe, cancel.clone(), |_| {}, true, true),
+                )
+                .await;
+                leader.release();
+            }
+        }
     }
 
     /// Sets how many requests the profile may have in flight at once. 0 means unlimited (the
@@ -382,7 +448,8 @@ impl LlmClient {
     where
         F: FnMut(LlmEvent),
     {
-        self.stream_with(profile, req, cancel, on_event, true).await
+        self.stream_with(profile, req, cancel, on_event, true, false)
+            .await
     }
 
     /// Like `stream`, but a rejected request-format parameter is reported instead of being rewritten.
@@ -397,7 +464,7 @@ impl LlmClient {
     where
         F: FnMut(LlmEvent),
     {
-        self.stream_with(profile, req, cancel, on_event, false)
+        self.stream_with(profile, req, cancel, on_event, false, false)
             .await
     }
 
@@ -408,12 +475,16 @@ impl LlmClient {
         cancel: CancellationToken,
         mut on_event: F,
         allow_relax: bool,
+        skip_warm: bool,
     ) -> LnaResult<StopReason>
     where
         F: FnMut(LlmEvent),
     {
         // before taking a request slot: waiting siblings must not hold one
-        let mut leader = match self.warm_role(prefix_key(profile, req)) {
+        let mut leader = if skip_warm {
+            None
+        } else {
+            match self.warm_role(prefix_key(profile, req)) {
             WarmRole::Leader(l) => Some(l),
             WarmRole::Follower(mut rx) => {
                 tokio::select! {
@@ -426,6 +497,7 @@ impl LlmClient {
                 None
             }
             WarmRole::Free => None,
+            }
         };
         let slot = self.acquire_slot(&profile.id, &cancel).await?;
         let adapter = adapter_for(profile.protocol);
@@ -857,7 +929,7 @@ impl LlmClient {
                 &mut on_text,
             )
             .await?;
-        add_usage(&mut total_usage, &u);
+        total_usage.add(&u);
 
         trace_llm_text(schema_name, "first", &raw);
         let mut candidate = strip_code_fences(&raw);
@@ -919,7 +991,7 @@ impl LlmClient {
                             |_| {},
                         )
                         .await?;
-                    add_usage(&mut total_usage, &mu);
+                    total_usage.add(&mu);
                     stop = mstop;
                     let more_text = strip_code_fences(&more_raw);
                     let more = match serde_json::from_str::<serde_json::Value>(&more_text) {
@@ -982,7 +1054,7 @@ impl LlmClient {
                     &mut on_text,
                 )
                 .await?;
-            add_usage(&mut total_usage, &au);
+            total_usage.add(&au);
             stop = astop;
             candidate = strip_code_fences(&again);
         }
@@ -1072,7 +1144,7 @@ impl LlmClient {
                     |_| {},
                 )
                 .await?;
-            add_usage(&mut total_usage, &ru);
+            total_usage.add(&ru);
             stop = rstop;
             candidate = strip_code_fences(&repaired);
         }
@@ -1343,12 +1415,6 @@ pub fn capability_rejection(body: &str, req: &LlmRequest) -> Option<LnaError> {
     ))
 }
 
-fn add_usage(dst: &mut Usage, src: &Usage) {
-    dst.input_tokens += src.input_tokens;
-    dst.output_tokens += src.output_tokens;
-    dst.cached_tokens += src.cached_tokens;
-}
-
 /// Debug aid: with `LNA_LLM_TRACE_DIR` set, the raw text of every structured answer is saved there.
 fn trace_llm_text(schema_name: &str, stage: &str, text: &str) {
     let Ok(dir) = std::env::var("LNA_LLM_TRACE_DIR") else {
@@ -1467,24 +1533,34 @@ mod salvage_tests {
 mod warm_tests {
     use super::*;
 
+    fn key(tag: &str) -> PrefixKey {
+        PrefixKey {
+            profile_id: "p".into(),
+            model_id: "m".into(),
+            tool_names: vec![],
+            system: "sys".into(),
+            shared_material: tag.into(),
+        }
+    }
+
     #[tokio::test]
     async fn first_request_of_a_prefix_leads_and_siblings_wait_for_it() {
         let c = LlmClient::new();
-        let mut leader = match c.warm_role(Some(7)) {
+        let mut leader = match c.warm_role(Some(key("A"))) {
             WarmRole::Leader(l) => l,
             _ => panic!("the first request of a prefix leads"),
         };
-        let mut sibling = match c.warm_role(Some(7)) {
+        let mut sibling = match c.warm_role(Some(key("A"))) {
             WarmRole::Follower(rx) => rx,
             _ => panic!("a sibling sent at the same time waits for the leader"),
         };
-        // a different prefix does not wait
-        assert!(matches!(c.warm_role(Some(8)), WarmRole::Leader(_)));
+        // a different material prefix never collides or waits
+        assert!(matches!(c.warm_role(Some(key("B"))), WarmRole::Leader(_)));
         assert!(!*sibling.borrow());
         leader.release();
         sibling.wait_for(|d| *d).await.unwrap();
         // once released the prefix counts as cached: later requests go straight through
-        assert!(matches!(c.warm_role(Some(7)), WarmRole::Free));
+        assert!(matches!(c.warm_role(Some(key("A"))), WarmRole::Free));
         // prompts that are too short to be cached are never held back
         assert!(matches!(c.warm_role(None), WarmRole::Free));
     }
@@ -1492,16 +1568,32 @@ mod warm_tests {
     #[tokio::test]
     async fn a_leader_that_fails_still_releases_its_siblings() {
         let c = LlmClient::new();
-        let leader = match c.warm_role(Some(1)) {
+        let leader = match c.warm_role(Some(key("X"))) {
             WarmRole::Leader(l) => l,
             _ => panic!(),
         };
-        let mut rx = match c.warm_role(Some(1)) {
+        let mut rx = match c.warm_role(Some(key("X"))) {
             WarmRole::Follower(rx) => rx,
             _ => panic!(),
         };
         drop(leader);
         rx.wait_for(|d| *d).await.unwrap();
+    }
+
+    #[test]
+    fn shared_material_slice_splits_at_task_markers() {
+        assert_eq!(
+            shared_material_slice("Sources: ABC\n\n=== THIS BATCH (1/3) ==="),
+            "Sources: ABC"
+        );
+        assert_eq!(
+            shared_material_slice("Sources: ABC\n\n=== TASK ===\nDo X"),
+            "Sources: ABC"
+        );
+        assert_eq!(
+            shared_material_slice("Sources: ABC\n\nPART 1 OF 3"),
+            "Sources: ABC"
+        );
     }
 }
 

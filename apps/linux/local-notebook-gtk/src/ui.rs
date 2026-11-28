@@ -564,12 +564,13 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
                 None
             };
 
+            const LECTURE_MODES: [&str; 4] = ["general", "preview", "review", "problem"];
             // lecture: mode, detail and whether the scope is confirmed first
             let lecture_opts = if k == "lecture" {
                 let ml = Label::new(Some(tr(en, "studio.cfg.lecture_mode_header")));
                 ml.set_xalign(0.0);
                 vbox.append(&ml);
-                let modes = ["general", "preview", "review", "practice"];
+                let modes = LECTURE_MODES;
                 let mode_labels: Vec<&str> = modes
                     .iter()
                     .map(|m| tr(en, &format!("studio.cfg.lecture_mode_{m}")))
@@ -599,6 +600,40 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
                 None
             };
 
+            let mut ref_checks: Vec<(String, CheckButton)> = Vec::new();
+            let cur_nid = st.active_notebook_id.borrow().clone();
+            if !cur_nid.is_empty() {
+                if let Ok(list_v) = call_core(&st.core, "studio.list", json!({ "notebook_id": cur_nid })) {
+                    let ready: Vec<(String, String)> = list_v
+                        .get("artifacts")
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter(|a| a.get("status").and_then(Value::as_str) == Some("READY"))
+                                .map(|a| {
+                                    (
+                                        a.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
+                                        a.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
+                                    )
+                                })
+                                .filter(|(id, _)| !id.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !ready.is_empty() {
+                        let rl = Label::new(Some(tr(en, "studio.cfg.ref_artifacts")));
+                        rl.set_xalign(0.0);
+                        vbox.append(&rl);
+                        let rbox = GtkBox::new(Orientation::Vertical, 4);
+                        for (rid, rtitle) in ready {
+                            let cb = CheckButton::with_label(&rtitle);
+                            rbox.append(&cb);
+                            ref_checks.push((rid, cb));
+                        }
+                        vbox.append(&rbox);
+                    }
+                }
+            }
             let ctx_row = GtkBox::new(Orientation::Horizontal, 8);
             ctx_row.append(ctx_bar.button());
             let ctx_hint = Label::new(Some(tr(en, "ctx.cfg_hint")));
@@ -650,6 +685,14 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
                     if !dlang.is_empty() {
                         obj.insert("lang".into(), json!(dlang));
                     }
+                    let ref_ids: Vec<String> = ref_checks
+                        .iter()
+                        .filter(|(_, cb)| cb.is_active())
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    if !ref_ids.is_empty() {
+                        obj.insert("ref_artifact_ids".into(), json!(ref_ids));
+                    }
                     if let Some(dd) = detail_combo.as_ref() {
                         let sel = dd.selected();
                         if k_ok == "mindmap" || k_ok == "knowledge_graph" {
@@ -662,7 +705,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
                     }
                 }
                 if let (Some(obj), Some((mode_dd, level_dd, confirm))) = (cfg.as_object_mut(), lecture_opts.as_ref()) {
-                    let modes = ["general", "preview", "review", "practice"];
+                    let modes = LECTURE_MODES;
                     let levels = ["auto", "brief", "standard", "detailed"];
                     let mode = modes.get(mode_dd.selected() as usize).copied().unwrap_or("general");
                     let level = levels.get(level_dd.selected() as usize).copied().unwrap_or("auto");
@@ -1940,6 +1983,19 @@ fn build_prompt_sources_button(st: &Rc<UiState>, art: &Value, artifact_id: &str)
         refresh_all(&st_rg);
     });
 
+    if art.get("status").and_then(Value::as_str) == Some("READY") {
+        let add_src_btn = Button::with_label(tr(en, "studio.add_to_sources"));
+        add_src_btn.add_css_class("lna-pill-btn");
+        let st_as = st.clone();
+        let aid_as = artifact_id.to_string();
+        let pop_as = pop.clone();
+        add_src_btn.connect_clicked(move |_| {
+            pop_as.popdown();
+            let _ = call_core(&st_as.core, "studio.add_to_sources", json!({ "artifact_id": aid_as }));
+            refresh_all(&st_as);
+        });
+        p_hdr.append(&add_src_btn);
+    }
     let copy_btn = Button::with_label("📋");
     copy_btn.set_tooltip_text(Some(tr(en, "studio.copy_prompt")));
     copy_btn.add_css_class("lna-pill-btn");

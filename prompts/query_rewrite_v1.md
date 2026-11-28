@@ -1,3 +1,3 @@
-<!-- version: query_rewrite_v1 -->
-Based on the conversation history and current question, rewrite the question into a standalone, self-contained retrieval query, and generate up to 3 search queries suitable for both lexical and semantic retrieval (if the sources and question are in different languages, include queries in both languages).
+<!-- version: query_rewrite_v2 -->
+Rewrite the current question into a standalone query using the history, plus up to 3 lexical/semantic search queries (include both languages if question and sources differ).
 Output JSON only: {"standalone":"...","queries":["..."]}

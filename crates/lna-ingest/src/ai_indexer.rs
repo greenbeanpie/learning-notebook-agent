@@ -84,23 +84,7 @@ fn resolve_active_chat_profile(
         Some(kref) => secrets.get(kref)?,
         None => None,
     };
-    Ok(Some(ResolvedProfile {
-        id: prof.id,
-        display_name: prof.display_name,
-        protocol: prof.protocol,
-        base_url: prof.base_url,
-        model_id: prof.model_id,
-        api_key,
-        show_thinking: prof.show_thinking,
-        effort: prof.effort,
-        context_window: prof.context_window,
-        max_output_tokens: prof.max_output_tokens,
-        capabilities: prof.capabilities,
-        extra_headers: prof.extra_headers,
-        anthropic_version: "2023-06-01".into(),
-        preset: prof.preset.clone(),
-        shrink_media: prof.shrink_media,
-    }))
+    Ok(Some(ResolvedProfile::from_model(&prof, api_key)))
 }
 
 fn truncate_chars(s: &str, max_chars: usize) -> String {

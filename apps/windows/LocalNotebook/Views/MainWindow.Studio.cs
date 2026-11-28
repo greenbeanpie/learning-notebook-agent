@@ -215,6 +215,10 @@ public sealed partial class MainWindow
         }
         if (status == "READY")
         {
+            Add(L10n.T("studio.add_to_sources"), async () =>
+            {
+                await CoreAsync("studio.add_to_sources", Args(("artifact_id", id)), L10n.T("studio.add_to_sources"));
+            });
             var existingCfg = a.TryGetProperty("config", out var cfgEl) && cfgEl.ValueKind == JsonValueKind.Object ? cfgEl : (JsonElement?)null;
             Add(L10n.T("studio.update_from_sources"), async () =>
             {
@@ -1009,7 +1013,7 @@ public sealed partial class MainWindow
                         (L10n.T("studio.cfg.lecture_mode_general"), "general"),
                         (L10n.T("studio.cfg.lecture_mode_preview"), "preview"),
                         (L10n.T("studio.cfg.lecture_mode_review"), "review"),
-                        (L10n.T("studio.cfg.lecture_mode_practice"), "practice"),
+                        (L10n.T("studio.cfg.lecture_mode_problem"), "problem"),
                     },
                     InitStr("mode", "general"));
                 getMode = modeGet;
@@ -1076,6 +1080,39 @@ public sealed partial class MainWindow
             }
         }
 
+        var refArtifactBoxes = new List<(string Id, CheckBox Box)>();
+        if (!string.IsNullOrEmpty(_activeNotebookId))
+        {
+            var listDoc = await CoreAsync("studio.list", Args(("notebook_id", _activeNotebookId)), "");
+            var initRefs = new HashSet<string>();
+            if (initialConfig is { } ic && ic.TryGetProperty("ref_artifact_ids", out var refArr) && refArr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in refArr.EnumerateArray())
+                    if (el.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(el.GetString()))
+                        initRefs.Add(el.GetString()!);
+            }
+            var readyArts = new List<(string Id, string Title)>();
+            if (listDoc is { } ld)
+            {
+                foreach (var a in Arr(ld, "artifacts"))
+                {
+                    if (Str(a, "status") == "READY")
+                        readyArts.Add((Str(a, "id"), Str(a, "title")));
+                }
+            }
+            if (readyArts.Count > 0)
+            {
+                panel.Children.Add(new TextBlock { Text = L10n.T("studio.cfg.ref_artifacts"), FontSize = 12, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"] });
+                var refList = new StackPanel { Spacing = 4 };
+                foreach (var (rid, rtitle) in readyArts)
+                {
+                    var cb = new CheckBox { Content = rtitle, IsChecked = initRefs.Contains(rid) };
+                    refArtifactBoxes.Add((rid, cb));
+                    refList.Children.Add(cb);
+                }
+                panel.Children.Add(refList);
+            }
+        }
         var supportsOutlineSplit = kind is "slides" or "report";
         var isLecture = kind == "lecture";
         var dlg = new ContentDialog
@@ -1101,6 +1138,8 @@ public sealed partial class MainWindow
         var kv = new List<(string, object?)>();
         if (topic.Text.Trim().Length > 0) kv.Add(("topic", topic.Text.Trim()));
         if ((lang.SelectedItem as ComboBoxItem)?.Tag is string l && l.Length > 0) kv.Add(("lang", l));
+        var chosenRefs = refArtifactBoxes.Where(x => x.Box.IsChecked == true).Select(x => x.Id).ToArray();
+        if (chosenRefs.Length > 0) kv.Add(("ref_artifact_ids", chosenRefs));
         switch (kind)
         {
             case "quiz":

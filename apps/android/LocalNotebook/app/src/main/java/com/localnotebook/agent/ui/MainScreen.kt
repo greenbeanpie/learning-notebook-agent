@@ -182,7 +182,8 @@ fun MainScreen(vm: AppViewModel) {
                         )
                         StudioScreen(
                             state = state,
-                            onCreateStudio = { k, t, d, im -> vm.createStudio(k, topic = t, detail = d, images = im) },
+                            onCreateStudio = { k, t, d, im, refs -> vm.createStudio(k, topic = t, detail = d, images = im, refArtifactIds = refs) },
+                            onAddToSources = vm::addArtifactToSources,
                             onOpenArtifact = vm::openArtifact,
                             onToggleFullscreen = vm::toggleStudioFullscreen,
                             onRetryArtifact = vm::retryArtifact,
@@ -226,7 +227,8 @@ fun MainScreen(vm: AppViewModel) {
                         )
                         else -> StudioScreen(
                             state = state,
-                            onCreateStudio = { k, t, d, im -> vm.createStudio(k, topic = t, detail = d, images = im) },
+                            onCreateStudio = { k, t, d, im, refs -> vm.createStudio(k, topic = t, detail = d, images = im, refArtifactIds = refs) },
+                            onAddToSources = vm::addArtifactToSources,
                             onOpenArtifact = vm::openArtifact,
                             onToggleFullscreen = vm::toggleStudioFullscreen,
                             onRetryArtifact = vm::retryArtifact,

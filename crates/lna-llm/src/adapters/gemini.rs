@@ -149,7 +149,9 @@ impl ProtocolAdapter for GeminiAdapter {
         if !req.system.is_empty() {
             body["systemInstruction"] = json!({ "parts": [{ "text": req.system }] });
         }
-        if !req.tools.is_empty() && req.tool_mode == ToolMode::Auto {
+        // Keep tool declarations when ToolMode::None so implicit/explicit prompt caching survives
+        // the final round of a tool loop.
+        if !req.tools.is_empty() {
             body["tools"] = json!([{
                 "functionDeclarations": req.tools.iter().map(|t| json!({
                     "name": t.name,
@@ -157,6 +159,11 @@ impl ProtocolAdapter for GeminiAdapter {
                     "parameters": t.parameters
                 })).collect::<Vec<_>>()
             }]);
+            if req.tool_mode == ToolMode::None {
+                body["toolConfig"] = json!({
+                    "functionCallingConfig": { "mode": "NONE" }
+                });
+            }
         }
 
         let mut builder = client.post(url).json(&body);

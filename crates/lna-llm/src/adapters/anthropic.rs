@@ -123,6 +123,22 @@ impl ProtocolAdapter for AnthropicAdapter {
         } else {
             req.max_output_tokens
         };
+        // Mark the penultimate message's last content block as an ephemeral cache breakpoint so
+        // multi-turn history and tool loops hit Anthropic prompt caching (max 4 breakpoints total).
+        if messages.len() >= 2 {
+            let pen = messages.len() - 2;
+            if let Some(last_block) = messages[pen]
+                .get_mut("content")
+                .and_then(|c| c.as_array_mut())
+                .and_then(|arr| arr.last_mut())
+                .and_then(|b| b.as_object_mut())
+            {
+                last_block.insert(
+                    "cache_control".into(),
+                    json!({ "type": "ephemeral" }),
+                );
+            }
+        }
         let mut body = json!({
             "model": profile.model_id,
             "max_tokens": max_tokens,
@@ -130,28 +146,35 @@ impl ProtocolAdapter for AnthropicAdapter {
             "stream": true,
         });
         if !req.system.is_empty() {
-            body["system"] = json!(req.system);
+            body["system"] = json!([{
+                "type": "text",
+                "text": req.system,
+                "cache_control": { "type": "ephemeral" }
+            }]);
         }
 
-        // Section 10.5: adaptive + display:"summarized" + output_config:{effort}
-        let use_legacy =
-            profile.capabilities.anthropic_thinking.as_deref() == Some("budget_tokens");
-        if use_legacy {
-            // The display switch only controls visibility, never reasoning strength or cost.
-            let desired: u32 = 4096;
-            let budget = if max_tokens > 1024 {
-                desired.min(max_tokens.saturating_sub(1024).max(1024))
+        // Section 10.5: adaptive + display:"summarized" + output_config:{effort}.
+        // Skip thinking on minimal warm-up probes (max_tokens <= 16) where thinking cannot fit.
+        if max_tokens > 16 {
+            let use_legacy =
+                profile.capabilities.anthropic_thinking.as_deref() == Some("budget_tokens");
+            if use_legacy {
+                // The display switch only controls visibility, never reasoning strength or cost.
+                let desired: u32 = 4096;
+                let budget = if max_tokens > 1024 {
+                    desired.min(max_tokens.saturating_sub(1024).max(1024))
+                } else {
+                    desired.min(max_tokens)
+                };
+                body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
             } else {
-                desired.min(max_tokens)
-            };
-            body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
-        } else {
-            body["thinking"] = json!({
-                "type": "adaptive",
-                "display": if req.reasoning.show_summary { "summarized" } else { "omitted" }
-            });
-            let effort = req.reasoning.effort.as_deref().unwrap_or("medium");
-            body["output_config"] = json!({ "effort": effort });
+                body["thinking"] = json!({
+                    "type": "adaptive",
+                    "display": if req.reasoning.show_summary { "summarized" } else { "omitted" }
+                });
+                let effort = req.reasoning.effort.as_deref().unwrap_or("medium");
+                body["output_config"] = json!({ "effort": effort });
+            }
         }
 
         if let OutputMode::JsonSchema { schema, .. } = &req.output {
@@ -166,16 +189,30 @@ impl ProtocolAdapter for AnthropicAdapter {
             body["output_config"] = oc;
         }
 
-        if !req.tools.is_empty() && req.tool_mode == ToolMode::Auto {
-            body["tools"] = json!(req
+        // Keep tools declared even when ToolMode::None so the prompt prefix cache survives
+        // the final summary round of a tool loop.
+        if !req.tools.is_empty() {
+            let last_idx = req.tools.len() - 1;
+            let mut tool_defs: Vec<Value> = req
                 .tools
                 .iter()
-                .map(|t| json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.parameters
-                }))
-                .collect::<Vec<_>>());
+                .enumerate()
+                .map(|(i, t)| {
+                    let mut obj = json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.parameters
+                    });
+                    if i == last_idx {
+                        obj["cache_control"] = json!({ "type": "ephemeral" });
+                    }
+                    obj
+                })
+                .collect();
+            body["tools"] = json!(tool_defs.drain(..).collect::<Vec<_>>());
+            if req.tool_mode == ToolMode::None {
+                body["tool_choice"] = json!({ "type": "none" });
+            }
         }
 
         let mut builder = client

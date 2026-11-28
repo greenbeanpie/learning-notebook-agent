@@ -136,7 +136,9 @@ impl ProtocolAdapter for ResponsesAdapter {
             body["include"] = json!(["reasoning.encrypted_content"]);
         }
 
-        if !req.tools.is_empty() && req.tool_mode == ToolMode::Auto {
+        // Keep tool declarations when ToolMode::None so the prompt prefix cache survives
+        // the final round of a tool loop.
+        if !req.tools.is_empty() {
             body["tools"] = json!(req
                 .tools
                 .iter()
@@ -147,6 +149,9 @@ impl ProtocolAdapter for ResponsesAdapter {
                     "parameters": t.parameters
                 }))
                 .collect::<Vec<_>>());
+            if req.tool_mode == ToolMode::None {
+                body["tool_choice"] = json!("none");
+            }
         }
 
         match &req.output {

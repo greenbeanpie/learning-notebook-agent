@@ -966,6 +966,14 @@ struct MainView: View {
             }
         }
         .contextMenu {
+            if art.status == "READY" {
+                Button(state.t("studio.add_to_sources")) {
+                    Task {
+                        _ = await state.run("studio.add_to_sources", ["artifact_id": art.id], what: state.t("studio.add_to_sources"))
+                        await state.refreshAll()
+                    }
+                }
+            }
             Button(state.t("studio.rename")) {
                 renameArtifactInput = art.title
                 renamingArtifact = art

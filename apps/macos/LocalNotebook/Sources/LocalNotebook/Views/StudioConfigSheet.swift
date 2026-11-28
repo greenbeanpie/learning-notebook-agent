@@ -48,7 +48,7 @@ private func options(for kind: String) -> [ConfigOption] {
         return [
             ConfigOption(key: "mode", headerKey: "studio.cfg.lecture_mode_header",
                          choices: [("studio.cfg.lecture_mode_general", "general"), ("studio.cfg.lecture_mode_preview", "preview"),
-                                   ("studio.cfg.lecture_mode_review", "review"), ("studio.cfg.lecture_mode_practice", "practice")],
+                                   ("studio.cfg.lecture_mode_review", "review"), ("studio.cfg.lecture_mode_problem", "problem")],
                          fallback: "general"),
             ConfigOption(key: "detail", headerKey: "studio.cfg.detail_header",
                          choices: [("studio.cfg.level_auto", "auto"), ("studio.cfg.level_concise", "brief"),
@@ -86,6 +86,7 @@ struct StudioConfigSheet: View {
     @State private var lang = ""
     @State private var chosen: [String: String] = [:]
     @State private var types: Set<String> = ["single", "multi"]
+    @State private var refArtifactIds: Set<String> = []
     @StateObject private var attach = AttachmentStore()
     @State private var loaded = false
 
@@ -171,6 +172,21 @@ struct StudioConfigSheet: View {
                         }
                     }
                 }
+                let readyArtifacts = state.artifacts.filter { $0.status == "READY" }
+                if !readyArtifacts.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(state.t("studio.cfg.ref_artifacts")).font(.subheadline).foregroundColor(p.textSecondary)
+                        WrapFlowLayout(spacing: 8) {
+                            ForEach(readyArtifacts, id: \.id) { art in
+                                Toggle(art.title, isOn: Binding(
+                                    get: { refArtifactIds.contains(art.id) },
+                                    set: { on in if on { refArtifactIds.insert(art.id) } else { refArtifactIds.remove(art.id) } }
+                                ))
+                                .toggleStyle(.button)
+                            }
+                        }
+                    }
+                }
                 if isLecture {
                     Text(state.t("studio.cfg.lecture_hint")).font(.caption).foregroundColor(p.textMuted)
                 }
@@ -213,6 +229,7 @@ struct StudioConfigSheet: View {
                 if let v = request.initial[opt.key] as? String, !v.isEmpty { chosen[opt.key] = v }
             }
             if let t = request.initial["types"] as? [String], !t.isEmpty { types = Set(t) }
+            if let refs = request.initial["ref_artifact_ids"] as? [String], !refs.isEmpty { refArtifactIds = Set(refs) }
         }
     }
 
@@ -225,6 +242,7 @@ struct StudioConfigSheet: View {
         let t = topic.trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.isEmpty { cfg["topic"] = t }
         if !lang.isEmpty { cfg["lang"] = lang }
+        if !refArtifactIds.isEmpty { cfg["ref_artifact_ids"] = Array(refArtifactIds) }
         switch kind {
         case "quiz":
             let q = value("quantity", "standard")

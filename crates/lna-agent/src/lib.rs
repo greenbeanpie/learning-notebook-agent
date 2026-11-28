@@ -22,6 +22,16 @@ const FOLLOWUPS_PROMPT: &str = include_str!("../../../prompts/followups_v1.md");
 const HISTORY_SUMMARY_PROMPT: &str = include_str!("../../../prompts/history_summary_v1.md");
 const SUMMARY_PROMPT: &str = include_str!("../../../prompts/notebook_summary_v1.md");
 
+/// Session-level prompt-cache anchor: keeps `system_prompt` byte-identical across turns of a
+/// conversation; runtime changes to selected files or conversation summary are appended at the
+/// end of the current user message as `<context_diff>`.
+#[derive(Clone)]
+struct SessionCacheAnchor {
+    base_system: String,
+    base_selected_ids: Vec<String>,
+    base_summary: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct AgentService {
     db: Database,
@@ -32,6 +42,7 @@ pub struct AgentService {
     events: broadcast::Sender<ApiEvent>,
     seq: Arc<std::sync::atomic::AtomicU64>,
     active_runs: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    cache_anchors: Arc<Mutex<HashMap<String, SessionCacheAnchor>>>,
 }
 
 impl AgentService {
@@ -53,6 +64,7 @@ impl AgentService {
             events,
             seq,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
+            cache_anchors: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -67,6 +79,9 @@ impl AgentService {
     }
 
     pub fn clear_history(&self, notebook_id: &str) -> LnaResult<()> {
+        if let Ok(mut m) = self.cache_anchors.lock() {
+            m.remove(notebook_id);
+        }
         if let Ok(g) = self.active_runs.lock() {
             if g.contains_key(notebook_id) {
                 return Err(LnaError::new(
@@ -792,14 +807,82 @@ impl AgentService {
             )
         };
         // stable parts first (instructions, file catalog), the rolling summary last
-        let mut system_prompt = CHAT_SYSTEM_PROMPT.to_string();
-        if !selected_source_meta.is_empty() {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&format_selected_files_xml(&self.db, &selected_source_meta));
-        }
-        if let Some(summary) = history_summary.as_deref().filter(|x| !x.trim().is_empty()) {
-            system_prompt.push_str(&format!("\n\n[历史摘要]\n{summary}"));
-        }
+        // Keep `system_prompt` byte-identical across turns of the same conversation so provider
+        // prompt caching stays warm; emit any runtime changes to selected files or summary as a
+        // trailing `<context_diff>` in the current turn's user message.
+        let current_selected_ids: Vec<String> = selected_source_meta
+            .iter()
+            .map(|(id, _, _)| id.clone())
+            .collect();
+        let current_summary = history_summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(String::from);
+        let (system_prompt, context_diff_xml) = {
+            let mut anchors = self
+                .cache_anchors
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let need_reset = history_msgs.is_empty() || !anchors.contains_key(notebook_id);
+            if need_reset {
+                let mut base = CHAT_SYSTEM_PROMPT.to_string();
+                if !selected_source_meta.is_empty() {
+                    base.push_str("\n\n");
+                    base.push_str(&format_selected_files_xml(&self.db, &selected_source_meta));
+                }
+                if let Some(ref s) = current_summary {
+                    base.push_str(&format!("\n\n[历史摘要]\n{s}"));
+                }
+                anchors.insert(
+                    notebook_id.to_string(),
+                    SessionCacheAnchor {
+                        base_system: base.clone(),
+                        base_selected_ids: current_selected_ids.clone(),
+                        base_summary: current_summary.clone(),
+                    },
+                );
+                (base, String::new())
+            } else {
+                let anchor = anchors.get(notebook_id).unwrap();
+                let mut diff = String::new();
+                let added: Vec<(String, String, String)> = selected_source_meta
+                    .iter()
+                    .filter(|(id, _, _)| !anchor.base_selected_ids.contains(id))
+                    .cloned()
+                    .collect();
+                let removed: Vec<&String> = anchor
+                    .base_selected_ids
+                    .iter()
+                    .filter(|id| !current_selected_ids.contains(id))
+                    .collect();
+                if !added.is_empty() {
+                    diff.push_str("<added_files>\n");
+                    diff.push_str(&format_selected_files_xml(&self.db, &added));
+                    diff.push_str("\n</added_files>\n");
+                }
+                if !removed.is_empty() {
+                    let ids: Vec<&str> = removed.iter().map(|s| s.as_str()).collect();
+                    diff.push_str(&format!(
+                        "<removed_file_ids note=\"user deselected these files; do not cite them\">{}</removed_file_ids>\n",
+                        ids.join(", ")
+                    ));
+                }
+                if current_summary != anchor.base_summary {
+                    if let Some(ref s) = current_summary {
+                        diff.push_str(&format!(
+                            "<updated_history_summary>\n{s}\n</updated_history_summary>\n"
+                        ));
+                    }
+                }
+                let diff_xml = if diff.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n<context_diff>\n{diff}</context_diff>")
+                };
+                (anchor.base_system.clone(), diff_xml)
+            }
+        };
 
         let studio_hint_xml = {
             detect_studio_artifact_hint(user_text).map(|(art_type, zh_label)| {
@@ -813,7 +896,7 @@ impl AgentService {
         let mut llm_messages = history_msgs;
         let files_xml = context_files::manifest(&resolved, &ctx_items);
         let question_xml = format!(
-            "{sources_xml}\n{files_xml}\n<question>{}</question>{studio_hint_xml}",
+            "{sources_xml}\n{files_xml}{context_diff_xml}\n<question>{}</question>{studio_hint_xml}",
             xml_text_escape(user_text)
         );
         llm_messages.push(LlmMessage {
@@ -935,7 +1018,7 @@ impl AgentService {
                 },
                 ToolDef {
                     name: "generate_studio_artifact".into(),
-                    description: "【必用·异步非阻塞】当用户要求生成测验/测试/出题/练习题(quiz)、闪卡(flashcards)、思维导图(mindmap)、研究报告/学习指南(report)、演示文稿/PPT(slides)、信息图(infographic)、音频概览/播客(audio)或「讲解」课(lecture：AI 制作幻灯片并配合语音朗读、激光笔与分步动画讲解，可用于预习/复习/练习)时，必须调用此工具；调用后会立即入队并在后台生成（不阻塞主对话），不要直接在对话中手写题目或长篇正文代替。除非用户明确要求更大数量，默认保持适中规模（quiz 5~8 题、flashcards 8~12 张、slides 6~10 页）。此工具内部会自动从已选来源检索证据，无需先逐页通读全文，只需在 topic 中写明目标章节/主题与具体要求即可。".into(),
+                    description: "【必用·异步非阻塞】当用户要求生成测验/测试/出题/练习题(quiz)、闪卡(flashcards)、思维导图(mindmap)、研究报告/学习指南(report)、演示文稿/PPT(slides)、信息图(infographic)、音频概览/播客(audio)或「讲解」课(lecture：AI 制作幻灯片并配合语音朗读、激光笔与分步动画讲解，可用于预习/复习/讲题)时，必须调用此工具；调用后会立即入队并在后台生成（不阻塞主对话），不要直接在对话中手写题目或长篇正文代替。除非用户明确要求更大数量，默认保持适中规模（quiz 5~8 题、flashcards 8~12 张、slides 6~10 页）。此工具内部会自动从已选来源检索证据，无需先逐页通读全文，只需在 topic 中写明目标章节/主题与具体要求即可。".into(),
                     parameters: json!({
                         "type": "object",
                         "properties": {
@@ -957,7 +1040,8 @@ impl AgentService {
                             "format": { "type": "string", "description": "格式：report 可选 document/interactive；audio 可选 deep_dive/debate/brief/critique" },
                             "pages": { "type": "integer", "minimum": 4, "maximum": 30, "description": "演示文稿页数（仅 slides，建议 6~10，默认 8）" },
                             "orientation": { "type": "string", "enum": ["landscape", "portrait", "square"], "description": "信息图方向（仅 infographic）" },
-                            "mode": { "type": "string", "enum": ["general", "preview", "review", "practice"], "description": "讲解模式（仅 lecture）：general 通用（默认）、preview 预习、review 复习、practice 练习" },
+                            "mode": { "type": "string", "enum": ["general", "preview", "review", "problem"], "description": "讲解模式（仅 lecture）：general 通用（默认）、preview 预习、review 复习、problem 讲题" },
+                            "ref_artifact_ids": { "type": "array", "items": { "type": "string" }, "description": "可选：引用本笔记本中已生成的 Studio 产物 ID 列表，作为本次生成的参考材料" },
                             "detail": { "type": "string", "enum": ["auto", "brief", "standard", "detailed"], "description": "讲解详细程度（仅 lecture，默认 auto）" }
                         },
                         "required": ["artifact_type"]
@@ -2211,29 +2295,17 @@ impl AgentService {
             Some(ref kref) => self.secrets.get(kref)?,
             None => None,
         };
-        Ok(ResolvedProfile {
-            id: profile.id.clone(),
-            display_name: profile.display_name.clone(),
-            protocol: profile.protocol,
-            base_url: profile.base_url.clone(),
-            model_id: profile.model_id.clone(),
-            api_key,
-            show_thinking: profile.show_thinking,
-            // `LNA_EFFORT_OVERRIDE` (a test hook for one process, never stored) replaces the
-            // profile's reasoning effort
-            effort: std::env::var("LNA_EFFORT_OVERRIDE")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .or_else(|| profile.effort.clone()),
-            context_window: profile.context_window,
-            max_output_tokens: profile.max_output_tokens,
-            capabilities: profile.capabilities.clone(),
-            extra_headers: profile.extra_headers.clone(),
-            anthropic_version: "2023-06-01".to_string(),
-            preset: profile.preset.clone(),
-            shrink_media: profile.shrink_media,
-        })
+        let mut resolved = ResolvedProfile::from_model(profile, api_key);
+        // `LNA_EFFORT_OVERRIDE` (a test hook for one process, never stored) replaces the
+        // profile's reasoning effort
+        if let Some(ov) = std::env::var("LNA_EFFORT_OVERRIDE")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            resolved.effort = Some(ov);
+        }
+        Ok(resolved)
     }
 
     async fn load_history_context(
@@ -2738,7 +2810,7 @@ impl AgentService {
                     .get("mode")
                     .and_then(|x| x.as_str())
                     .map(str::trim)
-                    .filter(|s| matches!(*s, "general" | "preview" | "review" | "practice"))
+                    .filter(|s| matches!(*s, "general" | "preview" | "review" | "problem"))
                     .unwrap_or("general");
                 let detail = args
                     .get("detail")
@@ -2749,6 +2821,16 @@ impl AgentService {
                 cfg.insert("mode".into(), json!(mode));
                 cfg.insert("detail".into(), json!(detail));
                 cfg.insert("reviewOutline".into(), json!(false));
+            }
+        }
+        if let Some(refs) = args.get("ref_artifact_ids").and_then(|x| x.as_array()) {
+            let ids: Vec<serde_json::Value> = refs
+                .iter()
+                .filter_map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()))
+                .map(|s| json!(s))
+                .collect();
+            if !ids.is_empty() {
+                cfg.insert("ref_artifact_ids".into(), serde_json::Value::Array(ids));
             }
         }
 

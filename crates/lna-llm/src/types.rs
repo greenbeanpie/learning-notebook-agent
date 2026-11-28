@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use lna_types::{LnaError, LnaResult, ModelCapabilities, ProtocolKind};
+use lna_types::{LnaError, LnaResult, ModelCapabilities, ModelProfile, ProtocolKind};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -238,6 +238,27 @@ pub struct ResolvedProfile {
 pub const API_KEY_PLACEHOLDER: &str = "{api_key}";
 
 impl ResolvedProfile {
+    /// Builds a runtime `ResolvedProfile` from a stored `ModelProfile` and its resolved API key.
+    pub fn from_model(profile: &ModelProfile, api_key: Option<SecretString>) -> Self {
+        Self {
+            id: profile.id.clone(),
+            display_name: profile.display_name.clone(),
+            protocol: profile.protocol,
+            base_url: profile.base_url.clone(),
+            model_id: profile.model_id.clone(),
+            api_key,
+            show_thinking: profile.show_thinking,
+            effort: profile.effort.clone(),
+            context_window: profile.context_window,
+            max_output_tokens: profile.max_output_tokens,
+            capabilities: profile.capabilities.clone(),
+            extra_headers: profile.extra_headers.clone(),
+            anthropic_version: "2023-06-01".to_string(),
+            preset: profile.preset.clone(),
+            shrink_media: profile.shrink_media,
+        }
+    }
+
     pub fn trimmed_base(&self) -> &str {
         self.base_url.trim_end_matches('/')
     }

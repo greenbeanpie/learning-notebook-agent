@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 lna-types = { path = "../lna-types" }
-lna-secrets = { path = "../lna-secrets" }
 async-trait.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

@@ -1427,7 +1427,7 @@ pub async fn brief(
     for round in 0..=max_rounds {
         let last = round == max_rounds;
         let req = LlmRequest::conversation(
-            "You read the user's attached reference files with the provided tools and report the passages relevant to the task, citing file name and page.",
+            "Read attached reference files via tools and return only task-relevant passages with file name and page.",
             messages.clone(),
             ctx.profile.output_budget().clamp(2048, 8192),
         )

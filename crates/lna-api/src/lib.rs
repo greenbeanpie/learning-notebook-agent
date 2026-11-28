@@ -1615,6 +1615,21 @@ impl CoreRuntime {
                 self.studio
                     .apply_quiz_to_knowledge_graphs(nid, aid, results)
             }
+            "studio.add_to_sources" => {
+                let aid = req_str(p, "artifact_id")?;
+                let (art, md) = self.studio.render_markdown(aid)?;
+                let title = p
+                    .get("title")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("[Studio] {}", art.title));
+                let (src, dup) = self
+                    .ingest
+                    .add_text(&art.notebook_id, &title, &md, SourceKind::Md)?;
+                Ok(json!({ "source": src, "duplicate": dup }))
+            }
             "studio.export" => {
                 let aid = req_str(p, "artifact_id")?;
                 let fmt = p

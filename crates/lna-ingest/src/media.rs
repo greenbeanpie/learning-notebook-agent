@@ -67,23 +67,7 @@ pub fn resolve_modality_profile_with_secret(
         Some(kref) => secrets.get(kref)?,
         None => None,
     };
-    Ok(Some(ResolvedProfile {
-        id: prof.id,
-        display_name: prof.display_name,
-        protocol: prof.protocol,
-        base_url: prof.base_url,
-        model_id: prof.model_id,
-        api_key,
-        show_thinking: prof.show_thinking,
-        effort: prof.effort,
-        context_window: prof.context_window,
-        max_output_tokens: prof.max_output_tokens,
-        capabilities: prof.capabilities,
-        extra_headers: prof.extra_headers,
-        anthropic_version: "2023-06-01".into(),
-        preset: prof.preset.clone(),
-        shrink_media: prof.shrink_media,
-    }))
+    Ok(Some(ResolvedProfile::from_model(&prof, api_key)))
 }
 
 fn transcode_to_png_via_image_crate(bytes: &[u8]) -> LnaResult<Vec<u8>> {
@@ -482,7 +466,7 @@ pub async fn ingest_audio_video(
     };
 
     let req = LlmRequest::from_parts(
-        "You are a high-precision multimodal media understanding assistant. Strictly based on the actual speech and visual content in the media, output clear, searchable structured Markdown in the primary language of the media.",
+        "Multimodal media assistant: transcribe and structure only observed speech and visuals as clean Markdown in the media's primary language.",
         vec![media_part, Part::Text(prompt)],
         resolved.output_budget().max(4096),
     );
@@ -537,7 +521,7 @@ pub async fn ingest_image(
                 src.title
             );
             let req = LlmRequest::from_parts(
-                "You are a high-precision image analysis and OCR assistant. Output only text and visual facts directly observed in the image, using Markdown tables and LaTeX formulas where appropriate.",
+                "Image OCR & analysis assistant: extract only directly observed text, Markdown tables, LaTeX formulas, and visual facts.",
                 vec![
                     Part::Media {
                         mime_type: mime,
@@ -719,7 +703,7 @@ async fn ocr_pdf_batch(
         page_list.join(", ")
     )));
     let req = LlmRequest::from_parts(
-        "You are a professional document OCR assistant. Faithfully transcribe text, Markdown tables, LaTeX formulas, and brief figure annotations visible on each page without fabrication.",
+        "Document OCR assistant: faithfully transcribe visible text, Markdown tables, LaTeX formulas, and brief figure notes without fabrication.",
         parts,
         resolved.output_budget().max(4096),
     );
@@ -880,7 +864,7 @@ pub async fn vision_inspect_images(
         )));
 
         let req = LlmRequest::from_parts(
-            "You are a rigorous visual reading assistant. Extract only accurate facts visible in the provided images, including exact text, chart values, and LaTeX equations, without guessing missing text or numbers.",
+            "Visual reading assistant: extract only exact visible text, chart values, and LaTeX equations without guessing.",
             parts,
             resolved.output_budget().max(4096),
         );

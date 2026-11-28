@@ -65,6 +65,10 @@ pub(crate) fn config_for_prompt(config: &Value, pictures_shown: bool) -> Value {
             .remove("files")
             .and_then(|v| v.as_array().map(|a| a.len()))
             .unwrap_or(0);
+        let n_refs = obj
+            .remove("ref_artifact_ids")
+            .and_then(|v| v.as_array().map(|a| a.len()))
+            .unwrap_or(0);
         if n_images > 0 {
             obj.insert(
                 "attached_images".into(),
@@ -79,6 +83,12 @@ pub(crate) fn config_for_prompt(config: &Value, pictures_shown: bool) -> Value {
             obj.insert(
                 "attached_files".into(),
                 json!(format!("{n_files} file(s), summarised in <user_files>")),
+            );
+        }
+        if n_refs > 0 {
+            obj.insert(
+                "referenced_artifacts".into(),
+                json!(format!("{n_refs} Studio artifact(s), included in <referenced_artifacts>")),
             );
         }
     }
@@ -125,12 +135,13 @@ mod tests {
 
     #[test]
     fn attachment_ids_never_reach_the_prompt() {
-        let cfg = json!({"topic": "t", "images": ["01ABC", "01DEF"], "files": ["01XYZ"]});
+        let cfg = json!({"topic": "t", "images": ["01ABC", "01DEF"], "files": ["01XYZ"], "ref_artifact_ids": ["01ART"]});
         let shown = config_for_prompt(&cfg, true).to_string();
         assert!(
-            !shown.contains("01ABC") && !shown.contains("01XYZ"),
+            !shown.contains("01ABC") && !shown.contains("01XYZ") && !shown.contains("01ART"),
             "{shown}"
         );
+        assert!(shown.contains("1 Studio artifact(s)"), "{shown}");
         assert!(
             shown.contains("2 picture(s), shown in this message"),
             "{shown}"

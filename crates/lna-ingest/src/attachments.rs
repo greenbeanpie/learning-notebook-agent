@@ -357,7 +357,7 @@ pub async fn describe(
             "{focus}\n要求：只报告图片中确实存在的文字、图表数值、公式（用 LaTeX）和视觉细节，不要猜测。"
         )));
         let req = LlmRequest::from_parts(
-            "You are a rigorous visual reading assistant. Extract only accurate facts visible in the provided images, including exact text, chart values and equations, without guessing.",
+            "Visual reading assistant: extract only exact visible text, chart values, and LaTeX equations without guessing.",
             parts,
             profile.output_budget().clamp(1024, 4096),
         );

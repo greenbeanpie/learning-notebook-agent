@@ -21,7 +21,6 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["Local Notebook Agent Contributors"]
 
 [workspace.dependencies]
 tokio = { version = "1.41", features = ["rt-multi-thread", "sync", "time", "fs", "io-util", "macros", "signal"] }

@@ -57,13 +57,13 @@ pub const LECTURE_MAX_OUTPUT_TOKENS: u32 = 32_768;
 /// Target upper bound of slides written per batch (3–4 slides per batch for coherence and stability).
 pub const LECTURE_SLIDE_BATCH_MAX: usize = 4;
 
-pub(crate) const ANIMATION_NOTE: &str = "ANIMATION: do NOT write cues, builds or any animation data; a separate animation step reads your finished slides and decides what appears when and where the laser points. Any mention of cues, builds or the laser pointer elsewhere in these instructions is for that animation step, not for you. Your part is to make that possible: narrate in the order things should appear and name each figure part by the same symbol or word that is drawn on it, say what a vector, point or line is where you first mention it (never use one before you have introduced it), put a result only after the sentences that explain it, and keep one idea per sentence.";
+pub(crate) const ANIMATION_NOTE: &str = "ANIMATION: Omit cues/builds (a later pass adds them). Narrate in reveal order, introduce each symbol/figure part before using it using its exact label, state results after their explanation, one idea per sentence.";
 
-pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: content that is obviously geometric or physical (vectors, forces, torques, coordinate systems, angles, shapes, trajectories, function graphs, surfaces) MUST have a figure; for anything else add one when a function graph, implicit curve, 3-D surface, geometric figure or physics diagram genuinely helps. Add \"figure_request\": {\"kind\":\"plot\"|\"plot3d\"|\"diagram\",\"purpose\":\"what it must show\",\"details\":\"exact functions, ranges, points, forces, angles, labels AND the part ids you will reference\"} to the slide (normally with layout \"figure\"). A separate drawing step turns it into a precise figure. In details, name each part you reference with an explicit id (e.g. \"curve id f: y=x^2-2x on [-1,3]; point id V at (1,-1) labelled 顶点; vector id G downward labelled G\") and use exactly those ids as figure:<id> in cues and builds. FIGURE + TEXT TOGETHER (important): a figure must never sit alone on a slide. The slide that shows a figure also carries the text that explains it — 2-3 very short (under ~16 Chinese characters or ~8 English words each) \"bullets\", a \"formula\" and/or a compact \"table\" (at most 4 rows, 2-3 short columns) stating the problem or claim and the key result, shown left of the figure — and the figure's labels use the same symbols as that text. Put the example's statement and its figure on the SAME slide; do not state an example on one slide and show its figure on the next, and do not use \"display_only\" for a figure slide. Narrate the text and the figure together: in each sentence point the laser at the figure part (figure:<id>) or bullet (b1..) being spoken about, and use builds so each bullet and its matching figure part appear in the same step.";
+pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: Geometric/physical content (vectors, forces, torques, axes, angles, trajectories, graphs, surfaces) MUST include `figure_request`: {\"kind\":\"plot|plot3d|diagram\",\"purpose\":...,\"details\": exact functions/ranges/points/vectors/labels with explicit part ids (e.g. `curve id f`, `vector id G`)}. Always pair every figure on the SAME slide with concise explaining text (2–3 short bullets <=16 zh / 8 en words, a formula, or a compact <=4x3 table) using matching symbols; never use `display_only` on a figure slide.";
 
 /// Judgement rules shared by the planner and the authors: how much to say, to whom, and what
 /// never to talk about. They are principles, not page counts, so the model sizes the lecture itself.
-pub(crate) const TEACHING_JUDGEMENT: &str = "TEACHING JUDGEMENT (applies to the plan and to every slide):\n- ECONOMY: every slide must earn its place. Before adding one ask: would a student who already has the prerequisites miss something if it were removed? If not, leave it out. No orientation, agenda, section-divider, recap or \"where we are\" slides unless the lecture truly spans several topics (a recap repeats what was just said; a method summary or extension after a problem adds something and is allowed, see PROBLEMS). A derivation is taught as its sequence of steps in order, pausing only where a step is not obvious (a non-trivial identity, a choice, a physical argument) and moving quickly through routine algebra. Plan the fewest sections that teach the scope: a single derivation or exercise is ONE section.\n- VISUALS (show before you tell): content that is obviously geometric or physical — vectors, forces and torques, coordinate systems and angles, shapes, motion paths, function graphs, surfaces — MUST be shown with a figure (figure_request: diagram, plot or plot3d) while it is explained, and the figure's parts appear step by step (builds on figure:<id>) in step with the equations or bullets, with the laser on the part being spoken about. A page that is only a worked derivation (algebra steps, a proof, a calculation) is SUGGESTED to use visuals or animation: reveal the steps one at a time, highlight the current step, and add a small figure when one truly clarifies; when no figure fits, the step-by-step reveal is enough. Never invent a figure just to have one. A slide that carries a needed figure or a step-by-step build earns its place under ECONOMY. Reasoning about vectors inside a derivation (directions of terms, components along an axis, which cross products vanish, signs of torques) is geometric content, not mere algebra: draw the vectors and the axis.\n- FILL THE SLIDE: a 16:9 slide holding only a short table, two or three bullets or one formula is mostly empty space. Put the figure that shows what that text states beside it (the text — bullets, formula or a compact table — sits left of the figure on the same slide), or merge the text into the neighbouring slide it belongs to. A table that lists directions, components or cases of vectors belongs next to a drawing of those vectors, with each row and its figure part revealed together.\n- LEARNER: infer the learner's level from the material itself (a university student working at this point of the course) and assume the usual prerequisites are known: do not define or re-teach prerequisite concepts, standard operations or notation (for example the cross product, derivatives or vector decomposition in a mechanics derivation). Explain only what is new or non-obvious in the material. If the user's request explicitly asks for background, give it.\n- PROBLEMS (an exercise, an example, a question or a derivation to work through): go straight to the problem and solve it. No slides that review, define or teach concepts, theorems, formulas or methods before the solution (no \"prerequisites\", \"knowledge review\", \"first let's recall ...\" or \"basic concepts\" slides or sections). When a step uses a known result, name it in one short clause at that step as the reason for the step (e.g. \"by the parallel-axis theorem, ...\") and move on; do not derive, prove or illustrate the known result itself. Only the non-obvious idea that unlocks this particular problem deserves explanation, and it is explained inside the step where it is used. AFTER THE SOLUTION (allowed, not required): once the problem is solved you may close with what the learner should take away from it — a method summary (the general approach and when it applies), an extension or generalisation (what changes if a condition changes, a variant, a related problem type), common mistakes, or a quick check of the result. Keep it to what genuinely adds value (usually one slide, at most two) and keep it tied to this problem; this is where connections to the wider topic belong, never before the solution.\n- NEVER TALK ABOUT HOW THIS LECTURE WAS PRODUCED: no OCR, text recognition or scan quality/noise, no image extraction, no outline, plan, section or generation steps, and no navigation such as \"this page sits in the derivation chain\". Speak as the teacher who wrote the lesson, about the content. Mentioning the textbook as a teaching resource (e.g. \"see the book's worked example\") is fine when it helps.";
+pub(crate) const TEACHING_JUDGEMENT: &str = "TEACHING RULES:\n- ECONOMY: Every slide must add new substance. Skip agenda/divider/recap slides unless spanning multiple topics; a single exercise/derivation is ONE section. Move briskly through routine algebra and pause only on non-obvious steps.\n- VISUALS & DENSITY: Geometric/physical reasoning (including vector directions/components/cross products in derivations) MUST include a figure paired with concise text/formula/table on the same 16:9 slide; avoid sparse slides.\n- LEARNER & PROBLEMS: Assume standard course prerequisites—never add prerequisite/concept-review slides before solving a problem. Name known theorems in one brief clause where used. After solving, optionally close with 1 concise slide of method takeaway, check, or common pitfalls tied to the problem.\n- VOICE: Speak purely as the teacher about the subject; never mention OCR, scans, image extraction, outlines, plans, or generation steps.";
 
 /// Errors that end an on-demand evidence read instead of falling back to plain retrieval: a
 /// cancelled job, and a model that refused the task (its reason is shown to the user).
@@ -74,24 +74,23 @@ pub(crate) fn ends_evidence_read(code: ErrorCode) -> bool {
 /// Mode/detail rules for the lecture author.
 pub(crate) fn lecture_rules(mode: &str, detail: &str) -> String {
     let mode_rule = match mode {
-        "preview" => "MODE preview (first-time learning of a unit): state the learning goals first, then teach concepts in a gentle order — concept → intuition → example → common pitfalls; highlight each new term with the laser the first time it appears.",
-        "review" => "MODE review (consolidation of material already learned): recap key points, connect and contrast related ideas, interleave topics, call out common mistakes, end with a compact summary. Give extra time to the weak concepts listed below and pass quickly over mastered ones. Do not re-teach from scratch.",
-        "practice" => "MODE practice (problem solving): build the lecture around problems. Start with the first problem — no concept-review slides before it. For each problem: one slide presenting the problem, with checkpoint {\"kind\":\"attempt\",\"question\":<the task>,\"expect\":<final answer>} so the learner solves it first; then worked-solution slides revealed step by step with builds and laser cues on each step; then a variant problem with less guidance (fading). Draw figures for problems that need them.",
-        _ => "MODE general: explain the requested material clearly for any kind of content (textbook, paper, article, a question, a derivation): lead with what the material says and how it works; add why it matters or a summary only where they genuinely help. Do not assume a textbook structure, and do not force a what → why → how template onto a short or purely technical piece of material.",
+        "preview" => "MODE preview: state learning goals, then build intuition gently (concept → intuition → example → pitfalls).",
+        "review" => "MODE review: consolidate learned material—recap key points, connect/contrast ideas, flag common mistakes, prioritize listed weak concepts and skim mastered ones.",
+        "problem" => "MODE problem (讲题): solve and explain the given problem(s) directly with zero prerequisite-review slides or forced attempt checkpoints. Per problem: (1) problem statement + conditions + figure on one slide; (2) core breakthrough idea; (3) step-by-step derivation citing known theorems briefly in place; (4) answer check + at most 1 concise takeaway/pitfall slide.",
+        _ => "MODE general: explain the material directly (what it says and how it works); add context or a summary only where genuinely helpful.",
     };
     let detail_rule = match detail {
-        "brief" => "DETAIL brief: only the essentials, few slides per section, short narration.",
-        "detailed" => "DETAIL detailed: thorough coverage with derivations, examples and edge cases; more slides per section.",
+        "brief" => "DETAIL brief: essentials only, few slides, short narration.",
+        "detailed" => "DETAIL detailed: thorough derivations, examples, and edge cases.",
         "standard" => "DETAIL standard: balanced coverage.",
-        _ => "DETAIL auto: decide the depth yourself from the amount and difficulty of the material in scope. The lecture is as long as the teaching needs and no longer: one page of material, one exercise or one derivation is a short lecture (a handful of slides), a section is a medium one, a whole chapter a long one. Do not pad and do not skip substance.",
+        _ => "DETAIL auto: match depth to scope (1 exercise/page = a handful of slides; a chapter = longer); never pad or skip substance.",
     };
     format!(
-        "{mode_rule}\n{detail_rule}\n{TEACHING_JUDGEMENT}\nCHECKPOINTS: do NOT ask a question after every point. Questions happen when the learner interrupts, or — sparingly, about one per section at most — when you judge a pause genuinely helps (a key difficulty or a common confusion): add \"checkpoint\": {{\"kind\":\"ask\",\"question\":...,\"expect\":...,\"reason\":<why a pause helps here>}} to that slide.{}",
-        if mode == "practice" { " In practice mode the per-problem \"attempt\" checkpoint is part of the format and does not count." } else { "" }
+        "{mode_rule}\n{detail_rule}\n{TEACHING_JUDGEMENT}\nCHECKPOINTS: do NOT ask a question after every point. Questions happen when the learner interrupts, or — sparingly, about one per section at most — when you judge a pause genuinely helps (a key difficulty or a common confusion): add \"checkpoint\": {{\"kind\":\"ask\",\"question\":...,\"expect\":...,\"reason\":<why a pause helps here>}} to that slide."
     )
 }
 
-const NARRATION_RULES: &str = "NARRATION: every slide has \"narration\": an ordered list of sentences {\"text\":...} that the teacher SAYS while the slide is shown (it is read by text-to-speech). Narration is plain spoken language: NO LaTeX, NO markdown, NO $, no symbols that cannot be read aloud — read formulas in words (e.g. \"A 的逆等于 A 的伴随矩阵除以 A 的行列式\"). One sentence per item, at most ~60 Chinese characters or ~35 English words. On-screen text stays concise (keywords, formulas in LaTeX $...$ are fine on screen). A slide may have no narration only if it sets \"display_only\": {\"reason\": ...} (e.g. a full-screen figure explained on the next slide); never two display-only slides in a row.";
+const NARRATION_RULES: &str = "NARRATION: Each slide has `narration`: ordered TTS sentences `{\"text\":...}` (<=60 zh chars / 35 en words each). Use plain spoken words only—NO LaTeX, markdown, `$`, or unpronounceable symbols (speak formulas in words). Keep on-screen text concise (LaTeX `$...$` allowed on screen). Only omit narration if `display_only: {\"reason\":...}` is set (never two in a row).";
 
 // ---------------------------------------------------------------------------------------------
 // schemas
@@ -1177,7 +1176,7 @@ pub fn check_lecture_content(slides: &[Value], mode: &str) -> Vec<Issue> {
 /// Things a model never needs to be asked about, fixed in place: LaTeX in narration becomes
 /// plain words, a checkpoint that is missing its question/answer/reason is dropped. Animation
 /// is not touched here (see [`crate::lecture_anim`]). Returns what was changed.
-pub fn apply_mechanical_fixes(slides: &mut [Value], mode: &str) -> Vec<String> {
+pub fn apply_mechanical_fixes(slides: &mut [Value], _mode: &str) -> Vec<String> {
     let mut log = Vec::new();
     for (si, slide) in slides.iter_mut().enumerate() {
         if let Some(ns) = slide.get_mut("narration").and_then(Value::as_array_mut) {
@@ -1196,7 +1195,7 @@ pub fn apply_mechanical_fixes(slides: &mut [Value], mode: &str) -> Vec<String> {
             .is_some_and(|cp| {
                 let kind = sv(cp, "kind");
                 sv(cp, "question").is_empty()
-                    || (kind == "attempt" && mode != "practice" && sv(cp, "expect").is_empty())
+                    || (kind == "attempt" && sv(cp, "expect").is_empty())
                     || (kind == "ask" && sv(cp, "reason").is_empty())
             });
         if drop_cp {
@@ -1432,23 +1431,7 @@ impl StudioService {
             .keychain_ref
             .as_deref()
             .and_then(|k| self.secrets.get(k).ok().flatten());
-        Some(ResolvedProfile {
-            id: prof.id,
-            display_name: prof.display_name,
-            protocol: prof.protocol,
-            base_url: prof.base_url,
-            model_id: prof.model_id,
-            api_key,
-            show_thinking: prof.show_thinking,
-            effort: prof.effort,
-            context_window: prof.context_window,
-            max_output_tokens: prof.max_output_tokens,
-            capabilities: prof.capabilities,
-            extra_headers: prof.extra_headers,
-            anthropic_version: "2023-06-01".into(),
-            preset: prof.preset.clone(),
-            shrink_media: prof.shrink_media,
-        })
+        Some(ResolvedProfile::from_model(&prof, api_key))
     }
 
     /// Draws one figure in a clean context: request → DSL → render → (errors/warnings or a
@@ -1756,6 +1739,9 @@ impl StudioService {
                 }
             }
         }
+        if let Ok(Some(ref_arts)) = self.artifact_brief(art) {
+            materials.push_str(&format!("<referenced_artifacts>\n{ref_arts}\n</referenced_artifacts>\n\n"));
+        }
         let with_materials = |body: String| format!("{materials}{body}");
         let target_ids = Self::generation_source_ids(art);
         let budget = section_read_budget(resolved);
@@ -1910,23 +1896,13 @@ impl StudioService {
                 }
                 skeleton_pages
             } else {
-                let skel_system = format!(
-                    "You are the Local Notebook Studio lecture planner producing a concise per-page skeleton JSON for ONE section of a narrated lesson. Output {{\"pages\": [{{\"title\": ..., \"points\": [...], \"needs_figure\": true|false, \"figure_hint\": ...}}]}}. Plan only as many pages as needed to teach this section's focus clearly (concise title, 2–4 key points per page, whether a mathematical/physical figure is needed, and a short figure_hint when needs_figure is true).
-{rules}
-Strictly ground every page in the provided sources. Match the language requested in config or the primary language of the sources.{}",
-                    if has_user_material(&art.config) {
-                        format!("
-{USER_MATERIAL_SCOPE} Plan only this section's focus; do not add material beyond it.")
-                    } else {
-                        String::new()
-                    }
-                );
+                // Reuse the exact same `system` prompt as slide authoring (putting the skeleton-only
+                // instruction at the END of the user message) so Phase 1 warms the provider's prompt
+                // cache for Phase 2's slide batches.
                 let skel_user = format!(
-                    "{user}
-
-PLANNING TASK: Output ONLY the per-page skeleton ({{\"pages\": [...]}}) for this section — do not write full slides or narration yet."
+                    "{user}\n\nPLANNING TASK (do NOT write full slides or narration yet): Output ONLY the per-page skeleton JSON ({{\"pages\": [{{\"title\": ..., \"points\": [...], \"needs_figure\": true|false, \"figure_hint\": ...}}]}}) for this section. Plan only as many pages as needed (2–4 concise points per page, needs_figure + short figure_hint when geometric/physical)."
                 );
-                let skel_req = mk_req(skel_system, skel_user, resolved.hard_output_cap(8_192));
+                let skel_req = mk_req(system.clone(), skel_user, resolved.hard_output_cap(8_192));
                 let (skel_out, u) = self
                     .run_structured_with_thought_ex(
                         artifact_id,
@@ -2678,7 +2654,7 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
             .get("mode")
             .and_then(Value::as_str)
             .unwrap_or("general");
-        if mode != "review" && mode != "practice" {
+        if mode != "review" {
             return String::new();
         }
         let Ok(sum) = self.compute_kg_progress_summary(&art.notebook_id, None) else {
@@ -3264,17 +3240,7 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                 CancellationToken::new(),
             )
             .await?;
-        let _ = lna_storage::record_usage(
-            &self.db,
-            Some(&art.notebook_id),
-            Some(&resolved.id),
-            "studio_lecture_ask",
-            Some(artifact_id),
-            usage.input_tokens as i64,
-            usage.output_tokens as i64,
-            usage.cached_tokens as i64,
-            false,
-        );
+        self.record_usage(&art.notebook_id, &resolved.id, "studio_lecture_ask", Some(artifact_id), &usage);
         let kind = out
             .pointer("/adapt/kind")
             .and_then(Value::as_str)
@@ -3498,17 +3464,7 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
             }
             (out, rest, idx + 1)
         };
-        let _ = lna_storage::record_usage(
-            &self.db,
-            Some(&art.notebook_id),
-            Some(&profile.id),
-            "studio_lecture_adapt",
-            Some(artifact_id),
-            usage.input_tokens as i64,
-            usage.output_tokens as i64,
-            usage.cached_tokens as i64,
-            false,
-        );
+        self.record_usage(&art.notebook_id, &profile.id, "studio_lecture_adapt", Some(artifact_id), &usage);
 
         // apply to the latest stored payload
         let (_, mut latest) = self.lecture_payload(artifact_id)?;
@@ -4238,8 +4194,9 @@ mod prereq_tests {
                 .any(|i| i.msg.contains("prerequisite/review slide"))
         };
         assert!(flagged("前置知识：叉乘", "general"));
-        assert!(flagged("先回顾一下转动惯量", "practice"));
+        assert!(flagged("先回顾一下转动惯量", "problem"));
         assert!(flagged("Prerequisites", "preview"));
+        assert!(lecture_rules("problem", "auto").contains("MODE problem"));
         assert!(!flagged("前置知识：叉乘", "review"));
         assert!(!flagged("第一步：写出力矩", "general"));
     }

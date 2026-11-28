@@ -949,30 +949,7 @@ impl StudioService {
         if instr.is_empty() {
             return Err(LnaError::invalid("Revision instruction cannot be empty"));
         }
-        let profile = lna_storage::get_active_profile(&self.db)?.ok_or_else(|| {
-            LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured")
-        })?;
-        let api_key = match profile.keychain_ref.as_deref() {
-            Some(kref) => self.secrets.get(kref)?,
-            None => None,
-        };
-        let resolved = ResolvedProfile {
-            id: profile.id.clone(),
-            display_name: profile.display_name.clone(),
-            protocol: profile.protocol,
-            base_url: profile.base_url.clone(),
-            model_id: profile.model_id.clone(),
-            api_key,
-            show_thinking: profile.show_thinking,
-            effort: profile.effort.clone(),
-            context_window: profile.context_window,
-            max_output_tokens: profile.max_output_tokens,
-            capabilities: profile.capabilities.clone(),
-            extra_headers: profile.extra_headers.clone(),
-            anthropic_version: "2023-06-01".into(),
-            preset: profile.preset.clone(),
-            shrink_media: profile.shrink_media,
-        };
+        let (profile, resolved) = self.resolve_active_profile()?;
 
         let existing_md = current_draft
             .map(str::trim)
@@ -1020,18 +997,14 @@ impl StudioService {
         } else {
             "You are a presentation outline editor. Revise the provided Markdown slide outline strictly according to the user's instruction while preserving factual grounding and clean Markdown structure (`# Title`, `## Slide N: Slide Title`, `- Key points`, `> Speaker notes`). Output ONLY the updated Markdown outline with no JSON or code fences."
         };
-        let req = LlmRequest {
-            system: sys.into(),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: attachments::user_parts(
-                    &self.db,
-                    &self.secrets,
-                    &self.llm,
-                    &art.notebook_id,
-                    &resolved,
-                    format!(
-                        "Artifact type: {}
+        let parts = attachments::user_parts(
+            &self.db,
+            &self.secrets,
+            &self.llm,
+            &art.notebook_id,
+            &resolved,
+            format!(
+                "Artifact type: {}
 Config: {}
 
 Current Outline:
@@ -1039,25 +1012,17 @@ Current Outline:
 
 User Revision Instruction:
 {}{}",
-                        art.artifact_type.as_str(),
-                        art.config,
-                        existing_md,
-                        instr,
-                        files_text
-                    ),
-                    images,
-                )
-                .await,
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: 2400,
-            reasoning: ReasoningOptions {
-                show_summary: profile.show_thinking,
-                effort: profile.effort.clone(),
-            },
-        };
+                art.artifact_type.as_str(),
+                art.config,
+                existing_md,
+                instr,
+                files_text
+            ),
+            images,
+        )
+        .await;
+        let req = LlmRequest::from_parts(sys, parts, 2400)
+            .with_reasoning(resolved.reasoning_options());
 
         let (revised_raw, usage) = self
             .run_text_with_thought(
@@ -1069,17 +1034,7 @@ User Revision Instruction:
                 CancellationToken::new(),
             )
             .await?;
-        let _ = lna_storage::record_usage(
-            &self.db,
-            Some(&art.notebook_id),
-            Some(&profile.id),
-            "studio_revise_draft",
-            Some(id),
-            usage.input_tokens as i64,
-            usage.output_tokens as i64,
-            usage.cached_tokens as i64,
-            false,
-        );
+        self.record_usage(&art.notebook_id, &profile.id, "studio_revise_draft", Some(id), &usage);
 
         let revised_md = revised_raw.trim().to_string();
         let draft_md_json = serde_json::to_string(&Value::String(revised_md))
@@ -1502,27 +1457,7 @@ User Revision Instruction:
                 return Err(err);
             }
         };
-        let api_key = match profile.keychain_ref {
-            Some(ref k) => self.secrets.get(k)?,
-            None => None,
-        };
-        let resolved = ResolvedProfile {
-            id: profile.id.clone(),
-            display_name: profile.display_name.clone(),
-            protocol: profile.protocol,
-            base_url: profile.base_url.clone(),
-            model_id: profile.model_id.clone(),
-            api_key,
-            show_thinking: profile.show_thinking,
-            effort: profile.effort.clone(),
-            context_window: profile.context_window,
-            max_output_tokens: profile.max_output_tokens,
-            capabilities: profile.capabilities.clone(),
-            extra_headers: profile.extra_headers.clone(),
-            anthropic_version: "2023-06-01".to_string(),
-            preset: profile.preset.clone(),
-            shrink_media: profile.shrink_media,
-        };
+        let resolved = self.resolve_profile(&profile)?;
 
         let is_local_test =
             resolved.base_url.contains("127.0.0.1") || resolved.base_url.contains("localhost");
@@ -1720,7 +1655,8 @@ User Revision Instruction:
                         }
                     }
                 )?;
-                let joined = [files, images]
+                let ref_arts = self.artifact_brief(art)?;
+                let joined = [files, images, ref_arts]
                     .into_iter()
                     .flatten()
                     .collect::<Vec<_>>()
@@ -1806,6 +1742,12 @@ User Revision Instruction:
             ),
             None => evidence_txt,
         };
+        let evidence_txt = match self.artifact_brief(art)? {
+            Some(brief) => format!(
+                "<referenced_artifacts>\n用户引用的已有 Studio 产物内容（视为直接提供的参考材料，与来源同等重要，不要编造其中没有的内容）：\n{brief}\n</referenced_artifacts>\n\n{evidence_txt}"
+            ),
+            None => evidence_txt,
+        };
 
         let review_outline = art
             .config
@@ -1860,23 +1802,17 @@ User Revision Instruction:
                 "You are a presentation outline planner. Output a clean, human-readable Markdown outline (using `# Title`, `## Slide N: Slide Title`, `- Key points`, and `> Speaker notes`). Match the language requested in config or the primary language of the sources. Be concise and accurate; never output JSON or fenced code blocks."
             };
             let plan_req = material::with_images(
-                LlmRequest {
-                    system: outline_sys.into(),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text(format!(
-                            "Artifact type: {}\nConfig: {}\nSources:\n{}",
-                            art.artifact_type.as_str(),
-                            material::config_for_prompt(&art.config, direct_pictures),
-                            evidence_txt
-                        ))],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::Text,
-                    max_output_tokens: 1800,
-                    reasoning: reasoning.clone(),
-                },
+                LlmRequest::simple(
+                    outline_sys,
+                    format!(
+                        "Artifact type: {}\nConfig: {}\nSources:\n{}",
+                        art.artifact_type.as_str(),
+                        material::config_for_prompt(&art.config, direct_pictures),
+                        evidence_txt
+                    ),
+                    1800,
+                )
+                .with_reasoning(reasoning.clone()),
                 &pictures,
             );
             let (draft_raw, _) = self
@@ -1996,17 +1932,7 @@ User Revision Instruction:
             }
         }
 
-        let _ = lna_storage::record_usage(
-            &self.db,
-            Some(&art.notebook_id),
-            Some(&profile.id),
-            "studio",
-            Some(artifact_id),
-            usage.input_tokens as i64,
-            usage.output_tokens as i64,
-            usage.cached_tokens as i64,
-            false,
-        );
+        self.record_usage(&art.notebook_id, &profile.id, "studio", Some(artifact_id), &usage);
 
         *current_stage = "RENDER".to_string();
         self.set_stage(artifact_id, "RUNNING", "RENDER", 0.85, &topic)?;
@@ -2249,6 +2175,25 @@ User Revision Instruction:
             );
             let limit = self.parallelism(profile).min(batches);
             let schema_ref = &schema;
+            if batches > 1 {
+                let warm_req = material::with_images(
+                    LlmRequest::simple(
+                        format!(
+                            "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. {sys_extra}",
+                            art.artifact_type.as_str()
+                        ),
+                        format!(
+                            "Parameters: {}\nReference outline: {}\n\nSources:\n{}",
+                            material::config_for_prompt(&art.config, pictures_shown),
+                            art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
+                            evidence_txt,
+                        ),
+                        1,
+                    ),
+                    pictures_ref,
+                );
+                self.llm.warm_prefix(resolved, &warm_req, &cancel).await;
+            }
             let system_prompt = format!(
                 "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. {sys_extra}",
                 art.artifact_type.as_str()
@@ -2367,26 +2312,20 @@ User Revision Instruction:
                 &self.l("规划演示文稿视觉主题与逐页版式", "Planning the visual theme and per-slide layouts"),
                 &self.l(&format!("正在围绕来源内容设计约 {target_pages} 页演示文稿的叙事节奏、主题配色与多样化版式组合…"), &format!("Designing the narrative pacing, color theme and varied layout mix for a deck of about {target_pages} slides…")),
             );
-            let plan_req = material::with_images(LlmRequest {
-                system: "You are an executive presentation architect and visual designer. Given the source material and user parameters, design a concise slide-by-slide visual storyboard (NOT raw JSON yet). Choose the best theme from [executive_navy, editorial_slate, academic_sage, warm_terracotta, midnight_aurora]. Plan an engaging narrative arc starting with `title` and `agenda`, ending with `summary`, and using DIVERSE visual layouts across content slides (`cards`, `two_column`, `metrics`, `timeline`, `table`, `formula`, `quote`, `section`, `bullets`) — NEVER use plain `bullets` on more than 25% of slides and never repeat the same content layout twice in a row. For each slide, specify: page number, layout, crisp headline, key facts/numbers/equations/comparisons from the sources, and visual structure. Match the requested language or primary source language.".into(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts: vec![Part::Text(format!(
+            let plan_req = material::with_images(
+                LlmRequest::simple(
+                    "Presentation architect: design a concise slide-by-slide storyboard (plain text, not JSON). Pick one theme from [executive_navy, editorial_slate, academic_sage, warm_terracotta, midnight_aurora]. Start with `title` + `agenda`, end with `summary`, vary content layouts (`cards`, `two_column`, `metrics`, `timeline`, `table`, `formula`, `quote`, `section`, `bullets`; <=25% `bullets`, never two identical layouts consecutively). Per slide: page, layout, headline, grounded key facts/equations, visual structure. Match requested/source language.",
+                    format!(
                         "Target slide count: ~{target_pages}\nParameters: {}\nApproved outline (if any): {}\n\nResearched Sources:\n{}",
-                                material::config_for_prompt(&art.config, pictures_shown),
+                        material::config_for_prompt(&art.config, pictures_shown),
                         art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                         evidence_txt
-                    ))],
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::Text,
-                max_output_tokens: 2400,
-                reasoning: ReasoningOptions {
-                    show_summary: profile.show_thinking,
-                    effort: profile.effort.clone(),
-                },
-            }, pictures_ref);
+                    ),
+                    2400,
+                )
+                .with_reasoning(resolved.reasoning_options()),
+                pictures_ref,
+            );
             let mut usage_sum = Usage::default();
             let storyboard = {
                 match self
@@ -2424,8 +2363,9 @@ User Revision Instruction:
                 &self.l("撰写高颜值演示文稿内容与版式数据", "Writing slide content and layout data"),
                 &self.l("正在基于版式蓝图生成完整结构化幻灯片（含卡片、对比表、流程图、关键指标、核心公式与演讲备注）…", "Generating the full structured slides from the layout blueprint (cards, comparison tables, flow charts, key metrics, core formulas and speaker notes)…"),
             );
-            let author_base = material::with_images(LlmRequest {
-                system: "You are a world-class presentation designer for Local Notebook Studio. Produce a publication-grade SlidesPayload JSON strictly grounded in the provided sources.\n\
+            let author_base = material::with_images(
+                LlmRequest::simple(
+                    "You are a world-class presentation designer for Local Notebook Studio. Produce a publication-grade SlidesPayload JSON strictly grounded in the provided sources.\n\
 Design rules:\n\
 1. Set top-level `theme` (one of: executive_navy, editorial_slate, academic_sage, warm_terracotta, midnight_aurora) and `subtitle`.\n\
 2. Use rich, varied layouts across slides: `title` (slide 1), `agenda`, `section`, `cards` (3-6 insight cards with tag/title/body), `two_column` (2 titled comparison columns with items), `metrics` (2-4 KPI highlight cards with value/label/detail), `timeline` (3-5 sequential steps with step/title/detail), `table` (structured comparison table with headers and rows), `formula` (highlighted equation/reaction in `formula` plus explanation in `bullets`), `quote`, `bullets` (sparingly), and `summary` (final slide).\n\
@@ -2433,23 +2373,19 @@ Design rules:\n\
 4. Keep on-slide text crisp and scannable (short headlines, concise card bodies, zero walls of text) while putting deeper explanation in `speaker_notes`.\n\
 5. Step-by-step builds (optional): for derivations, procedures, comparisons or lists that are presented one item at a time, add `builds`: [{\"step\":1,\"targets\":[ids],\"effect\":\"fade|appear|fly_up|draw|emphasis|dim_others\"}] with steps numbered 1..K; ids: title, subtitle, b1..bN, card1.., metric1.., step1.., col1, col1.i2, table, table.r1, formula, callout, figure, figure:<part id>. Elements not listed are visible from the start. Keep simple slides static.\n\
 6. Figures (optional): when a function graph, 3-D surface, geometric figure or physics diagram genuinely helps, use layout `figure` with `figure_request`: {\"kind\":\"plot|plot3d|diagram\",\"purpose\":...,\"details\": exact functions/ranges/points/forces/labels and the part ids you reference}. A separate step draws it precisely; never describe SVG.\n\
-7. Match the language requested in config or the primary language of the sources.".into(),
-                messages: vec![LlmMessage {
-                    role: Role::User,
-                    parts: vec![Part::Text(format!(
+7. Match the language requested in config or the primary language of the sources.",
+                    format!(
                         "Target slide count: ~{target_pages}\nParameters: {}\nVisual Storyboard:\n{}\n\nReference outline: {}\n\nResearched Sources:\n{}",
-                                material::config_for_prompt(&art.config, pictures_shown),
+                        material::config_for_prompt(&art.config, pictures_shown),
                         if storyboard.is_empty() { "Design a rich, visually varied deck." } else { &storyboard },
                         art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                         evidence_txt
-                    ))],
-                }],
-                tools: vec![],
-                tool_mode: ToolMode::None,
-                output: OutputMode::Text,
-                max_output_tokens: resolved.max_output_tokens,
-                reasoning: reasoning.clone(),
-            }, pictures_ref);
+                    ),
+                    resolved.max_output_tokens,
+                )
+                .with_reasoning(reasoning.clone()),
+                pictures_ref,
+            );
             // Orchestrator: the storyboard is the plan; a longer deck is written by several
             // executors at once, each owning a contiguous range of pages, then merged in order.
             let deck_parts = if target_pages >= 8 {
@@ -2459,6 +2395,7 @@ Design rules:\n\
             };
             let ranges = split_ranges(target_pages as usize, deck_parts);
             if deck_parts > 1 {
+                self.llm.warm_prefix(resolved, &author_base, &cancel).await;
                 self.append_thought(
                     artifact_id,
                     &art.notebook_id,
@@ -2541,7 +2478,7 @@ Design rules:\n\
                     &self.l("检测到部分页面仍为纯列表版式，正在将其重构为卡片、双栏对比、流程图或表格以提升视觉层次…", "Some slides are still plain lists; restructuring them into cards, two-column comparisons, flow charts or tables for a better visual hierarchy…"),
                 );
                 let polish_req = LlmRequest::simple(
-                    "You are a senior presentation visual editor. Upgrade the provided SlidesPayload JSON so it looks like a professionally designed deck: convert repetitive `bullets` slides into rich `cards`, `two_column`, `timeline`, `table`, `metrics`, or `formula` layouts with crisp `subtitle` and bottom `callout` takeaways, while preserving 100% factual accuracy and citations.",
+                    "Presentation visual editor: upgrade repetitive `bullets` slides in SlidesPayload JSON into `cards`, `two_column`, `timeline`, `table`, `metrics`, or `formula` with concise `subtitle` and `callout`, preserving all facts and citations.",
                     format!("Current SlidesPayload JSON:\n{}", deck),
                     resolved.max_output_tokens,
                 );
@@ -2747,28 +2684,25 @@ Design rules:\n\
         } else {
             ", preserving source citation indices [n] in the citations array"
         };
-        let gen_req = material::with_images(LlmRequest {
-            system: format!(
-                "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}{}.{} Match the language requested in config or the primary language of the sources. Keep content concise, accurate, and well-structured without filler.",
-                art.artifact_type.as_str(),
-                citation_rule,
-                extra_hint
-            ),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text(format!(
+        let gen_req = material::with_images(
+            LlmRequest::simple(
+                format!(
+                    "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}{}.{} Match the language requested in config or the primary language of the sources. Keep content concise, accurate, and well-structured without filler.",
+                    art.artifact_type.as_str(),
+                    citation_rule,
+                    extra_hint
+                ),
+                format!(
                     "Parameters: {}\nReference outline: {}\n\nSources:\n{}",
-                                material::config_for_prompt(&art.config, pictures_shown),
+                    material::config_for_prompt(&art.config, pictures_shown),
                     art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                     evidence_txt
-                ))],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: resolved.max_output_tokens,
-            reasoning,
-        }, pictures_ref);
+                ),
+                resolved.max_output_tokens,
+            )
+            .with_reasoning(reasoning),
+            pictures_ref,
+        );
         // Long reports / long audio scripts: planner + parallel part writers.
         let multi_kind = match art.artifact_type {
             ArtifactType::Report
@@ -2934,6 +2868,9 @@ Design rules:\n\
             .map(|(i, (h, f))| format!("{}. {h} — {f}", i + 1))
             .collect::<Vec<_>>()
             .join("\n");
+        if total > 1 {
+            self.llm.warm_prefix(resolved, gen_req, &cancel).await;
+        }
         let results = self
             .run_parts(total, self.parallelism(profile), &cancel, |k| {
                 let (heading, focus) = &parts[k];
@@ -3408,6 +3345,54 @@ Design rules:\n\
         Ok(validate::grade_quiz_answer(q, answer))
     }
 
+    /// Renders a finished Studio artifact into clean Markdown text (for exporting, referencing
+    /// from another Studio artifact, or importing into the notebook's Sources list).
+    pub fn render_markdown(&self, artifact_id: &str) -> LnaResult<(StudioArtifact, String)> {
+        let art = self.get(artifact_id)?;
+        let payload = art
+            .payload
+            .clone()
+            .ok_or_else(|| LnaError::new(ErrorCode::Conflict, "Artifact has no content yet"))?;
+        let md = render::artifact_markdown(art.artifact_type.as_str(), &art.title, &payload);
+        if md.trim().is_empty() {
+            return Err(LnaError::new(
+                ErrorCode::OutputInvalid,
+                "Rendered artifact Markdown is empty",
+            ));
+        }
+        Ok((art, md))
+    }
+
+    /// Loads and renders any existing READY Studio artifacts referenced in `art.config["ref_artifact_ids"]`.
+    pub(crate) fn artifact_brief(&self, art: &StudioArtifact) -> LnaResult<Option<String>> {
+        let Some(ids) = art.config.get("ref_artifact_ids").and_then(Value::as_array) else {
+            return Ok(None);
+        };
+        let mut sections = Vec::new();
+        for id in ids.iter().filter_map(Value::as_str) {
+            let id = id.trim();
+            if id.is_empty() || id == art.id {
+                continue;
+            }
+            if let Ok((ref_art, md)) = self.render_markdown(id) {
+                if ref_art.notebook_id != art.notebook_id {
+                    continue;
+                }
+                sections.push(format!(
+                    "### [Studio · {}] {}\n{}",
+                    ref_art.artifact_type.as_str(),
+                    ref_art.title,
+                    truncate_str(&md, 16_000)
+                ));
+            }
+        }
+        if sections.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(sections.join("\n\n---\n\n")))
+        }
+    }
+
     pub fn export_artifact(
         &self,
         artifact_id: &str,
@@ -3857,32 +3842,41 @@ Design rules:\n\
         Ok(tokens.max(0) as usize <= budget.min(12_000))
     }
 
-    fn resolve_active_profile(&self) -> LnaResult<(ModelProfile, ResolvedProfile)> {
-        let profile = lna_storage::get_active_profile(&self.db)?.ok_or_else(|| {
-            LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured")
-        })?;
+    fn resolve_profile(&self, profile: &ModelProfile) -> LnaResult<ResolvedProfile> {
         let api_key = match profile.keychain_ref.as_deref() {
             Some(kref) => self.secrets.get(kref)?,
             None => None,
         };
-        let resolved = ResolvedProfile {
-            id: profile.id.clone(),
-            display_name: profile.display_name.clone(),
-            protocol: profile.protocol,
-            base_url: profile.base_url.clone(),
-            model_id: profile.model_id.clone(),
-            api_key,
-            show_thinking: profile.show_thinking,
-            effort: profile.effort.clone(),
-            context_window: profile.context_window,
-            max_output_tokens: profile.max_output_tokens,
-            capabilities: profile.capabilities.clone(),
-            extra_headers: profile.extra_headers.clone(),
-            anthropic_version: "2023-06-01".into(),
-            preset: profile.preset.clone(),
-            shrink_media: profile.shrink_media,
-        };
+        Ok(ResolvedProfile::from_model(profile, api_key))
+    }
+
+    fn resolve_active_profile(&self) -> LnaResult<(ModelProfile, ResolvedProfile)> {
+        let profile = lna_storage::get_active_profile(&self.db)?.ok_or_else(|| {
+            LnaError::new(ErrorCode::ModelNotConfigured, "No active model configured")
+        })?;
+        let resolved = self.resolve_profile(&profile)?;
         Ok((profile, resolved))
+    }
+
+    pub(crate) fn record_usage(
+        &self,
+        notebook_id: &str,
+        profile_id: &str,
+        scope: &str,
+        subject_id: Option<&str>,
+        usage: &Usage,
+    ) {
+        let _ = lna_storage::record_usage(
+            &self.db,
+            Some(notebook_id),
+            Some(profile_id),
+            scope,
+            subject_id,
+            usage.input_tokens as i64,
+            usage.output_tokens as i64,
+            usage.cached_tokens as i64,
+            false,
+        );
     }
 
     /// Mind map / knowledge graph in several passes so size is never limited by one output:
@@ -3962,23 +3956,20 @@ Design rules:\n\
                     &self.l("初始化图谱骨架", "Initializing the graph skeleton"),
                     &self.l("第 1 步：搭建根节点与全部一级分支；之后逐个分支重新查阅原文，追加更细的知识点节点。", "Step 1: build the root node and all first-level branches; then revisit the source for each branch and add finer knowledge-point nodes."),
                 );
-                let req = material::with_images(LlmRequest {
-                    system: format!(
-                        "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}), built in several passes. THIS IS PASS 1 (initialization): output ONLY the skeleton as structured JSON — the root node and the top-level branches (3-7 major themes of the requested scope that together cover all of it; omit nothing, but merge thin chapters into one theme and split none just because the book has many chapters). Do NOT output any deeper nodes: later passes re-read the sources branch by branch and add the topics and knowledge points. Each top-level branch is a reorganized theme, not a copy of a chapter title; its \"summary\" states in one or two sentences what the theme is about and which chapters / pages it draws from. Use short ids such as \"b1\", \"b2\".{rules} Strictly ground the structure in the provided sources. Match the language requested in config or the primary language of the sources."
-                    ),
-                    messages: vec![LlmMessage {
-                        role: Role::User,
-                        parts: vec![Part::Text(format!(
+                let req = material::with_images(
+                    LlmRequest::simple(
+                        format!(
+                            "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}), built in several passes. THIS IS PASS 1 (initialization): output ONLY the skeleton as structured JSON — the root node and the top-level branches (3-7 major themes of the requested scope that together cover all of it; omit nothing, but merge thin chapters into one theme and split none just because the book has many chapters). Do NOT output any deeper nodes: later passes re-read the sources branch by branch and add the topics and knowledge points. Each top-level branch is a reorganized theme, not a copy of a chapter title; its \"summary\" states in one or two sentences what the theme is about and which chapters / pages it draws from. Use short ids such as \"b1\", \"b2\".{rules} Strictly ground the structure in the provided sources. Match the language requested in config or the primary language of the sources."
+                        ),
+                        format!(
                             "Parameters: {}\n\nSources:\n{}",
                             material::config_for_prompt(&art.config, pictures_shown), evidence_txt
-                        ))],
-                    }],
-                    tools: vec![],
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::Text,
-                    max_output_tokens: resolved.max_output_tokens,
-                    reasoning: reasoning.clone(),
-                }, &pictures);
+                        ),
+                        resolved.max_output_tokens,
+                    )
+                    .with_reasoning(reasoning.clone()),
+                    &pictures,
+                );
                 let (mut skeleton, u) = self
                     .run_structured_with_thought(
                         artifact_id,
@@ -4522,29 +4513,26 @@ Design rules:\n\
                 "THIS IS AN APPEND PASS for the top-level branch \"{label}\" of a {kind} whose skeleton already exists. Using the source excerpts, output ONLY the NEW descendant nodes of this branch, in AT MOST TWO LEVELS: topic nodes directly under the branch, and knowledge-point nodes under each topic, at the requested detail level. Anything finer goes into facets; the learner can expand a knowledge point later on demand. Do not repeat nodes listed under \"Existing subtree\" and do not cover material that belongs to the other top-level branches."
             )
         };
-        let req = material::with_images(LlmRequest {
-            // The system prompt is the same for every branch of the map; what is specific to this
-            // branch (task, node, subtree) goes at the end of the user message, after the shared
-            // parameters and the sources, so parallel branches share the longest possible prefix.
-            system: format!(
-                "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}). Follow the TASK at the end of the user message.{rules} Strictly ground everything in the provided sources. Match the language requested in config or the primary language of the sources."
-            ),
-            messages: vec![LlmMessage {
-                role: Role::User,
-                parts: vec![Part::Text(format!(
+        // The system prompt is the same for every branch of the map; what is specific to this
+        // branch (task, node, subtree) goes at the end of the user message, after the shared
+        // parameters and the sources, so parallel branches share the longest possible prefix.
+        let req = material::with_images(
+            LlmRequest::simple(
+                format!(
+                    "You are the Local Notebook Studio generator producing structured JSON for mindmap ({kind}). Follow the TASK at the end of the user message.{rules} Strictly ground everything in the provided sources. Match the language requested in config or the primary language of the sources."
+                ),
+                format!(
                     "Parameters: {}\n\nSources:\n{evidence}\n\n=== TASK ===\n{task} Every new node needs a unique new \"id\" and a \"parent_id\" that is either \"{node_id}\", an id from the existing subtree, or the id of another new node you output.\nPath: {}\nNode: [{node_id}] {label}\nSummary: {summary}\nFacets: {}\nExisting subtree:\n{outline}\nOther top-level branches (out of scope): {}",
-                                material::config_for_prompt(&art.config, pictures_shown),
+                    material::config_for_prompt(&art.config, pictures_shown),
                     if path.is_empty() { "(root)".to_string() } else { path.join(" > ") },
                     if facets.is_empty() { "(none)".to_string() } else { facets.join("; ") },
                     if others.is_empty() { "(none)".to_string() } else { others.join("; ") },
-                ))],
-            }],
-            tools: vec![],
-            tool_mode: ToolMode::None,
-            output: OutputMode::Text,
-            max_output_tokens: resolved.max_output_tokens,
-            reasoning,
-        }, &pictures);
+                ),
+                resolved.max_output_tokens,
+            )
+            .with_reasoning(reasoning),
+            &pictures,
+        );
         let (out, usage) = self
             .run_structured_with_thought_ex(
                 artifact_id,
@@ -4635,7 +4623,7 @@ Design rules:\n\
             }
         });
         let req = LlmRequest::simple(
-            "You review the structure of a knowledge map. You see its top-level BRANCHES and their TOPICS (title and summary only). Return structured JSON with: \"moves\" — topics that clearly belong to a different branch (e.g. a concept that a later branch builds on sits in the wrong theme), each with the id of the better branch; \"merges\" — two topics that cover the same ground (keep one, drop the other; both must be under the same or different branches). Be conservative: only clear problems, at most 6 changes in total, empty arrays when the structure is fine. Use only ids that appear in the listing.",
+            "Knowledge-map structure reviewer: inspect BRANCHES and TOPICS and return JSON `{\"moves\":[...],\"merges\":[...]}` only for clear misplacements or duplicates (<=6 total changes; empty arrays if fine; use only listed ids).",
             listing,
             resolved.bounded_output(2000),
         )
@@ -4725,7 +4713,7 @@ Design rules:\n\
             }
         });
         let req = LlmRequest::simple(
-            "You are the Local Notebook Studio generator. A node of a mind map / knowledge graph has too many children. Group them into 3-7 cohesive intermediate topics by concept (not by order of appearance). Output {\"groups\": [{\"label\", \"summary\", \"members\": [child ids]}]}. Every child id belongs to exactly one group; a child that fits no group may be left out and stays directly under the node. Labels are short; each summary is one or two sentences that synthesize what the members share. Match the language of the labels.",
+            "Group the crowded node's children into 3–7 conceptual intermediate topics: output `{\"groups\":[{\"label\",\"summary\",\"members\":[child_ids]}]}`. Each child belongs to at most one group; keep labels short, summaries 1–2 sentences, matching the labels' language.",
             format!("Node: [{parent_id}] {parent_label}\nChildren:\n{listing}"),
             resolved.max_output_tokens,
         )
@@ -4826,17 +4814,7 @@ Design rules:\n\
                 CancellationToken::new(),
             )
             .await?;
-        let _ = lna_storage::record_usage(
-            &self.db,
-            Some(&art.notebook_id),
-            Some(&profile.id),
-            "studio_refine_node",
-            Some(artifact_id),
-            usage.input_tokens as i64,
-            usage.output_tokens as i64,
-            usage.cached_tokens as i64,
-            false,
-        );
+        self.record_usage(&art.notebook_id, &profile.id, "studio_refine_node", Some(artifact_id), &usage);
 
         // Merge into the latest stored payload so a concurrent refine isn't lost.
         let mut latest = self.get(artifact_id)?.payload.unwrap_or(payload);
@@ -5147,6 +5125,12 @@ Design rules:\n\
                 }
             }
         }
+        if let Ok(Some(ref_arts)) = self.artifact_brief(art) {
+            material_txt.push_str(&format!(
+                "<referenced_artifacts>\n{}\n</referenced_artifacts>\n\n",
+                truncate_str(&ref_arts, 6_000)
+            ));
+        }
         let planner_instruction = if branch_focus {
             "Focus ONLY on the branch/topic given above (other branches are handled separately). Using the reading tools, read the parts of the sources that cover this branch in depth: read_index_node for its outline nodes, read_source_pages for its page ranges, search_sources for specific methods, theorems, formulas or cases. Make several rounds of calls when needed so that every sub-topic, method, theorem and formula of this branch is backed by actual source text, not just outline titles. Reply \"DONE\" only when the branch is fully covered."
         } else if is_mindmap {
@@ -5220,9 +5204,9 @@ Design rules:\n\
         let planner_system = if branch_focus {
             "You are a thorough knowledge-structure researcher for Local Notebook Studio. You are deepening ONE branch of a knowledge map: read the source sections behind that branch in detail with the reading tools (several rounds if needed) so every distinct concept, method, theorem, formula and case in it can be grounded in source text. Ignore material outside the branch."
         } else if is_mindmap {
-            "You are a thorough curriculum and knowledge-structure planner for Local Notebook Studio. Your job is to inspect the source structure and gather balanced, concrete details (sub-topics, definitions, theorems, formulas, mechanisms, and examples) across EVERY major chapter or section in the requested scope using the reading tools. Call multiple tools in parallel across different chapters so no chapter is left shallow or skipped. Only reply DONE once every major branch has sufficient concrete detail to build a deep, evenly balanced hierarchy."
+            "Knowledge-structure planner: use reading tools in parallel across all major chapters in scope to gather balanced definitions, theorems, formulas, and examples. Reply DONE once every branch has sufficient depth."
         } else {
-            "You are a research planner for Local Notebook Studio. Read the sources on demand with the tools: target the requested topic/scope (or, for a whole-book request, its key sections evenly across all chapters), never request the entire book at once, and avoid unrelated material. Work in as many rounds as the artifact needs; reply DONE once the evidence covers the requested scope."
+            "Research planner: read only the sections relevant to the requested scope using tools (never the whole book at once). Continue across rounds until the scope is covered, then reply DONE."
         };
         for round in 0..max_rounds {
             if cancel.is_cancelled() {
@@ -5287,17 +5271,7 @@ Design rules:\n\
             };
             let round_usage = turn.usage;
             let round_text = turn.text;
-            let _ = lna_storage::record_usage(
-                &self.db,
-                Some(&art.notebook_id),
-                Some(&profile.id),
-                "studio_on_demand_read",
-                Some(artifact_id),
-                round_usage.input_tokens as i64,
-                round_usage.output_tokens as i64,
-                round_usage.cached_tokens as i64,
-                false,
-            );
+            self.record_usage(&art.notebook_id, &profile.id, "studio_on_demand_read", Some(artifact_id), &round_usage);
             if turn.tool_calls.is_empty() {
                 // the reader's closing reply: with `finish` it should be the requested result
                 if let Some(f) = finish {
@@ -5630,20 +5604,11 @@ Design rules:\n\
                     "Stop reading now and give the final answer as instructed above, based on the passages you have read (no more tool calls).".into(),
                 )],
             });
+            // the conversation holds tool calls, so the tools stay declared
             let req = material::with_images(
-                LlmRequest {
-                    system: planner_system.into(),
-                    messages: msgs,
-                    // the conversation holds tool calls, so the tools stay declared
-                    tools: tools.clone(),
-                    tool_mode: ToolMode::None,
-                    output: OutputMode::Text,
-                    max_output_tokens: resolved.bounded_output(6000),
-                    reasoning: ReasoningOptions {
-                        show_summary: profile.show_thinking,
-                        effort: profile.effort.clone(),
-                    },
-                },
+                LlmRequest::conversation(planner_system, msgs, resolved.bounded_output(6000))
+                    .with_tools(tools.clone(), ToolMode::None)
+                    .with_reasoning(resolved.reasoning_options()),
                 &pictures,
             );
             match self
@@ -5661,17 +5626,7 @@ Design rules:\n\
                 .await
             {
                 Ok((v, u)) => {
-                    let _ = lna_storage::record_usage(
-                        &self.db,
-                        Some(&art.notebook_id),
-                        Some(&profile.id),
-                        "studio_on_demand_read",
-                        Some(artifact_id),
-                        u.input_tokens as i64,
-                        u.output_tokens as i64,
-                        u.cached_tokens as i64,
-                        false,
-                    );
+                    self.record_usage(&art.notebook_id, &profile.id, "studio_on_demand_read", Some(artifact_id), &u);
                     plan = Some(v);
                 }
                 Err(e) if matches!(e.code, ErrorCode::Cancelled | ErrorCode::ModelRefused) => {
@@ -6237,17 +6192,7 @@ Core Topics: {}",
                             cancel_c,
                         )
                         .await?;
-                    let _ = lna_storage::record_usage(
-                        &self.db,
-                        Some(&art.notebook_id),
-                        Some(&profile.id),
-                        "studio_digest_reduce_batch",
-                        Some(artifact_id),
-                        batch_usage.input_tokens as i64,
-                        batch_usage.output_tokens as i64,
-                        batch_usage.cached_tokens as i64,
-                        false,
-                    );
+                    self.record_usage(&art.notebook_id, &profile.id, "studio_digest_reduce_batch", Some(artifact_id), &batch_usage);
                     Ok(format!("## 摘要批次 {}\n{}", batch_index + 1, batch_summary))
                 }
             })
@@ -6274,17 +6219,7 @@ Core Topics: {}",
                 cancel.clone(),
             )
             .await?;
-        let _ = lna_storage::record_usage(
-            &self.db,
-            Some(&art.notebook_id),
-            Some(&profile.id),
-            "studio_digest_reduce",
-            Some(artifact_id),
-            reduce_usage.input_tokens as i64,
-            reduce_usage.output_tokens as i64,
-            reduce_usage.cached_tokens as i64,
-            false,
-        );
+        self.record_usage(&art.notebook_id, &profile.id, "studio_digest_reduce", Some(artifact_id), &reduce_usage);
         if !digests.is_empty() {
             self.append_thought(
                 artifact_id,
@@ -6528,17 +6463,7 @@ Core Topics: {}",
                     ).map_err(map_sql_err)?;
                     Ok(())
                 })?;
-                let _ = lna_storage::record_usage(
-                    &self.db,
-                    Some(notebook_id),
-                    Some(&profile.id),
-                    "studio_digest_map",
-                    Some(&g.source_id),
-                    usage.input_tokens as i64,
-                    usage.output_tokens as i64,
-                    usage.cached_tokens as i64,
-                    false,
-                );
+                self.record_usage(notebook_id, &profile.id, "studio_digest_map", Some(&g.source_id), &usage);
                 fresh.insert(idx, digest);
                 Ok(())
             },
@@ -6788,9 +6713,7 @@ fn sanitize_preview(ty: ArtifactType, v: &mut Value) {
 }
 
 fn add_usage(sum: &mut Usage, u: &Usage) {
-    sum.input_tokens = sum.input_tokens.saturating_add(u.input_tokens);
-    sum.output_tokens = sum.output_tokens.saturating_add(u.output_tokens);
-    sum.cached_tokens = sum.cached_tokens.saturating_add(u.cached_tokens);
+    sum.add(u);
 }
 
 /// Result of a branch append / node refine pass.
@@ -7745,7 +7668,7 @@ pub(crate) struct ReaderFinish {
 pub(crate) const USER_MATERIAL_SCOPE: &str = "USER MATERIAL FIRST: the user attached their own material (<user_images> / <user_files>, or described in the topic above). The scope of this artifact is EXACTLY what that material shows or asks, e.g. one exercise means that one exercise. Do NOT widen it to the chapter, section or neighbouring topics that contain it, and do NOT cover related material the user did not mention. The user's material comes first; relate it to the sources only when that actually helps (a definition, theorem or formula it relies on that you must get right, or a connection worth pointing out): read just those passages, and never produce slides whose only purpose is to locate the material in the book, list prerequisites or recap the chapter. After the material itself is fully covered, a short closing part that grows out of it — a method summary, an extension or variant, common mistakes — is welcome when it adds value.";
 
 fn has_user_material(config: &Value) -> bool {
-    ["images", "files"].iter().any(|k| {
+    ["images", "files", "ref_artifact_ids"].iter().any(|k| {
         config
             .get(*k)
             .and_then(Value::as_array)
