@@ -17,8 +17,10 @@ use std::collections::HashSet;
 pub const LECTURE_REPAIR_ROUNDS: usize = 2;
 /// The most repair rounds the setting can ask for.
 pub const MAX_LECTURE_REPAIR_ROUNDS: usize = 20;
-/// Independent animation reviews per section (each costs minutes, so one by default).
+/// Independent animation reviews & repairs per section (each costs minutes, so one by default).
 pub const LECTURE_REVIEW_ROUNDS: usize = 1;
+/// The most animation repair rounds the setting can ask for.
+pub const MAX_LECTURE_ANIM_REPAIR_ROUNDS: usize = 20;
 /// A section stops asking for more reviews after this long.
 pub const LECTURE_SECTION_BUDGET_SECS: u64 = 420;
 
@@ -2187,16 +2189,20 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
         // after the content checks pass, a second fresh-context call reviews the result as a
         // viewer sees it. Animation problems go back to a new animation author, narration
         // problems to the section author; the loop ends when a review finds nothing
-        let rounds = self.lecture_repair_rounds_setting();
-        let (max_reviews, budget) = (lecture_review_rounds(), lecture_section_budget());
+        let content_rounds = self.lecture_repair_rounds_setting();
+        let anim_rounds = self.lecture_anim_repair_rounds_setting();
+        let budget = lecture_section_budget();
+        let mut content_repairs = 0usize;
+        let mut anim_repairs = 0usize;
         let mut reviews = 0usize;
-        for round in 0..=rounds {
+        let max_iters = content_rounds + anim_rounds;
+        for _iter in 0..=max_iters {
             let mut content = check_lecture_content(&slides, mode);
             content.extend(check_section_visuals(&slides, sc.visual_need));
             let (mut anim_issues, mut narr_issues) = (Vec::new(), Vec::new());
             if content.is_empty()
-                && round < rounds
-                && reviews < max_reviews
+                && anim_repairs < anim_rounds
+                && reviews < anim_rounds
                 && started.elapsed() < budget
             {
                 reviews += 1;
@@ -2224,28 +2230,17 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
             if writer_issues.is_empty() && anim_issues.is_empty() {
                 break;
             }
-            if round == rounds {
-                let log = mark_unnarrated_display_only(&mut slides);
-                self.append_thought(
-                    artifact_id,
-                    &art.notebook_id,
-                    "stage",
-                    &format!("讲解校验：{} 仍有问题", sc.section_title),
-                    &format!(
-                        "经 {rounds} 轮返修后仍有内容问题，保留现状：\n{}\n\n{}",
-                        issues_text(&writer_issues, &slides),
-                        log.join("\n")
-                    ),
-                );
-                break;
-            }
             if writer_issues.is_empty() {
+                if anim_repairs >= anim_rounds {
+                    break;
+                }
+                anim_repairs += 1;
                 // only the animation is wrong: a new animation author, given the problems
                 self.append_thought(
                     artifact_id,
                     &art.notebook_id,
                     "stage",
-                    &format!("动画返修：{}（第 {} 轮）", sc.section_title, round + 1),
+                    &format!("动画返修：{}（第 {} 轮）", sc.section_title, anim_repairs),
                     &issues_text(&anim_issues, &slides),
                 );
                 let u = self
@@ -2271,14 +2266,30 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                 );
                 continue;
             }
+            if content_repairs >= content_rounds {
+                let log = mark_unnarrated_display_only(&mut slides);
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    &format!("讲解校验：{} 仍有问题", sc.section_title),
+                    &format!(
+                        "经 {content_rounds} 轮返修后仍有内容问题，保留现状：\n{}\n\n{}",
+                        issues_text(&writer_issues, &slides),
+                        log.join("\n")
+                    ),
+                );
+                break;
+            }
+            content_repairs += 1;
             self.append_thought(
                 artifact_id,
                 &art.notebook_id,
                 "stage",
                 &if content.is_empty() {
-                    format!("动画审查返修：{}（第 {} 轮）", sc.section_title, round + 1)
+                    format!("动画审查返修：{}（第 {} 轮）", sc.section_title, content_repairs)
                 } else {
-                    format!("讲解校验：{}（返修第 {} 轮）", sc.section_title, round + 1)
+                    format!("讲解校验：{}（返修第 {} 轮）", sc.section_title, content_repairs)
                 },
                 &issues_text(&writer_issues, &slides),
             );
@@ -2623,6 +2634,24 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
             .and_then(|v| v.get("repair_rounds").and_then(Value::as_u64))
             .map(|n| n.min(MAX_LECTURE_REPAIR_ROUNDS as u64) as usize)
             .unwrap_or_else(lecture_repair_rounds)
+    }
+
+    /// Animation review/repair rounds per section: `lecture.limits.anim_repair_rounds` when set.
+    /// Falls back to 0 when `repair_rounds == 0` and `anim_repair_rounds` is omitted (preserving
+    /// legacy "repair_rounds: 0 disables review" behavior), otherwise `lecture_review_rounds()`.
+    fn lecture_anim_repair_rounds_setting(&self) -> usize {
+        if let Some(v) = lna_storage::get_setting_json(&self.db, LECTURE_LIMITS_KEY)
+            .ok()
+            .flatten()
+        {
+            if let Some(n) = v.get("anim_repair_rounds").and_then(Value::as_u64) {
+                return n.min(MAX_LECTURE_ANIM_REPAIR_ROUNDS as u64) as usize;
+            }
+            if v.get("repair_rounds").and_then(Value::as_u64) == Some(0) {
+                return 0;
+            }
+        }
+        lecture_review_rounds()
     }
 
     /// Mechanical clean-up of a freshly written/repaired section: animation consistency and

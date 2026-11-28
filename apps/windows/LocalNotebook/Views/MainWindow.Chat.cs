@@ -87,6 +87,10 @@ public sealed partial class MainWindow
     private double _lastScrollableHeight;
     private double _lastVerticalOffset;
     private bool _chatScrollHooked;
+    private double _programmaticScrollTarget;
+    private DateTime _programmaticScrollUntil = DateTime.MinValue;
+    private DateTime _userScrolledUpUntil = DateTime.MinValue;
+    private string? _lastRenderedNotebookId;
 
     /// The ListView's inner ScrollViewer. It is looked up again when the cached one has left the
     /// visual tree (the template is re-applied, e.g. after the list is rebuilt for another notebook),
@@ -113,17 +117,20 @@ public sealed partial class MainWindow
             _chatScrollHooked = true;
             ChatList.LayoutUpdated += (_, _) =>
             {
-                if (!_chatStickToBottom || _scrollPending) return;
+                if (!_chatStickToBottom || _scrollPending || _userDragging || DateTime.UtcNow < _userScrolledUpUntil) return;
                 var sv = EnsureChatScrollViewer();
                 if (sv != null && sv.ScrollableHeight - sv.VerticalOffset > 0.5) ScrollChatToBottomIfSticky();
             };
-            // What the user does with the list is observed directly (also when the event is
-            // handled by the inner ScrollViewer), because the scroll offset alone cannot tell a
-            // user scroll from a layout change.
+            // Direct user input handlers immediately break sticky follow on upward wheel/keys.
+            // Touchpad / scrollbar thumb DirectManipulation is also caught in OnChatViewChanged.
             ChatList.AddHandler(UIElement.PointerWheelChangedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, e) =>
             {
                 MarkUserScroll();
-                if (e.GetCurrentPoint(ChatList).Properties.MouseWheelDelta > 0) _chatStickToBottom = false;
+                if (e.GetCurrentPoint(ChatList).Properties.MouseWheelDelta > 0)
+                {
+                    _chatStickToBottom = false;
+                    _userScrolledUpUntil = DateTime.UtcNow.AddMilliseconds(500);
+                }
             }), true);
             ChatList.AddHandler(UIElement.PointerPressedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => _userDragging = true), true);
             Microsoft.UI.Xaml.Input.PointerEventHandler released = (_, _) => { _userDragging = false; MarkUserScroll(); };
@@ -136,6 +143,7 @@ public sealed partial class MainWindow
                 {
                     MarkUserScroll();
                     _chatStickToBottom = false;
+                    _userScrolledUpUntil = DateTime.UtcNow.AddMilliseconds(500);
                 }
             }), true);
         }
@@ -149,31 +157,34 @@ public sealed partial class MainWindow
     /// touch is still theirs for a moment.
     private void MarkUserScroll() => _userScrollUntil = DateTime.UtcNow.AddMilliseconds(900);
 
-    /// "Following" is decided only by what the user does. The offset moving up counts as the user
-    /// scrolling up only while the user is actually interacting with the list: layout changes
-    /// (parallel agents rewriting their step lists, items re-measured, the extent shrinking and
-    /// growing again between two events) also move the offset and must never switch following off.
-    /// Reaching the bottom by scrolling down (or by our own scroll, which only goes down) resumes it.
+    /// Any non-programmatic upward scroll (wheel, precision touchpad DirectManipulation, touch,
+    /// scrollbar thumb drag, or keyboard) immediately pauses auto-follow. Auto-follow resumes
+    /// only when the user genuinely scrolls back down to the very bottom (<= 8px).
     private void OnChatViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
         var sv = _chatScrollViewer;
         if (sv == null) return;
         var sh = sv.ScrollableHeight;
         var vo = sv.VerticalOffset;
-        var movedUp = vo < _lastVerticalOffset - 1.0;
-        var userActive = _userDragging || DateTime.UtcNow < _userScrollUntil;
-        if (movedUp && userActive)
+        var now = DateTime.UtcNow;
+        var delta = vo - _lastVerticalOffset;
+        var isProgrammatic = now < _programmaticScrollUntil && Math.Abs(vo - _programmaticScrollTarget) <= 2.0;
+
+        if (!isProgrammatic && delta < -1.0)
         {
-            _chatStickToBottom = false;
+            // Ignore pure extent-shrink clamping when the user wasn't scrolling up and we are still at the bottom.
+            var shrunkClamp = sh < _lastScrollableHeight - 1.0 && (sh - vo) <= 2.0 && !_userDragging && now >= _userScrollUntil;
+            if (!shrunkClamp)
+            {
+                _chatStickToBottom = false;
+                _userScrolledUpUntil = now.AddMilliseconds(500);
+            }
         }
-        else if (!movedUp && sh - vo <= 36.0)
+        else if (!isProgrammatic && delta > 1.0 && now >= _userScrolledUpUntil && (sh - vo) <= 8.0)
         {
             _chatStickToBottom = true;
         }
-        else if (_chatStickToBottom && sh - vo > 0.5)
-        {
-            ScrollChatToBottomIfSticky();
-        }
+
         _lastScrollableHeight = sh;
         _lastVerticalOffset = vo;
     }
@@ -200,20 +211,22 @@ public sealed partial class MainWindow
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
         {
             _scrollPending = false;
-            if (!_chatStickToBottom) return;
+            if (!_chatStickToBottom || _userDragging || DateTime.UtcNow < _userScrolledUpUntil) return;
             var sv = EnsureChatScrollViewer();
             if (sv == null)
             {
                 if (ChatList.Items.Count > 0) ChatList.ScrollIntoView(ChatList.Items[^1]);
                 return;
             }
-            // The items added just before this call may not be measured yet: measure first so the
-            // bottom we scroll to is the real one.
             try { sv.UpdateLayout(); } catch { }
-            if (sv.ScrollableHeight - sv.VerticalOffset <= 0.5) return;
-            sv.ChangeView(null, sv.ScrollableHeight, null, true);
-            _lastScrollableHeight = sv.ScrollableHeight;
-            _lastVerticalOffset = sv.ScrollableHeight;
+            if (!_chatStickToBottom || _userDragging || DateTime.UtcNow < _userScrolledUpUntil) return;
+            var target = sv.ScrollableHeight;
+            if (target - sv.VerticalOffset <= 0.5) return;
+            _programmaticScrollTarget = target;
+            _programmaticScrollUntil = DateTime.UtcNow.AddMilliseconds(250);
+            sv.ChangeView(null, target, null, true);
+            _lastScrollableHeight = target;
+            _lastVerticalOffset = target;
             // Content that lays out after this (images, markdown blocks) is caught by the
             // LayoutUpdated / ViewChanged follow-ups while following is on.
         });
@@ -326,7 +339,11 @@ public sealed partial class MainWindow
             _views[v.Id] = v;
             ChatList.Items.Add(v.Root);
         }
-        _chatStickToBottom = true;
+        if (_lastRenderedNotebookId != _activeNotebookId)
+        {
+            _lastRenderedNotebookId = _activeNotebookId;
+            _chatStickToBottom = true;
+        }
         ScrollChatToBottomIfSticky();
     }
 

@@ -1808,9 +1808,25 @@ impl CoreRuntime {
                 Ok(json!({ "id": id }))
             }
             "diagnostics.export" => {
-                let out_path = std::path::Path::new(req_str(p, "out_path")?);
-                archive::export_diagnostics(&self.db, out_path)?;
-                Ok(json!({ "ok": true }))
+                let path_str = p
+                    .get("out_path")
+                    .or_else(|| p.get("output_path"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| LnaError::invalid("Missing out_path"))?;
+                let out_path = std::path::Path::new(path_str);
+                let want_zip = out_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("zip"))
+                    .unwrap_or(false)
+                    || p.get("format").and_then(|v| v.as_str()) == Some("zip");
+                if want_zip {
+                    archive::export_diagnostics_zip(&self.db, &self.llm, out_path)
+                } else {
+                    archive::export_diagnostics(&self.db, out_path)?;
+                    Ok(json!({ "ok": true }))
+                }
             }
             "embedding.rebuild" => {
                 let force = p.get("force").and_then(|x| x.as_bool()).unwrap_or(false);

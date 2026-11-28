@@ -31,12 +31,14 @@ fun UnifiedSettingsSheet(
     mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
     lectureRepairRounds: Int = 2,
     onSaveLectureRepairRounds: (Int) -> Unit = {},
+    lectureAnimRepairRounds: Int = 1,
+    onSaveLectureAnimRepairRounds: (Int) -> Unit = {},
     tokenLimits: MaxTokenLimitsConfig = MaxTokenLimitsConfig(),
     onSaveTokenLimits: (MaxTokenLimitsConfig) -> Unit = {},
     onResetTokenLimits: () -> Unit = {},
     debugMode: Boolean = false,
     onToggleDebugMode: (Boolean) -> Unit = {},
-    onExportLogs: () -> Unit = {},
+    onExportDiagnostics: () -> Unit = {},
     onSavePrefs: (UiPreferences) -> Unit,
     onSaveModel: (
         profileId: String?,
@@ -274,8 +276,8 @@ fun UnifiedSettingsSheet(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        OutlinedButton(onClick = onExportLogs, modifier = Modifier.fillMaxWidth()) {
-                            Text(L10n.t("settings.export_logs", en))
+                        OutlinedButton(onClick = onExportDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                            Text(L10n.t("settings.export_diag", en))
                         }
                     }
 
@@ -296,6 +298,17 @@ fun UnifiedSettingsSheet(
                         }
                         Text(
                             L10n.t("settings.lecture_repair_rounds_hint", en),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(L10n.t("settings.lecture_anim_repair_rounds", en), style = MaterialTheme.typography.labelMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            OutlinedButton(onClick = { onSaveLectureAnimRepairRounds(lectureAnimRepairRounds - 1) }, enabled = lectureAnimRepairRounds > 0) { Text("−") }
+                            Text("$lectureAnimRepairRounds", style = MaterialTheme.typography.titleMedium)
+                            OutlinedButton(onClick = { onSaveLectureAnimRepairRounds(lectureAnimRepairRounds + 1) }, enabled = lectureAnimRepairRounds < 20) { Text("+") }
+                        }
+                        Text(
+                            L10n.t("settings.lecture_anim_repair_rounds_hint", en),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

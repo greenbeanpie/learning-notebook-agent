@@ -45,6 +45,7 @@ data class AppUiState(
     val mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
     /** Lecture repair rounds per section ("lecture.limits"); 0 = no repair, no independent review. */
     val lectureRepairRounds: Int = 2,
+    val lectureAnimRepairRounds: Int = 1,
     val tokenLimits: MaxTokenLimitsConfig = MaxTokenLimitsConfig(),
     val debugMode: Boolean = false,
     val statusBanner: String = "",
@@ -900,19 +901,39 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 val res = core.call("settings.get", JSONObject().put("key", "lecture.limits"))
                 val mv = res.optJSONObject("value") ?: return@runCatching
-                _ui.update { it.copy(lectureRepairRounds = mv.optInt("repair_rounds", 2).coerceIn(0, 20)) }
+                _ui.update {
+                    it.copy(
+                        lectureRepairRounds = mv.optInt("repair_rounds", 2).coerceIn(0, 20),
+                        lectureAnimRepairRounds = mv.optInt("anim_repair_rounds", 1).coerceIn(0, 20),
+                    )
+                }
             }
         }
     }
 
     fun saveLectureRepairRounds(rounds: Int) {
         val n = rounds.coerceIn(0, 20)
+        val anim = _ui.value.lectureAnimRepairRounds
         _ui.update { it.copy(lectureRepairRounds = n) }
         viewModelScope.launch {
             runCatching {
                 core.call(
                     "settings.set",
-                    JSONObject().put("key", "lecture.limits").put("value", JSONObject().put("repair_rounds", n)),
+                    JSONObject().put("key", "lecture.limits").put("value", JSONObject().put("repair_rounds", n).put("anim_repair_rounds", anim)),
+                )
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun saveLectureAnimRepairRounds(rounds: Int) {
+        val n = rounds.coerceIn(0, 20)
+        val content = _ui.value.lectureRepairRounds
+        _ui.update { it.copy(lectureAnimRepairRounds = n) }
+        viewModelScope.launch {
+            runCatching {
+                core.call(
+                    "settings.set",
+                    JSONObject().put("key", "lecture.limits").put("value", JSONObject().put("repair_rounds", content).put("anim_repair_rounds", n)),
                 )
             }.onFailure { reportError(it) }
         }
@@ -991,15 +1012,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun exportLogs() {
+    fun exportDiagnostics() {
         viewModelScope.launch {
             runCatching {
                 val ctx = getApplication<Application>()
                 val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
-                val outFile = File(dir, "local-notebook-logs.log")
-                core.call("logs.export", JSONObject().put("out_path", outFile.absolutePath))
+                val outFile = File(dir, "local-notebook-diagnostics.zip")
+                core.call("diagnostics.export", JSONObject().put("out_path", outFile.absolutePath))
                 _ui.update {
-                    it.copy(statusMessage = String.format(L10n.t("settings.export_logs_done", it.prefs.isEnglish), outFile.absolutePath))
+                    it.copy(statusMessage = String.format(L10n.t("settings.export_diag_done", it.prefs.isEnglish), outFile.absolutePath))
                 }
             }.onFailure { reportError(it) }
         }

@@ -747,7 +747,11 @@ public sealed class ArtifactViewerPane : IDisposable
     private bool _thoughtStick = true;
     private bool _thoughtUserDragging;
     private DateTime _thoughtUserUntil = DateTime.MinValue;
+    private DateTime _thoughtScrolledUpUntil = DateTime.MinValue;
+    private double _thoughtProgrammaticTarget;
+    private DateTime _thoughtProgrammaticUntil = DateTime.MinValue;
     private double _thoughtLastOffset;
+    private double _thoughtLastScrollableHeight;
     private bool _thoughtScrollPending;
 
     /// <summary>
@@ -765,7 +769,11 @@ public sealed class ArtifactViewerPane : IDisposable
         sv.AddHandler(UIElement.PointerWheelChangedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, e) =>
         {
             MarkUser();
-            if (e.GetCurrentPoint(sv).Properties.MouseWheelDelta > 0) _thoughtStick = false;
+            if (e.GetCurrentPoint(sv).Properties.MouseWheelDelta > 0)
+            {
+                _thoughtStick = false;
+                _thoughtScrolledUpUntil = DateTime.UtcNow.AddMilliseconds(500);
+            }
         }), true);
         sv.AddHandler(UIElement.PointerPressedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => _thoughtUserDragging = true), true);
         Microsoft.UI.Xaml.Input.PointerEventHandler released = (_, _) => { _thoughtUserDragging = false; MarkUser(); };
@@ -778,15 +786,30 @@ public sealed class ArtifactViewerPane : IDisposable
             {
                 MarkUser();
                 _thoughtStick = false;
+                _thoughtScrolledUpUntil = DateTime.UtcNow.AddMilliseconds(500);
             }
         }), true);
         sv.ViewChanged += (_, _) =>
         {
+            var sh = sv.ScrollableHeight;
             var vo = sv.VerticalOffset;
-            var movedUp = vo < _thoughtLastOffset - 1.0;
-            var userActive = _thoughtUserDragging || DateTime.UtcNow < _thoughtUserUntil;
-            if (movedUp && userActive) _thoughtStick = false;
-            else if (!movedUp && sv.ScrollableHeight - vo <= 24) _thoughtStick = true;
+            var now = DateTime.UtcNow;
+            var delta = vo - _thoughtLastOffset;
+            var isProgrammatic = now < _thoughtProgrammaticUntil && Math.Abs(vo - _thoughtProgrammaticTarget) <= 2.0;
+            if (!isProgrammatic && delta < -1.0)
+            {
+                var shrunkClamp = sh < _thoughtLastScrollableHeight - 1.0 && (sh - vo) <= 2.0 && !_thoughtUserDragging && now >= _thoughtUserUntil;
+                if (!shrunkClamp)
+                {
+                    _thoughtStick = false;
+                    _thoughtScrolledUpUntil = now.AddMilliseconds(500);
+                }
+            }
+            else if (!isProgrammatic && delta > 1.0 && now >= _thoughtScrolledUpUntil && sh - vo <= 8.0)
+            {
+                _thoughtStick = true;
+            }
+            _thoughtLastScrollableHeight = sh;
             _thoughtLastOffset = vo;
         };
         panel.SizeChanged += (_, _) => FollowThoughtsIfSticky();
@@ -794,26 +817,30 @@ public sealed class ArtifactViewerPane : IDisposable
 
     private void FollowThoughtsIfSticky()
     {
-        if (!_thoughtStick || _thoughtScrollPending || _thoughtScroll == null) return;
+        if (!_thoughtStick || _thoughtScrollPending || _thoughtScroll == null || _thoughtUserDragging || DateTime.UtcNow < _thoughtScrolledUpUntil) return;
         _thoughtScrollPending = true;
         _thoughtScroll.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
         {
             _thoughtScrollPending = false;
-            if (_thoughtStick) ScrollThoughtsToBottom();
+            if (_thoughtStick && !_thoughtUserDragging && DateTime.UtcNow >= _thoughtScrolledUpUntil) ScrollThoughtsToBottom();
         });
     }
 
     /// <summary>True while the process list should follow new output.</summary>
-    private bool ThoughtScrollAtBottom() => _thoughtScroll != null && _thoughtStick;
+    private bool ThoughtScrollAtBottom() => _thoughtScroll != null && _thoughtStick && !_thoughtUserDragging && DateTime.UtcNow >= _thoughtScrolledUpUntil;
 
     private void ScrollThoughtsToBottom()
     {
         var sv = _thoughtScroll;
-        if (sv == null) return;
+        if (sv == null || !_thoughtStick || _thoughtUserDragging || DateTime.UtcNow < _thoughtScrolledUpUntil) return;
         sv.UpdateLayout();
-        if (sv.ScrollableHeight - sv.VerticalOffset <= 0.5) return;
-        sv.ChangeView(null, sv.ScrollableHeight, null, disableAnimation: true);
-        _thoughtLastOffset = sv.ScrollableHeight;
+        var target = sv.ScrollableHeight;
+        if (target - sv.VerticalOffset <= 0.5) return;
+        _thoughtProgrammaticTarget = target;
+        _thoughtProgrammaticUntil = DateTime.UtcNow.AddMilliseconds(250);
+        sv.ChangeView(null, target, null, disableAnimation: true);
+        _thoughtLastScrollableHeight = target;
+        _thoughtLastOffset = target;
     }
 
     /// <summary>One card of the execution-process panel. Reasoning cards are collapsed by default and cap the displayed text.</summary>

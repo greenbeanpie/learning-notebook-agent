@@ -555,3 +555,44 @@ fn notes_keep_citation_snapshots_and_summary_notes_are_copies() {
         "NOT_FOUND"
     );
 }
+
+#[test]
+fn diagnostics_zip_contains_traces_logs_notebooks_and_no_keys() {
+    let mock = mock_with_answer();
+    let env = Env::new("diag_zip");
+    let nid = seeded(&env);
+    let prof = env.profile(&mock, 32000);
+    let kref = prof["keychain_ref"].as_str().unwrap().to_string();
+    let key = format!("sk-diagzip-{:x}", std::process::id());
+    env.ok("secret.set", json!({ "keychain_ref": kref, "secret": key }));
+    env.ok("settings.debug.set", json!({ "enabled": true }));
+    let question = "请详细说明基与维数之间的关系是什么";
+    env.ok("chat.send", json!({ "notebook_id": nid, "text": question }));
+
+    let out_zip = env.dir.join("diag.zip");
+    let res = env.ok(
+        "diagnostics.export",
+        json!({ "out_path": out_zip.display().to_string() }),
+    );
+    env.ok("secret.clear", json!({ "keychain_ref": kref }));
+    assert_eq!(res["format"], json!("zip"));
+    assert!(res["notebooks"].as_u64().unwrap() >= 1);
+    assert!(res["api_traces"].as_u64().unwrap() >= 1);
+
+    let f = std::fs::File::open(&out_zip).unwrap();
+    let mut z = zip::ZipArchive::new(f).unwrap();
+    let mut names = Vec::new();
+    for i in 0..z.len() {
+        let mut entry = z.by_index(i).unwrap();
+        let name = entry.name().unwrap().to_string();
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+        let text = String::from_utf8_lossy(&buf);
+        assert!(!text.contains(&key), "API key leaked into ZIP entry {name}");
+        names.push(name);
+    }
+    assert!(names.iter().any(|n| n == "manifest.json"));
+    assert!(names.iter().any(|n| n == "logs/runtime.log"));
+    assert!(names.iter().any(|n| n.starts_with("notebooks/") && n.ends_with(".json")));
+    assert!(names.iter().any(|n| n.starts_with("api_traces/") && n.ends_with(".json")));
+}

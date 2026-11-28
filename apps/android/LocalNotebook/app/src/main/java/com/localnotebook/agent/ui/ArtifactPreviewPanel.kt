@@ -34,12 +34,39 @@ fun ThoughtsPanel(thoughts: List<ThoughtStepItem>, running: Boolean, en: Boolean
     var expanded by remember { mutableStateOf(setOf<Int>()) }
     var showFull by remember { mutableStateOf(setOf<Int>()) }
     val listState = rememberLazyListState()
+    var following by remember { mutableStateOf(true) }
+    var userScroll by remember { mutableStateOf(false) }
+    var lastScrollUpMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect {
+            if (it is androidx.compose.foundation.interaction.DragInteraction.Start) userScroll = true
+        }
+    }
+    LaunchedEffect(listState) {
+        var wasScrolling = false
+        snapshotFlow {
+            listOf(
+                listState.canScrollForward,
+                listState.lastScrolledBackward,
+                listState.lastScrolledForward,
+                listState.isScrollInProgress,
+            )
+        }.collect { (canForward, backward, forward, scrolling) ->
+            val now = System.currentTimeMillis()
+            if (backward && (userScroll || scrolling)) {
+                following = false
+                lastScrollUpMs = now
+            } else if (!canForward && forward && (now - lastScrollUpMs > 400L)) {
+                following = true
+            }
+            if (wasScrolling && !scrolling) userScroll = false
+            wasScrolling = scrolling
+        }
+    }
     LaunchedEffect(thoughts.size) {
-        // Follow new cards only while the user is already at the bottom.
-        val info = listState.layoutInfo
-        val last = info.visibleItemsInfo.lastOrNull()
-        val atBottom = last == null || last.index >= info.totalItemsCount - 2
-        if (atBottom && thoughts.isNotEmpty() && running) listState.scrollToItem(maxOf(0, info.totalItemsCount))
+        if (following && thoughts.isNotEmpty() && running) {
+            listState.scrollToItem(maxOf(0, listState.layoutInfo.totalItemsCount - 1))
+        }
     }
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (running) {

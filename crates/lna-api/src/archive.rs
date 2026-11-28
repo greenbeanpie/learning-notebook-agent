@@ -653,6 +653,368 @@ pub fn export_diagnostics(db: &Database, out_json: &Path) -> LnaResult<()> {
     std::fs::write(out_json, serde_json::to_string_pretty(&diag).unwrap()).map_err(io_err)
 }
 
+
+fn is_sensitive_header_or_key(name: &str) -> bool {
+    let low = name.to_ascii_lowercase();
+    if low == "max_token_limits" {
+        return false;
+    }
+    ["authorization", "api-key", "api_key", "apikey", "secret", "password", "cookie", "keychain", "x-goog-api-key", "token"]
+        .iter()
+        .any(|k| low.contains(k))
+}
+
+/// Export complete redacted Debug diagnostics bundle as a ZIP archive:
+/// - `manifest.json`: summary metadata, counts, breakdown, sanitized settings & model profiles (NO API keys), indices
+/// - `notebooks/<id>.json`: per-notebook sources, chat messages, studio artifacts (with errors/thoughts), notes
+/// - `api_traces/<seq>.json`: per-request full Debug API endpoint input & output (base64 images stripped to `$media_ref`)
+/// - `media/<hash>.<ext>`: deduplicated image/media attachments referenced by `api_traces`
+/// - `logs/runtime.log`: full persistent INFO+ and Debug runtime logs
+pub fn export_diagnostics_zip(
+    db: &Database,
+    llm: &lna_llm::LlmClient,
+    out_zip: &Path,
+) -> LnaResult<Value> {
+    let counts = db.read(|conn| {
+        let nb: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notebooks", [], |r| r.get(0))
+            .map_err(map_sql_err)?;
+        let src: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0))
+            .map_err(map_sql_err)?;
+        let msg: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_messages", [], |r| r.get(0))
+            .map_err(map_sql_err)?;
+        let art: i64 = conn
+            .query_row("SELECT COUNT(*) FROM studio_artifacts", [], |r| r.get(0))
+            .map_err(map_sql_err)?;
+        Ok(json!({ "notebooks": nb, "sources": src, "messages": msg, "artifacts": art }))
+    })?;
+
+    let breakdown = db.read(|conn| {
+        let group = |sql: &str| -> LnaResult<Value> {
+            let mut stmt = conn.prepare(sql).map_err(map_sql_err)?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(map_sql_err)?;
+            let mut m = serde_json::Map::new();
+            for r in rows {
+                let (k, n) = r.map_err(map_sql_err)?;
+                m.insert(k.unwrap_or_else(|| "none".into()), json!(n));
+            }
+            Ok(Value::Object(m))
+        };
+        Ok(json!({
+            "source_status": group("SELECT status, COUNT(*) FROM sources GROUP BY status")?,
+            "source_errors": group("SELECT error_code, COUNT(*) FROM sources WHERE error_code IS NOT NULL GROUP BY error_code")?,
+            "studio_status": group("SELECT status, COUNT(*) FROM studio_artifacts GROUP BY status")?,
+            "studio_errors": group("SELECT error_code, COUNT(*) FROM studio_artifacts WHERE error_code IS NOT NULL GROUP BY error_code")?,
+            "chat_status": group("SELECT status, COUNT(*) FROM chat_messages GROUP BY status")?,
+            "chat_errors": group("SELECT error_code, COUNT(*) FROM chat_messages WHERE error_code IS NOT NULL GROUP BY error_code")?,
+            "job_status": group("SELECT status, COUNT(*) FROM jobs GROUP BY status")?,
+        }))
+    })?;
+
+    // Sanitized app_settings (exclude any secret/key/token entries except max_token_limits)
+    let settings = db.read(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT key, value_json FROM app_settings ORDER BY key")
+            .map_err(map_sql_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(map_sql_err)?;
+        let mut m = serde_json::Map::new();
+        for r in rows {
+            let (k, vj) = r.map_err(map_sql_err)?;
+            if is_sensitive_header_or_key(&k) {
+                m.insert(k, json!("[REDACTED]"));
+            } else {
+                let parsed = serde_json::from_str::<Value>(&vj).unwrap_or_else(|_| Value::String(vj));
+                m.insert(k, parsed);
+            }
+        }
+        Ok(Value::Object(m))
+    })?;
+
+    // Sanitized model profiles (NEVER include API keys/secrets; redact sensitive headers & URL params)
+    let profiles: Vec<Value> = lna_storage::list_profiles(db)
+        .unwrap_or_default()
+        .iter()
+        .map(|p| {
+            let safe_headers: serde_json::Map<String, Value> = p
+                .extra_headers
+                .iter()
+                .map(|(k, v)| {
+                    if is_sensitive_header_or_key(k) {
+                        (k.clone(), json!("[REDACTED]"))
+                    } else {
+                        (k.clone(), json!(v))
+                    }
+                })
+                .collect();
+            json!({
+                "id": p.id,
+                "display_name": p.display_name,
+                "protocol": p.protocol.as_str(),
+                "base_url": lna_llm::sanitize_url_for_log(&p.base_url),
+                "model_id": p.model_id,
+                "context_window": p.context_window,
+                "max_output_tokens": p.max_output_tokens,
+                "max_parallel": p.max_parallel,
+                "preset": p.preset,
+                "shrink_media": p.shrink_media,
+                "capabilities": p.capabilities,
+                "extra_headers": safe_headers,
+                "active": p.is_active,
+            })
+        })
+        .collect();
+
+    if let Some(parent) = out_zip.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| LnaError::internal(e.to_string()))?;
+    }
+    let f = std::fs::File::create(out_zip).map_err(|e| LnaError::internal(e.to_string()))?;
+    let mut zip = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // 1. Per-notebook sub-JSONs under notebooks/<id>.json
+    let notebooks = lna_storage::list_notebooks(db).unwrap_or_default();
+    let mut notebooks_index = Vec::new();
+    for nb in &notebooks {
+        let sources = lna_storage::list_sources(db, &nb.id).unwrap_or_default();
+        let messages = db
+            .read(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, role, content, status, stop_reason, error_code, created_at
+                         FROM chat_messages WHERE notebook_id = ?1 ORDER BY created_at ASC",
+                    )
+                    .map_err(map_sql_err)?;
+                let rows = stmt
+                    .query_map([&nb.id], |r| {
+                        Ok(json!({
+                            "id": r.get::<_, String>(0)?,
+                            "role": r.get::<_, String>(1)?,
+                            "content": r.get::<_, String>(2)?,
+                            "status": r.get::<_, String>(3)?,
+                            "stop_reason": r.get::<_, Option<String>>(4)?,
+                            "error_code": r.get::<_, Option<String>>(5)?,
+                            "created_at": r.get::<_, i64>(6)?,
+                        }))
+                    })
+                    .map_err(map_sql_err)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(map_sql_err)?);
+                }
+                Ok(out)
+            })
+            .unwrap_or_default();
+        let artifacts = db
+            .read(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, artifact_type, title, status, stage, progress, config_json,
+                                source_ids_json, draft_json, payload_json, error_code, error_detail,
+                                error_log, created_at, updated_at, finished_at
+                         FROM studio_artifacts WHERE notebook_id = ?1 ORDER BY updated_at DESC",
+                    )
+                    .map_err(map_sql_err)?;
+                let rows = stmt
+                    .query_map([&nb.id], |r| {
+                        let parse_opt = |s: Option<String>| -> Value {
+                            s.and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                                .unwrap_or(Value::Null)
+                        };
+                        let cfg_raw = r.get::<_, String>(6)?;
+                        let sids_raw = r.get::<_, String>(7)?;
+                        Ok(json!({
+                            "id": r.get::<_, String>(0)?,
+                            "artifact_type": r.get::<_, String>(1)?,
+                            "title": r.get::<_, String>(2)?,
+                            "status": r.get::<_, String>(3)?,
+                            "stage": r.get::<_, Option<String>>(4)?,
+                            "progress": r.get::<_, f64>(5)?,
+                            "config": serde_json::from_str::<Value>(&cfg_raw).unwrap_or_else(|_| Value::String(cfg_raw)),
+                            "source_ids": serde_json::from_str::<Value>(&sids_raw).unwrap_or_else(|_| Value::String(sids_raw)),
+                            "draft": parse_opt(r.get::<_, Option<String>>(8)?),
+                            "payload": parse_opt(r.get::<_, Option<String>>(9)?),
+                            "error_code": r.get::<_, Option<String>>(10)?,
+                            "error_detail": r.get::<_, Option<String>>(11)?,
+                            "error_log": r.get::<_, Option<String>>(12)?,
+                            "created_at": r.get::<_, i64>(13)?,
+                            "updated_at": r.get::<_, i64>(14)?,
+                            "finished_at": r.get::<_, Option<i64>>(15)?,
+                        }))
+                    })
+                    .map_err(map_sql_err)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(map_sql_err)?);
+                }
+                Ok(out)
+            })
+            .unwrap_or_default();
+
+        let notes = db
+            .read(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT id, title, body_md, origin, created_at, updated_at FROM notes WHERE notebook_id = ?1")
+                    .map_err(map_sql_err)?;
+                let rows = stmt
+                    .query_map([&nb.id], |r| {
+                        Ok(json!({
+                            "id": r.get::<_, String>(0)?,
+                            "title": r.get::<_, String>(1)?,
+                            "body_md": r.get::<_, String>(2)?,
+                            "origin": r.get::<_, String>(3)?,
+                            "created_at": r.get::<_, i64>(4)?,
+                            "updated_at": r.get::<_, i64>(5)?,
+                        }))
+                    })
+                    .map_err(map_sql_err)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(map_sql_err)?);
+                }
+                Ok(out)
+            })
+            .unwrap_or_default();
+
+        let rel_path = format!("notebooks/{}.json", nb.id);
+        let nb_doc = json!({
+            "notebook": nb,
+            "sources": sources,
+            "messages": messages,
+            "artifacts": artifacts,
+            "notes": notes,
+        });
+        zip.start_file(&rel_path, opts).map_err(z_err)?;
+        zip.write_all(serde_json::to_string_pretty(&nb_doc).unwrap().as_bytes())
+            .map_err(io_err)?;
+        notebooks_index.push(json!({
+            "id": nb.id,
+            "title": nb.title,
+            "file": rel_path,
+            "sources": sources.len(),
+            "messages": messages.len(),
+            "artifacts": artifacts.len(),
+            "notes": notes.len(),
+        }));
+    }
+
+    // 2. Structured Debug API traces (api_traces/*.json) and extracted images (media/*)
+    let mut api_traces_index = Vec::new();
+    let mut media_files = Vec::new();
+    let mut log_bytes: u64 = 0;
+
+    if let Some(log_dir) = llm.log_dir() {
+        let traces_dir = log_dir.join("traces");
+        if let Ok(rd) = std::fs::read_dir(&traces_dir) {
+            let mut trace_paths: Vec<std::path::PathBuf> = rd
+                .filter_map(|e| e.ok().map(|x| x.path()))
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+                .collect();
+            trace_paths.sort();
+            for tp in trace_paths {
+                let Some(fname) = tp.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if let Ok(bytes) = std::fs::read(&tp) {
+                    let rel = format!("api_traces/{fname}");
+                    zip.start_file(&rel, opts).map_err(z_err)?;
+                    zip.write_all(&bytes).map_err(io_err)?;
+                    if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+                        api_traces_index.push(json!({
+                            "seq": v["seq"],
+                            "timestamp_ms": v["timestamp_ms"],
+                            "protocol": v["protocol"],
+                            "profile_id": v["profile_id"],
+                            "model_id": v["model_id"],
+                            "endpoint": v["endpoint"],
+                            "http_status": v["http_status"],
+                            "stop_reason": v["stop_reason"],
+                            "elapsed_ms": v["elapsed_ms"],
+                            "usage": v["usage"],
+                            "media_refs": v["media_refs"],
+                            "file": rel,
+                        }));
+                    } else {
+                        api_traces_index.push(json!({ "file": rel }));
+                    }
+                }
+            }
+        }
+
+        let media_dir = log_dir.join("media");
+        if let Ok(rd) = std::fs::read_dir(&media_dir) {
+            let mut mpaths: Vec<std::path::PathBuf> = rd
+                .filter_map(|e| e.ok().map(|x| x.path()))
+                .filter(|p| p.is_file())
+                .collect();
+            mpaths.sort();
+            for mp in mpaths {
+                let Some(fname) = mp.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if let Ok(bytes) = std::fs::read(&mp) {
+                    let rel = format!("media/{fname}");
+                    zip.start_file(&rel, opts).map_err(z_err)?;
+                    zip.write_all(&bytes).map_err(io_err)?;
+                    media_files.push(json!({ "file": rel, "bytes": bytes.len() }));
+                }
+            }
+        }
+    }
+
+    // 3. Full persistent runtime logs (INFO+ and Debug wire logs) under logs/runtime.log
+    if let Ok(log_res) = llm.export_logs(None) {
+        let content = log_res
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        log_bytes = content.len() as u64;
+        zip.start_file("logs/runtime.log", opts).map_err(z_err)?;
+        zip.write_all(content.as_bytes()).map_err(io_err)?;
+    }
+
+    // 4. Root manifest.json (总 JSON)
+    let manifest = json!({
+        "format": "lna-diagnostics-zip",
+        "schema_version": 2,
+        "version": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "exported_at": now_ms(),
+        "debug_mode": llm.debug_mode(),
+        "counts": counts,
+        "breakdown": breakdown,
+        "max_token_limits": llm.token_limits(),
+        "settings": settings,
+        "profiles": profiles,
+        "logs_file": "logs/runtime.log",
+        "log_bytes": log_bytes,
+        "notebooks_index": notebooks_index,
+        "api_traces_index": api_traces_index,
+        "media_files": media_files,
+    });
+    zip.start_file("manifest.json", opts).map_err(z_err)?;
+    zip.write_all(serde_json::to_string_pretty(&manifest).unwrap().as_bytes())
+        .map_err(io_err)?;
+
+    zip.finish().map_err(z_err)?;
+    Ok(json!({
+        "ok": true,
+        "format": "zip",
+        "path": out_zip.to_string_lossy(),
+        "notebooks": notebooks_index.len(),
+        "api_traces": api_traces_index.len(),
+        "media_files": media_files.len(),
+        "log_bytes": log_bytes,
+    }))
+}
+
 fn z_err(e: zip::result::ZipError) -> LnaError {
     LnaError::invalid(format!("ZIP error: {e}"))
 }

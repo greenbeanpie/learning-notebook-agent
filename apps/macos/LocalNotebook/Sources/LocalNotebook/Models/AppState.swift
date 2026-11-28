@@ -754,7 +754,7 @@ final class AppState: ObservableObject {
 
     func exportDiagnostics() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "diagnostics.json"
+        panel.nameFieldStringValue = "local-notebook-diagnostics.zip"
         if panel.runModal() == .OK, let url = panel.url {
             Task {
                 do {

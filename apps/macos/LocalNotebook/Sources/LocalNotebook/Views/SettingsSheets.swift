@@ -108,8 +108,9 @@ struct UnifiedSettingsSheet: View {
     @State private var maxOutputTokensText = ""
     /// Empty or 0 = unlimited.
     @State private var maxParallelText = ""
-    /// Lecture repair rounds per section ("lecture.limits"); 0 = no repair, no independent review.
+    /// Lecture repair rounds per section ("lecture.limits").
     @State private var lectureRepairRounds = 2
+    @State private var lectureAnimRepairRounds = 1
     @State private var limLectureSlides = "32768"
     @State private var limLectureOutline = "16384"
     @State private var limStudioDefault = "0"
@@ -191,8 +192,9 @@ struct UnifiedSettingsSheet: View {
         .preferredColorScheme(themeId.preferredColorScheme)
         .task {
             if let r = await state.run("settings.get", ["key": "lecture.limits"]),
-               let v = r["value"] as? [String: Any], let n = v["repair_rounds"] as? Int {
-                lectureRepairRounds = min(max(n, 0), 20)
+               let v = r["value"] as? [String: Any] {
+                if let n = v["repair_rounds"] as? Int { lectureRepairRounds = min(max(n, 0), 20) }
+                if let a = v["anim_repair_rounds"] as? Int { lectureAnimRepairRounds = min(max(a, 0), 20) }
             }
             if let tr = await state.run("settings.token_limits.get", [:]),
                let lim = tr["limits"] as? [String: Any] {
@@ -330,7 +332,23 @@ struct UnifiedSettingsSheet: View {
                         Task {
                             _ = await state.run("settings.set", [
                                 "key": "lecture.limits",
-                                "value": ["repair_rounds": n]
+                                "value": ["repair_rounds": n, "anim_repair_rounds": lectureAnimRepairRounds]
+                            ])
+                        }
+                    }
+                    Stepper(value: $lectureAnimRepairRounds, in: 0...20) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(state.t("settings.lecture_anim_repair_rounds")): \(lectureAnimRepairRounds)")
+                            Text(state.t("settings.lecture_anim_repair_rounds_hint"))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .onChange(of: lectureAnimRepairRounds) { _, n in
+                        Task {
+                            _ = await state.run("settings.set", [
+                                "key": "lecture.limits",
+                                "value": ["repair_rounds": lectureRepairRounds, "anim_repair_rounds": n]
                             ])
                         }
                     }
@@ -422,11 +440,6 @@ struct UnifiedSettingsSheet: View {
 
                     Button(state.t("nb.export_diag")) {
                         state.exportDiagnostics()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(state.t("settings.export_logs")) {
-                        state.exportLogs()
                     }
                     .buttonStyle(.bordered)
 

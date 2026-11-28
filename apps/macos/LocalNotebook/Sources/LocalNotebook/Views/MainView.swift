@@ -680,8 +680,6 @@ struct MainView: View {
                             .id(msg.id)
                         }
                         Color.clear.frame(height: 1).id("chat-bottom")
-                            // back at the very bottom: following resumes
-                            .onAppear { chatFollowing = true }
                     }
                 }
                 .onHover { chatHovered = $0 }
@@ -696,7 +694,13 @@ struct MainView: View {
                         ) { ev in
                             switch ev.type {
                             case .scrollWheel:
-                                if chatHovered && ev.scrollingDeltaY > 0.5 { chatFollowing = false }
+                                if chatHovered {
+                                    if ev.scrollingDeltaY > 0.5 {
+                                        chatFollowing = false
+                                    } else if ev.scrollingDeltaY < -0.5, let sv = Self.chatScrollView(at: ev), Self.isAtBottom(sv) {
+                                        chatFollowing = true
+                                    }
+                                }
                             case .leftMouseDown:
                                 if chatHovered, Self.isScroller(at: ev) { chatFollowing = false }
                             case .leftMouseUp:

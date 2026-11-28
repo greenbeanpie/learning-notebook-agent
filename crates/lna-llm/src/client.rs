@@ -250,8 +250,10 @@ pub struct LlmClient {
     log_path: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     /// Serializes writes & rotation to `log_path`.
     log_write_lock: std::sync::Arc<std::sync::Mutex<()>>,
-    /// When true, records full API endpoint request & response payloads to `log_path`.
+    /// When true, records full API endpoint request & response payloads to `log_path` and `traces/`.
     debug_mode: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Monotonic sequence counter for structured Debug API trace files.
+    trace_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for LlmClient {
@@ -300,6 +302,7 @@ impl LlmClient {
             log_path: Default::default(),
             log_write_lock: Default::default(),
             debug_mode: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            trace_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -424,7 +427,101 @@ impl LlmClient {
             .unwrap_or_else(|e| e.into_inner());
         let _ = std::fs::remove_file(rotated_log_path(&path));
         let _ = std::fs::write(&path, b"");
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir_all(dir.join("traces"));
+            let _ = std::fs::remove_dir_all(dir.join("media"));
+        }
         Ok(())
+    }
+
+    /// Directory containing `lna.log`, `traces/`, and `media/`.
+    pub fn log_dir(&self) -> Option<std::path::PathBuf> {
+        self.log_path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    }
+
+    /// Persists a structured Debug API trace JSON file under `<log_dir>/traces/` with any
+    /// embedded base64 media extracted into `<log_dir>/media/<sha256>.<ext>` and replaced
+    /// by a `$media_ref` pointer. Returns the media-stripped request string for text logs.
+    fn record_api_trace(
+        &self,
+        protocol: &str,
+        profile_id: &str,
+        model_id: &str,
+        endpoint_sanitized: &str,
+        http_status: u16,
+        stop_reason: Option<&str>,
+        usage: Option<&Usage>,
+        elapsed_ms: u64,
+        raw_req_body: &str,
+        raw_resp_body: &str,
+        error_text: Option<&str>,
+    ) -> String {
+        let Some(log_dir) = self.log_dir() else {
+            return raw_req_body.to_string();
+        };
+        let traces_dir = log_dir.join("traces");
+        let media_dir = log_dir.join("media");
+        let _ = std::fs::create_dir_all(&traces_dir);
+        let _ = std::fs::create_dir_all(&media_dir);
+
+        let mut media_refs = Vec::new();
+        let req_json: serde_json::Value = match serde_json::from_str::<serde_json::Value>(raw_req_body) {
+            Ok(mut v) => {
+                strip_and_save_media(&mut v, &media_dir, &mut media_refs);
+                v
+            }
+            Err(_) => serde_json::Value::String(raw_req_body.to_string()),
+        };
+        let stripped_req_str = serde_json::to_string(&req_json).unwrap_or_else(|_| raw_req_body.to_string());
+
+        let seq = self.trace_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let ts_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let trace = serde_json::json!({
+            "seq": seq,
+            "timestamp_ms": ts_ms,
+            "protocol": protocol,
+            "profile_id": profile_id,
+            "model_id": model_id,
+            "endpoint": endpoint_sanitized,
+            "http_status": http_status,
+            "stop_reason": stop_reason,
+            "elapsed_ms": elapsed_ms,
+            "usage": usage.map(|u| serde_json::json!({
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "cached_tokens": u.cached_tokens,
+            })),
+            "media_refs": media_refs,
+            "request": req_json,
+            "response_raw": raw_resp_body,
+            "error": error_text,
+        });
+        let safe_proto: String = protocol
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .collect();
+        let filename = format!("{ts_ms}_{seq:05}_{safe_proto}.json");
+        let _guard = self.log_write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(bytes) = serde_json::to_vec_pretty(&trace) {
+            let _ = std::fs::write(traces_dir.join(filename), bytes);
+        }
+        // Cap stored traces at the latest 300 files to bound disk growth.
+        if let Ok(rd) = std::fs::read_dir(&traces_dir) {
+            let mut names: Vec<std::path::PathBuf> = rd
+                .filter_map(|e| e.ok().map(|x| x.path()))
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+                .collect();
+            if names.len() > 300 {
+                names.sort();
+                for old in &names[..names.len() - 300] {
+                    let _ = std::fs::remove_file(old);
+                }
+            }
+        }
+        stripped_req_str
     }
 
     fn warm_role(&self, key: Option<PrefixKey>) -> WarmRole {
@@ -667,21 +764,15 @@ impl LlmClient {
             let req_started = std::time::Instant::now();
             let debug_wire = self.debug_mode();
             let endpoint_sanitized = sanitize_url_for_log(http_req.url().as_str());
-            if debug_wire {
-                let body_str = http_req
+            let debug_req_body = if debug_wire {
+                http_req
                     .body()
                     .and_then(|b| b.as_bytes())
                     .map(|b| String::from_utf8_lossy(b).into_owned())
-                    .unwrap_or_default();
-                self.append_log(
-                    "DEBUG",
-                    "lna_llm::wire",
-                    &format!(
-                        ">>> REQUEST protocol={:?} profile={} model={} url={}\n{}",
-                        profile.protocol, profile.id, profile.model_id, endpoint_sanitized, body_str
-                    ),
-                );
-            }
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
             let resp_res = tokio::select! {
                 _ = cancel.cancelled() => return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled")),
                 r = self.http.execute(http_req) => r,
@@ -725,13 +816,30 @@ impl LlmClient {
                     ),
                 );
                 if debug_wire {
+                    let stripped_req = self.record_api_trace(
+                        profile.protocol.as_str(),
+                        &profile.id,
+                        &profile.model_id,
+                        &endpoint_sanitized,
+                        status.as_u16(),
+                        None,
+                        None,
+                        elapsed_ms,
+                        &debug_req_body,
+                        &body,
+                        Some(&format!("HTTP {}", status.as_u16())),
+                    );
                     self.append_log(
                         "DEBUG",
                         "lna_llm::wire",
                         &format!(
-                            "<<< ERROR RESPONSE status={} url={} elapsed_ms={}\n{}",
-                            status.as_u16(),
+                            ">>> REQUEST protocol={:?} profile={} model={} url={}\n{}\n<<< ERROR RESPONSE status={} elapsed_ms={}\n{}",
+                            profile.protocol,
+                            profile.id,
+                            profile.model_id,
                             endpoint_sanitized,
+                            stripped_req,
+                            status.as_u16(),
                             elapsed_ms,
                             body
                         ),
@@ -890,15 +998,34 @@ impl LlmClient {
                 ),
             );
             if debug_wire {
+                let raw_resp = String::from_utf8_lossy(&debug_resp_buf);
+                let stop_str = format!("{:?}", final_stop);
+                let stripped_req = self.record_api_trace(
+                    profile.protocol.as_str(),
+                    &profile.id,
+                    &profile.model_id,
+                    &endpoint_sanitized,
+                    200,
+                    Some(&stop_str),
+                    Some(&last_usage),
+                    elapsed_ms,
+                    &debug_req_body,
+                    &raw_resp,
+                    None,
+                );
                 self.append_log(
                     "DEBUG",
                     "lna_llm::wire",
                     &format!(
-                        "<<< RESPONSE status=200 url={} stop={:?} elapsed_ms={}\n{}",
+                        ">>> REQUEST protocol={:?} profile={} model={} url={}\n{}\n<<< RESPONSE status=200 stop={:?} elapsed_ms={}\n{}",
+                        profile.protocol,
+                        profile.id,
+                        profile.model_id,
                         endpoint_sanitized,
+                        stripped_req,
                         final_stop,
                         elapsed_ms,
-                        String::from_utf8_lossy(&debug_resp_buf)
+                        raw_resp
                     ),
                 );
             }
@@ -2304,7 +2431,7 @@ fn rotated_log_path(p: &Path) -> std::path::PathBuf {
     std::path::PathBuf::from(s)
 }
 
-fn sanitize_url_for_log(raw: &str) -> String {
+pub fn sanitize_url_for_log(raw: &str) -> String {
     let Ok(mut u) = reqwest::Url::parse(raw) else {
         return raw.to_string();
     };
@@ -2323,6 +2450,115 @@ fn sanitize_url_for_log(raw: &str) -> String {
         u.query_pairs_mut().clear().extend_pairs(pairs);
     }
     u.to_string()
+}
+
+
+fn mime_to_ext(mime: &str) -> &'static str {
+    let m = mime.trim().to_ascii_lowercase();
+    if m.contains("png") {
+        "png"
+    } else if m.contains("jpeg") || m.contains("jpg") {
+        "jpg"
+    } else if m.contains("webp") {
+        "webp"
+    } else if m.contains("gif") {
+        "gif"
+    } else if m.contains("svg") {
+        "svg"
+    } else if m.contains("pdf") {
+        "pdf"
+    } else if m.contains("mp4") {
+        "mp4"
+    } else if m.contains("mpeg") || m.contains("mp3") {
+        "mp3"
+    } else if m.contains("wav") {
+        "wav"
+    } else {
+        "bin"
+    }
+}
+
+fn save_decoded_media(
+    mime: &str,
+    b64: &str,
+    media_dir: &std::path::Path,
+    saved_media: &mut Vec<String>,
+) -> Option<serde_json::Value> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let cleaned: String = b64.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(cleaned.as_bytes())
+        .ok()?;
+    let hash = hex::encode(sha2::Sha256::digest(&bytes));
+    let short = &hash[..16];
+    let ext = mime_to_ext(mime);
+    let rel = format!("media/{short}.{ext}");
+    let dest = media_dir.join(format!("{short}.{ext}"));
+    if !dest.exists() {
+        let _ = std::fs::write(&dest, &bytes);
+    }
+    if !saved_media.iter().any(|x| x == &rel) {
+        saved_media.push(rel.clone());
+    }
+    Some(serde_json::json!({
+        "$media_ref": rel,
+        "mime_type": mime,
+        "bytes": bytes.len(),
+    }))
+}
+
+/// Walks a request JSON value, extracts embedded base64 images/media into `media_dir`,
+/// and replaces them with compact `$media_ref` objects.
+pub fn strip_and_save_media(
+    val: &mut serde_json::Value,
+    media_dir: &std::path::Path,
+    saved_media: &mut Vec<String>,
+) {
+    match val {
+        serde_json::Value::String(s) => {
+            // Data URL: data:image/png;base64,....
+            if let Some(rest) = s.strip_prefix("data:") {
+                if let Some((meta, b64)) = rest.split_once(";base64,") {
+                    if b64.len() >= 64 {
+                        if let Some(rep) = save_decoded_media(meta, b64, media_dir, saved_media) {
+                            *val = rep;
+                        }
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                strip_and_save_media(item, media_dir, saved_media);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            // Anthropic: { type: "base64", media_type: "...", data: "..." }
+            // Gemini: { mime_type/mimeType: "...", data: "..." }
+            let mime_opt = map
+                .get("media_type")
+                .or_else(|| map.get("mime_type"))
+                .or_else(|| map.get("mimeType"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if let (Some(mime), Some(b64)) = (
+                mime_opt,
+                map.get("data").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            ) {
+                if b64.len() >= 64 {
+                    if let Some(rep) = save_decoded_media(&mime, &b64, media_dir, saved_media) {
+                        map.insert("data".to_string(), rep);
+                        return;
+                    }
+                }
+            }
+            for (_, v) in map.iter_mut() {
+                strip_and_save_media(v, media_dir, saved_media);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -2372,6 +2608,33 @@ mod logging_and_limits_tests {
 
         client.clear_logs().unwrap();
         assert_eq!(client.log_size_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_strip_and_save_media() {
+        use base64::Engine as _;
+        let tmp = std::env::temp_dir().join(format!("lna_media_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let png_bytes = vec![0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+        let mut payload = serde_json::json!({
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{b64}") } },
+                    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64 } }
+                ]}
+            ]
+        });
+        let mut saved = Vec::new();
+        strip_and_save_media(&mut payload, &tmp, &mut saved);
+        assert_eq!(saved.len(), 1, "identical images should deduplicate to 1 file");
+        assert!(saved[0].starts_with("media/") && saved[0].ends_with(".png"));
+        let serialized = payload.to_string();
+        assert!(!serialized.contains(&b64));
+        assert!(serialized.contains("$media_ref"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

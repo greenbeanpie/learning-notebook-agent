@@ -664,7 +664,7 @@ public sealed partial class MainWindow : Window
 
     private async void OnExportDiagnosticsClick(object sender, RoutedEventArgs e)
     {
-        var path = await PickSaveFileAsync("diagnostics", L10n.T("nb.diag_filter"), ".json");
+        var path = await PickSaveFileAsync("local-notebook-diagnostics", L10n.T("nb.diag_filter"), ".zip");
         if (path == null) return;
         if (await CoreAsync("diagnostics.export", Args(("out_path", path)), L10n.T("nb.export_diag")) != null)
             ShowStatus(InfoBarSeverity.Success, L10n.T("nb.diag_exported"), L10n.T("nb.diag_exported_msg"));

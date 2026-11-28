@@ -863,7 +863,7 @@ pub fn build_main_window(app: &Application, core: Arc<CoreRuntime>) {
             pop.popdown();
             let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
             let out_path = out_dir.join("local-notebook-diagnostics.zip");
-            if call_core(&st.core, "diagnostics.export", json!({ "output_path": out_path.to_string_lossy() })).is_ok() {
+            if call_core(&st.core, "diagnostics.export", json!({ "out_path": out_path.to_string_lossy() })).is_ok() {
                 let en = st.is_en();
                 st.status_label.set_text(&trf(en, "art.diagnostics_exported_to", &[&(out_path.display())]));
             }
@@ -2703,6 +2703,15 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
             .map(|n| n.min(20) as f64)
             .unwrap_or(2.0),
     );
+    let lecture_anim_rounds_spin = SpinButton::with_range(0.0, 20.0, 1.0);
+    lecture_anim_rounds_spin.set_digits(0);
+    lecture_anim_rounds_spin.set_value(
+        call_core(&st.core, "settings.get", json!({ "key": "lecture.limits" }))
+            .ok()
+            .and_then(|v| v.pointer("/value/anim_repair_rounds").and_then(Value::as_u64))
+            .map(|n| n.min(20) as f64)
+            .unwrap_or(1.0),
+    );
 
     let save_prefs_btn = Button::with_label(tr(en, "settings.save"));
     save_prefs_btn.add_css_class("lna-primary-btn");
@@ -2717,11 +2726,18 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let quiz_view_dd_c = quiz_view_dd.clone();
     let quiz_submit_dd_c = quiz_submit_dd.clone();
     let lecture_rounds_spin_c = lecture_rounds_spin.clone();
+    let lecture_anim_rounds_spin_c = lecture_anim_rounds_spin.clone();
     save_prefs_btn.connect_clicked(move |_| {
         let _ = call_core(
             &st_p.core,
             "settings.set",
-            json!({ "key": "lecture.limits", "value": { "repair_rounds": lecture_rounds_spin_c.value_as_int().clamp(0, 20) } }),
+            json!({
+                "key": "lecture.limits",
+                "value": {
+                    "repair_rounds": lecture_rounds_spin_c.value_as_int().clamp(0, 20),
+                    "anim_repair_rounds": lecture_anim_rounds_spin_c.value_as_int().clamp(0, 20),
+                }
+            }),
         );
         {
             let mut p = st_p.prefs.borrow_mut();
@@ -2794,23 +2810,12 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     gen_diag_btn.connect_clicked(move |_| {
         let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let out_path = out_dir.join("local-notebook-diagnostics.zip");
-        if call_core(&st_diag.core, "diagnostics.export", json!({ "output_path": out_path.to_string_lossy() })).is_ok() {
+        if call_core(&st_diag.core, "diagnostics.export", json!({ "out_path": out_path.to_string_lossy() })).is_ok() {
             st_diag.status_label.set_text(&trf(st_diag.is_en(), "art.diagnostics_exported_to", &[&out_path.display()]));
-        }
-    });
-    let gen_export_logs_btn = Button::with_label(tr(en, "settings.export_logs"));
-    gen_export_logs_btn.add_css_class("lna-pill-btn");
-    let st_logs = st.clone();
-    gen_export_logs_btn.connect_clicked(move |_| {
-        let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let out_path = out_dir.join("local-notebook-logs.log");
-        if call_core(&st_logs.core, "logs.export", json!({ "out_path": out_path.to_string_lossy() })).is_ok() {
-            st_logs.status_label.set_text(&trf(st_logs.is_en(), "settings.export_logs_done", &[&out_path.display()]));
         }
     });
     gen_extra_row.append(&gen_privacy_btn);
     gen_extra_row.append(&gen_diag_btn);
-    gen_extra_row.append(&gen_export_logs_btn);
 
     // Built-in Max Token limits
     let tok_val = call_core(&st.core, "settings.token_limits.get", json!({}))
@@ -2921,6 +2926,13 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     lecture_rounds_hint.set_xalign(0.0);
     lecture_rounds_hint.add_css_class("dim-label");
     gen_box.append(&lecture_rounds_hint);
+    gen_box.append(&Label::new(Some(tr(en, "settings.lecture_anim_repair_rounds"))));
+    gen_box.append(&lecture_anim_rounds_spin);
+    let lecture_anim_rounds_hint = Label::new(Some(tr(en, "settings.lecture_anim_repair_rounds_hint")));
+    lecture_anim_rounds_hint.set_wrap(true);
+    lecture_anim_rounds_hint.set_xalign(0.0);
+    lecture_anim_rounds_hint.add_css_class("dim-label");
+    gen_box.append(&lecture_anim_rounds_hint);
     let tok_hdr = Label::new(Some(tr(en, "settings.token_limits_header")));
     tok_hdr.set_xalign(0.0);
     gen_box.append(&tok_hdr);

@@ -46,12 +46,17 @@ public sealed partial class MainWindow
             videoProfileId = Str(mv, "video_profile_id");
         }
 
-        // Lecture repair limit ("lecture.limits"): how many rounds of repair a section may take
+        // Lecture repair limits ("lecture.limits"): content repair rounds + animation review/repair rounds
         var lectureRounds = 2.0;
+        var lectureAnimRounds = 1.0;
         var limitsSet = await Api.CallAsync("settings.get", Args(("key", "lecture.limits")));
-        if (limitsSet.Result is { } ls && ls.TryGetProperty("value", out var lv) && lv.ValueKind == JsonValueKind.Object
-            && lv.TryGetProperty("repair_rounds", out var rr) && rr.ValueKind == JsonValueKind.Number && rr.TryGetInt32(out var rrn))
-            lectureRounds = Math.Clamp(rrn, 0, 20);
+        if (limitsSet.Result is { } ls && ls.TryGetProperty("value", out var lv) && lv.ValueKind == JsonValueKind.Object)
+        {
+            if (lv.TryGetProperty("repair_rounds", out var rr) && rr.ValueKind == JsonValueKind.Number && rr.TryGetInt32(out var rrn))
+                lectureRounds = Math.Clamp(rrn, 0, 20);
+            if (lv.TryGetProperty("anim_repair_rounds", out var ar) && ar.ValueKind == JsonValueKind.Number && ar.TryGetInt32(out var arn))
+                lectureAnimRounds = Math.Clamp(arn, 0, 20);
+        }
 
         // Built-in max_token limits & Debug logging state
         int limLectureSlides = 32768, limLectureOutline = 16384, limStudioDefault = 0, limStudioAux = 8192, limAgentAux = 4096, limIngestIndex = 8192;
@@ -124,11 +129,16 @@ public sealed partial class MainWindow
 
         var lectureRoundsBox = new NumberBox { Header = L10n.T("settings.lecture_repair_rounds"), Value = lectureRounds, Minimum = 0, Maximum = 20, SmallChange = 1, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
         var lectureRoundsHint = new TextBlock { Text = L10n.T("settings.lecture_repair_rounds_hint"), TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };
-        lectureRoundsBox.ValueChanged += async (_, a) =>
+        var lectureAnimRoundsBox = new NumberBox { Header = L10n.T("settings.lecture_anim_repair_rounds"), Value = lectureAnimRounds, Minimum = 0, Maximum = 20, SmallChange = 1, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var lectureAnimRoundsHint = new TextBlock { Text = L10n.T("settings.lecture_anim_repair_rounds_hint"), TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };
+        async Task SaveLectureLimitsAsync()
         {
-            if (double.IsNaN(a.NewValue)) return;
-            await Api.CallAsync("settings.set", Args(("key", "lecture.limits"), ("value", Args(("repair_rounds", (int)Math.Clamp(a.NewValue, 0, 20))))));
-        };
+            var cr = double.IsNaN(lectureRoundsBox.Value) ? 2 : (int)Math.Clamp(lectureRoundsBox.Value, 0, 20);
+            var ar = double.IsNaN(lectureAnimRoundsBox.Value) ? 1 : (int)Math.Clamp(lectureAnimRoundsBox.Value, 0, 20);
+            await Api.CallAsync("settings.set", Args(("key", "lecture.limits"), ("value", Args(("repair_rounds", cr), ("anim_repair_rounds", ar)))));
+        }
+        lectureRoundsBox.ValueChanged += async (_, _) => await SaveLectureLimitsAsync();
+        lectureAnimRoundsBox.ValueChanged += async (_, _) => await SaveLectureLimitsAsync();
 
         // Built-in Max Token limits
         var tokenLimitsHeader = new TextBlock { Text = L10n.T("settings.token_limits_header"), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) };
@@ -195,15 +205,6 @@ public sealed partial class MainWindow
         {
             await Api.CallAsync("settings.debug.set", Args(("enabled", debugModeToggle.IsOn)));
         };
-        var exportLogsBtn = new Button { Content = L10n.T("settings.export_logs"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
-        exportLogsBtn.Click += async (_, _) =>
-        {
-            var path = await PickSaveFileAsync("local-notebook-logs", L10n.T("settings.export_logs"), ".log");
-            if (path == null) return;
-            if (await CoreAsync("logs.export", Args(("out_path", path)), L10n.T("settings.export_logs")) != null)
-                ShowStatus(InfoBarSeverity.Success, L10n.T("settings.export_logs"), L10n.Fmt("settings.export_logs_done", path));
-        };
-
         var diagBtn = new Button { Content = L10n.T("settings.diag_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
         diagBtn.Click += OnExportDiagnosticsClick;
         var privacyBtn = new Button { Content = L10n.T("settings.privacy_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
@@ -211,7 +212,6 @@ public sealed partial class MainWindow
         var generalActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 6, 0, 0) };
         generalActions.Children.Add(privacyBtn);
         generalActions.Children.Add(diagBtn);
-        generalActions.Children.Add(exportLogsBtn);
 
         var generalPanel = new StackPanel { Spacing = 12, Padding = new Thickness(4, 8, 4, 8) };
         generalPanel.Children.Add(expandThoughtsToggle);
@@ -221,6 +221,8 @@ public sealed partial class MainWindow
         generalPanel.Children.Add(quizSubmitBox);
         generalPanel.Children.Add(lectureRoundsBox);
         generalPanel.Children.Add(lectureRoundsHint);
+        generalPanel.Children.Add(lectureAnimRoundsBox);
+        generalPanel.Children.Add(lectureAnimRoundsHint);
         generalPanel.Children.Add(tokenLimitsHeader);
         generalPanel.Children.Add(nbLectureSlides);
         generalPanel.Children.Add(nbLectureOutline);
