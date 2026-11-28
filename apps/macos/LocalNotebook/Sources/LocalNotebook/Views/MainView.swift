@@ -221,7 +221,7 @@ struct MainView: View {
                 }
             } label: {
                 HStack(spacing: 5) {
-                    Text(activeNotebookTitle)
+                    Text(L10n.t("nb.switch", en: state.isEnglish))
                         .font(.system(size: 13, weight: .medium))
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
@@ -909,7 +909,7 @@ struct MainView: View {
         let iconName = studioSymbol(for: art.artifactType)
         let running = art.status == "PENDING" || art.status == "RUNNING"
         let hint = running ? state.t("studio.click_thoughts") : (art.status == "FAILED" ? state.t("studio.click_error_log") : "")
-        let age = timeAgo(art.createdAt)
+        let age = timeAgo(art.updatedAt > 0 ? art.updatedAt : art.createdAt)
         Button {
             state.activeArtifact = art
         } label: {

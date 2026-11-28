@@ -244,6 +244,14 @@ pub struct LlmClient {
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<Gate>>>>,
     /// Wait before the first retry of a throttled request (doubles per try, capped at 30s).
     retry_base: Duration,
+    /// User-configurable built-in max_output_tokens ceilings (live-updated from Settings).
+    token_limits: std::sync::Arc<std::sync::RwLock<MaxTokenLimits>>,
+    /// Persistent log file path (`<data_dir>/logs/lna.log`); records INFO+ by default.
+    log_path: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
+    /// Serializes writes & rotation to `log_path`.
+    log_write_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    /// When true, records full API endpoint request & response payloads to `log_path`.
+    debug_mode: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for LlmClient {
@@ -288,6 +296,10 @@ impl LlmClient {
             gates: Default::default(),
             warm: Default::default(),
             retry_base: Duration::from_secs(1),
+            token_limits: std::sync::Arc::new(std::sync::RwLock::new(MaxTokenLimits::default())),
+            log_path: Default::default(),
+            log_write_lock: Default::default(),
+            debug_mode: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -295,6 +307,124 @@ impl LlmClient {
     pub fn with_retry_base(mut self, base: Duration) -> Self {
         self.retry_base = base;
         self
+    }
+
+    pub fn token_limits(&self) -> MaxTokenLimits {
+        self.token_limits
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_token_limits(&self, limits: MaxTokenLimits) {
+        if let Ok(mut g) = self.token_limits.write() {
+            *g = limits;
+        }
+    }
+
+    pub fn configure_logging(&self, path: std::path::PathBuf, debug: bool) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut g) = self.log_path.lock() {
+            *g = Some(path);
+        }
+        self.set_debug_mode(debug);
+    }
+
+    pub fn set_debug_mode(&self, enabled: bool) {
+        self.debug_mode
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn debug_mode(&self) -> bool {
+        self.debug_mode.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn log_path(&self) -> Option<std::path::PathBuf> {
+        self.log_path.lock().ok().and_then(|g| g.clone())
+    }
+
+    pub fn log_size_bytes(&self) -> u64 {
+        let Some(p) = self.log_path() else { return 0 };
+        let cur = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        let prev = std::fs::metadata(rotated_log_path(&p))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        cur.saturating_add(prev)
+    }
+
+    pub fn append_log(&self, level: &str, target: &str, message: &str) {
+        let Some(path) = self.log_path() else { return };
+        let _guard = self
+            .log_write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        const MAX_LOG_BYTES: u64 = 20 * 1024 * 1024;
+        if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) >= MAX_LOG_BYTES {
+            let backup = rotated_log_path(&path);
+            let _ = std::fs::remove_file(&backup);
+            let _ = std::fs::rename(&path, &backup);
+        }
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let ts = lna_types::now_ms();
+            let _ = writeln!(f, "[{ts}] [{level}] [{target}] {message}");
+        }
+    }
+
+    pub fn export_logs(&self, out_path: Option<&Path>) -> LnaResult<serde_json::Value> {
+        let path = self
+            .log_path()
+            .ok_or_else(|| LnaError::internal("Log file is not configured"))?;
+        let _guard = self
+            .log_write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut combined = Vec::new();
+        let backup = rotated_log_path(&path);
+        if let Ok(b) = std::fs::read(&backup) {
+            combined.extend_from_slice(&b);
+        }
+        if let Ok(c) = std::fs::read(&path) {
+            combined.extend_from_slice(&c);
+        }
+        let size = combined.len() as u64;
+        if let Some(dest) = out_path {
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(dest, &combined)
+                .map_err(|e| LnaError::internal(format!("Failed to export logs: {e}")))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "path": dest.to_string_lossy(),
+                "size_bytes": size,
+            }))
+        } else {
+            Ok(serde_json::json!({
+                "ok": true,
+                "content": String::from_utf8_lossy(&combined),
+                "size_bytes": size,
+            }))
+        }
+    }
+
+    pub fn clear_logs(&self) -> LnaResult<()> {
+        let Some(path) = self.log_path() else {
+            return Ok(());
+        };
+        let _guard = self
+            .log_write_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::remove_file(rotated_log_path(&path));
+        let _ = std::fs::write(&path, b"");
+        Ok(())
     }
 
     fn warm_role(&self, key: Option<PrefixKey>) -> WarmRole {
@@ -534,6 +664,24 @@ impl LlmClient {
             }
 
             let http_req = adapter.build(&self.http, &profile, &req)?;
+            let req_started = std::time::Instant::now();
+            let debug_wire = self.debug_mode();
+            let endpoint_sanitized = sanitize_url_for_log(http_req.url().as_str());
+            if debug_wire {
+                let body_str = http_req
+                    .body()
+                    .and_then(|b| b.as_bytes())
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .unwrap_or_default();
+                self.append_log(
+                    "DEBUG",
+                    "lna_llm::wire",
+                    &format!(
+                        ">>> REQUEST protocol={:?} profile={} model={} url={}\n{}",
+                        profile.protocol, profile.id, profile.model_id, endpoint_sanitized, body_str
+                    ),
+                );
+            }
             let resp_res = tokio::select! {
                 _ = cancel.cancelled() => return Err(LnaError::new(ErrorCode::Cancelled, "Cancelled")),
                 r = self.http.execute(http_req) => r,
@@ -562,6 +710,33 @@ impl LlmClient {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<u64>().ok());
                 let body = resp.text().await.unwrap_or_default();
+                let elapsed_ms = req_started.elapsed().as_millis() as u64;
+                self.append_log(
+                    "WARN",
+                    "lna_llm::http",
+                    &format!(
+                        "protocol={:?} profile={} model={} url={} status={} elapsed_ms={}",
+                        profile.protocol,
+                        profile.id,
+                        profile.model_id,
+                        endpoint_sanitized,
+                        status.as_u16(),
+                        elapsed_ms
+                    ),
+                );
+                if debug_wire {
+                    self.append_log(
+                        "DEBUG",
+                        "lna_llm::wire",
+                        &format!(
+                            "<<< ERROR RESPONSE status={} url={} elapsed_ms={}\n{}",
+                            status.as_u16(),
+                            endpoint_sanitized,
+                            elapsed_ms,
+                            body
+                        ),
+                    );
+                }
                 let err = map_http_status(status, &body);
                 if status.as_u16() == 400 {
                     // A model that stops accepting tools or structured output is not quietly
@@ -611,6 +786,9 @@ impl LlmClient {
             let mut parser = SseParser::new();
             let mut byte_stream = resp.bytes_stream();
             let mut stop_reason = None;
+            let mut last_usage = Usage::default();
+            let mut debug_resp_buf: Vec<u8> = Vec::new();
+            const MAX_DEBUG_RESP_BYTES: usize = 4 * 1024 * 1024;
 
             loop {
                 let next_chunk = tokio::select! {
@@ -628,10 +806,22 @@ impl LlmClient {
                         if let Some(l) = leader.as_mut() {
                             l.release();
                         }
+                        if debug_wire && debug_resp_buf.len() < MAX_DEBUG_RESP_BYTES {
+                            let take = bytes
+                                .len()
+                                .min(MAX_DEBUG_RESP_BYTES - debug_resp_buf.len());
+                            debug_resp_buf.extend_from_slice(&bytes[..take]);
+                        }
                         for frame in parser.push(&bytes)? {
                             for ev in decoder.on_frame(frame)? {
-                                if let LlmEvent::Finished { ref reason } = ev {
-                                    stop_reason = Some(reason.clone());
+                                match &ev {
+                                    LlmEvent::Finished { reason } => {
+                                        stop_reason = Some(reason.clone());
+                                    }
+                                    LlmEvent::Usage(u) => {
+                                        last_usage = u.clone();
+                                    }
+                                    _ => {}
                                 }
                                 on_event(ev);
                             }
@@ -681,10 +871,41 @@ impl LlmClient {
                     );
                 }
             }
+            let final_stop = stop_reason.unwrap_or(StopReason::EndTurn);
+            let elapsed_ms = req_started.elapsed().as_millis() as u64;
+            self.append_log(
+                "INFO",
+                "lna_llm::http",
+                &format!(
+                    "protocol={:?} profile={} model={} url={} status=200 stop={:?} in={} out={} cached={} elapsed_ms={}",
+                    profile.protocol,
+                    profile.id,
+                    profile.model_id,
+                    endpoint_sanitized,
+                    final_stop,
+                    last_usage.input_tokens,
+                    last_usage.output_tokens,
+                    last_usage.cached_tokens,
+                    elapsed_ms
+                ),
+            );
+            if debug_wire {
+                self.append_log(
+                    "DEBUG",
+                    "lna_llm::wire",
+                    &format!(
+                        "<<< RESPONSE status=200 url={} stop={:?} elapsed_ms={}\n{}",
+                        endpoint_sanitized,
+                        final_stop,
+                        elapsed_ms,
+                        String::from_utf8_lossy(&debug_resp_buf)
+                    ),
+                );
+            }
             if let Some(s) = slot.as_ref() {
                 s.succeeded();
             }
-            return Ok(stop_reason.unwrap_or(StopReason::EndTurn));
+            return Ok(final_stop);
         }
     }
 
@@ -2074,5 +2295,83 @@ mod degenerate_loop_tests {
         assert!(!has_degenerate_tail_loop(normal));
         let stuck = format!("{{\"a\":\"{}", "abcd".repeat(30));
         assert!(has_degenerate_tail_loop(&stuck));
+    }
+}
+
+fn rotated_log_path(p: &Path) -> std::path::PathBuf {
+    let mut s = p.as_os_str().to_os_string();
+    s.push(".1");
+    std::path::PathBuf::from(s)
+}
+
+fn sanitize_url_for_log(raw: &str) -> String {
+    let Ok(mut u) = reqwest::Url::parse(raw) else {
+        return raw.to_string();
+    };
+    let pairs: Vec<(String, String)> = u
+        .query_pairs()
+        .map(|(k, v)| {
+            let lower = k.to_ascii_lowercase();
+            if lower.contains("key") || lower.contains("token") || lower.contains("secret") {
+                (k.into_owned(), "REDACTED".to_string())
+            } else {
+                (k.into_owned(), v.into_owned())
+            }
+        })
+        .collect();
+    if !pairs.is_empty() {
+        u.query_pairs_mut().clear().extend_pairs(pairs);
+    }
+    u.to_string()
+}
+
+#[cfg(test)]
+mod logging_and_limits_tests {
+    use super::*;
+
+    #[test]
+    fn test_max_token_limits_defaults() {
+        let d = MaxTokenLimits::default();
+        assert_eq!(d.lecture_slides, 32_768);
+        assert_eq!(d.lecture_outline, 16_384);
+        assert_eq!(d.studio_default, 0);
+        assert_eq!(d.studio_aux, 8_192);
+        assert_eq!(d.agent_aux, 4_096);
+        assert_eq!(d.ingest_index, 8_192);
+    }
+
+    #[test]
+    fn test_sanitize_url_for_log() {
+        let u = sanitize_url_for_log("https://generativelanguage.googleapis.com/v1beta/models/gemini:streamGenerateContent?alt=sse&key=SECRET_123");
+        assert!(u.contains("alt=sse"));
+        assert!(!u.contains("SECRET_123"));
+        assert!(u.contains("key=REDACTED"));
+    }
+
+    #[test]
+    fn test_append_and_export_logs() {
+        let tmp = std::env::temp_dir().join(format!("lna_log_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let log_file = tmp.join("lna.log");
+        let export_file = tmp.join("exported.log");
+
+        let client = LlmClient::new();
+        client.configure_logging(log_file.clone(), false);
+        assert!(!client.debug_mode());
+        client.append_log("INFO", "test", "hello info log");
+        client.set_debug_mode(true);
+        assert!(client.debug_mode());
+        client.append_log("DEBUG", "test", "hello debug log");
+
+        let meta = client.export_logs(Some(&export_file)).unwrap();
+        assert!(meta.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0) > 0);
+        let exported = std::fs::read_to_string(&export_file).unwrap();
+        assert!(exported.contains("[INFO] [test] hello info log"));
+        assert!(exported.contains("[DEBUG] [test] hello debug log"));
+
+        client.clear_logs().unwrap();
+        assert_eq!(client.log_size_bytes(), 0);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

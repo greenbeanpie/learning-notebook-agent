@@ -110,6 +110,14 @@ struct UnifiedSettingsSheet: View {
     @State private var maxParallelText = ""
     /// Lecture repair rounds per section ("lecture.limits"); 0 = no repair, no independent review.
     @State private var lectureRepairRounds = 2
+    @State private var limLectureSlides = "32768"
+    @State private var limLectureOutline = "16384"
+    @State private var limStudioDefault = "0"
+    @State private var limStudioAux = "8192"
+    @State private var limAgentAux = "4096"
+    @State private var limIngestIndex = "8192"
+    @State private var debugModeEnabled = false
+    @State private var tokenLimitsNotice = ""
     @State private var priceInText = ""
     @State private var priceOutText = ""
     @State private var extraHeaders: [(id: UUID, key: String, value: String)] = []
@@ -185,6 +193,18 @@ struct UnifiedSettingsSheet: View {
             if let r = await state.run("settings.get", ["key": "lecture.limits"]),
                let v = r["value"] as? [String: Any], let n = v["repair_rounds"] as? Int {
                 lectureRepairRounds = min(max(n, 0), 20)
+            }
+            if let tr = await state.run("settings.token_limits.get", [:]),
+               let lim = tr["limits"] as? [String: Any] {
+                limLectureSlides = String((lim["lecture_slides"] as? NSNumber)?.intValue ?? 32768)
+                limLectureOutline = String((lim["lecture_outline"] as? NSNumber)?.intValue ?? 16384)
+                limStudioDefault = String((lim["studio_default"] as? NSNumber)?.intValue ?? 0)
+                limStudioAux = String((lim["studio_aux"] as? NSNumber)?.intValue ?? 8192)
+                limAgentAux = String((lim["agent_aux"] as? NSNumber)?.intValue ?? 4096)
+                limIngestIndex = String((lim["ingest_index"] as? NSNumber)?.intValue ?? 8192)
+            }
+            if let dr = await state.run("settings.debug.get", [:]) {
+                debugModeEnabled = (dr["enabled"] as? Bool) ?? false
             }
             await loadModelsData()
             await refreshEmbeddingStatus()
@@ -317,7 +337,82 @@ struct UnifiedSettingsSheet: View {
                 }
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
-                .frame(height: 300)
+                .frame(minHeight: 280)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(state.t("settings.token_limits_header"))
+                        .font(.caption.weight(.semibold))
+                    HStack {
+                        Text(state.t("settings.token_limit_lecture_slides")).frame(width: 220, alignment: .leading)
+                        TextField("32768", text: $limLectureSlides).textFieldStyle(.roundedBorder).frame(width: 110)
+                    }
+                    HStack {
+                        Text(state.t("settings.token_limit_lecture_outline")).frame(width: 220, alignment: .leading)
+                        TextField("16384", text: $limLectureOutline).textFieldStyle(.roundedBorder).frame(width: 110)
+                    }
+                    HStack {
+                        Text(state.t("settings.token_limit_studio_default")).frame(width: 220, alignment: .leading)
+                        TextField("0", text: $limStudioDefault).textFieldStyle(.roundedBorder).frame(width: 110)
+                    }
+                    HStack {
+                        Text(state.t("settings.token_limit_studio_aux")).frame(width: 220, alignment: .leading)
+                        TextField("8192", text: $limStudioAux).textFieldStyle(.roundedBorder).frame(width: 110)
+                    }
+                    HStack {
+                        Text(state.t("settings.token_limit_agent_aux")).frame(width: 220, alignment: .leading)
+                        TextField("4096", text: $limAgentAux).textFieldStyle(.roundedBorder).frame(width: 110)
+                    }
+                    HStack {
+                        Text(state.t("settings.token_limit_ingest_index")).frame(width: 220, alignment: .leading)
+                        TextField("8192", text: $limIngestIndex).textFieldStyle(.roundedBorder).frame(width: 110)
+                    }
+                    HStack(spacing: 10) {
+                        Button(state.t("settings.save")) {
+                            Task {
+                                _ = await state.run("settings.token_limits.set", [
+                                    "lecture_slides": max(0, Int(limLectureSlides.trimmingCharacters(in: .whitespaces)) ?? 32768),
+                                    "lecture_outline": max(0, Int(limLectureOutline.trimmingCharacters(in: .whitespaces)) ?? 16384),
+                                    "studio_default": max(0, Int(limStudioDefault.trimmingCharacters(in: .whitespaces)) ?? 0),
+                                    "studio_aux": max(0, Int(limStudioAux.trimmingCharacters(in: .whitespaces)) ?? 8192),
+                                    "agent_aux": max(0, Int(limAgentAux.trimmingCharacters(in: .whitespaces)) ?? 4096),
+                                    "ingest_index": max(0, Int(limIngestIndex.trimmingCharacters(in: .whitespaces)) ?? 8192),
+                                ])
+                                tokenLimitsNotice = state.t("settings.saved")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button(state.t("settings.token_limits_reset")) {
+                            Task {
+                                if let r = await state.run("settings.token_limits.reset", [:]),
+                                   let lim = r["limits"] as? [String: Any] {
+                                    limLectureSlides = String((lim["lecture_slides"] as? NSNumber)?.intValue ?? 32768)
+                                    limLectureOutline = String((lim["lecture_outline"] as? NSNumber)?.intValue ?? 16384)
+                                    limStudioDefault = String((lim["studio_default"] as? NSNumber)?.intValue ?? 0)
+                                    limStudioAux = String((lim["studio_aux"] as? NSNumber)?.intValue ?? 8192)
+                                    limAgentAux = String((lim["agent_aux"] as? NSNumber)?.intValue ?? 4096)
+                                    limIngestIndex = String((lim["ingest_index"] as? NSNumber)?.intValue ?? 8192)
+                                    tokenLimitsNotice = state.t("settings.token_limits_reset_done")
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    if !tokenLimitsNotice.isEmpty {
+                        Text(tokenLimitsNotice).font(.caption).foregroundColor(.secondary)
+                    }
+
+                    Divider().padding(.vertical, 4)
+
+                    Toggle(state.t("settings.debug_mode"), isOn: $debugModeEnabled)
+                        .onChange(of: debugModeEnabled) { _, on in
+                            Task { _ = await state.run("settings.debug.set", ["enabled": on]) }
+                        }
+                    Text(state.t("settings.debug_mode_hint"))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 14)
 
                 HStack(spacing: 10) {
                     Button(state.t("nb.privacy")) {
@@ -327,6 +422,11 @@ struct UnifiedSettingsSheet: View {
 
                     Button(state.t("nb.export_diag")) {
                         state.exportDiagnostics()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button(state.t("settings.export_logs")) {
+                        state.exportLogs()
                     }
                     .buttonStyle(.bordered)
 

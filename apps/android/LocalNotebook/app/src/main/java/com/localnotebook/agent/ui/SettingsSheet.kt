@@ -16,6 +16,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.localnotebook.agent.core.L10n
+import com.localnotebook.agent.core.MaxTokenLimitsConfig
 import com.localnotebook.agent.core.MediaRoutingConfig
 import com.localnotebook.agent.core.ModelProfileItem
 import com.localnotebook.agent.core.ProviderPresetItem
@@ -30,6 +31,12 @@ fun UnifiedSettingsSheet(
     mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
     lectureRepairRounds: Int = 2,
     onSaveLectureRepairRounds: (Int) -> Unit = {},
+    tokenLimits: MaxTokenLimitsConfig = MaxTokenLimitsConfig(),
+    onSaveTokenLimits: (MaxTokenLimitsConfig) -> Unit = {},
+    onResetTokenLimits: () -> Unit = {},
+    debugMode: Boolean = false,
+    onToggleDebugMode: (Boolean) -> Unit = {},
+    onExportLogs: () -> Unit = {},
     onSavePrefs: (UiPreferences) -> Unit,
     onSaveModel: (
         profileId: String?,
@@ -219,6 +226,56 @@ fun UnifiedSettingsSheet(
 
                         Button(onClick = { onSavePrefs(draftPrefs) }, modifier = Modifier.fillMaxWidth()) {
                             Text(L10n.t("settings.save", en))
+                        }
+
+                        HorizontalDivider()
+                        Text(L10n.t("settings.token_limits_header", en), style = MaterialTheme.typography.titleSmall)
+                        var tLecSlides by remember(tokenLimits) { mutableStateOf(tokenLimits.lectureSlides.toString()) }
+                        var tLecOutline by remember(tokenLimits) { mutableStateOf(tokenLimits.lectureOutline.toString()) }
+                        var tStudioDef by remember(tokenLimits) { mutableStateOf(tokenLimits.studioDefault.toString()) }
+                        var tStudioAux by remember(tokenLimits) { mutableStateOf(tokenLimits.studioAux.toString()) }
+                        var tAgentAux by remember(tokenLimits) { mutableStateOf(tokenLimits.agentAux.toString()) }
+                        var tIngestIdx by remember(tokenLimits) { mutableStateOf(tokenLimits.ingestIndex.toString()) }
+                        OutlinedTextField(value = tLecSlides, onValueChange = { tLecSlides = it }, label = { Text(L10n.t("settings.token_limit_lecture_slides", en)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = tLecOutline, onValueChange = { tLecOutline = it }, label = { Text(L10n.t("settings.token_limit_lecture_outline", en)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = tStudioDef, onValueChange = { tStudioDef = it }, label = { Text(L10n.t("settings.token_limit_studio_default", en)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = tStudioAux, onValueChange = { tStudioAux = it }, label = { Text(L10n.t("settings.token_limit_studio_aux", en)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = tAgentAux, onValueChange = { tAgentAux = it }, label = { Text(L10n.t("settings.token_limit_agent_aux", en)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = tIngestIdx, onValueChange = { tIngestIdx = it }, label = { Text(L10n.t("settings.token_limit_ingest_index", en)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    onSaveTokenLimits(
+                                        MaxTokenLimitsConfig(
+                                            lectureSlides = tLecSlides.trim().toIntOrNull()?.coerceAtLeast(0) ?: 32768,
+                                            lectureOutline = tLecOutline.trim().toIntOrNull()?.coerceAtLeast(0) ?: 16384,
+                                            studioDefault = tStudioDef.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0,
+                                            studioAux = tStudioAux.trim().toIntOrNull()?.coerceAtLeast(0) ?: 8192,
+                                            agentAux = tAgentAux.trim().toIntOrNull()?.coerceAtLeast(0) ?: 4096,
+                                            ingestIndex = tIngestIdx.trim().toIntOrNull()?.coerceAtLeast(0) ?: 8192,
+                                        )
+                                    )
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(L10n.t("settings.save", en)) }
+                            OutlinedButton(onClick = onResetTokenLimits, modifier = Modifier.weight(1f)) {
+                                Text(L10n.t("settings.token_limits_reset", en))
+                            }
+                        }
+
+                        HorizontalDivider()
+                        Text(L10n.t("settings.debug_section", en), style = MaterialTheme.typography.titleSmall)
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text(L10n.t("settings.debug_mode", en), modifier = Modifier.weight(1f))
+                            Switch(checked = debugMode, onCheckedChange = onToggleDebugMode)
+                        }
+                        Text(
+                            L10n.t("settings.debug_mode_hint", en),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedButton(onClick = onExportLogs, modifier = Modifier.fillMaxWidth()) {
+                            Text(L10n.t("settings.export_logs", en))
                         }
                     }
 

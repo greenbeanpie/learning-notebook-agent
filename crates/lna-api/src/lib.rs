@@ -73,6 +73,42 @@ impl CoreRuntime {
         for prof in lna_storage::list_profiles(&db).unwrap_or_default() {
             llm.set_parallel_limit(&prof.id, prof.max_parallel);
         }
+        let saved_debug: bool = db
+            .read(|conn| {
+                Ok(conn
+                    .query_row(
+                        "SELECT value_json FROM app_settings WHERE key='debug_mode'",
+                        [],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<bool>(&s).ok())
+                    .unwrap_or(false))
+            })
+            .unwrap_or(false);
+        llm.configure_logging(db.paths().root.join("logs").join("lna.log"), saved_debug);
+        if let Ok(Some(raw_limits)) = db.read(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT value_json FROM app_settings WHERE key='max_token_limits'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok())
+        }) {
+            if let Ok(parsed) = serde_json::from_str::<lna_llm::MaxTokenLimits>(&raw_limits) {
+                llm.set_token_limits(parsed);
+            }
+        }
+        llm.append_log(
+            "INFO",
+            "lna_api::core",
+            &format!(
+                "Core opened (version={}, debug_mode={})",
+                env!("CARGO_PKG_VERSION"),
+                saved_debug
+            ),
+        );
         let embedding = EmbeddingService::new(db.clone(), secrets.clone());
         let retrieval = Arc::new(RetrievalEngine::new(db.clone(), embedding.clone()));
         let (events, _) = broadcast::channel(512);
@@ -740,6 +776,90 @@ impl CoreRuntime {
                     .map_err(map_sql_err)?;
                     Ok(())
                 })?;
+                Ok(json!({ "ok": true }))
+            }
+            "settings.token_limits.get" => Ok(json!({
+                "limits": self.llm.token_limits(),
+                "defaults": lna_llm::MaxTokenLimits::default(),
+            })),
+            "settings.token_limits.set" => {
+                let val = p.get("limits").cloned().unwrap_or_else(|| p.clone());
+                let limits: lna_llm::MaxTokenLimits = serde_json::from_value(val)
+                    .map_err(|e| LnaError::invalid(format!("Invalid max_token_limits: {e}")))?;
+                let raw = serde_json::to_string(&limits).unwrap_or_default();
+                self.db.write(|conn| {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO app_settings (key, value_json) VALUES ('max_token_limits', ?1)",
+                        [raw],
+                    )
+                    .map_err(map_sql_err)?;
+                    Ok(())
+                })?;
+                self.llm.set_token_limits(limits.clone());
+                self.llm.append_log(
+                    "INFO",
+                    "lna_api::settings",
+                    &format!("Updated max_token_limits: {:?}", limits),
+                );
+                Ok(json!({
+                    "ok": true,
+                    "limits": limits,
+                    "defaults": lna_llm::MaxTokenLimits::default(),
+                }))
+            }
+            "settings.token_limits.reset" => {
+                let defaults = lna_llm::MaxTokenLimits::default();
+                self.db.write(|conn| {
+                    conn.execute("DELETE FROM app_settings WHERE key='max_token_limits'", [])
+                        .map_err(map_sql_err)?;
+                    Ok(())
+                })?;
+                self.llm.set_token_limits(defaults.clone());
+                self.llm.append_log(
+                    "INFO",
+                    "lna_api::settings",
+                    "Reset max_token_limits to official defaults",
+                );
+                Ok(json!({
+                    "ok": true,
+                    "limits": defaults,
+                    "defaults": lna_llm::MaxTokenLimits::default(),
+                }))
+            }
+            "settings.debug.get" => Ok(json!({
+                "enabled": self.llm.debug_mode(),
+                "log_path": self.llm.log_path().map(|p| p.to_string_lossy().into_owned()),
+                "size_bytes": self.llm.log_size_bytes(),
+            })),
+            "settings.debug.set" => {
+                let enabled = p.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+                self.db.write(|conn| {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO app_settings (key, value_json) VALUES ('debug_mode', ?1)",
+                        [if enabled { "true" } else { "false" }],
+                    )
+                    .map_err(map_sql_err)?;
+                    Ok(())
+                })?;
+                self.llm.set_debug_mode(enabled);
+                self.llm.append_log(
+                    "INFO",
+                    "lna_api::settings",
+                    &format!("Debug mode set to {enabled}"),
+                );
+                Ok(json!({ "ok": true, "enabled": enabled }))
+            }
+            "logs.export" => {
+                let out_path = p
+                    .get("out_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(std::path::Path::new);
+                self.llm.export_logs(out_path)
+            }
+            "logs.clear" => {
+                self.llm.clear_logs()?;
                 Ok(json!({ "ok": true }))
             }
 

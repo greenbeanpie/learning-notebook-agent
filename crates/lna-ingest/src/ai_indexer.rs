@@ -298,7 +298,7 @@ pub async fn run_ai_index_nodes(
     let req = LlmRequest::simple(
         AI_NODES_SYSTEM_PROMPT,
         probe,
-        resolved.bounded_output(8192),
+        resolved.bounded_output(llm.token_limits().ingest_index),
     )
     .with_output(OutputMode::JsonObject);
     let (value, usage) = llm
@@ -356,7 +356,7 @@ pub async fn run_ai_guide(
     let req = LlmRequest::simple(
         AI_GUIDE_SYSTEM_PROMPT,
         text,
-        resolved.bounded_output(4096),
+        resolved.bounded_output(llm.token_limits().ingest_index),
     )
     .with_output(OutputMode::JsonObject);
     let (value, usage) = llm

@@ -181,7 +181,7 @@ fun StudioScreen(
                 ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(art.title, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        val age = timeAgo(art.createdAt, now, en)
+                        val age = timeAgo(if (art.updatedAt > 0L) art.updatedAt else art.createdAt, now, en)
                         Text(
                             "${L10n.t("studio.${if (art.isKnowledgeGraph) "knowledge_graph" else art.artifactType}", en)} · ${artifactStatusLabel(art, en)}${if (age.isNotEmpty()) " · $age" else ""}",
                             style = MaterialTheme.typography.labelMedium,

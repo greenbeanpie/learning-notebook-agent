@@ -45,6 +45,8 @@ data class AppUiState(
     val mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
     /** Lecture repair rounds per section ("lecture.limits"); 0 = no repair, no independent review. */
     val lectureRepairRounds: Int = 2,
+    val tokenLimits: MaxTokenLimitsConfig = MaxTokenLimitsConfig(),
+    val debugMode: Boolean = false,
     val statusBanner: String = "",
     val isSendingChat: Boolean = false,
     val showCreateNotebook: Boolean = false,
@@ -74,6 +76,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             loadModelProfiles()
             loadMediaRouting()
             loadLectureLimits()
+            loadTokenLimitsAndDebug()
             loadInitialNotebook()
             launch {
                 core.events.collect { ev ->
@@ -496,6 +499,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     outputDir = a.optString("output_dir", ""),
                     progressState = a.optJSONObject("progress_state") ?: JSONObject(),
                     createdAt = a.optLong("created_at", 0L),
+                    updatedAt = a.optLong("updated_at", 0L),
                 )
             }
 
@@ -910,6 +914,93 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     "settings.set",
                     JSONObject().put("key", "lecture.limits").put("value", JSONObject().put("repair_rounds", n)),
                 )
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    private fun loadTokenLimitsAndDebug() {
+        viewModelScope.launch {
+            runCatching {
+                val tr = core.call("settings.token_limits.get", JSONObject())
+                val lim = tr.optJSONObject("limits")
+                if (lim != null) {
+                    _ui.update {
+                        it.copy(
+                            tokenLimits = MaxTokenLimitsConfig(
+                                lectureSlides = lim.optInt("lecture_slides", 32768),
+                                lectureOutline = lim.optInt("lecture_outline", 16384),
+                                studioDefault = lim.optInt("studio_default", 0),
+                                studioAux = lim.optInt("studio_aux", 8192),
+                                agentAux = lim.optInt("agent_aux", 4096),
+                                ingestIndex = lim.optInt("ingest_index", 8192),
+                            )
+                        )
+                    }
+                }
+                val dr = core.call("settings.debug.get", JSONObject())
+                _ui.update { it.copy(debugMode = dr.optBoolean("enabled", false)) }
+            }
+        }
+    }
+
+    fun saveTokenLimits(cfg: MaxTokenLimitsConfig) {
+        _ui.update { it.copy(tokenLimits = cfg) }
+        viewModelScope.launch {
+            runCatching {
+                core.call(
+                    "settings.token_limits.set",
+                    JSONObject()
+                        .put("lecture_slides", cfg.lectureSlides.coerceAtLeast(0))
+                        .put("lecture_outline", cfg.lectureOutline.coerceAtLeast(0))
+                        .put("studio_default", cfg.studioDefault.coerceAtLeast(0))
+                        .put("studio_aux", cfg.studioAux.coerceAtLeast(0))
+                        .put("agent_aux", cfg.agentAux.coerceAtLeast(0))
+                        .put("ingest_index", cfg.ingestIndex.coerceAtLeast(0)),
+                )
+                _ui.update { it.copy(statusMessage = L10n.t("settings.saved", it.prefs.isEnglish)) }
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun resetTokenLimits() {
+        viewModelScope.launch {
+            runCatching {
+                val r = core.call("settings.token_limits.reset", JSONObject())
+                val lim = r.optJSONObject("limits")
+                val cfg = if (lim != null) {
+                    MaxTokenLimitsConfig(
+                        lectureSlides = lim.optInt("lecture_slides", 32768),
+                        lectureOutline = lim.optInt("lecture_outline", 16384),
+                        studioDefault = lim.optInt("studio_default", 0),
+                        studioAux = lim.optInt("studio_aux", 8192),
+                        agentAux = lim.optInt("agent_aux", 4096),
+                        ingestIndex = lim.optInt("ingest_index", 8192),
+                    )
+                } else MaxTokenLimitsConfig()
+                _ui.update { it.copy(tokenLimits = cfg, statusMessage = L10n.t("settings.token_limits_reset_done", it.prefs.isEnglish)) }
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun setDebugMode(enabled: Boolean) {
+        _ui.update { it.copy(debugMode = enabled) }
+        viewModelScope.launch {
+            runCatching {
+                core.call("settings.debug.set", JSONObject().put("enabled", enabled))
+            }.onFailure { reportError(it) }
+        }
+    }
+
+    fun exportLogs() {
+        viewModelScope.launch {
+            runCatching {
+                val ctx = getApplication<Application>()
+                val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
+                val outFile = File(dir, "local-notebook-logs.log")
+                core.call("logs.export", JSONObject().put("out_path", outFile.absolutePath))
+                _ui.update {
+                    it.copy(statusMessage = String.format(L10n.t("settings.export_logs_done", it.prefs.isEnglish), outFile.absolutePath))
+                }
             }.onFailure { reportError(it) }
         }
     }

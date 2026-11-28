@@ -2798,8 +2798,113 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
             st_diag.status_label.set_text(&trf(st_diag.is_en(), "art.diagnostics_exported_to", &[&out_path.display()]));
         }
     });
+    let gen_export_logs_btn = Button::with_label(tr(en, "settings.export_logs"));
+    gen_export_logs_btn.add_css_class("lna-pill-btn");
+    let st_logs = st.clone();
+    gen_export_logs_btn.connect_clicked(move |_| {
+        let out_dir = dirs::download_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let out_path = out_dir.join("local-notebook-logs.log");
+        if call_core(&st_logs.core, "logs.export", json!({ "out_path": out_path.to_string_lossy() })).is_ok() {
+            st_logs.status_label.set_text(&trf(st_logs.is_en(), "settings.export_logs_done", &[&out_path.display()]));
+        }
+    });
     gen_extra_row.append(&gen_privacy_btn);
     gen_extra_row.append(&gen_diag_btn);
+    gen_extra_row.append(&gen_export_logs_btn);
+
+    // Built-in Max Token limits
+    let tok_val = call_core(&st.core, "settings.token_limits.get", json!({}))
+        .ok()
+        .and_then(|v| v.get("limits").cloned())
+        .unwrap_or_else(|| json!({}));
+    let make_tok_spin = |key: &str, def: f64| -> SpinButton {
+        let cur = tok_val.get(key).and_then(Value::as_f64).unwrap_or(def);
+        let sb = SpinButton::with_range(0.0, 1_000_000.0, 1024.0);
+        sb.set_digits(0);
+        sb.set_value(cur);
+        sb
+    };
+    let sp_lec_slides = make_tok_spin("lecture_slides", 32768.0);
+    let sp_lec_outline = make_tok_spin("lecture_outline", 16384.0);
+    let sp_studio_def = make_tok_spin("studio_default", 0.0);
+    let sp_studio_aux = make_tok_spin("studio_aux", 8192.0);
+    let sp_agent_aux = make_tok_spin("agent_aux", 4096.0);
+    let sp_ingest_idx = make_tok_spin("ingest_index", 8192.0);
+    let tok_updating = Rc::new(RefCell::new(false));
+    let save_tok_limits = {
+        let core = st.core.clone();
+        let u = tok_updating.clone();
+        let s1 = sp_lec_slides.clone();
+        let s2 = sp_lec_outline.clone();
+        let s3 = sp_studio_def.clone();
+        let s4 = sp_studio_aux.clone();
+        let s5 = sp_agent_aux.clone();
+        let s6 = sp_ingest_idx.clone();
+        move || {
+            if *u.borrow() { return; }
+            let _ = call_core(&core, "settings.token_limits.set", json!({
+                "lecture_slides": s1.value() as u32,
+                "lecture_outline": s2.value() as u32,
+                "studio_default": s3.value() as u32,
+                "studio_aux": s4.value() as u32,
+                "agent_aux": s5.value() as u32,
+                "ingest_index": s6.value() as u32,
+            }));
+        }
+    };
+    for sp in [&sp_lec_slides, &sp_lec_outline, &sp_studio_def, &sp_studio_aux, &sp_agent_aux, &sp_ingest_idx] {
+        let f = save_tok_limits.clone();
+        sp.connect_value_changed(move |_| f());
+    }
+    let tok_reset_btn = Button::with_label(tr(en, "settings.token_limits_reset"));
+    tok_reset_btn.add_css_class("lna-pill-btn");
+    {
+        let st_r = st.clone();
+        let u = tok_updating.clone();
+        let s1 = sp_lec_slides.clone();
+        let s2 = sp_lec_outline.clone();
+        let s3 = sp_studio_def.clone();
+        let s4 = sp_studio_aux.clone();
+        let s5 = sp_agent_aux.clone();
+        let s6 = sp_ingest_idx.clone();
+        tok_reset_btn.connect_clicked(move |_| {
+            if let Ok(v) = call_core(&st_r.core, "settings.token_limits.reset", json!({})) {
+                if let Some(lim) = v.get("limits") {
+                    *u.borrow_mut() = true;
+                    s1.set_value(lim.get("lecture_slides").and_then(Value::as_f64).unwrap_or(32768.0));
+                    s2.set_value(lim.get("lecture_outline").and_then(Value::as_f64).unwrap_or(16384.0));
+                    s3.set_value(lim.get("studio_default").and_then(Value::as_f64).unwrap_or(0.0));
+                    s4.set_value(lim.get("studio_aux").and_then(Value::as_f64).unwrap_or(8192.0));
+                    s5.set_value(lim.get("agent_aux").and_then(Value::as_f64).unwrap_or(4096.0));
+                    s6.set_value(lim.get("ingest_index").and_then(Value::as_f64).unwrap_or(8192.0));
+                    *u.borrow_mut() = false;
+                    st_r.status_label.set_text(tr(st_r.is_en(), "settings.token_limits_reset_done"));
+                }
+            }
+        });
+    }
+
+    // Debug mode toggle
+    let debug_init = call_core(&st.core, "settings.debug.get", json!({}))
+        .ok()
+        .and_then(|v| v.get("enabled").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let debug_row = GtkBox::new(Orientation::Horizontal, 8);
+    let debug_lbl = Label::new(Some(tr(en, "settings.debug_mode")));
+    debug_lbl.set_hexpand(true);
+    debug_lbl.set_xalign(0.0);
+    let debug_sw = Switch::new();
+    debug_sw.set_active(debug_init);
+    let core_dbg = st.core.clone();
+    debug_sw.connect_active_notify(move |sw| {
+        let _ = call_core(&core_dbg, "settings.debug.set", json!({ "enabled": sw.is_active() }));
+    });
+    debug_row.append(&debug_lbl);
+    debug_row.append(&debug_sw);
+    let debug_hint = Label::new(Some(tr(en, "settings.debug_mode_hint")));
+    debug_hint.set_wrap(true);
+    debug_hint.set_xalign(0.0);
+    debug_hint.add_css_class("dim-label");
 
     gen_box.append(&exp_row);
     gen_box.append(&sug_row);
@@ -2816,6 +2921,28 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     lecture_rounds_hint.set_xalign(0.0);
     lecture_rounds_hint.add_css_class("dim-label");
     gen_box.append(&lecture_rounds_hint);
+    let tok_hdr = Label::new(Some(tr(en, "settings.token_limits_header")));
+    tok_hdr.set_xalign(0.0);
+    gen_box.append(&tok_hdr);
+    for (lbl_k, sp) in [
+        ("settings.token_limit_lecture_slides", &sp_lec_slides),
+        ("settings.token_limit_lecture_outline", &sp_lec_outline),
+        ("settings.token_limit_studio_default", &sp_studio_def),
+        ("settings.token_limit_studio_aux", &sp_studio_aux),
+        ("settings.token_limit_agent_aux", &sp_agent_aux),
+        ("settings.token_limit_ingest_index", &sp_ingest_idx),
+    ] {
+        let r = GtkBox::new(Orientation::Horizontal, 8);
+        let l = Label::new(Some(tr(en, lbl_k)));
+        l.set_hexpand(true);
+        l.set_xalign(0.0);
+        r.append(&l);
+        r.append(sp);
+        gen_box.append(&r);
+    }
+    gen_box.append(&tok_reset_btn);
+    gen_box.append(&debug_row);
+    gen_box.append(&debug_hint);
     gen_box.append(&gen_extra_row);
     gen_box.append(&save_prefs_btn);
 
@@ -4033,7 +4160,8 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     emb_box.append(&emb_actions);
 
     tabs.append_page(&app_box, Some(&Label::new(Some(tr(en, "settings.tab_appearance")))));
-    tabs.append_page(&gen_box, Some(&Label::new(Some(tr(en, "settings.tab_general")))));
+    let gen_scroll = ScrolledWindow::builder().child(&gen_box).vexpand(true).build();
+    tabs.append_page(&gen_scroll, Some(&Label::new(Some(tr(en, "settings.tab_general")))));
     tabs.append_page(&model_scroll, Some(&Label::new(Some(tr(en, "settings.tab_models")))));
     tabs.append_page(&emb_box, Some(&Label::new(Some(tr(en, "settings.tab_embedding")))));
 

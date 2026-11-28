@@ -97,8 +97,18 @@ data class StudioArtifactItem(
     val errorLog: String,
     val outputDir: String = "",
     val progressState: org.json.JSONObject = org.json.JSONObject(),
-    /** Unix ms when the artifact was created (the Studio list shows its age). */
+    /** Unix ms when the artifact was created/updated (the Studio list shows updatedAt). */
     val createdAt: Long = 0L,
+    val updatedAt: Long = 0L,
+)
+
+data class MaxTokenLimitsConfig(
+    val lectureSlides: Int = 32768,
+    val lectureOutline: Int = 16384,
+    val studioDefault: Int = 0,
+    val studioAux: Int = 8192,
+    val agentAux: Int = 4096,
+    val ingestIndex: Int = 8192,
 )
 
 data class PdfPreviewTarget(

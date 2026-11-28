@@ -53,6 +53,22 @@ public sealed partial class MainWindow
             && lv.TryGetProperty("repair_rounds", out var rr) && rr.ValueKind == JsonValueKind.Number && rr.TryGetInt32(out var rrn))
             lectureRounds = Math.Clamp(rrn, 0, 20);
 
+        // Built-in max_token limits & Debug logging state
+        int limLectureSlides = 32768, limLectureOutline = 16384, limStudioDefault = 0, limStudioAux = 8192, limAgentAux = 4096, limIngestIndex = 8192;
+        var tokRes = await Api.CallAsync("settings.token_limits.get", Args());
+        if (tokRes.Result is { } tr && tr.TryGetProperty("limits", out var tl) && tl.ValueKind == JsonValueKind.Object)
+        {
+            limLectureSlides = (int)Int(tl, "lecture_slides", 32768);
+            limLectureOutline = (int)Int(tl, "lecture_outline", 16384);
+            limStudioDefault = (int)Int(tl, "studio_default", 0);
+            limStudioAux = (int)Int(tl, "studio_aux", 8192);
+            limAgentAux = (int)Int(tl, "agent_aux", 4096);
+            limIngestIndex = (int)Int(tl, "ingest_index", 8192);
+        }
+        var debugEnabled = false;
+        var dbgRes = await Api.CallAsync("settings.debug.get", Args());
+        if (dbgRes.Result is { } dr) debugEnabled = Bool(dr, "enabled");
+
         // ---- Tab 1: Appearance & Interface ----
         var langBox = new ComboBox { Header = L10n.T("settings.language"), HorizontalAlignment = HorizontalAlignment.Stretch };
         var langOpts = new[] { (L10n.T("settings.lang_auto"), "auto"), (L10n.T("settings.lang_zh"), "zh-CN"), (L10n.T("settings.lang_en"), "en-US") };
@@ -114,6 +130,80 @@ public sealed partial class MainWindow
             await Api.CallAsync("settings.set", Args(("key", "lecture.limits"), ("value", Args(("repair_rounds", (int)Math.Clamp(a.NewValue, 0, 20))))));
         };
 
+        // Built-in Max Token limits
+        var tokenLimitsHeader = new TextBlock { Text = L10n.T("settings.token_limits_header"), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) };
+        NumberBox MakeTokenBox(string labelKey, int val) => new()
+        {
+            Header = L10n.T(labelKey),
+            Value = val,
+            Minimum = 0,
+            Maximum = 1000000,
+            SmallChange = 1024,
+            LargeChange = 4096,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+        };
+        var nbLectureSlides = MakeTokenBox("settings.token_limit_lecture_slides", limLectureSlides);
+        var nbLectureOutline = MakeTokenBox("settings.token_limit_lecture_outline", limLectureOutline);
+        var nbStudioDefault = MakeTokenBox("settings.token_limit_studio_default", limStudioDefault);
+        var nbStudioAux = MakeTokenBox("settings.token_limit_studio_aux", limStudioAux);
+        var nbAgentAux = MakeTokenBox("settings.token_limit_agent_aux", limAgentAux);
+        var nbIngestIndex = MakeTokenBox("settings.token_limit_ingest_index", limIngestIndex);
+        var tokenLimitsStatus = new TextBlock { FontSize = 12, Opacity = 0.75, TextWrapping = TextWrapping.Wrap };
+        var updatingTokenLimits = false;
+        async Task SaveTokenLimitsAsync()
+        {
+            if (updatingTokenLimits) return;
+            static int SafeInt(NumberBox b) => double.IsNaN(b.Value) ? 0 : (int)Math.Clamp(b.Value, 0, 1000000);
+            await Api.CallAsync("settings.token_limits.set", Args(
+                ("lecture_slides", SafeInt(nbLectureSlides)),
+                ("lecture_outline", SafeInt(nbLectureOutline)),
+                ("studio_default", SafeInt(nbStudioDefault)),
+                ("studio_aux", SafeInt(nbStudioAux)),
+                ("agent_aux", SafeInt(nbAgentAux)),
+                ("ingest_index", SafeInt(nbIngestIndex))
+            ));
+        }
+        foreach (var box in new[] { nbLectureSlides, nbLectureOutline, nbStudioDefault, nbStudioAux, nbAgentAux, nbIngestIndex })
+            box.ValueChanged += async (_, _) => await SaveTokenLimitsAsync();
+
+        var resetTokenLimitsBtn = new Button { Content = L10n.T("settings.token_limits_reset"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        resetTokenLimitsBtn.Click += async (_, _) =>
+        {
+            var r = await CoreAsync("settings.token_limits.reset", Args(), L10n.T("settings.token_limits_reset"));
+            if (r is { } rr && rr.TryGetProperty("limits", out var tl) && tl.ValueKind == JsonValueKind.Object)
+            {
+                updatingTokenLimits = true;
+                try
+                {
+                    nbLectureSlides.Value = Int(tl, "lecture_slides", 32768);
+                    nbLectureOutline.Value = Int(tl, "lecture_outline", 16384);
+                    nbStudioDefault.Value = Int(tl, "studio_default", 0);
+                    nbStudioAux.Value = Int(tl, "studio_aux", 8192);
+                    nbAgentAux.Value = Int(tl, "agent_aux", 4096);
+                    nbIngestIndex.Value = Int(tl, "ingest_index", 8192);
+                }
+                finally { updatingTokenLimits = false; }
+                tokenLimitsStatus.Text = L10n.T("settings.token_limits_reset_done");
+            }
+        };
+
+        // Logging & Debug mode
+        var debugHeader = new TextBlock { Text = L10n.T("settings.debug_section"), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 0) };
+        var debugModeToggle = new ToggleSwitch { Header = L10n.T("settings.debug_mode"), IsOn = debugEnabled };
+        var debugModeHint = new TextBlock { Text = L10n.T("settings.debug_mode_hint"), TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };
+        debugModeToggle.Toggled += async (_, _) =>
+        {
+            await Api.CallAsync("settings.debug.set", Args(("enabled", debugModeToggle.IsOn)));
+        };
+        var exportLogsBtn = new Button { Content = L10n.T("settings.export_logs"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
+        exportLogsBtn.Click += async (_, _) =>
+        {
+            var path = await PickSaveFileAsync("local-notebook-logs", L10n.T("settings.export_logs"), ".log");
+            if (path == null) return;
+            if (await CoreAsync("logs.export", Args(("out_path", path)), L10n.T("settings.export_logs")) != null)
+                ShowStatus(InfoBarSeverity.Success, L10n.T("settings.export_logs"), L10n.Fmt("settings.export_logs_done", path));
+        };
+
         var diagBtn = new Button { Content = L10n.T("settings.diag_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
         diagBtn.Click += OnExportDiagnosticsClick;
         var privacyBtn = new Button { Content = L10n.T("settings.privacy_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
@@ -121,6 +211,7 @@ public sealed partial class MainWindow
         var generalActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(0, 6, 0, 0) };
         generalActions.Children.Add(privacyBtn);
         generalActions.Children.Add(diagBtn);
+        generalActions.Children.Add(exportLogsBtn);
 
         var generalPanel = new StackPanel { Spacing = 12, Padding = new Thickness(4, 8, 4, 8) };
         generalPanel.Children.Add(expandThoughtsToggle);
@@ -130,6 +221,18 @@ public sealed partial class MainWindow
         generalPanel.Children.Add(quizSubmitBox);
         generalPanel.Children.Add(lectureRoundsBox);
         generalPanel.Children.Add(lectureRoundsHint);
+        generalPanel.Children.Add(tokenLimitsHeader);
+        generalPanel.Children.Add(nbLectureSlides);
+        generalPanel.Children.Add(nbLectureOutline);
+        generalPanel.Children.Add(nbStudioDefault);
+        generalPanel.Children.Add(nbStudioAux);
+        generalPanel.Children.Add(nbAgentAux);
+        generalPanel.Children.Add(nbIngestIndex);
+        generalPanel.Children.Add(resetTokenLimitsBtn);
+        generalPanel.Children.Add(tokenLimitsStatus);
+        generalPanel.Children.Add(debugHeader);
+        generalPanel.Children.Add(debugModeToggle);
+        generalPanel.Children.Add(debugModeHint);
         generalPanel.Children.Add(generalActions);
 
         async Task SaveUiPrefsAsync()

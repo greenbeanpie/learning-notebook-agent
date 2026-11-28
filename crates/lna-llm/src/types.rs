@@ -8,6 +8,38 @@ use std::collections::BTreeMap;
 /// (`max_output_tokens == 0`).
 pub const UNLIMITED_OUTPUT_FALLBACK_TOKENS: u32 = 32_000;
 
+/// User-configurable built-in max_output_tokens ceilings per subsystem.
+/// `0` means "follow the model profile (no extra cap)".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MaxTokenLimits {
+    /// Hard cap per batch for lecture slide authoring & repair (official default: 32768).
+    pub lecture_slides: u32,
+    /// Hard cap for lecture outline & per-page skeleton (official default: 16384).
+    pub lecture_outline: u32,
+    /// Optional ceiling for general Studio artifact payloads (0 = follow model profile).
+    pub studio_default: u32,
+    /// Ceiling for Studio auxiliary calls (outlines, storyboards, digest reduction; default: 8192).
+    pub studio_aux: u32,
+    /// Ceiling for Chat auxiliary calls (query rewrite, summary, followups; default: 4096).
+    pub agent_aux: u32,
+    /// Ceiling for Ingest calls (AI index, guide, attachment extraction; default: 8192).
+    pub ingest_index: u32,
+}
+
+impl Default for MaxTokenLimits {
+    fn default() -> Self {
+        Self {
+            lecture_slides: 32_768,
+            lecture_outline: 16_384,
+            studio_default: 0,
+            studio_aux: 8_192,
+            agent_aux: 4_096,
+            ingest_index: 8_192,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {

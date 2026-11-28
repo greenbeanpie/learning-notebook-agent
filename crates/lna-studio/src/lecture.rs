@@ -1837,7 +1837,12 @@ impl StudioService {
             sc.section_focus,
             sc.extra
         );
-        let max_out = resolved.hard_output_cap(LECTURE_MAX_OUTPUT_TOKENS);
+        let limits = self.llm.token_limits();
+        let max_out = if limits.lecture_slides == 0 {
+            resolved.max_output_tokens
+        } else {
+            resolved.hard_output_cap(limits.lecture_slides)
+        };
         let mk_req = |sys: String, text: String, cap: u32| {
             with_images(
                 LlmRequest::simple(sys, text, cap).with_reasoning(reasoning.clone()),
@@ -1902,7 +1907,8 @@ impl StudioService {
                 let skel_user = format!(
                     "{user}\n\nPLANNING TASK (do NOT write full slides or narration yet): Output ONLY the per-page skeleton JSON ({{\"pages\": [{{\"title\": ..., \"points\": [...], \"needs_figure\": true|false, \"figure_hint\": ...}}]}}) for this section. Plan only as many pages as needed (2–4 concise points per page, needs_figure + short figure_hint when geometric/physical)."
                 );
-                let skel_req = mk_req(system.clone(), skel_user, resolved.hard_output_cap(16_384));
+                let outline_cap = if limits.lecture_outline == 0 { resolved.max_output_tokens } else { resolved.hard_output_cap(limits.lecture_outline) };
+                let skel_req = mk_req(system.clone(), skel_user, outline_cap);
                 let (skel_out, u) = self
                     .run_structured_with_thought_ex(
                         artifact_id,
@@ -2776,7 +2782,10 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                             kg_hint,
                             evidence_txt
                         ),
-                        resolved.hard_output_cap(16_384),
+                        {
+                            let ol = self.llm.token_limits().lecture_outline;
+                            if ol == 0 { resolved.max_output_tokens } else { resolved.hard_output_cap(ol) }
+                        },
                     )
                     .with_reasoning(reasoning.clone()),
                     &images,

@@ -98,6 +98,7 @@ struct StudioArtifactItem: Identifiable {
     var progress: Double = 0
     /// Unix milliseconds.
     var createdAt: Int64 = 0
+    var updatedAt: Int64 = 0
     /// The user's own pictures (local paths) and file names given with the request.
     var imagePaths: [String] = []
     var fileNames: [String] = []
@@ -603,7 +604,8 @@ final class AppState: ObservableObject {
             progressState: a["progress_state"] as? [String: Any] ?? [:],
             stage: a["stage"] as? String ?? "",
             progress: (a["progress"] as? NSNumber)?.doubleValue ?? 0,
-            createdAt: (a["created_at"] as? NSNumber)?.int64Value ?? 0
+            createdAt: (a["created_at"] as? NSNumber)?.int64Value ?? 0,
+            updatedAt: (a["updated_at"] as? NSNumber)?.int64Value ?? 0
         )
         item.imagePaths = atts.filter(isImage).compactMap { $0["path"] as? String }.filter { FileManager.default.fileExists(atPath: $0) }
         item.fileNames = atts.filter { !isImage($0) }.compactMap { $0["name"] as? String }
@@ -758,6 +760,21 @@ final class AppState: ObservableObject {
                 do {
                     _ = try await core.call(method: "diagnostics.export", params: ["out_path": url.path])
                     statusMessage = L10n.fmt("app.diagnostics_exported", en: isEnglish, url.lastPathComponent)
+                } catch {
+                    report(error)
+                }
+            }
+        }
+    }
+
+    func exportLogs() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "local-notebook-logs.log"
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                do {
+                    _ = try await core.call(method: "logs.export", params: ["out_path": url.path])
+                    statusMessage = L10n.fmt("settings.export_logs_done", en: isEnglish, url.lastPathComponent)
                 } catch {
                     report(error)
                 }

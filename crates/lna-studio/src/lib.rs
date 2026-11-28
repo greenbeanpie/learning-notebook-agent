@@ -251,6 +251,18 @@ impl StudioService {
     }
 
     /// Picks the text for the UI language (used for the step titles/bodies shown in the execution process).
+    /// Effective output token cap for general Studio structured generation.
+    /// Uses `MaxTokenLimits::studio_default` when > 0, bounded by the profile's cap;
+    /// falls back to the profile's `max_output_tokens` when 0 (unlimited / follow profile).
+    fn studio_output_cap(&self, resolved: &ResolvedProfile) -> u32 {
+        let cap = self.llm.token_limits().studio_default;
+        if cap > 0 {
+            resolved.hard_output_cap(cap)
+        } else {
+            resolved.max_output_tokens
+        }
+    }
+
     fn l(&self, zh: &str, en: &str) -> String {
         if self.ui_is_en() {
             en.to_string()
@@ -1021,7 +1033,7 @@ User Revision Instruction:
             images,
         )
         .await;
-        let req = LlmRequest::from_parts(sys, parts, resolved.bounded_output(8192))
+        let req = LlmRequest::from_parts(sys, parts, resolved.bounded_output(self.llm.token_limits().studio_aux))
             .with_reasoning(resolved.reasoning_options());
 
         let (revised_raw, usage) = self
@@ -1810,7 +1822,7 @@ User Revision Instruction:
                         material::config_for_prompt(&art.config, direct_pictures),
                         evidence_txt
                     ),
-                    resolved.bounded_output(8192),
+                    resolved.bounded_output(self.llm.token_limits().studio_aux),
                 )
                 .with_reasoning(reasoning.clone()),
                 &pictures,
@@ -2216,7 +2228,7 @@ User Revision Instruction:
                                 bi + 1,
                                 batches
                             ),
-                            resolved.max_output_tokens,
+                            self.studio_output_cap(&resolved),
                         )
                         .with_reasoning(reasoning_c),
                         pictures_ref,
@@ -2321,7 +2333,7 @@ User Revision Instruction:
                         art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                         evidence_txt
                     ),
-                    resolved.bounded_output(8192),
+                    resolved.bounded_output(self.llm.token_limits().studio_aux),
                 )
                 .with_reasoning(resolved.reasoning_options()),
                 pictures_ref,
@@ -2381,7 +2393,7 @@ Design rules:\n\
                         art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                         evidence_txt
                     ),
-                    resolved.max_output_tokens,
+                    self.studio_output_cap(&resolved),
                 )
                 .with_reasoning(reasoning.clone()),
                 pictures_ref,
@@ -2480,7 +2492,7 @@ Design rules:\n\
                 let polish_req = LlmRequest::simple(
                     "Presentation visual editor: upgrade repetitive `bullets` slides in SlidesPayload JSON into `cards`, `two_column`, `timeline`, `table`, `metrics`, or `formula` with concise `subtitle` and `callout`, preserving all facts and citations.",
                     format!("Current SlidesPayload JSON:\n{}", deck),
-                    resolved.max_output_tokens,
+                    self.studio_output_cap(&resolved),
                 );
                 if let Ok((polished, u3)) = self
                     .run_structured_with_thought(
@@ -2698,7 +2710,7 @@ Design rules:\n\
                     art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                     evidence_txt
                 ),
-                resolved.max_output_tokens,
+                self.studio_output_cap(&resolved),
             )
             .with_reasoning(reasoning),
             pictures_ref,
@@ -2812,7 +2824,7 @@ Design rules:\n\
                 "PLANNING TASK (do not write the {kind} itself): split the requested work into 3-6 {what} that can be written independently and in parallel, in reading order, covering the requested scope without overlap. For each give a short `heading` and a `focus` naming exactly which concepts / source parts it covers. Output the structured JSON requested below only."
             ),
         );
-        plan_req.max_output_tokens = resolved.bounded_output(2000);
+        plan_req.max_output_tokens = resolved.bounded_output(self.llm.token_limits().studio_aux);
         let (plan, u) = self
             .run_structured_with_thought(
                 artifact_id,
@@ -3965,7 +3977,7 @@ Design rules:\n\
                             "Parameters: {}\n\nSources:\n{}",
                             material::config_for_prompt(&art.config, pictures_shown), evidence_txt
                         ),
-                        resolved.max_output_tokens,
+                        self.studio_output_cap(&resolved),
                     )
                     .with_reasoning(reasoning.clone()),
                     &pictures,
@@ -4528,7 +4540,7 @@ Design rules:\n\
                     if facets.is_empty() { "(none)".to_string() } else { facets.join("; ") },
                     if others.is_empty() { "(none)".to_string() } else { others.join("; ") },
                 ),
-                resolved.max_output_tokens,
+                self.studio_output_cap(&resolved),
             )
             .with_reasoning(reasoning),
             &pictures,
@@ -4715,7 +4727,7 @@ Design rules:\n\
         let req = LlmRequest::simple(
             "Group the crowded node's children into 3–7 conceptual intermediate topics: output `{\"groups\":[{\"label\",\"summary\",\"members\":[child_ids]}]}`. Each child belongs to at most one group; keep labels short, summaries 1–2 sentences, matching the labels' language.",
             format!("Node: [{parent_id}] {parent_label}\nChildren:\n{listing}"),
-            resolved.max_output_tokens,
+            self.studio_output_cap(&resolved),
         )
         .with_reasoning(reasoning);
         let (out, usage) = self
@@ -6173,7 +6185,7 @@ Core Topics: {}",
                     let batch_req = LlmRequest::simple(
                         "You are a document structure synthesis assistant. Merge this batch of section summaries while preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.",
                         batch_text,
-                        resolved.bounded_output(8192),
+                        resolved.bounded_output(self.llm.token_limits().studio_aux),
                     )
                     .with_reasoning(ReasoningOptions {
                         show_summary: profile.show_thinking,
@@ -6203,7 +6215,7 @@ Core Topics: {}",
         let reduce_req = LlmRequest::simple(
             "You are a document structure synthesis assistant. Merge the section summaries into a cohesive global outline preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.",
             reduced_text,
-            resolved.bounded_output(8192),
+            resolved.bounded_output(self.llm.token_limits().studio_aux),
         )
         .with_reasoning(ReasoningOptions {
             show_summary: profile.show_thinking,

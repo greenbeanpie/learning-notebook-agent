@@ -251,7 +251,7 @@ public sealed partial class MainWindow : Window
     {
         _chatImages?.ApplyLocalization();
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(NotebookPicker, L10n.T("nb.switch"));
-        if (_activeNotebookId == null) NotebookPickerText.Text = L10n.T("nb.switch");
+        NotebookPickerText.Text = L10n.T("nb.switch");
         NewNotebookBtn.Content = L10n.T("nb.new");
         StudioHomeTitleText.Text = L10n.T("studio.title");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(SettingsBtn, L10n.T("settings.title"));
@@ -360,7 +360,7 @@ public sealed partial class MainWindow : Window
         if (list is not { } res) return;
         {
             NotebookListView.Items.Clear();
-            NotebookPickerText.Text = _activeNotebookTitle.Length > 0 ? _activeNotebookTitle : L10n.T("nb.switch");
+            NotebookPickerText.Text = L10n.T("nb.switch");
             foreach (var nb in Arr(res, "notebooks"))
             {
                 var id = Str(nb, "id");

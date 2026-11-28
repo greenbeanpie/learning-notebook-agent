@@ -175,11 +175,12 @@ public sealed partial class MainWindow
             "FAILED" => L10n.T("studio.click_error_log"),
             _ => "",
         };
-        var createdAt = Int(a, "created_at");
+        var updatedAt = Int(a, "updated_at");
+        if (updatedAt <= 0) updatedAt = Int(a, "created_at");
         var statusLine = new TextBlock { FontSize = 11, Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextMutedBrush"], TextWrapping = TextWrapping.Wrap };
         void SetStatusLine()
         {
-            var age = TimeAgo(createdAt);
+            var age = TimeAgo(updatedAt);
             statusLine.Text = $"{KindName(kind)} · {ArtifactStatusLabel(status, stage)}{(age.Length > 0 ? " · " + age : "")}{hintSuffix}";
         }
         SetStatusLine();
