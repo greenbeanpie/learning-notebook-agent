@@ -164,17 +164,16 @@ impl CoreRuntime {
     /// detects image / audio / video input with a small sample each (all three, whatever was
     /// stored). A modality is only set when its sample is understood. The third value lists the
     /// modalities whose probe failed unexpectedly (server, network, auth), not the ones the model
-    /// simply does not take. Connection/auth failures of the plain ping are returned as errors.
+    /// simply does not take. Connection/auth failures are returned as errors (there is no separate
+    /// ping: the first real probe request shows them). JSON mode is only tried when JSON Schema
+    /// is not available, since either one is enough to use the model.
     async fn probe_capabilities(
         &self,
         resolved: &lna_llm::ResolvedProfile,
         base: ModelCapabilities,
     ) -> LnaResult<(ModelCapabilities, String, Vec<Value>)> {
-        let (txt, ping_usage) = self.ping(resolved).await?;
-
         let mut caps = base;
         caps.streaming = true;
-        caps.stream_usage = ping_usage.input_tokens > 0 || ping_usage.output_tokens > 0;
 
         let probe_schema = json!({
             "type": "object",
@@ -213,49 +212,68 @@ impl CoreRuntime {
         )
         .with_output(OutputMode::JsonObject);
 
-        let tool_fut = async {
-            let mut tool_called = false;
-            self.llm
-                .stream_strict(resolved, &tool_req, CancellationToken::new(), |event| {
-                    if matches!(event, LlmEvent::ToolCallStart { .. }) {
-                        tool_called = true;
-                    }
-                })
+        let tool_fut =
+            async {
+                let mut tool_called = false;
+                let mut usage_seen = false;
+                match self
+                    .llm
+                    .stream_strict(resolved, &tool_req, CancellationToken::new(), |event| {
+                        match event {
+                            LlmEvent::ToolCallStart { .. } => tool_called = true,
+                            LlmEvent::Usage(u) if u.input_tokens > 0 || u.output_tokens > 0 => {
+                                usage_seen = true
+                            }
+                            _ => {}
+                        }
+                    })
+                    .await
+                {
+                    Ok(_) => Ok((tool_called, usage_seen)),
+                    Err(e) if is_connection_failure(&e) => Err(e),
+                    Err(_) => Ok((false, false)),
+                }
+            };
+        // One structured-output check: Ok(true) when the model answered `{"ok":true}`.
+        let structured = |req: LlmRequest| async move {
+            match self
+                .llm
+                .complete_text_strict(resolved, &req, CancellationToken::new())
                 .await
-                .is_ok()
-                && tool_called
+            {
+                Ok((raw, _)) => Ok(serde_json::from_str::<Value>(&raw)
+                    .ok()
+                    .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
+                    .unwrap_or(false)),
+                Err(e) if is_connection_failure(&e) => Err(e),
+                Err(_) => Ok(false),
+            }
         };
-        let schema_fut = async {
-            self.llm
-                .complete_text_strict(resolved, &schema_req, CancellationToken::new())
-                .await
-                .ok()
-                .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
-                .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
-                .unwrap_or(false)
-        };
-        let json_mode_fut = async {
-            self.llm
-                .complete_text_strict(resolved, &json_mode_req, CancellationToken::new())
-                .await
-                .ok()
-                .and_then(|(raw, _)| serde_json::from_str::<Value>(&raw).ok())
-                .map(|value| value.get("ok").and_then(Value::as_bool) == Some(true))
-                .unwrap_or(false)
+        // JSON Schema first; JSON mode only when the schema did not work (either is enough).
+        let structured_fut = async {
+            if structured(schema_req.clone()).await? {
+                return Ok((true, None));
+            }
+            let mode = structured(json_mode_req.clone()).await?;
+            Ok::<_, LnaError>((false, Some(mode)))
         };
 
-        // All six capability probes are independent and bounded by LlmClient's per-profile gate.
-        let (tools_ok, schema_ok, json_mode_ok, vision, audio, video) = tokio::join!(
+        // The capability probes are independent and bounded by LlmClient's per-profile gate.
+        let (tool_res, structured_res, vision, audio, video) = tokio::join!(
             tool_fut,
-            schema_fut,
-            json_mode_fut,
+            structured_fut,
             self.probe_media(resolved, MediaProbe::Image),
             self.probe_media(resolved, MediaProbe::Audio),
             self.probe_media(resolved, MediaProbe::Video),
         );
+        let (tools_ok, usage_seen) = tool_res?;
+        let (schema_ok, json_mode_ok) = structured_res?;
+        caps.stream_usage = usage_seen;
         caps.tools = tools_ok;
         caps.json_schema = schema_ok;
-        caps.json_mode = json_mode_ok;
+        if let Some(mode) = json_mode_ok {
+            caps.json_mode = mode;
+        }
         let mut failed = Vec::new();
         let mut settle = |kind: &str, verdict: Result<bool, String>| match verdict {
             Ok(seen) => seen,
@@ -269,7 +287,7 @@ impl CoreRuntime {
         caps.supports_video = settle("video", video);
 
         caps.probed_at = Some(lna_types::now_ms());
-        Ok((caps, txt, failed))
+        Ok((caps, resolved.model_id.clone(), failed))
     }
 
     /// Sends one media sample and checks the reply describes it. `Ok(true)`: the sample was
@@ -290,7 +308,7 @@ impl CoreRuntime {
             ),
             MediaProbe::Audio => (
                 format!(
-                    "Describe the attached audio in at most five words. If no audio is attached, reply exactly {}.",
+                    "How many separate beeps are in the attached audio? Reply with just the number. If no audio is attached, reply exactly {}.",
                     pm::NO_AUDIO
                 ),
                 "audio/wav",
@@ -316,8 +334,9 @@ impl CoreRuntime {
                     audio_format,
                 },
             ],
-            // room for models that think before answering
-            512,
+            // room for models that think before answering: a small cap is spent on reasoning and
+            // leaves no answer, which would wrongly mark the input as unsupported
+            4096,
         );
         let reply = match self
             .llm
@@ -2198,6 +2217,24 @@ fn builtin_provider_presets() -> Value {
             }
         }
     ])
+}
+
+/// A failure of the connection itself (credentials, address, rate limit, network), as opposed to
+/// the model declining a capability probe.
+fn is_connection_failure(e: &LnaError) -> bool {
+    matches!(
+        e.code,
+        ErrorCode::ModelNotConfigured
+            | ErrorCode::ModelAuthFailed
+            | ErrorCode::ModelNotFound
+            | ErrorCode::ModelRateLimited
+            | ErrorCode::ModelOverloaded
+            | ErrorCode::ModelStreamInterrupted
+            | ErrorCode::KeychainUnavailable
+            | ErrorCode::FetchFailed
+            | ErrorCode::Internal
+            | ErrorCode::Cancelled
+    )
 }
 
 /// Which declared input `probe_media` checks.

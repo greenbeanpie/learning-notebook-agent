@@ -108,6 +108,8 @@ struct UnifiedSettingsSheet: View {
     @State private var maxOutputTokensText = ""
     /// Empty or 0 = unlimited.
     @State private var maxParallelText = ""
+    /// Lecture repair rounds per section ("lecture.limits"); 0 = no repair, no independent review.
+    @State private var lectureRepairRounds = 2
     @State private var priceInText = ""
     @State private var priceOutText = ""
     @State private var extraHeaders: [(id: UUID, key: String, value: String)] = []
@@ -180,6 +182,10 @@ struct UnifiedSettingsSheet: View {
         .background(palette.panelBg)
         .preferredColorScheme(themeId.preferredColorScheme)
         .task {
+            if let r = await state.run("settings.get", ["key": "lecture.limits"]),
+               let v = r["value"] as? [String: Any], let n = v["repair_rounds"] as? Int {
+                lectureRepairRounds = min(max(n, 0), 20)
+            }
             await loadModelsData()
             await refreshEmbeddingStatus()
         }
@@ -292,10 +298,26 @@ struct UnifiedSettingsSheet: View {
                     .onChange(of: state.prefs.quizSubmitMode) { _, _ in
                         Task { await state.savePreferences() }
                     }
+                    Stepper(value: $lectureRepairRounds, in: 0...20) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(state.t("settings.lecture_repair_rounds")): \(lectureRepairRounds)")
+                            Text(state.t("settings.lecture_repair_rounds_hint"))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .onChange(of: lectureRepairRounds) { _, n in
+                        Task {
+                            _ = await state.run("settings.set", [
+                                "key": "lecture.limits",
+                                "value": ["repair_rounds": n]
+                            ])
+                        }
+                    }
                 }
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
-                .frame(height: 230)
+                .frame(height: 300)
 
                 HStack(spacing: 10) {
                     Button(state.t("nb.privacy")) {

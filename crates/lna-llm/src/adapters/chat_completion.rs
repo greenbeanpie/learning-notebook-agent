@@ -183,6 +183,16 @@ impl ProtocolAdapter for ChatCompletionAdapter {
             body["stream_options"] = json!({ "include_usage": true });
         }
 
+        // A test hook for one process (never stored): `LNA_EFFORT_OVERRIDE=low` asks the model to
+        // reason less. The profile's own effort setting is not sent by this protocol.
+        if let Some(effort) = std::env::var("LNA_EFFORT_OVERRIDE")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            body["reasoning_effort"] = json!(effort);
+        }
+
         // Tools stay in the request even when the model must not call them (the final answer
         // round): dropping them changes the prompt prefix and loses the provider's prompt cache.
         if !req.tools.is_empty() {

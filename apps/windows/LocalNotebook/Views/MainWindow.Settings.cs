@@ -46,6 +46,13 @@ public sealed partial class MainWindow
             videoProfileId = Str(mv, "video_profile_id");
         }
 
+        // Lecture repair limit ("lecture.limits"): how many rounds of repair a section may take
+        var lectureRounds = 2.0;
+        var limitsSet = await Api.CallAsync("settings.get", Args(("key", "lecture.limits")));
+        if (limitsSet.Result is { } ls && ls.TryGetProperty("value", out var lv) && lv.ValueKind == JsonValueKind.Object
+            && lv.TryGetProperty("repair_rounds", out var rr) && rr.ValueKind == JsonValueKind.Number && rr.TryGetInt32(out var rrn))
+            lectureRounds = Math.Clamp(rrn, 0, 20);
+
         // ---- Tab 1: Appearance & Interface ----
         var langBox = new ComboBox { Header = L10n.T("settings.language"), HorizontalAlignment = HorizontalAlignment.Stretch };
         var langOpts = new[] { (L10n.T("settings.lang_auto"), "auto"), (L10n.T("settings.lang_zh"), "zh-CN"), (L10n.T("settings.lang_en"), "en-US") };
@@ -99,6 +106,14 @@ public sealed partial class MainWindow
         foreach (var (lbl, tag) in quizSubmitOpts) quizSubmitBox.Items.Add(new ComboBoxItem { Content = lbl, Tag = tag });
         quizSubmitBox.SelectedIndex = Math.Max(0, Array.FindIndex(quizSubmitOpts, x => x.Item2 == L10n.Prefs.QuizSubmitMode));
 
+        var lectureRoundsBox = new NumberBox { Header = L10n.T("settings.lecture_repair_rounds"), Value = lectureRounds, Minimum = 0, Maximum = 20, SmallChange = 1, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var lectureRoundsHint = new TextBlock { Text = L10n.T("settings.lecture_repair_rounds_hint"), TextWrapping = TextWrapping.Wrap, Opacity = 0.7, FontSize = 12 };
+        lectureRoundsBox.ValueChanged += async (_, a) =>
+        {
+            if (double.IsNaN(a.NewValue)) return;
+            await Api.CallAsync("settings.set", Args(("key", "lecture.limits"), ("value", Args(("repair_rounds", (int)Math.Clamp(a.NewValue, 0, 20))))));
+        };
+
         var diagBtn = new Button { Content = L10n.T("settings.diag_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
         diagBtn.Click += OnExportDiagnosticsClick;
         var privacyBtn = new Button { Content = L10n.T("settings.privacy_btn"), Style = (Style)Application.Current.Resources["PillButtonStyle"] };
@@ -113,6 +128,8 @@ public sealed partial class MainWindow
         generalPanel.Children.Add(studioLangBox);
         generalPanel.Children.Add(quizViewBox);
         generalPanel.Children.Add(quizSubmitBox);
+        generalPanel.Children.Add(lectureRoundsBox);
+        generalPanel.Children.Add(lectureRoundsHint);
         generalPanel.Children.Add(generalActions);
 
         async Task SaveUiPrefsAsync()

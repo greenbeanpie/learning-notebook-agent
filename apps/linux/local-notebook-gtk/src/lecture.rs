@@ -85,13 +85,26 @@ fn caption(p: &Shared, text: &str) {
 }
 
 fn show_position(p: &Shared) {
-    let (slide, step, text) = {
+    // browsing by hand: what this sentence reveals is shown, what it points at is marked
+    let (slide, step, text, marks) = {
         let pl = p.borrow();
         let Some(s) = pl.seq.get(pl.pos) else { return };
-        (s.slide, step_before(&pl.seq, pl.pos), s.text.clone())
+        let mut step = step_before(&pl.seq, pl.pos);
+        let mut marks = Vec::new();
+        for cue in &s.cues {
+            match cue.get("type").and_then(Value::as_str) {
+                Some("step") => step = step.max(cue.get("n").and_then(Value::as_i64).unwrap_or(0) as _),
+                Some("laser") => marks.push(cue.to_string()),
+                _ => {}
+            }
+        }
+        (s.slide, step, s.text.clone(), marks)
     };
     js(p, &format!("lecture.show({slide},{step})"));
     caption(p, &text);
+    if !marks.is_empty() {
+        js(p, &format!("lecture.marks([{}])", marks.join(",")));
+    }
 }
 
 fn update_counter(p: &Shared) {

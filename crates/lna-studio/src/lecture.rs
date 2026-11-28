@@ -15,15 +15,49 @@ use crate::material::{config_for_prompt, image_parts, with_images};
 use std::collections::HashSet;
 
 pub const LECTURE_REPAIR_ROUNDS: usize = 2;
+/// The most repair rounds the setting can ask for.
+pub const MAX_LECTURE_REPAIR_ROUNDS: usize = 20;
+/// Independent animation reviews per section (each costs minutes, so one by default).
+pub const LECTURE_REVIEW_ROUNDS: usize = 1;
+/// A section stops asking for more reviews after this long.
+pub const LECTURE_SECTION_BUDGET_SECS: u64 = 420;
+
+/// Repair/review rounds per section: `LECTURE_REPAIR_ROUNDS`, or the number in the environment
+/// variable `LNA_LECTURE_REPAIR_ROUNDS` (a test hook for watching how repairs converge).
+pub(crate) fn lecture_review_rounds() -> usize {
+    std::env::var("LNA_LECTURE_REVIEW_ROUNDS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(LECTURE_REVIEW_ROUNDS)
+}
+
+/// Seconds a section may spend before it stops asking for further reviews (`LNA_LECTURE_
+/// SECTION_BUDGET_SECS` overrides). Content repairs that are needed are still made.
+pub(crate) fn lecture_section_budget() -> std::time::Duration {
+    std::time::Duration::from_secs(
+        std::env::var("LNA_LECTURE_SECTION_BUDGET_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(LECTURE_SECTION_BUDGET_SECS),
+    )
+}
+
+/// App setting that holds the lecture limits the user can change in Settings.
+pub(crate) const LECTURE_LIMITS_KEY: &str = "lecture.limits";
+
+pub(crate) fn lecture_repair_rounds() -> usize {
+    std::env::var("LNA_LECTURE_REPAIR_ROUNDS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(LECTURE_REPAIR_ROUNDS)
+}
 const FIGURE_REVIEW_ROUNDS: usize = 2;
 /// Hard per-request output token cap for lecture slide generation & repair (prevents runaway output).
 pub const LECTURE_MAX_OUTPUT_TOKENS: u32 = 32_768;
 /// Target upper bound of slides written per batch (3–4 slides per batch for coherence and stability).
 pub const LECTURE_SLIDE_BATCH_MAX: usize = 4;
 
-pub(crate) const ELEMENT_IDS_GUIDE: &str = "ELEMENT IDS (laser targets and build targets) on a slide: \"title\", \"subtitle\", \"b1\"..\"bN\" (bullets, 1-based), \"card1\".., \"metric1\".., \"step1\".. (timeline steps), \"col1\"/\"col2\" (whole column) and \"col1.i2\" (item 2 of column 1), \"table\" and \"table.r1\" (row 1), \"formula\", \"callout\", \"figure\" (the whole figure) and \"figure:<part id>\" (one part of the figure, e.g. \"figure:V\", \"figure:F1\"). Only ids of elements that exist on that slide are valid.";
-
-pub(crate) const CUES_GUIDE: &str = "CUES (attached to the narration sentence during which they happen):\n- Laser pointer: {\"type\":\"laser\",\"target\":<element id>,\"shape\":\"circle\"|\"ellipse\",\"scale\":1.0-1.6 (ring size relative to the element),\"speed\":0.3-1.5 (revolutions per second),\"duration_ms\":800-6000, \"angle_deg\": -90..90 (optional ellipse tilt to align with a slanted element such as an incline, a slanted vector or a rotated block; omit for horizontal), \"at\": <optional: the exact words of this sentence at which pointing starts>, \"style\": <optional: \"glow\" (the figure part flashes in colour; default for figure parts), \"marker\" (a highlighter sweep; default for wide text such as a table row), \"ring\" (a circling dot; default for small text)>}. Use it for the things the sentence is about, never decoratively. ONE POINTER PER THING NAMED: when a sentence names two or more things on the slide (e.g. \"the part perpendicular to the axis is r-perp, the part along the axis is z times k\"), give each its own laser cue, in the order they are spoken, each with \"at\" set to the words where it is named; the pointer then moves from one to the next as they are spoken. Point at the precise thing (one figure part, one bullet, one table row), not at a whole figure or table.\n- Step reveal: {\"type\":\"step\",\"n\":k} shows build step k of this slide.\nBUILDS (step-by-step animation): \"builds\": [{\"step\":1,\"targets\":[ids],\"effect\":\"appear\"|\"fade\"|\"fly_up\"|\"draw\"|\"emphasis\"|\"dim_others\"}]. Steps are numbered 1..K consecutively; elements not listed are visible from the start. Every step must be revealed by exactly one {\"type\":\"step\"} cue, in increasing order, on the sentence where that content is first explained. Use builds for derivations, procedures, comparisons and lists explained one item at a time; keep simple slides static. \"draw\" suits figure curves/arrows; \"emphasis\"/\"dim_others\" highlight something already visible. A figure part never appears before what it hangs on: projection or guide lines, labels, angle marks and components appear in the same step as (or after) the vector, line or point they belong to — put them in that step's targets (parts left out of every build are visible from the start).";
+pub(crate) const ANIMATION_NOTE: &str = "ANIMATION: do NOT write cues, builds or any animation data; a separate animation step reads your finished slides and decides what appears when and where the laser points. Any mention of cues, builds or the laser pointer elsewhere in these instructions is for that animation step, not for you. Your part is to make that possible: narrate in the order things should appear and name each figure part by the same symbol or word that is drawn on it, say what a vector, point or line is where you first mention it (never use one before you have introduced it), put a result only after the sentences that explain it, and keep one idea per sentence.";
 
 pub(crate) const FIGURE_REQUEST_GUIDE: &str = "FIGURES: content that is obviously geometric or physical (vectors, forces, torques, coordinate systems, angles, shapes, trajectories, function graphs, surfaces) MUST have a figure; for anything else add one when a function graph, implicit curve, 3-D surface, geometric figure or physics diagram genuinely helps. Add \"figure_request\": {\"kind\":\"plot\"|\"plot3d\"|\"diagram\",\"purpose\":\"what it must show\",\"details\":\"exact functions, ranges, points, forces, angles, labels AND the part ids you will reference\"} to the slide (normally with layout \"figure\"). A separate drawing step turns it into a precise figure. In details, name each part you reference with an explicit id (e.g. \"curve id f: y=x^2-2x on [-1,3]; point id V at (1,-1) labelled 顶点; vector id G downward labelled G\") and use exactly those ids as figure:<id> in cues and builds. FIGURE + TEXT TOGETHER (important): a figure must never sit alone on a slide. The slide that shows a figure also carries the text that explains it — 2-3 very short (under ~16 Chinese characters or ~8 English words each) \"bullets\", a \"formula\" and/or a compact \"table\" (at most 4 rows, 2-3 short columns) stating the problem or claim and the key result, shown left of the figure — and the figure's labels use the same symbols as that text. Put the example's statement and its figure on the SAME slide; do not state an example on one slide and show its figure on the next, and do not use \"display_only\" for a figure slide. Narrate the text and the figure together: in each sentence point the laser at the figure part (figure:<id>) or bullet (b1..) being spoken about, and use builds so each bullet and its matching figure part appear in the same step.";
 
@@ -57,7 +91,7 @@ pub(crate) fn lecture_rules(mode: &str, detail: &str) -> String {
     )
 }
 
-const NARRATION_RULES: &str = "NARRATION: every slide has \"narration\": an ordered list of sentences {\"text\":...,\"cues\":[...]} that the teacher SAYS while the slide is shown (it is read by text-to-speech). Narration is plain spoken language: NO LaTeX, NO markdown, NO $, no symbols that cannot be read aloud — read formulas in words (e.g. \"A 的逆等于 A 的伴随矩阵除以 A 的行列式\"). One sentence per item, at most ~60 Chinese characters or ~35 English words. On-screen text stays concise (keywords, formulas in LaTeX $...$ are fine on screen). A slide may have no narration only if it sets \"display_only\": {\"reason\": ...} (e.g. a full-screen figure explained on the next slide); never two display-only slides in a row.";
+const NARRATION_RULES: &str = "NARRATION: every slide has \"narration\": an ordered list of sentences {\"text\":...} that the teacher SAYS while the slide is shown (it is read by text-to-speech). Narration is plain spoken language: NO LaTeX, NO markdown, NO $, no symbols that cannot be read aloud — read formulas in words (e.g. \"A 的逆等于 A 的伴随矩阵除以 A 的行列式\"). One sentence per item, at most ~60 Chinese characters or ~35 English words. On-screen text stays concise (keywords, formulas in LaTeX $...$ are fine on screen). A slide may have no narration only if it sets \"display_only\": {\"reason\": ...} (e.g. a full-screen figure explained on the next slide); never two display-only slides in a row.";
 
 // ---------------------------------------------------------------------------------------------
 // schemas
@@ -127,27 +161,8 @@ pub(crate) fn lecture_reader_finish(art: &StudioArtifact, kg_hint: &str) -> Read
     }
 }
 
-pub(crate) fn cue_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["type"],
-        "properties": {
-            "type": { "type": "string", "enum": ["laser", "step"] },
-            "target": { "type": "string" },
-            "shape": { "type": "string", "enum": ["circle", "ellipse"] },
-            "scale": { "type": "number" },
-            "angle_deg": { "type": "number" },
-            "speed": { "type": "number" },
-            "duration_ms": { "type": "integer" },
-            "n": { "type": "integer" },
-            "at": { "type": "string" },
-            "style": { "type": "string", "enum": ["auto", "ring", "glow", "marker"] }
-        }
-    })
-}
-
-/// A lecture slide: a regular slide plus narration, cues, builds, checkpoint and figure request.
+/// A lecture slide the author writes: a regular slide plus narration, checkpoint and figure
+/// request. Builds and cues are added afterwards by the animation step.
 pub(crate) fn lecture_slide_schema() -> Value {
     let mut item = slide_item_schema();
     if let Some(props) = item.get_mut("properties").and_then(Value::as_object_mut) {
@@ -160,8 +175,7 @@ pub(crate) fn lecture_slide_schema() -> Value {
                     "additionalProperties": false,
                     "required": ["text"],
                     "properties": {
-                        "text": { "type": "string" },
-                        "cues": { "type": "array", "items": cue_schema() }
+                        "text": { "type": "string" }
                     }
                 }
             }),
@@ -185,6 +199,8 @@ pub(crate) fn lecture_slide_schema() -> Value {
             }),
         );
         props.insert("figure_request".into(), figure_request_schema());
+        // builds and cues are the animation step's business (`animation_author_schema`)
+        props.remove("builds");
     }
     item["required"] = json!(["layout", "title", "narration"]);
     item
@@ -426,35 +442,12 @@ fn has_tex(s: &str) -> bool {
         .any(|w| w[0] == b'\\' && w[1].is_ascii_alphabetic())
 }
 
-/// One validation problem; `fix` is the local fallback applied only after repair rounds fail.
+/// One content problem the model is asked to fix (animation consistency is never reported
+/// here: [`crate::lecture_anim`] establishes it deterministically).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Issue {
     pub slide: usize,
     pub msg: String,
-    pub fix: Fix,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Fix {
-    RemoveCue { sentence: usize, cue: usize },
-    MarkDisplayOnly,
-    RemoveBuildStep(i64),
-    RemoveBuilds,
-    PlainNarration { sentence: usize },
-    DropCheckpoint,
-    DropLaserTarget { target: String },
-    None,
-}
-
-fn num_in(v: &Value, k: &str, lo: f64, hi: f64) -> Result<(), String> {
-    match v.get(k) {
-        None | Some(Value::Null) => Ok(()),
-        Some(x) => match x.as_f64() {
-            Some(n) if n >= lo && n <= hi => Ok(()),
-            Some(n) => Err(format!("\"{k}\" = {n} is outside {lo}..{hi}")),
-            None => Err(format!("\"{k}\" must be a number")),
-        },
-    }
 }
 
 /// Phrases that show the text is about how the lecture was produced (reading the scan, the
@@ -553,43 +546,554 @@ pub(crate) fn check_section_visuals(slides: &[Value], visual_need: &str) -> Vec<
         issues.push(Issue {
             slide: 0,
             msg: "this section is obviously geometric or physical but no slide has a \"figure_request\"; give the slide that introduces it a figure (layout \"figure\", with the explaining bullets/formula/table beside it) and reveal its parts step by step with builds on figure:<id> in step with the narration".into(),
-            fix: Fix::None,
         });
     }
     for (si, s) in slides.iter().enumerate() {
         if !sparse_text_only(s) {
             continue;
         }
-        match visual_need {
-            "required" => issues.push(Issue {
+        if visual_need == "required" {
+            issues.push(Issue {
                 slide: si,
                 msg: "shows only a short table/list with no figure, so most of the slide is empty, in a section that is geometric or physical; add a \"figure_request\" that draws what this text describes (for a table of directions, components or products of vectors: draw those vectors and the axis), keep the table/bullets/formula on the same slide beside the figure, and reveal each row/bullet together with its figure part (builds on table.rN or bN plus figure:<id>, laser on the part being spoken about)".into(),
-                fix: Fix::None,
-            }),
-            "suggested" if slide_builds_empty(s) => issues.push(Issue {
-                slide: si,
-                msg: "shows only a short table/list with no figure and no step-by-step reveal, so the slide is static and mostly empty; reveal its rows/bullets one at a time with builds and step cues in step with the narration, and add a \"figure_request\" (with the text kept beside the figure) if a diagram genuinely shows what it states".into(),
-                fix: Fix::None,
-            }),
-            _ => {}
+            });
         }
     }
     issues
 }
 
-fn slide_builds_empty(slide: &Value) -> bool {
-    slide
+/// System prompt of the animation author: a fresh context that sees only the finished slides.
+pub(crate) const ANIMATION_AUTHOR_SYSTEM: &str = "You are the Local Notebook Studio lecture animator. You direct the animation of finished lecture slides: for every narration sentence you decide which elements appear when it starts and where the laser pointer points while it is spoken. You see only the finished slides, never how they were written, and you change no text. Output {\"slides\": [...]} and nothing else.\n\nPLAYBACK\n- Whatever you do not reveal is on screen from the start. So list every element that has to wait: bullets (b1..), table rows (table.rN), formula, callout, and EVERY figure part that is not background, labels, helper lines, angle marks, projections and components included. Only background (axes, outlines, the object the page is about) stays visible from the start.\n- \"reveal\" of sentence k lists the ids that appear when that sentence starts. An element appears on the first sentence that speaks about it, neither earlier nor later. A label, angle mark, projection or helper line appears together with (or after) the point, vector or line it belongs to (figure_parts tell what each part hangs on, text elements say what they label with \"for\"); a result or formula appears on the sentence that states it, never before the sentences that explain it. A sentence that introduces something new reveals it; a sentence that only explains what is already on screen reveals nothing. Never leave a part for a later sentence than the one that names it, and never show a part before the sentence that first mentions it.\n- \"points\" of sentence k lists the laser targets in the order they are spoken: one per thing named, always the precise element (one figure part, one bullet, one table row, never a whole figure), with \"at\" optionally giving the exact words at which pointing starts. Point at something in every sentence that speaks about something on screen. A target must already be visible (revealed in this or an earlier sentence).\n- \"effect\": draw for curves, arrows and lines of a figure; fade for text; appear otherwise.\n- Give every slide that has narration, every sentence of it, in order (sentence numbers are 1-based). When a slide comes with current_animation, that is its present plan: return the corrected plan in the same format.\nELEMENT IDS: \"title\", \"b1\"..\"bN\" (bullets), \"table.r1\".. (table rows), \"formula\", \"callout\", \"figure:<part id>\" (a figure part), \"card1\"/\"metric1\"/\"step1\".. where the slide has them. Only ids of elements that exist on the slide are valid (see valid_targets).";
+
+pub(crate) fn animation_author_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slides"],
+        "properties": {
+            "slides": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["slide", "sentences"],
+                    "properties": {
+                        "slide": { "type": "integer", "minimum": 1 },
+                        "sentences": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["sentence", "reveal", "points"],
+                                "properties": {
+                                    "sentence": { "type": "integer", "minimum": 1 },
+                                    "reveal": { "type": "array", "items": { "type": "string" } },
+                                    "effect": { "type": "string", "enum": ["appear", "fade", "fly_up", "draw"] },
+                                    "points": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "required": ["target"],
+                                            "properties": {
+                                                "target": { "type": "string" },
+                                                "at": { "type": "string" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// What the animation author is shown: per slide the on-screen text, the figure's parts (what
+/// they hang on) and spec elements, the valid targets and the numbered narration. No builds, no
+/// cues (those are what it writes), no pictures.
+pub(crate) fn animation_author_input(slides: &[Value]) -> Value {
+    let full = animation_review_input(slides);
+    let list = full
+        .get("slides")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let out: Vec<Value> = list
+        .into_iter()
+        .zip(slides)
+        .filter(|(_, s)| {
+            s.get("narration")
+                .and_then(Value::as_array)
+                .is_some_and(|n| n.iter().any(|x| !sv(x, "text").is_empty()))
+        })
+        .map(|(mut v, s)| {
+            if let Some(o) = v.as_object_mut() {
+                o.remove("builds");
+                if let Some(ns) = o.get_mut("narration").and_then(Value::as_array_mut) {
+                    for n in ns {
+                        if let Some(no) = n.as_object_mut() {
+                            no.remove("cues");
+                        }
+                    }
+                }
+                o.insert("valid_targets".into(), json!(slide_element_ids(s)));
+            }
+            v
+        })
+        .collect();
+    json!({ "slides": out })
+}
+
+/// The slides (1-based numbers) the plan covers completely: every sentence with text has an
+/// entry. A plan that skips slides or sentences is asked for again.
+pub(crate) fn plan_complete_slides(slides: &[Value], plan: &Value) -> Vec<usize> {
+    plan.get("slides")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|sp| {
+            let n = sp.get("slide").and_then(Value::as_u64)? as usize;
+            let slide = slides.get(n.checked_sub(1)?)?;
+            let given: HashSet<u64> = sp
+                .get("sentences")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x.get("sentence").and_then(Value::as_u64))
+                .collect();
+            // an empty plan for a slide that has things to show is no plan
+            let does_something = sp
+                .get("sentences")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|x| {
+                    ["reveal", "points"].iter().any(|k| {
+                        x.get(*k)
+                            .and_then(Value::as_array)
+                            .is_some_and(|a| !a.is_empty())
+                    })
+                });
+            let has_content = slide_element_ids(slide)
+                .iter()
+                .any(|i| i != "title" && i != "subtitle");
+            if has_content && !does_something {
+                return None;
+            }
+            let all = slide
+                .get("narration")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter(|(_, x)| !sv(x, "text").trim().is_empty())
+                .all(|(j, _)| given.contains(&(j as u64 + 1)));
+            all.then_some(n)
+        })
+        .collect()
+}
+
+/// The element id a plan's target means: models often drop the "figure:" prefix of a figure
+/// part or change its case. Anything that matches nothing is returned as written (the
+/// normalizer drops it).
+fn resolve_target(t: &str, ids: &[String]) -> String {
+    let t = t.trim();
+    if ids.iter().any(|i| i == t) {
+        return t.to_string();
+    }
+    let prefixed = format!("figure:{t}");
+    if ids.contains(&prefixed) {
+        return prefixed;
+    }
+    let low = t.to_lowercase();
+    ids.iter()
+        .find(|i| i.to_lowercase() == low || i.to_lowercase() == format!("figure:{low}"))
+        .cloned()
+        .unwrap_or_else(|| t.to_string())
+}
+
+/// Writes the animation author's plan into the slides: every build and cue is replaced by what
+/// the plan says (a reveal becomes one build step plus its step cue on that sentence, a point
+/// becomes a laser cue). Slides the plan does not mention keep nothing, so they are static.
+/// Consistency of the result (dependencies, ordering, parameters) is `normalize_animation`'s job.
+/// Returns what was applied, for the log.
+pub(crate) fn apply_animation(slides: &mut [Value], plan: &Value) -> Vec<String> {
+    let mut log = Vec::new();
+    for sp in plan
+        .get("slides")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(idx) = sp
+            .get("slide")
+            .and_then(Value::as_u64)
+            .and_then(|n| (n as usize).checked_sub(1))
+            .filter(|i| *i < slides.len())
+        else {
+            continue;
+        };
+        let slide = &mut slides[idx];
+        let ids = slide_element_ids(slide);
+        let Some(narr) = slide.get_mut("narration").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for n in narr.iter_mut() {
+            if let Some(o) = n.as_object_mut() {
+                o.insert("cues".into(), json!([]));
+            }
+        }
+        let mut builds: Vec<Value> = Vec::new();
+        let mut revealed = HashSet::new();
+        let mut pointed = 0usize;
+        for sent in sp
+            .get("sentences")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(j) = sent
+                .get("sentence")
+                .and_then(Value::as_u64)
+                .and_then(|n| (n as usize).checked_sub(1))
+                .filter(|j| *j < narr.len())
+            else {
+                continue;
+            };
+            let mut cues: Vec<Value> = Vec::new();
+            let targets: Vec<String> = sent
+                .get("reveal")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|t| resolve_target(t, &ids))
+                .filter(|t| revealed.insert(t.clone()))
+                .collect();
+            if !targets.is_empty() {
+                let step = builds.len() + 1;
+                let effect = sent
+                    .get("effect")
+                    .and_then(Value::as_str)
+                    .filter(|e| ["appear", "fade", "fly_up", "draw"].contains(e))
+                    .unwrap_or("fade");
+                builds.push(json!({"step": step, "targets": targets, "effect": effect}));
+                cues.push(json!({"type": "step", "n": step}));
+            }
+            for p in sent
+                .get("points")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let target = resolve_target(&sv(p, "target"), &ids);
+                if target.is_empty() {
+                    continue;
+                }
+                let mut cue = json!({"type": "laser", "target": target, "shape": "ellipse"});
+                let at = sv(p, "at");
+                if !at.is_empty() {
+                    cue["at"] = json!(at);
+                }
+                cues.push(cue);
+                pointed += 1;
+            }
+            narr[j]["cues"] = json!(cues);
+        }
+        let steps = builds.len();
+        if let Some(o) = slide.as_object_mut() {
+            if builds.is_empty() {
+                o.remove("builds");
+            } else {
+                o.insert("builds".into(), json!(builds));
+            }
+        }
+        log.push(format!(
+            "第 {} 页：{} 个分步揭示，{} 处激光指向",
+            idx + 1,
+            steps,
+            pointed
+        ));
+    }
+    log
+}
+
+/// A slide's current animation in the animation author's own format (per sentence: what it
+/// reveals and where it points), so a repair can start from it and change only what is wrong.
+pub(crate) fn animation_plan_of(slide: &Value) -> Value {
+    let builds = slide
         .get("builds")
         .and_then(Value::as_array)
-        .is_none_or(|b| b.is_empty())
+        .cloned()
+        .unwrap_or_default();
+    let sentences: Vec<Value> = slide
+        .get("narration")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(j, n)| {
+            let cues = n
+                .get("cues")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut reveal: Vec<Value> = Vec::new();
+            let mut effect = Value::Null;
+            let mut points: Vec<Value> = Vec::new();
+            for c in &cues {
+                match sv(c, "type").as_str() {
+                    "step" => {
+                        let k = c.get("n").and_then(Value::as_i64).unwrap_or(0);
+                        for b in builds
+                            .iter()
+                            .filter(|b| b.get("step").and_then(Value::as_i64) == Some(k))
+                        {
+                            reveal.extend(
+                                b.get("targets")
+                                    .and_then(Value::as_array)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            );
+                            if effect.is_null() {
+                                effect = b.get("effect").cloned().unwrap_or(Value::Null);
+                            }
+                        }
+                    }
+                    "laser" => {
+                        let mut p = json!({"target": sv(c, "target")});
+                        if !sv(c, "at").is_empty() {
+                            p["at"] = json!(sv(c, "at"));
+                        }
+                        points.push(p);
+                    }
+                    _ => {}
+                }
+            }
+            let mut o = json!({"sentence": j + 1, "reveal": reveal, "points": points});
+            if !effect.is_null() {
+                o["effect"] = effect;
+            }
+            o
+        })
+        .collect();
+    json!({ "sentences": sentences })
+}
+
+/// A repaired plan may contain only the sentences the author changed. Lay it over the slides'
+/// current animation: provided sentences replace their old versions, every other sentence keeps
+/// what it had, except that a target the repair revealed somewhere else is no longer revealed
+/// at its old place (so moving a reveal really moves it).
+pub(crate) fn merge_animation_plan(slides: &[Value], plan: &Value) -> Value {
+    let merged: Vec<Value> = plan
+        .get("slides")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|sp| {
+            let idx = (sp.get("slide").and_then(Value::as_u64)? as usize).checked_sub(1)?;
+            let base = animation_plan_of(slides.get(idx)?);
+            let provided: Vec<&Value> = sp
+                .get("sentences")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .collect();
+            let number = |v: &Value| v.get("sentence").and_then(Value::as_u64).unwrap_or(0);
+            let moved: HashSet<String> = provided
+                .iter()
+                .flat_map(|p| {
+                    p.get("reveal")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter_map(|t| t.as_str().map(String::from))
+                .collect();
+            let sentences: Vec<Value> = base["sentences"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|mut b| {
+                    if let Some(p) = provided.iter().find(|p| number(p) == number(&b)) {
+                        return (*p).clone();
+                    }
+                    if let Some(r) = b.get_mut("reveal").and_then(Value::as_array_mut) {
+                        r.retain(|t| t.as_str().is_none_or(|t| !moved.contains(t)));
+                    }
+                    b
+                })
+                .collect();
+            Some(json!({"slide": idx + 1, "sentences": sentences}))
+        })
+        .collect();
+    json!({ "slides": merged })
+}
+
+/// Removes everything animation from authored slides (a model may emit builds or cues even
+/// though it was told not to; the animation step is the only author of them).
+pub(crate) fn strip_animation(slides: &mut [Value]) {
+    for s in slides.iter_mut() {
+        if let Some(o) = s.as_object_mut() {
+            o.remove("builds");
+        }
+        if let Some(ns) = s.get_mut("narration").and_then(Value::as_array_mut) {
+            for n in ns {
+                if let Some(o) = n.as_object_mut() {
+                    o.remove("cues");
+                }
+            }
+        }
+    }
+}
+
+/// System prompt of the fresh-context animation reviewer (it never sees how the section was
+/// written, only the finished data and the playback rules).
+pub(crate) const ANIMATION_REVIEW_SYSTEM: &str = "You are the Local Notebook Studio lecture reviewer. You review the animation order of finished lecture slides. You see only the slides' data, not how they were written. Output {\"problems\": [...]} and nothing else; an empty list means everything is consistent.\n\nPLAYBACK RULES\n- Elements in no entrance build (effect appear/fade/fly_up/draw; default fade) are visible from the start. Targets: title, b1.. (bullets), table.rN, formula, callout, figure:<partId> for figure parts.\n- A build {\"step\":k,\"targets\":[..]} becomes visible when a narration cue {\"type\":\"step\",\"n\":k} is reached; a sentence's step cues apply when it starts, before its laser cues. A laser cue points at its target while the sentence is spoken.\n- Figure parts come with figure_elements (type, text, label, for) so you can tell a label from the line it labels.\n\nFor every slide, go through the narration sentence by sentence, work out what is visible, and report only REAL problems of these kinds: (1) the sentence speaks about, or points at, a point/vector/line/bullet/formula that is not visible yet; (2) a result, formula or conclusion is revealed before the sentence that explains it; (3) a label, angle mark, projection or helper line is visible before the thing it belongs to; (4) a figure part that the narration discusses is listed in no build although the things it labels appear later. Do not report style, wording, or things that are merely early by a fraction of a sentence. A formula, bullet or table row is one element: it is correctly revealed as a whole on the first sentence that starts to state it, so do not report it because later sentences explain its parts one by one; report it only when it appears before the sentence that first speaks about it, or after a sentence that already relies on it. Each problem: slide (1-based), sentence (1-based, 0 if not tied to one), element (id), fix (\"animation\" when moving a reveal or a pointer solves it; \"narration\" when the narration itself speaks about something that is never shown at that point and only rewording or reordering the sentences can solve it), problem (one concrete sentence quoting the build/cue data that proves it). At most 12 problems, most serious first.";
+
+pub(crate) fn animation_review_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["problems"],
+        "properties": {
+            "problems": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["slide", "sentence", "element", "fix", "problem"],
+                    "properties": {
+                        "slide": { "type": "integer", "minimum": 1 },
+                        "sentence": { "type": "integer", "minimum": 0 },
+                        "element": { "type": "string" },
+                        "fix": { "type": "string", "enum": ["animation", "narration"] },
+                        "problem": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// The slides as the reviewer needs them: text elements, builds, narration with cues, and the
+/// figure's parts (ids + what they hang on) and spec elements. No pictures, no SVG.
+pub(crate) fn animation_review_input(slides: &[Value]) -> Value {
+    let out: Vec<Value> = slides
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let fig = s.get("figure").filter(|f| f.is_object());
+            // what each part waits for as the playback rules resolve it (the engine's raw
+            // geometric anchors are noisy and would disagree with what really plays)
+            let deps = crate::lecture_anim::part_dependencies(s);
+            let parts: Vec<Value> = fig
+                .and_then(|f| f.pointer("/meta/parts"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|p| {
+                    let id = sv(p, "id");
+                    json!({"hangs_on": deps.get(&id), "id": id})
+                })
+                .collect();
+            let elements: Vec<Value> = fig
+                .and_then(|f| f.pointer("/spec/elements"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|e| {
+                    json!({
+                        "id": sv(e, "id"), "type": sv(e, "type"),
+                        "text": sv(e, "text"), "label": sv(e, "label"), "for": sv(e, "for"),
+                    })
+                })
+                .collect();
+            json!({
+                "slide": i + 1,
+                "title": sv(s, "title"),
+                "bullets": s.get("bullets"),
+                "formula": sv(s, "formula"),
+                "callout": sv(s, "callout"),
+                "table_rows": s.pointer("/table/rows"),
+                "builds": s.get("builds"),
+                "narration": s.get("narration").and_then(Value::as_array).map(|ns| {
+                    ns.iter().enumerate().map(|(j, n)| json!({
+                        "sentence": j + 1, "text": sv(n, "text"), "cues": n.get("cues"),
+                    })).collect::<Vec<_>>()
+                }),
+                "figure_parts": parts,
+                "figure_elements": elements,
+            })
+        })
+        .collect();
+    json!({ "slides": out })
+}
+
+/// The reviewer's problems, split by who can fix them: `(animation, narration)`. Animation
+/// problems go back to a fresh animation author, narration problems to the section author
+/// (unknown slides are ignored).
+pub(crate) fn animation_review_issues(out: &Value, slides: &[Value]) -> (Vec<Issue>, Vec<Issue>) {
+    let (mut animation, mut narration) = (Vec::new(), Vec::new());
+    for p in out
+        .get("problems")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(12)
+    {
+        let Some(slide) = p.get("slide").and_then(Value::as_u64).map(|n| n as usize) else {
+            continue;
+        };
+        if slide == 0 || slide > slides.len() {
+            continue;
+        }
+        let (sentence, element, problem) = (
+            p.get("sentence").and_then(Value::as_u64).unwrap_or(0),
+            sv(p, "element"),
+            sv(p, "problem"),
+        );
+        if problem.trim().is_empty() {
+            continue;
+        }
+        let place = format!(
+            "{}{}",
+            if sentence > 0 {
+                format!(", sentence {sentence}")
+            } else {
+                String::new()
+            },
+            if element.is_empty() {
+                String::new()
+            } else {
+                format!(", element {element}")
+            },
+        );
+        if sv(p, "fix") == "narration" {
+            narration.push(Issue {
+                slide: slide - 1,
+                msg: format!("narration order{place}: {problem} (fix by rewording or reordering the narration sentences so nothing is spoken about before it can be on screen; do not change the figure)"),
+            });
+        } else {
+            animation.push(Issue {
+                slide: slide - 1,
+                msg: format!("animation order{place}: {problem}"),
+            });
+        }
+    }
+    (animation, narration)
 }
 
 /// Checks lecture slides (one section or a whole lecture). `label(i)` names slide i in messages.
-pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
+pub fn check_lecture_content(slides: &[Value], mode: &str) -> Vec<Issue> {
     let mut issues = Vec::new();
     let mut prev_display_only = false;
     for (si, slide) in slides.iter().enumerate() {
-        let ids: HashSet<String> = slide_element_ids(slide).into_iter().collect();
         let narration = slide
             .get("narration")
             .and_then(Value::as_array)
@@ -605,13 +1109,12 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
             .and_then(Value::as_str)
             .is_some_and(|r| !r.trim().is_empty());
         if spoken.is_empty() && !display_only {
-            issues.push(Issue { slide: si, msg: "has no narration; add narration sentences or mark it \"display_only\": {\"reason\": ...}".into(), fix: Fix::MarkDisplayOnly });
+            issues.push(Issue { slide: si, msg: "has no narration; add narration sentences or mark it \"display_only\": {\"reason\": ...}".into() });
         }
         if spoken.is_empty() && display_only && prev_display_only {
             issues.push(Issue {
                 slide: si,
                 msg: "is the second display-only slide in a row; give one of them narration".into(),
-                fix: Fix::None,
             });
         }
         prev_display_only = spoken.is_empty() && display_only;
@@ -636,7 +1139,6 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
             issues.push(Issue {
                 slide: si,
                 msg: format!("talks about the reading/generation process (\"{term}\"); rewrite that text so it teaches the content itself and never mentions OCR, scan or recognition quality, the outline/plan, or where \"this page\" sits in the derivation chain"),
-                fix: Fix::None,
             });
         }
 
@@ -646,7 +1148,6 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
                 issues.push(Issue {
                     slide: si,
                     msg: format!("is a prerequisite/review slide (\"{term}\"); the learner already knows the prerequisites, so do not teach known concepts here: go straight to the material and, where a step needs a known result, name it in one clause at that step (unless the user's request explicitly asked for background)"),
-                    fix: Fix::None,
                 });
             }
         }
@@ -667,493 +1168,78 @@ pub fn check_lecture_slides(slides: &[Value], mode: &str) -> Vec<Issue> {
             issues.push(Issue {
                 slide: si,
                 msg: "has a figure but no on-screen text beside it; add 2-3 very short \"bullets\" (and/or a \"formula\") that state the problem, the key result and what each labelled part of the figure means, so text and figure are read together".into(),
-                fix: Fix::None,
             });
-        }
-
-        // builds
-        let builds = slide
-            .get("builds")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let mut steps: Vec<i64> = Vec::new();
-        for b in &builds {
-            let step = b.get("step").and_then(Value::as_i64).unwrap_or(0);
-            if step < 1 {
-                issues.push(Issue {
-                    slide: si,
-                    msg: "has a build without a positive \"step\"".into(),
-                    fix: Fix::RemoveBuilds,
-                });
-                continue;
-            }
-            steps.push(step);
-            for t in b
-                .get("targets")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let t = t.as_str().unwrap_or("");
-                if !ids.contains(t) {
-                    issues.push(Issue {
-                        slide: si,
-                        msg: format!("build step {step} targets \"{t}\", which does not exist on this slide (valid: {})", join_ids(&ids)),
-                        fix: Fix::RemoveBuildStep(step),
-                    });
-                }
-            }
-            let eff = sv(b, "effect");
-            if !eff.is_empty()
-                && !["appear", "fade", "fly_up", "draw", "emphasis", "dim_others"]
-                    .contains(&eff.as_str())
-            {
-                issues.push(Issue {
-                    slide: si,
-                    msg: format!("build step {step} has unknown effect \"{eff}\""),
-                    fix: Fix::RemoveBuildStep(step),
-                });
-            }
-        }
-        let mut uniq = steps.clone();
-        uniq.sort();
-        uniq.dedup();
-        let max_step = uniq.last().copied().unwrap_or(0);
-        if !uniq.is_empty() && uniq != (1..=max_step).collect::<Vec<_>>() {
-            issues.push(Issue {
-                slide: si,
-                msg: format!(
-                    "build steps must be numbered 1..K consecutively, got {:?}",
-                    uniq
-                ),
-                fix: Fix::RemoveBuilds,
-            });
-        }
-
-        // cues
-        let mut revealed: Vec<i64> = Vec::new();
-        for (ni, n) in narration.iter().enumerate() {
-            let text = sv(n, "text");
-            if has_tex(&text) {
-                issues.push(Issue {
-                    slide: si,
-                    msg: format!("narration sentence {} contains LaTeX/markup (\"{}\"); narration must be plain spoken words", ni + 1, truncate_str(&text, 60)),
-                    fix: Fix::PlainNarration { sentence: ni },
-                });
-            }
-            for (ci, c) in n
-                .get("cues")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .enumerate()
-            {
-                match sv(c, "type").as_str() {
-                    "laser" => {
-                        let target = sv(c, "target");
-                        if !ids.contains(&target) {
-                            issues.push(Issue {
-                                slide: si,
-                                msg: format!("laser cue in sentence {} targets \"{}\", which does not exist on this slide (valid: {})", ni + 1, target, join_ids(&ids)),
-                                fix: Fix::RemoveCue { sentence: ni, cue: ci },
-                            });
-                        }
-                        let shape = sv(c, "shape");
-                        if !shape.is_empty() && shape != "circle" && shape != "ellipse" {
-                            issues.push(Issue { slide: si, msg: format!("laser cue in sentence {} has shape \"{}\" (use circle or ellipse)", ni + 1, shape), fix: Fix::RemoveCue { sentence: ni, cue: ci } });
-                        }
-                        for (k, lo, hi) in [
-                            ("scale", 1.0, 1.6),
-                            ("speed", 0.3, 1.5),
-                            ("angle_deg", -90.0, 90.0),
-                            ("duration_ms", 800.0, 6000.0),
-                        ] {
-                            if let Err(e) = num_in(c, k, lo, hi) {
-                                issues.push(Issue {
-                                    slide: si,
-                                    msg: format!("laser cue in sentence {}: {}", ni + 1, e),
-                                    fix: Fix::RemoveCue {
-                                        sentence: ni,
-                                        cue: ci,
-                                    },
-                                });
-                            }
-                        }
-                    }
-                    "step" => {
-                        let k = c.get("n").and_then(Value::as_i64).unwrap_or(0);
-                        if k < 1 || k > max_step {
-                            issues.push(Issue {
-                                slide: si,
-                                msg: format!("step cue n={} in sentence {} does not match a build step (this slide has {} steps)", k, ni + 1, max_step),
-                                fix: Fix::RemoveCue { sentence: ni, cue: ci },
-                            });
-                        } else if revealed.last().is_some_and(|last| k <= *last) {
-                            issues.push(Issue {
-                                slide: si,
-                                msg: format!(
-                                    "step cue n={} in sentence {} is out of order or repeated",
-                                    k,
-                                    ni + 1
-                                ),
-                                fix: Fix::RemoveCue {
-                                    sentence: ni,
-                                    cue: ci,
-                                },
-                            });
-                        } else {
-                            revealed.push(k);
-                        }
-                    }
-                    other => issues.push(Issue {
-                        slide: si,
-                        msg: format!("unknown cue type \"{}\" in sentence {}", other, ni + 1),
-                        fix: Fix::RemoveCue {
-                            sentence: ni,
-                            cue: ci,
-                        },
-                    }),
-                }
-            }
-        }
-        for k in 1..=max_step {
-            if !revealed.contains(&k) && !spoken.is_empty() {
-                issues.push(Issue { slide: si, msg: format!("build step {k} is never revealed by a step cue, so its content would stay hidden"), fix: Fix::RemoveBuildStep(k) });
-            }
-        }
-
-        // checkpoint
-        if let Some(cp) = slide.get("checkpoint").filter(|c| c.is_object()) {
-            let kind = sv(cp, "kind");
-            if sv(cp, "question").is_empty() {
-                issues.push(Issue {
-                    slide: si,
-                    msg: "checkpoint has no question".into(),
-                    fix: Fix::DropCheckpoint,
-                });
-            }
-            if kind == "attempt" && mode != "practice" && sv(cp, "expect").is_empty() {
-                issues.push(Issue {
-                    slide: si,
-                    msg: "attempt checkpoint needs \"expect\" (the answer)".into(),
-                    fix: Fix::DropCheckpoint,
-                });
-            }
-            if kind == "ask" && sv(cp, "reason").is_empty() {
-                issues.push(Issue { slide: si, msg: "checkpoint must state \"reason\" (why pausing here helps); drop it if a pause is not really needed".into(), fix: Fix::DropCheckpoint });
-            }
         }
     }
     issues
 }
 
-fn join_ids(ids: &HashSet<String>) -> String {
-    let mut v: Vec<&String> = ids.iter().collect();
-    v.sort();
-    v.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-}
-
-/// Last-resort local fallback after the repair rounds: removes only what is broken.
-pub fn apply_fallbacks(slides: &mut [Value], issues: &[Issue]) -> Vec<String> {
+/// Things a model never needs to be asked about, fixed in place: LaTeX in narration becomes
+/// plain words, a checkpoint that is missing its question/answer/reason is dropped. Animation
+/// is not touched here (see [`crate::lecture_anim`]). Returns what was changed.
+pub fn apply_mechanical_fixes(slides: &mut [Value], mode: &str) -> Vec<String> {
     let mut log = Vec::new();
-    // cue removals must go from the highest index down so indices stay valid
-    let mut cue_removals: Vec<(usize, usize, usize)> = Vec::new();
-    for is in issues {
-        let Some(slide) = slides.get_mut(is.slide) else {
-            continue;
-        };
-        match &is.fix {
-            Fix::RemoveCue { sentence, cue } => cue_removals.push((is.slide, *sentence, *cue)),
-            Fix::MarkDisplayOnly => {
-                slide["display_only"] = json!({ "reason": "(no narration provided)" });
-                log.push(format!("slide {}: marked display-only", is.slide + 1));
-            }
-            Fix::RemoveBuildStep(step) => {
-                if let Some(b) = slide.get_mut("builds").and_then(Value::as_array_mut) {
-                    b.retain(|x| x.get("step").and_then(Value::as_i64) != Some(*step));
-                    log.push(format!(
-                        "slide {}: removed build step {}",
-                        is.slide + 1,
-                        step
-                    ));
-                }
-            }
-            Fix::RemoveBuilds => {
-                if let Some(o) = slide.as_object_mut() {
-                    o.remove("builds");
-                }
-                log.push(format!("slide {}: removed builds", is.slide + 1));
-            }
-            Fix::PlainNarration { sentence } => {
-                if let Some(n) = slide
-                    .get_mut("narration")
-                    .and_then(|n| n.get_mut(*sentence))
-                {
-                    let t = crate::texfmt::tex_to_unicode(&sv(n, "text")).replace('$', "");
+    for (si, slide) in slides.iter_mut().enumerate() {
+        if let Some(ns) = slide.get_mut("narration").and_then(Value::as_array_mut) {
+            for n in ns.iter_mut() {
+                let text = sv(n, "text");
+                if has_tex(&text) {
+                    let t = crate::texfmt::tex_to_unicode(&text).replace('$', "");
                     n["text"] = Value::String(t);
+                    log.push(format!("slide {}: narration LaTeX converted", si + 1));
                 }
             }
-            Fix::DropCheckpoint => {
-                if let Some(o) = slide.as_object_mut() {
-                    o.remove("checkpoint");
-                }
-                log.push(format!("slide {}: dropped checkpoint", is.slide + 1));
-            }
-            Fix::DropLaserTarget { .. } | Fix::None => {}
         }
-    }
-    cue_removals.sort();
-    cue_removals.dedup();
-    for (s, n, c) in cue_removals.into_iter().rev() {
-        if let Some(cues) = slides[s]
-            .pointer_mut(&format!("/narration/{n}/cues"))
-            .and_then(Value::as_array_mut)
-        {
-            if c < cues.len() {
-                cues.remove(c);
-                log.push(format!(
-                    "slide {}: removed an invalid cue in sentence {}",
-                    s + 1,
-                    n + 1
-                ));
+        let drop_cp = slide
+            .get("checkpoint")
+            .filter(|c| c.is_object())
+            .is_some_and(|cp| {
+                let kind = sv(cp, "kind");
+                sv(cp, "question").is_empty()
+                    || (kind == "attempt" && mode != "practice" && sv(cp, "expect").is_empty())
+                    || (kind == "ask" && sv(cp, "reason").is_empty())
+            });
+        if drop_cp {
+            if let Some(o) = slide.as_object_mut() {
+                o.remove("checkpoint");
             }
+            log.push(format!("slide {}: incomplete checkpoint dropped", si + 1));
         }
-    }
-    // builds whose steps were removed must be renumbered, with step cues remapped
-    for slide in slides.iter_mut() {
-        renumber_builds(slide);
     }
     log
 }
 
-/// Deck (non-lecture) builds: drop builds that target missing elements or use unknown
-/// effects, then renumber steps 1..K. Decks are clicked through manually, so there are no
-/// step cues to check.
+/// Deck (non-lecture) builds: the same consistency rules as a lecture without narration (no
+/// step cues, no pointing). Decks are clicked through manually.
 pub fn sanitize_deck_builds(slides: &mut [Value]) -> Vec<String> {
     let mut log = Vec::new();
     for (si, slide) in slides.iter_mut().enumerate() {
-        let ids: HashSet<String> = slide_element_ids(slide).into_iter().collect();
-        let Some(builds) = slide.get_mut("builds").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        let before = builds.len();
-        builds.retain(|b| {
-            let step_ok = b
-                .get("step")
-                .and_then(Value::as_i64)
-                .is_some_and(|s| s >= 1);
-            let eff = b.get("effect").and_then(Value::as_str).unwrap_or("fade");
-            let eff_ok =
-                ["appear", "fade", "fly_up", "draw", "emphasis", "dim_others"].contains(&eff);
-            let targets_ok = b.get("targets").and_then(Value::as_array).is_some_and(|t| {
-                !t.is_empty()
-                    && t.iter()
-                        .all(|x| x.as_str().is_some_and(|x| ids.contains(x)))
-            });
-            step_ok && eff_ok && targets_ok
-        });
-        if builds.len() != before {
-            log.push(format!(
-                "slide {}: removed {} invalid build(s)",
-                si + 1,
-                before - builds.len()
-            ));
+        for l in crate::lecture_anim::normalize_deck_animation(slide) {
+            log.push(format!("slide {}: {l}", si + 1));
         }
-        renumber_builds(slide);
     }
     log
 }
 
-const ENTRANCE_EFFECTS: [&str; 4] = ["appear", "fade", "fly_up", "draw"];
-
-/// Keeps a figure part from appearing before what it hangs on: a projection line drawn from
-/// an arrow tip, the label of a vector or an angle mark between two lines waits for them.
-/// Uses the attachment groups the figure engine reports (`figure.meta.parts[].anchors`): a
-/// part may appear only once every attachment point of it is drawn by something already
-/// visible. Parts the narration points at earlier stay where they are. Returns the moved
-/// part ids.
-pub(crate) fn order_figure_builds(slide: &mut Value) -> Vec<String> {
-    let parts = slide
-        .pointer("/figure/meta/parts")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let builds = slide
-        .get("builds")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if parts.is_empty() || builds.is_empty() {
-        return Vec::new();
-    }
-    let is_entrance = |b: &Value| {
-        ENTRANCE_EFFECTS.contains(&b.get("effect").and_then(Value::as_str).unwrap_or("fade"))
-    };
-    let mut step: HashMap<String, i64> = parts.iter().map(|p| (sv(p, "id"), 0)).collect();
-    for b in builds.iter().filter(|b| is_entrance(b)) {
-        let s = b.get("step").and_then(Value::as_i64).unwrap_or(0);
-        for t in b
-            .get("targets")
+/// Last resort for a slide that still has neither narration nor a reason: it is display-only.
+pub fn mark_unnarrated_display_only(slides: &mut [Value]) -> Vec<String> {
+    let mut log = Vec::new();
+    for (si, slide) in slides.iter_mut().enumerate() {
+        let spoken = slide
+            .get("narration")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let t = t.as_str().unwrap_or("");
-            if t == "figure" {
-                return Vec::new(); // the whole figure is one build: nothing to order inside it
-            }
-            if let Some(e) = t.strip_prefix("figure:").and_then(|id| step.get_mut(id)) {
-                *e = if *e == 0 { s } else { (*e).min(s) };
-            }
+            .is_some_and(|n| n.iter().any(|x| !sv(x, "text").is_empty()));
+        let has_reason = slide
+            .get("display_only")
+            .and_then(|d| d.get("reason"))
+            .and_then(Value::as_str)
+            .is_some_and(|r| !r.trim().is_empty());
+        if !spoken && !has_reason {
+            slide["display_only"] = json!({ "reason": "(no narration provided)" });
+            log.push(format!("slide {}: marked display-only", si + 1));
         }
     }
-    // the step during which the narration first points at each part
-    let mut pointed: HashMap<String, i64> = HashMap::new();
-    let mut cur = 0;
-    for n in slide
-        .get("narration")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        for c in n
-            .get("cues")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if sv(c, "type") == "step" {
-                cur = cur.max(c.get("n").and_then(Value::as_i64).unwrap_or(0));
-            }
-        }
-        for c in n
-            .get("cues")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if sv(c, "type") == "laser" {
-                if let Some(id) = sv(c, "target").strip_prefix("figure:") {
-                    pointed.entry(id.to_string()).or_insert(cur);
-                }
-            }
-        }
-    }
-    let anchors: Vec<(String, Vec<Vec<String>>)> = parts
-        .iter()
-        .filter_map(|p| {
-            let groups: Vec<Vec<String>> =
-                serde_json::from_value(p.get("anchors")?.clone()).ok()?;
-            Some((sv(p, "id"), groups))
-        })
-        .collect();
-    let mut moved: Vec<String> = Vec::new();
-    for _ in 0..=parts.len() {
-        let mut changed = false;
-        for (id, groups) in &anchors {
-            let need = groups
-                .iter()
-                .map(|g| {
-                    g.iter()
-                        .map(|m| step.get(m).copied().unwrap_or(0))
-                        .min()
-                        .unwrap_or(0)
-                })
-                .max()
-                .unwrap_or(0);
-            let have = step.get(id).copied().unwrap_or(0);
-            if have < need && pointed.get(id).is_none_or(|p| *p >= need) {
-                step.insert(id.clone(), need);
-                if !moved.contains(id) {
-                    moved.push(id.clone());
-                }
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    if moved.is_empty() {
-        return moved;
-    }
-    let Some(bs) = slide.get_mut("builds").and_then(Value::as_array_mut) else {
-        return Vec::new();
-    };
-    for id in &moved {
-        let target = format!("figure:{id}");
-        for b in bs.iter_mut().filter(|b| is_entrance(b)) {
-            if let Some(t) = b.get_mut("targets").and_then(Value::as_array_mut) {
-                t.retain(|x| x.as_str() != Some(target.as_str()));
-            }
-        }
-        let k = step[id];
-        match bs
-            .iter_mut()
-            .find(|b| is_entrance(b) && b.get("step").and_then(Value::as_i64) == Some(k))
-        {
-            Some(b) => {
-                if let Some(t) = b.get_mut("targets").and_then(Value::as_array_mut) {
-                    t.push(json!(target));
-                }
-            }
-            None => bs.push(json!({"step": k, "targets": [target], "effect": "fade"})),
-        }
-    }
-    bs.retain(|b| {
-        b.get("targets")
-            .and_then(Value::as_array)
-            .is_some_and(|t| !t.is_empty())
-    });
-    renumber_builds(slide);
-    moved
-}
-
-fn renumber_builds(slide: &mut Value) {
-    let Some(builds) = slide.get("builds").and_then(Value::as_array).cloned() else {
-        return;
-    };
-    let mut steps: Vec<i64> = builds
-        .iter()
-        .filter_map(|b| b.get("step").and_then(Value::as_i64))
-        .collect();
-    steps.sort();
-    steps.dedup();
-    let map: HashMap<i64, i64> = steps
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (*s, i as i64 + 1))
-        .collect();
-    if map.iter().all(|(k, v)| k == v) {
-        return;
-    }
-    if let Some(bs) = slide.get_mut("builds").and_then(Value::as_array_mut) {
-        for b in bs.iter_mut() {
-            if let Some(s) = b.get("step").and_then(Value::as_i64) {
-                b["step"] = json!(map.get(&s).copied().unwrap_or(s));
-            }
-        }
-    }
-    if let Some(ns) = slide.get_mut("narration").and_then(Value::as_array_mut) {
-        for n in ns.iter_mut() {
-            if let Some(cues) = n.get_mut("cues").and_then(Value::as_array_mut) {
-                cues.retain(|c| {
-                    sv(c, "type") != "step"
-                        || c.get("n")
-                            .and_then(Value::as_i64)
-                            .is_some_and(|k| map.contains_key(&k))
-                });
-                for c in cues.iter_mut() {
-                    if sv(c, "type") == "step" {
-                        if let Some(k) = c.get("n").and_then(Value::as_i64) {
-                            c["n"] = json!(map[&k]);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    log
 }
 
 fn issues_text(issues: &[Issue], slides: &[Value]) -> String {
@@ -1609,6 +1695,13 @@ impl StudioService {
                             // no figure after the retry: a "figure" layout without one would play as
                             // an empty-looking slide, so it becomes an ordinary slide
                             None => {
+                                self.append_thought(
+                                    artifact_id,
+                                    &art.notebook_id,
+                                    "stage",
+                                    &format!("配图未能画出：{title}"),
+                                    "两次尝试都没有得到可用的图，该页不带图，指向图形部件的动画提示已被移除。",
+                                );
                                 if sv(&slides[i], "layout") == "figure" {
                                     slides[i]["layout"] = json!("bullets");
                                 }
@@ -1720,6 +1813,7 @@ impl StudioService {
         max_repairs: usize,
         cancel: CancellationToken,
     ) -> LnaResult<(Vec<Value>, Usage)> {
+        let started = std::time::Instant::now();
         let mode = art
             .config
             .get("mode")
@@ -1736,7 +1830,7 @@ impl StudioService {
         // repair requests below are cloned from the same request, so they keep them too
         let images = image_parts(&self.db.paths().root, art, resolved);
         let system = format!(
-            "You are the Local Notebook Studio lecture author producing structured JSON for lecture slides of ONE section of a narrated lesson (a teacher speaking over slides). Output {{\"slides\": [...]}} for this section only. Slide layouts as in a deck (title/section/agenda/bullets/two_column/cards/metrics/timeline/table/quote/formula/summary/figure); keep on-screen text concise and let the narration carry the explanation. Preserve source citation indices [n] in each slide's citations array.\n{NARRATION_RULES}\n{CUES_GUIDE}\n{ELEMENT_IDS_GUIDE}\n{FIGURE_REQUEST_GUIDE}\n{rules}\nStrictly ground every fact in the provided sources. Match the language requested in config or the primary language of the sources. Sections are written separately and played in order: unless the section position below asks for a title or summary slide, do not add an opening or closing slide of your own, only slides that teach this section's focus.{}",
+            "You are the Local Notebook Studio lecture author producing structured JSON for lecture slides of ONE section of a narrated lesson (a teacher speaking over slides). Output {{\"slides\": [...]}} for this section only. Slide layouts as in a deck (title/section/agenda/bullets/two_column/cards/metrics/timeline/table/quote/formula/summary/figure); keep on-screen text concise and let the narration carry the explanation. Preserve source citation indices [n] in each slide's citations array.\n{NARRATION_RULES}\n{ANIMATION_NOTE}\n{FIGURE_REQUEST_GUIDE}\n{rules}\nStrictly ground every fact in the provided sources. Match the language requested in config or the primary language of the sources. Sections are written separately and played in order: unless the section position below asks for a title or summary slide, do not add an opening or closing slide of your own, only slides that teach this section's focus.{}",
             if has_user_material(&art.config) {
                 format!("\n{USER_MATERIAL_SCOPE} Write only this section's focus; do not add material beyond it.")
             } else {
@@ -2071,6 +2165,7 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                 "Lecture section produced no slides",
             ));
         }
+        strip_animation(&mut slides);
         let u = self
             .fulfil_figure_requests(
                 art,
@@ -2084,31 +2179,129 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
             .await?;
         add_usage(&mut usage, &u);
 
-        for round in 0..=LECTURE_REPAIR_ROUNDS {
-            let mut issues = check_lecture_slides(&slides, mode);
-            issues.extend(check_section_visuals(&slides, sc.visual_need));
-            if issues.is_empty() {
+        // animation is its own step, after the content exists: a fresh-context call that sees
+        // only the finished slides decides what appears when and where the laser points
+        let u = self
+            .animate_section(
+                artifact_id,
+                &art.notebook_id,
+                resolved,
+                sc.section_title,
+                &mut slides,
+                &[],
+                max_out,
+                &reasoning,
+                cancel.clone(),
+            )
+            .await?;
+        add_usage(&mut usage, &u);
+        self.tidy_section(
+            artifact_id,
+            &art.notebook_id,
+            sc.section_title,
+            &mut slides,
+            mode,
+        );
+        // after the content checks pass, a second fresh-context call reviews the result as a
+        // viewer sees it. Animation problems go back to a new animation author, narration
+        // problems to the section author; the loop ends when a review finds nothing
+        let rounds = self.lecture_repair_rounds_setting();
+        let (max_reviews, budget) = (lecture_review_rounds(), lecture_section_budget());
+        let mut reviews = 0usize;
+        for round in 0..=rounds {
+            let mut content = check_lecture_content(&slides, mode);
+            content.extend(check_section_visuals(&slides, sc.visual_need));
+            let (mut anim_issues, mut narr_issues) = (Vec::new(), Vec::new());
+            if content.is_empty()
+                && round < rounds
+                && reviews < max_reviews
+                && started.elapsed() < budget
+            {
+                reviews += 1;
+                let (found, u) = self
+                    .review_animation(
+                        artifact_id,
+                        &art.notebook_id,
+                        resolved,
+                        sc.section_title,
+                        &slides,
+                        LlmRequest::simple(
+                            ANIMATION_REVIEW_SYSTEM.to_string(),
+                            animation_review_input(&slides).to_string(),
+                            max_out,
+                        )
+                        .with_reasoning(reasoning.clone()),
+                        cancel.clone(),
+                    )
+                    .await?;
+                add_usage(&mut usage, &u);
+                (anim_issues, narr_issues) = found;
+            }
+            let mut writer_issues = content.clone();
+            writer_issues.append(&mut narr_issues);
+            if writer_issues.is_empty() && anim_issues.is_empty() {
                 break;
             }
-            if round == LECTURE_REPAIR_ROUNDS {
-                let log = apply_fallbacks(&mut slides, &issues);
+            if round == rounds {
+                let log = mark_unnarrated_display_only(&mut slides);
                 self.append_thought(
                     artifact_id,
                     &art.notebook_id,
                     "stage",
                     &format!("讲解校验：{} 仍有问题", sc.section_title),
-                    &format!("经 {LECTURE_REPAIR_ROUNDS} 轮返修后仍有问题，已仅移除出错的部分：\n{}\n\n{}", issues_text(&issues, &slides), log.join("\n")),
+                    &format!(
+                        "经 {rounds} 轮返修后仍有内容问题，保留现状：\n{}\n\n{}",
+                        issues_text(&writer_issues, &slides),
+                        log.join("\n")
+                    ),
                 );
                 break;
+            }
+            if writer_issues.is_empty() {
+                // only the animation is wrong: a new animation author, given the problems
+                self.append_thought(
+                    artifact_id,
+                    &art.notebook_id,
+                    "stage",
+                    &format!("动画返修：{}（第 {} 轮）", sc.section_title, round + 1),
+                    &issues_text(&anim_issues, &slides),
+                );
+                let u = self
+                    .animate_section(
+                        artifact_id,
+                        &art.notebook_id,
+                        resolved,
+                        sc.section_title,
+                        &mut slides,
+                        &anim_issues,
+                        max_out,
+                        &reasoning,
+                        cancel.clone(),
+                    )
+                    .await?;
+                add_usage(&mut usage, &u);
+                self.tidy_section(
+                    artifact_id,
+                    &art.notebook_id,
+                    sc.section_title,
+                    &mut slides,
+                    mode,
+                );
+                continue;
             }
             self.append_thought(
                 artifact_id,
                 &art.notebook_id,
                 "stage",
-                &format!("讲解校验：{}（返修第 {} 轮）", sc.section_title, round + 1),
-                &issues_text(&issues, &slides),
+                &if content.is_empty() {
+                    format!("动画审查返修：{}（第 {} 轮）", sc.section_title, round + 1)
+                } else {
+                    format!("讲解校验：{}（返修第 {} 轮）", sc.section_title, round + 1)
+                },
+                &issues_text(&writer_issues, &slides),
             );
-            // figures already drawn are kept; show the model their real part ids
+            // figures already drawn are kept; show the model their real part ids. The author
+            // never wrote animation, so it is not shown any
             let figures: Vec<(usize, Value)> = slides
                 .iter()
                 .enumerate()
@@ -2119,6 +2312,7 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                 })
                 .collect();
             let mut shown = slides.clone();
+            strip_animation(&mut shown);
             for s in shown.iter_mut() {
                 if let Some(o) = s.as_object_mut() {
                     if let Some(f) = o.remove("figure") {
@@ -2136,7 +2330,7 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
             let repair = format!(
                 "{user}\n\nYour previous output for this section:\n{}\n\nValidation problems:\n{}\n\nReturn the corrected {{\"slides\": [...]}} for this section. Keep the same slides in the same order and keep every \"figure_request\" unchanged (those figures are already drawn; their real part ids are listed in figure_parts_available). Fix only what is listed.",
                 json!({ "slides": shown }),
-                issues_text(&issues, &slides)
+                issues_text(&writer_issues, &slides)
             );
             let res = {
                 self.run_structured_with_thought_ex(
@@ -2176,6 +2370,7 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                             o.remove("figure_parts_available");
                         }
                     }
+                    strip_animation(&mut new_slides);
                     // a repair may add a brand-new figure request
                     let u = self
                         .fulfil_figure_requests(
@@ -2189,6 +2384,28 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                         )
                         .await?;
                     add_usage(&mut usage, &u);
+                    // the text changed, so the animation is written again from scratch
+                    let u = self
+                        .animate_section(
+                            artifact_id,
+                            &art.notebook_id,
+                            resolved,
+                            sc.section_title,
+                            &mut new_slides,
+                            &[],
+                            max_out,
+                            &reasoning,
+                            cancel.clone(),
+                        )
+                        .await?;
+                    add_usage(&mut usage, &u);
+                    self.tidy_section(
+                        artifact_id,
+                        &art.notebook_id,
+                        sc.section_title,
+                        &mut new_slides,
+                        mode,
+                    );
                     slides = new_slides;
                 }
                 Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
@@ -2197,29 +2414,262 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                 }
             }
         }
-        let mut moved_log = Vec::new();
-        for (i, s) in slides.iter_mut().enumerate() {
+        for s in slides.iter_mut() {
             if let Some(o) = s.as_object_mut() {
                 o.remove("figure_request");
             }
-            let moved = order_figure_builds(s);
-            if !moved.is_empty() {
-                moved_log.push(format!("第 {} 页：{}", i + 1, moved.join("、")));
+        }
+        // the final word on animation order, whatever the repair rounds did
+        self.tidy_section(
+            artifact_id,
+            &art.notebook_id,
+            sc.section_title,
+            &mut slides,
+            mode,
+        );
+        for (i, s) in slides.iter().enumerate() {
+            let left = crate::lecture_anim::animation_violations(s);
+            if !left.is_empty() {
+                tracing::warn!(
+                    "lecture slide {} animation still inconsistent: {:?}",
+                    i + 1,
+                    left
+                );
             }
         }
-        if !moved_log.is_empty() {
+        Ok((slides, usage))
+    }
+
+    /// One fresh-context model call that reads a finished section the way a viewer sees it
+    /// (what is on screen while each sentence is spoken) and lists order problems. It never
+    /// blocks generation: a failed review (other than cancellation) means "no problems found".
+    #[allow(clippy::too_many_arguments)]
+    async fn review_animation(
+        &self,
+        artifact_id: &str,
+        notebook_id: &str,
+        resolved: &ResolvedProfile,
+        section_title: &str,
+        slides: &[Value],
+        req: LlmRequest,
+        cancel: CancellationToken,
+    ) -> LnaResult<((Vec<Issue>, Vec<Issue>), Usage)> {
+        let schema = animation_review_schema();
+        let res = self
+            .run_structured_with_thought_ex(
+                artifact_id,
+                notebook_id,
+                &format!("动画审查：{section_title}"),
+                resolved,
+                &req,
+                "animation_review",
+                &schema,
+                1,
+                None,
+                cancel,
+            )
+            .await;
+        match res {
+            Ok((out, u)) => {
+                let (anim, narr) = animation_review_issues(&out, slides);
+                let found = anim.len() + narr.len();
+                self.append_thought(
+                    artifact_id,
+                    notebook_id,
+                    "stage",
+                    &format!("动画审查：{section_title}"),
+                    &if found == 0 {
+                        "独立审查未发现先后关系问题。".to_string()
+                    } else {
+                        format!(
+                            "独立审查报告了 {found} 个问题（{} 个交回动画重编，{} 个交回讲解作者改旁白）。",
+                            anim.len(),
+                            narr.len()
+                        )
+                    },
+                );
+                Ok(((anim, narr), u))
+            }
+            Err(e) if e.code == ErrorCode::Cancelled => Err(e),
+            Err(e) => {
+                tracing::warn!("animation review failed: {}", e.message);
+                Ok(((Vec::new(), Vec::new()), Usage::default()))
+            }
+        }
+    }
+
+    /// One fresh-context model call that animates a section: it sees only the finished slides
+    /// (never how they were written) and says per sentence what appears and where the laser
+    /// points; the plan replaces whatever animation the slides had. `hints` are problems found
+    /// in an earlier animation of the same slides. A failed call (other than cancellation)
+    /// leaves the slides static instead of blocking the lecture.
+    #[allow(clippy::too_many_arguments)]
+    async fn animate_section(
+        &self,
+        artifact_id: &str,
+        notebook_id: &str,
+        resolved: &ResolvedProfile,
+        section_title: &str,
+        slides: &mut [Value],
+        hints: &[Issue],
+        max_out: u32,
+        reasoning: &ReasoningOptions,
+        cancel: CancellationToken,
+    ) -> LnaResult<Usage> {
+        // a repair is anchored: only the slides with problems are redone, each starting from its
+        // current animation, so a fixed problem cannot come back and a good slide is never lost
+        let repair = !hints.is_empty();
+        let mut remaining: Vec<usize> = if repair {
+            let mut v: Vec<usize> = hints.iter().map(|h| h.slide + 1).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        } else {
+            animation_author_input(slides)
+                .get("slides")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.get("slide").and_then(Value::as_u64).map(|n| n as usize))
+                .collect()
+        };
+        let mut usage = Usage::default();
+        let mut log: Vec<String> = Vec::new();
+        let mut failures = 0usize;
+        // a first plan must cover every narrated slide and every sentence: what the model left
+        // out is asked for again (only that), as long as each call gets something done
+        loop {
+            let mut full = animation_author_input(slides);
+            if let Some(list) = full.get_mut("slides").and_then(Value::as_array_mut) {
+                list.retain(|v| {
+                    v.get("slide")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| remaining.contains(&(n as usize)))
+                });
+                if repair {
+                    for v in list.iter_mut() {
+                        let idx = v.get("slide").and_then(Value::as_u64).unwrap_or(1) as usize - 1;
+                        if let Some(sl) = slides.get(idx) {
+                            v["current_animation"] = animation_plan_of(sl);
+                        }
+                    }
+                }
+                if list.is_empty() {
+                    break;
+                }
+            }
+            let mut input = full.to_string();
+            if repair {
+                input.push_str(&format!(
+                    "\n\nThe current animation of the slides above (current_animation) has these problems:\n{}\n\nReturn the corrected plan for exactly these slides: every sentence of each, all of current_animation with only the fixes applied (a sentence you leave out keeps what it has now). Change only what is needed to fix the listed problems.",
+                    issues_text(hints, slides)
+                ));
+            } else if !log.is_empty() {
+                input.push_str(
+                    "\n\nThese slides were missing from your previous plan or it skipped some of their sentences. Give the complete plan for every sentence of exactly these slides.",
+                );
+            }
+            let req = LlmRequest::simple(ANIMATION_AUTHOR_SYSTEM.to_string(), input, max_out)
+                .with_reasoning(reasoning.clone());
+            let schema = animation_author_schema();
+            let res = self
+                .run_structured_with_thought_ex(
+                    artifact_id,
+                    notebook_id,
+                    &format!("编排动画：{section_title}"),
+                    resolved,
+                    &req,
+                    "animation_plan",
+                    &schema,
+                    1,
+                    None,
+                    cancel.clone(),
+                )
+                .await;
+            let (mut plan, u) = match res {
+                Ok(x) => x,
+                Err(e) if e.code == ErrorCode::Cancelled => return Err(e),
+                Err(e) => {
+                    // a failed call (unparseable output, a provider error) is tried once more:
+                    // giving up leaves the whole section without animation
+                    tracing::warn!("animation authoring failed: {}", e.message);
+                    failures += 1;
+                    if failures < 2 {
+                        continue;
+                    }
+                    break;
+                }
+            };
+            add_usage(&mut usage, &u);
+            if let Some(list) = plan.get_mut("slides").and_then(Value::as_array_mut) {
+                list.retain(|v| {
+                    v.get("slide")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| remaining.contains(&(n as usize)))
+                });
+            }
+            let complete: Vec<usize> = plan_complete_slides(slides, &plan);
+            if repair {
+                plan = merge_animation_plan(slides, &plan);
+            }
+            log.extend(apply_animation(slides, &plan));
+            if repair {
+                break;
+            }
+            let before = remaining.len();
+            remaining.retain(|n| !complete.contains(n));
+            if remaining.is_empty() || remaining.len() == before {
+                break;
+            }
+        }
+        self.append_thought(
+            artifact_id,
+            notebook_id,
+            "stage",
+            &format!("编排动画：{section_title}"),
+            &log.join("\n"),
+        );
+        Ok(usage)
+    }
+
+    /// Repair rounds per section: the "lecture.limits" setting (`repair_rounds`, saved from
+    /// Settings) when it holds a whole number, otherwise the built-in default.
+    fn lecture_repair_rounds_setting(&self) -> usize {
+        lna_storage::get_setting_json(&self.db, LECTURE_LIMITS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|v| v.get("repair_rounds").and_then(Value::as_u64))
+            .map(|n| n.min(MAX_LECTURE_REPAIR_ROUNDS as u64) as usize)
+            .unwrap_or_else(lecture_repair_rounds)
+    }
+
+    /// Mechanical clean-up of a freshly written/repaired section: animation consistency and
+    /// the fixes no model round trip is needed for. Logged as an automatic stage (it never
+    /// counts as a model failure).
+    fn tidy_section(
+        &self,
+        artifact_id: &str,
+        notebook_id: &str,
+        section_title: &str,
+        slides: &mut [Value],
+        mode: &str,
+    ) {
+        let mut lines: Vec<String> = Vec::new();
+        for (i, s) in slides.iter_mut().enumerate() {
+            for l in crate::lecture_anim::normalize_animation(s) {
+                lines.push(format!("第 {} 页：{l}", i + 1));
+            }
+        }
+        lines.extend(apply_mechanical_fixes(slides, mode));
+        if !lines.is_empty() {
             self.append_thought(
                 artifact_id,
-                &art.notebook_id,
+                notebook_id,
                 "stage",
-                &format!("图形出现顺序：{}", sc.section_title),
-                &format!(
-                    "以下图形部件依附于后出现的部件，已改为与其一同出现：\n{}",
-                    moved_log.join("\n")
-                ),
+                &format!("整理动画提示：{section_title}"),
+                &lines.join("\n"),
             );
         }
-        Ok((slides, usage))
     }
 
     pub(crate) fn lecture_kg_hint(&self, art: &StudioArtifact) -> String {
@@ -3220,102 +3670,277 @@ mod tests {
 
     #[test]
     fn valid_slide_has_no_issues() {
-        assert!(check_lecture_slides(&[slide()], "general").is_empty());
+        assert!(check_lecture_content(&[slide()], "general").is_empty());
     }
 
     #[test]
     fn talk_about_the_reading_process_is_reported_but_the_book_may_be_named() {
         let mut s = slide();
         s["narration"][0]["text"] = json!("扫描版的识别噪声很大，下标要按标准的矢量分解去理解。");
-        let issues = check_lecture_slides(&[s], "general");
+        let issues = check_lecture_content(&[s], "general");
         assert!(issues
             .iter()
             .any(|i| i.msg.contains("reading/generation process")));
         let mut t = slide();
         t["title"] = json!("先定位：这一页在推导链中的位置");
-        assert!(check_lecture_slides(&[t], "general")
+        assert!(check_lecture_content(&[t], "general")
             .iter()
             .any(|i| i.msg.contains("reading/generation process")));
         let mut ok = slide();
         ok["narration"][0]["text"] = json!("课本上的例题用的正是这个结论。");
-        assert!(check_lecture_slides(&[ok], "general").is_empty());
+        assert!(check_lecture_content(&[ok], "general").is_empty());
     }
 
     #[test]
-    fn reports_bad_targets_params_tex_and_missing_narration() {
-        let mut s = slide();
-        s["narration"][0]["cues"][1]["target"] = json!("b9");
-        s["narration"][0]["cues"][1]["speed"] = json!(5);
-        s["narration"][1]["text"] = json!("所以 $A^{-1}$ 存在。");
+    fn reports_missing_narration() {
         let empty = json!({"layout": "title", "title": "封面", "narration": []});
-        let issues = check_lecture_slides(&[s, empty], "general");
+        let issues = check_lecture_content(&[slide(), empty], "general");
         let msgs: Vec<&str> = issues.iter().map(|i| i.msg.as_str()).collect();
-        assert!(msgs.iter().any(|m| m.contains("\"b9\"")), "{msgs:?}");
-        assert!(msgs.iter().any(|m| m.contains("speed")), "{msgs:?}");
-        assert!(msgs.iter().any(|m| m.contains("LaTeX")), "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("no narration")), "{msgs:?}");
-        // no silent re-targeting: the fallback removes the broken cue only
-        assert!(issues.iter().any(|i| matches!(
-            i.fix,
-            Fix::RemoveCue {
-                sentence: 0,
-                cue: 1
-            }
-        )));
+    }
+
+    /// The model writes JSON fields in the order the schema lists them (constrained decoding),
+    /// so the schema must keep its authored order: `layout` and `title` first, not alphabetical
+    /// (which put `narration` before `title` and let long narration spill into the title).
+    #[test]
+    fn schemas_keep_their_authored_field_order() {
+        let slide = lecture_slide_schema();
+        let keys: Vec<&str> = slide["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(&keys[..2], ["layout", "title"]);
+        let pos = |k: &str| keys.iter().position(|x| *x == k).unwrap();
+        assert!(pos("bullets") < pos("narration"));
+        // animation is not the author's business: no builds, no cues
+        assert!(!keys.contains(&"builds"));
+        assert!(slide["properties"]["narration"]["items"]["properties"]
+            .get("cues")
+            .is_none());
+        let skel = section_page_skeleton_schema();
+        let skel_keys: Vec<&str> = skel["properties"]["pages"]["items"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(skel_keys.first(), Some(&"title"));
+    }
+
+    #[test]
+    fn animation_review_input_and_issues() {
+        let mut s = slide();
+        s["figure"] = json!({
+            "spec": {"elements": [{"id": "v", "type": "vector"}, {"id": "lbl_v", "type": "text", "text": "v", "for": "v"}]},
+            "meta": {"parts": [{"id": "v"}, {"id": "lbl_v", "anchors": [["v"]]}]}
+        });
+        let input = animation_review_input(std::slice::from_ref(&s));
+        let sl = &input["slides"][0];
+        assert_eq!(sl["slide"], 1);
+        assert_eq!(sl["figure_parts"][1]["hangs_on"], json!([["v"]]));
+        assert_eq!(sl["figure_elements"][1]["for"], "v");
+        assert_eq!(sl["narration"][1]["sentence"], 2);
+        let schema = animation_review_schema();
+        assert_eq!(schema["required"], json!(["problems"]));
+        let ok = json!({"problems": [
+            {"slide": 1, "sentence": 2, "element": "b2", "fix": "animation", "problem": "revealed early"},
+            {"slide": 1, "sentence": 3, "element": "", "fix": "narration", "problem": "speaks about v before it exists"},
+            {"slide": 9, "sentence": 1, "element": "x", "fix": "animation", "problem": "unknown slide"},
+            {"slide": 1, "sentence": 0, "element": "", "fix": "animation", "problem": "  "}
+        ]});
+        let (anim, narr) = animation_review_issues(&ok, std::slice::from_ref(&s));
+        assert_eq!(anim.len(), 1);
+        assert_eq!(anim[0].slide, 0);
+        assert!(anim[0].msg.contains("sentence 2") && anim[0].msg.contains("element b2"));
+        assert_eq!(narr.len(), 1);
+        assert!(narr[0].msg.contains("sentence 3") && narr[0].msg.contains("narration"));
+        let (a2, n2) = animation_review_issues(&json!({"problems": []}), &[s]);
+        assert!(a2.is_empty() && n2.is_empty());
+    }
+
+    #[test]
+    fn animation_author_input_hides_animation_and_lists_targets() {
+        let s = json!({
+            "layout": "figure", "title": "T", "bullets": ["a", "b"],
+            "builds": [{"step": 1, "targets": ["b1"]}],
+            "narration": [{"text": "一", "cues": [{"type": "step", "n": 1}]}, {"text": "二"}],
+            "figure": {"meta": {"parts": [{"id": "v"}]}, "spec": {"elements": [{"id": "v", "type": "vector"}]}}
+        });
+        let silent = json!({"layout": "figure", "title": "S", "narration": [], "display_only": {"reason": "r"}});
+        let input = animation_author_input(&[silent, s]);
+        let slides = input["slides"].as_array().unwrap();
+        assert_eq!(slides.len(), 1, "slides without narration are not animated");
+        let sl = &slides[0];
+        assert_eq!(sl["slide"], 2);
+        assert!(sl.get("builds").is_none());
+        assert!(sl["narration"][0].get("cues").is_none());
+        let ids = sl["valid_targets"].as_array().unwrap();
+        assert!(ids.iter().any(|v| v == "b2") && ids.iter().any(|v| v == "figure:v"));
+        assert_eq!(animation_author_schema()["required"], json!(["slides"]));
+    }
+
+    #[test]
+    fn animation_plan_becomes_builds_and_cues() {
+        let mut slides = vec![json!({
+            "layout": "bullets", "title": "T", "bullets": ["a", "b"],
+            "builds": [{"step": 7, "targets": ["b2"]}],
+            "narration": [
+                {"text": "一", "cues": [{"type": "laser", "target": "b2"}]},
+                {"text": "二"}, {"text": "三"}
+            ]
+        })];
+        let plan = json!({"slides": [
+            {"slide": 1, "sentences": [
+                {"sentence": 1, "reveal": ["b1"], "effect": "fade", "points": [{"target": "b1", "at": "一"}]},
+                {"sentence": 2, "reveal": [], "points": []},
+                {"sentence": 3, "reveal": ["b2", "b1"], "effect": "bogus", "points": [{"target": "b2"}, {"target": ""}]},
+                {"sentence": 9, "reveal": ["b1"], "points": []}
+            ]},
+            {"slide": 4, "sentences": []}
+        ]});
+        let log = apply_animation(&mut slides, &plan);
+        assert_eq!(log.len(), 1);
+        let s = &slides[0];
+        // each reveal is its own step with its step cue; a target is revealed only once
+        assert_eq!(
+            s["builds"],
+            json!([
+                {"step": 1, "targets": ["b1"], "effect": "fade"},
+                {"step": 2, "targets": ["b2"], "effect": "fade"}
+            ])
+        );
+        assert_eq!(
+            s["narration"][0]["cues"][0],
+            json!({"type": "step", "n": 1})
+        );
+        assert_eq!(s["narration"][0]["cues"][1]["target"], "b1");
+        assert_eq!(s["narration"][0]["cues"][1]["at"], "一");
+        assert_eq!(s["narration"][1]["cues"], json!([]));
+        assert_eq!(
+            s["narration"][2]["cues"][0],
+            json!({"type": "step", "n": 2})
+        );
+        assert_eq!(s["narration"][2]["cues"].as_array().unwrap().len(), 2);
+        // a plan read back from the slide is the plan that was written (repairs start from it)
+        let back = animation_plan_of(&slides[0]);
+        assert_eq!(back["sentences"][0]["reveal"], json!(["b1"]));
+        assert_eq!(back["sentences"][0]["points"][0]["at"], "一");
+        assert_eq!(back["sentences"][2]["reveal"], json!(["b2"]));
+        assert_eq!(back["sentences"][1]["reveal"], json!([]));
+        // the result survives the normalizer unchanged in meaning
+        crate::lecture_anim::normalize_animation(&mut slides[0]);
+        assert!(crate::lecture_anim::animation_violations(&slides[0]).is_empty());
+        strip_animation(&mut slides);
+        assert!(slides[0].get("builds").is_none());
+        assert!(slides[0]["narration"][0].get("cues").is_none());
+    }
+
+    #[test]
+    fn a_partial_repair_plan_keeps_the_rest_of_the_animation() {
+        let mut slides = vec![json!({
+            "layout": "bullets", "title": "T", "bullets": ["a", "b", "c"],
+            "narration": [{"text": "一"}, {"text": "二"}, {"text": "三"}, {"text": "四"}]
+        })];
+        apply_animation(
+            &mut slides,
+            &json!({"slides": [{"slide": 1, "sentences": [
+                {"sentence": 1, "reveal": ["b1"], "points": [{"target": "b1"}]},
+                {"sentence": 2, "reveal": ["b2"], "points": [{"target": "b2"}]},
+                {"sentence": 3, "reveal": ["b3"], "points": [{"target": "b3"}]},
+                {"sentence": 4, "reveal": [], "points": []}
+            ]}]}),
+        );
+        // the repair only moves b2 to sentence 4: it returns that sentence and the one it left
+        let partial = json!({"slides": [{"slide": 1, "sentences": [
+            {"sentence": 2, "reveal": [], "points": [{"target": "b2"}]},
+            {"sentence": 4, "reveal": ["b2"], "points": []}
+        ]}]});
+        let merged = merge_animation_plan(&slides, &partial);
+        apply_animation(&mut slides, &merged);
+        let back = animation_plan_of(&slides[0]);
+        assert_eq!(back["sentences"][0]["reveal"], json!(["b1"]));
+        assert_eq!(back["sentences"][1]["reveal"], json!([]));
+        assert_eq!(back["sentences"][2]["reveal"], json!(["b3"]));
+        assert_eq!(back["sentences"][3]["reveal"], json!(["b2"]));
+        assert_eq!(back["sentences"][2]["points"][0]["target"], "b3");
+    }
+
+    #[test]
+    fn plan_targets_are_resolved_and_incomplete_plans_are_found() {
+        let mut slides = vec![
+            json!({"layout": "figure", "title": "T", "bullets": ["a"],
+                "figure": {"meta": {"parts": [{"id": "vec_F"}]}, "spec": {"elements": [{"id": "vec_F", "type": "vector"}]}},
+                "narration": [{"text": "一"}, {"text": "二"}]}),
+            json!({"layout": "bullets", "title": "S", "bullets": ["x"], "narration": [{"text": "三"}]}),
+        ];
+        let plan = json!({"slides": [{"slide": 1, "sentences": [
+            {"sentence": 1, "reveal": ["vec_f"], "points": [{"target": "vec_F"}, {"target": "B1"}]}
+        ]}]});
+        // slide 1 is missing its second sentence, slide 2 is missing altogether
+        assert!(plan_complete_slides(&slides, &plan).is_empty());
+        apply_animation(&mut slides, &plan);
+        assert_eq!(slides[0]["builds"][0]["targets"], json!(["figure:vec_F"]));
+        assert_eq!(
+            slides[0]["narration"][0]["cues"][1]["target"],
+            "figure:vec_F"
+        );
+        assert_eq!(slides[0]["narration"][0]["cues"][2]["target"], "b1");
+        // an empty plan for slides that have content is not complete either
+        let empty = json!({"slides": [
+            {"slide": 1, "sentences": [{"sentence": 1, "reveal": [], "points": []}, {"sentence": 2, "reveal": [], "points": []}]},
+            {"slide": 2, "sentences": [{"sentence": 1, "reveal": [], "points": []}]}
+        ]});
+        assert!(plan_complete_slides(&slides, &empty).is_empty());
+        let full = json!({"slides": [
+            {"slide": 1, "sentences": [{"sentence": 1, "reveal": ["b1"], "points": []}, {"sentence": 2, "reveal": [], "points": []}]},
+            {"slide": 2, "sentences": [{"sentence": 1, "reveal": [], "points": [{"target": "b1"}]}]}
+        ]});
+        assert_eq!(plan_complete_slides(&slides, &full), vec![1, 2]);
     }
 
     #[test]
     fn display_only_rules() {
         let d = json!({"layout": "figure", "title": "图", "narration": [], "display_only": {"reason": "大图展示"}});
-        assert!(check_lecture_slides(std::slice::from_ref(&d), "general").is_empty());
-        let issues = check_lecture_slides(&[d.clone(), d], "general");
+        assert!(check_lecture_content(std::slice::from_ref(&d), "general").is_empty());
+        let issues = check_lecture_content(&[d.clone(), d], "general");
         assert!(issues.iter().any(|i| i.msg.contains("second display-only")));
     }
 
+    /// Animation problems are never a reason to ask the model again: the content check does not
+    /// report them and the deterministic normalisation settles them.
     #[test]
-    fn unrevealed_and_unordered_steps_are_reported() {
+    fn animation_problems_are_not_content_problems() {
         let mut s = slide();
         s["narration"][1]["cues"] = json!([]);
-        let issues = check_lecture_slides(&[s.clone()], "general");
-        assert!(issues.iter().any(|i| i.msg.contains("never revealed")));
-        s["narration"][1]["cues"] = json!([{"type": "step", "n": 1}]);
-        let issues = check_lecture_slides(&[s], "general");
-        assert!(issues.iter().any(|i| i.msg.contains("out of order")));
+        s["narration"][0]["cues"][1]["target"] = json!("b9");
+        s["narration"][0]["cues"][1]["speed"] = json!(5);
+        assert!(check_lecture_content(&[s.clone()], "general").is_empty());
+        crate::lecture_anim::normalize_animation(&mut s);
+        assert!(crate::lecture_anim::animation_violations(&s).is_empty());
     }
 
     #[test]
-    fn checkpoint_needs_reason() {
+    fn mechanical_fixes_convert_tex_and_drop_incomplete_checkpoints() {
         let mut s = slide();
+        s["narration"][1]["text"] = json!("所以 $A^{-1}$ 存在。");
         s["checkpoint"] = json!({"kind": "ask", "question": "为什么？"});
-        assert!(check_lecture_slides(&[s.clone()], "general")
-            .iter()
-            .any(|i| i.msg.contains("reason")));
-        s["checkpoint"]["reason"] = json!("易混淆");
-        assert!(check_lecture_slides(&[s], "general").is_empty());
-    }
-
-    #[test]
-    fn fallbacks_remove_only_broken_parts_and_renumber() {
-        let mut s = slide();
-        s["narration"][0]["cues"][1]["target"] = json!("nope");
-        s["builds"][0]["targets"] = json!(["missing"]);
         let mut slides = vec![s];
-        let issues = check_lecture_slides(&slides, "general");
-        apply_fallbacks(&mut slides, &issues);
-        let s = &slides[0];
-        // laser cue removed (not re-pointed), build step 1 removed, step 2 renumbered to 1
-        assert!(s["narration"][0]["cues"]
-            .as_array()
+        let log = apply_mechanical_fixes(&mut slides, "general");
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert!(!slides[0]["narration"][1]["text"]
+            .as_str()
             .unwrap()
-            .iter()
-            .all(|c| c["type"] != "laser"));
-        assert_eq!(s["builds"].as_array().unwrap().len(), 1);
-        assert_eq!(s["builds"][0]["step"], 1);
-        assert!(
-            check_lecture_slides(&slides, "general").is_empty(),
-            "{:?}",
-            check_lecture_slides(&slides, "general")
-        );
+            .contains('$'));
+        assert!(slides[0].get("checkpoint").is_none());
+        let mut ok = slide();
+        ok["checkpoint"] = json!({"kind": "ask", "question": "为什么？", "reason": "易混淆"});
+        let mut slides = vec![ok];
+        assert!(apply_mechanical_fixes(&mut slides, "general").is_empty());
+        let mut bare = vec![json!({"layout": "title", "title": "封面", "narration": []})];
+        assert_eq!(mark_unnarrated_display_only(&mut bare).len(), 1);
+        assert!(check_lecture_content(&bare, "general").is_empty());
     }
 
     #[test]
@@ -3330,7 +3955,7 @@ mod tests {
             "narration": [{"text": "画出曲线。", "cues": [{"type": "step", "n": 1}, {"type": "laser", "target": "figure:V", "shape": "circle", "speed": 1.0}]}]
         });
         assert!(slide_element_ids(&s).contains(&"figure:V".to_string()));
-        assert!(check_lecture_slides(&[s.clone()], "general").is_empty());
+        assert!(check_lecture_content(&[s.clone()], "general").is_empty());
         let dir = std::env::temp_dir().join(format!("lna_fig_{}", std::process::id()));
         let n = render_figure_assets(&json!({"slides": [s.clone()]}), &dir).unwrap();
         assert_eq!(n, 2);
@@ -3342,15 +3967,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut alone = s.clone();
         alone["bullets"] = json!([]);
-        let issues = check_lecture_slides(&[alone], "general");
+        let issues = check_lecture_content(&[alone], "general");
         assert!(
             issues
                 .iter()
                 .any(|i| i.msg.contains("no on-screen text beside")),
             "{issues:?}"
         );
+        // a pointer at a part the figure does not have is cleaned, not sent back to the model
         s["narration"][0]["cues"][1]["target"] = json!("figure:Q");
-        assert!(!check_lecture_slides(&[s], "general").is_empty());
+        assert!(check_lecture_content(&[s.clone()], "general").is_empty());
+        crate::lecture_anim::normalize_animation(&mut s);
+        // the sentence still reveals the figure, so the pointer goes to what it reveals
+        let cues = s["narration"][0]["cues"].as_array().unwrap();
+        assert_eq!(cues.len(), 2);
+        assert_eq!(cues[1]["target"], "figure:f");
+        assert!(crate::lecture_anim::animation_violations(&s).is_empty());
     }
 
     #[test]
@@ -3576,14 +4208,8 @@ mod visual_tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].slide, 1);
 
-        // a derivation section only asks for a step reveal, and is satisfied by one
-        assert_eq!(
-            check_section_visuals(&[table_slide(3)], "suggested").len(),
-            1
-        );
-        let mut built = table_slide(3);
-        built["builds"] = json!([{"step": 1, "targets": ["table.r1"]}]);
-        assert!(check_section_visuals(&[built], "suggested").is_empty());
+        // a derivation section asks nothing of the author: the animation step reveals its rows
+        assert!(check_section_visuals(&[table_slide(3)], "suggested").is_empty());
         assert!(check_section_visuals(&[table_slide(3)], "none").is_empty());
     }
 
@@ -3591,72 +4217,8 @@ mod visual_tests {
     fn table_counts_as_text_beside_a_figure() {
         let mut s = table_slide(2);
         s["figure"] = json!({"meta": {"parts": []}});
-        let issues = check_lecture_slides(&[s], "general");
+        let issues = check_lecture_content(&[s], "general");
         assert!(!issues.iter().any(|i| i.msg.contains("no on-screen text")));
-    }
-}
-
-#[cfg(test)]
-mod figure_order_tests {
-    use super::*;
-
-    fn slide(h_anchors: Value, h_laser_first: bool) -> Value {
-        let first_cues = if h_laser_first {
-            json!([{"type": "step", "n": 1}, {"type": "laser", "target": "figure:h"}])
-        } else {
-            json!([{"type": "step", "n": 1}])
-        };
-        json!({
-            "layout": "figure", "title": "t", "bullets": ["a", "b"],
-            "figure": {"meta": {"parts": [
-                {"id": "P", "bbox": [0, 0, 0, 0]},
-                {"id": "V", "bbox": [0, 0, 0, 0]},
-                {"id": "h", "bbox": [0, 0, 0, 0], "anchors": h_anchors},
-                {"id": "lbl", "bbox": [0, 0, 0, 0], "anchors": [["h"]]}
-            ]}},
-            "builds": [
-                {"step": 1, "targets": ["b1"], "effect": "fade"},
-                {"step": 2, "targets": ["b2", "figure:V"], "effect": "draw"}
-            ],
-            "narration": [
-                {"text": "一", "cues": first_cues},
-                {"text": "二", "cues": [{"type": "step", "n": 2}]}
-            ]
-        })
-    }
-
-    fn step_of(s: &Value, target: &str) -> Option<i64> {
-        s["builds"].as_array().unwrap().iter().find_map(|b| {
-            b["targets"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|t| t == target)
-                .then(|| b["step"].as_i64().unwrap())
-        })
-    }
-
-    #[test]
-    fn helper_and_its_label_wait_for_the_vector() {
-        let mut s = slide(json!([["V"]]), false);
-        let moved = order_figure_builds(&mut s);
-        assert_eq!(moved, vec!["h".to_string(), "lbl".to_string()]);
-        assert_eq!(step_of(&s, "figure:h"), Some(2));
-        assert_eq!(step_of(&s, "figure:lbl"), Some(2));
-        assert!(check_lecture_slides(std::slice::from_ref(&s), "general")
-            .iter()
-            .all(|i| !i.msg.contains("step")));
-    }
-
-    #[test]
-    fn point_already_drawn_or_pointed_at_keeps_order() {
-        // the shared point is also on the static P: nothing to wait for
-        let mut s = slide(json!([["P", "V"]]), false);
-        assert!(order_figure_builds(&mut s).is_empty());
-        // the narration points at h before V appears: leave it visible
-        let mut s = slide(json!([["V"]]), true);
-        let moved = order_figure_builds(&mut s);
-        assert!(!moved.contains(&"h".to_string()));
     }
 }
 
@@ -3671,7 +4233,7 @@ mod prereq_tests {
     #[test]
     fn prerequisite_detours_are_flagged_outside_review_mode() {
         let flagged = |t: &str, mode: &str| {
-            check_lecture_slides(&[slide(t)], mode)
+            check_lecture_content(&[slide(t)], mode)
                 .iter()
                 .any(|i| i.msg.contains("prerequisite/review slide"))
         };

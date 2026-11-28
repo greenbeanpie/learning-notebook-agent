@@ -157,8 +157,24 @@ final class LectureController: ObservableObject {
 
     private func showPosition() {
         guard let s = seq[safe: pos] else { return }
-        js("lecture.show(\(s.slide),\(Lecture.stepBefore(seq, pos)))")
+        // browsing by hand: what this sentence reveals is shown, what it points at is marked
+        var step = Lecture.stepBefore(seq, pos)
+        var marks: [String] = []
+        for cue in s.cues {
+            switch cue["type"] as? String {
+            case "step":
+                step = max(step, (cue["n"] as? Int) ?? Int((cue["n"] as? Double) ?? 0))
+            case "laser":
+                if let d = try? JSONSerialization.data(withJSONObject: cue), let t = String(data: d, encoding: .utf8) {
+                    marks.append(t)
+                }
+            default:
+                break
+            }
+        }
+        js("lecture.show(\(s.slide),\(step))")
         caption(s.text)
+        if !marks.isEmpty { js("lecture.marks([\(marks.joined(separator: ","))])") }
     }
 
     private func saveProgress() {

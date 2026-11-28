@@ -671,6 +671,43 @@ fn canvas_size(spec: &Value) -> (f64, f64) {
 /// Renders a figure spec. `hidden` parts are omitted from the SVG (used for per-step PNGs);
 /// part geometry is always reported for every part.
 pub fn render_figure(spec: &Value, hidden: &HashSet<String>) -> FigureOutput {
+    let mut out = render_figure_geometry(spec, hidden);
+    apply_explicit_owners(spec, &mut out);
+    out
+}
+
+/// Collects `"for": "<id>"` from every element (groups included): a text that labels another
+/// part says so explicitly, which beats guessing from distances.
+fn collect_owners(elements: &[Value], out: &mut Vec<(String, String)>) {
+    for el in elements {
+        let (id, owner) = (s_of(el, "id"), s_of(el, "for"));
+        if !id.is_empty() && !owner.is_empty() {
+            out.push((id, owner));
+        }
+        if let Some(ch) = el.get("children").and_then(Value::as_array) {
+            collect_owners(ch, out);
+        }
+    }
+}
+
+/// A part with an explicit owner hangs on exactly that part.
+fn apply_explicit_owners(spec: &Value, out: &mut FigureOutput) {
+    let mut owners = Vec::new();
+    if let Some(els) = spec.get("elements").and_then(Value::as_array) {
+        collect_owners(els, &mut owners);
+    }
+    let ids: HashSet<String> = out.parts.iter().map(|p| p.id.clone()).collect();
+    for (id, owner) in owners {
+        if owner == id || !ids.contains(&owner) {
+            continue;
+        }
+        if let Some(p) = out.parts.iter_mut().find(|p| p.id == id) {
+            p.anchors = vec![vec![owner]];
+        }
+    }
+}
+
+fn render_figure_geometry(spec: &Value, hidden: &HashSet<String>) -> FigureOutput {
     let (w, h) = canvas_size(spec);
     let mut ctx = Ctx {
         w,
@@ -3003,6 +3040,28 @@ mod tests {
             "{:?}",
             out.warnings
         );
+    }
+
+    #[test]
+    fn explicit_for_overrides_geometric_attachment() {
+        let spec = json!({"kind": "diagram", "elements": [
+            {"id": "V", "type": "vector", "from": [0, 0], "to": [3, 0]},
+            {"id": "W", "type": "vector", "from": [0, 2], "to": [3, 2]},
+            {"id": "lbl", "type": "text", "at": [1.5, 0.15], "text": "w", "for": "W"},
+            {"id": "bad", "type": "text", "at": [1.5, 2.15], "text": "x", "for": "nope"}
+        ]});
+        let out = render_figure(&spec, &none());
+        let anchors = |id: &str| {
+            out.parts
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.anchors.clone())
+                .unwrap()
+        };
+        // next to V but says it labels W
+        assert_eq!(anchors("lbl"), vec![vec!["W".to_string()]]);
+        // an unknown owner is ignored: the geometric guess stays
+        assert_ne!(anchors("bad"), vec![vec!["nope".to_string()]]);
     }
 
     #[test]

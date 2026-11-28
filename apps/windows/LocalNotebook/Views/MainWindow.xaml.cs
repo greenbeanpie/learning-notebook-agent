@@ -389,7 +389,16 @@ public sealed partial class MainWindow : Window
     private async void OnNotebookItemClick(object sender, ItemClickEventArgs e)
     {
         NotebookFlyout.Hide();
-        if (e.ClickedItem is not ListViewItem { Tag: string id } || id == _activeNotebookId) return;
+        // ClickedItem is the ListViewItem itself or, depending on how the list is realised, its
+        // content row: resolve the notebook id from either.
+        var id = e.ClickedItem switch
+        {
+            ListViewItem { Tag: string t } => t,
+            FrameworkElement fe => NotebookListView.Items.OfType<ListViewItem>()
+                .FirstOrDefault(i => ReferenceEquals(i.Content, fe))?.Tag as string,
+            _ => null,
+        };
+        if (id is null || id == _activeNotebookId) return;
         await SwitchNotebookAsync(id);
     }
 

@@ -284,6 +284,8 @@ fun MainScreen(vm: AppViewModel) {
             presets = state.providerPresets,
             profiles = state.modelProfiles,
             mediaRouting = state.mediaRouting,
+            lectureRepairRounds = state.lectureRepairRounds,
+            onSaveLectureRepairRounds = vm::saveLectureRepairRounds,
             onSavePrefs = vm::updatePreferences,
             onSaveModel = vm::saveModelProfile,
             onDeleteProfile = vm::deleteModelProfile,

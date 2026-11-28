@@ -859,6 +859,7 @@ impl LlmClient {
             .await?;
         add_usage(&mut total_usage, &u);
 
+        trace_llm_text(schema_name, "first", &raw);
         let mut candidate = strip_code_fences(&raw);
         let mut last_reason = String::new();
 
@@ -1006,7 +1007,8 @@ impl LlmClient {
                 }
             }
             match serde_json::from_str::<serde_json::Value>(&candidate) {
-                Ok(val) => {
+                Ok(mut val) => {
+                    strip_empty_abort(&mut val);
                     let errs: Vec<String> = validator
                         .iter_errors(&val)
                         .take(3)
@@ -1347,6 +1349,22 @@ fn add_usage(dst: &mut Usage, src: &Usage) {
     dst.cached_tokens += src.cached_tokens;
 }
 
+/// Debug aid: with `LNA_LLM_TRACE_DIR` set, the raw text of every structured answer is saved there.
+fn trace_llm_text(schema_name: &str, stage: &str, text: &str) {
+    let Ok(dir) = std::env::var("LNA_LLM_TRACE_DIR") else {
+        return;
+    };
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(
+        Path::new(&dir).join(format!("{ms}-{schema_name}-{stage}.txt")),
+        text,
+    );
+}
+
 fn strip_code_fences(s: &str) -> String {
     let t = s.trim();
     if let Some(rest) = t.strip_prefix("```json") {
@@ -1572,14 +1590,31 @@ const ABORT_NOTE: &str = "
 如果这项任务确实无法完成（例如材料缺失或无法读取、图片看不见、要求自相矛盾），不要编造内容：在 JSON 根对象里只写一个字符串字段 \"abort_reason\"，说明原因，其余字段可省略。";
 
 /// `schema` with the optional root property `abort_reason` added (when the root lists properties).
+/// It goes FIRST: the model writes fields in schema order, so it decides whether to give up
+/// before it writes any content (placed last it would be filled with a placeholder instead).
 fn with_abort_property(schema: &serde_json::Value) -> serde_json::Value {
     let mut out = schema.clone();
     if let Some(props) = out.get_mut("properties").and_then(|p| p.as_object_mut()) {
-        props
-            .entry("abort_reason")
-            .or_insert_with(|| serde_json::json!({"type": "string"}));
+        if !props.contains_key("abort_reason") {
+            let mut ordered = serde_json::Map::new();
+            ordered.insert("abort_reason".into(), serde_json::json!({"type": "string"}));
+            ordered.append(props);
+            *props = ordered;
+        }
     }
     out
+}
+
+/// Drops an empty `abort_reason` ("I am not giving up") so the answer fits the original schema.
+fn strip_empty_abort(v: &mut serde_json::Value) {
+    if let Some(o) = v.as_object_mut() {
+        if o.get("abort_reason")
+            .and_then(|r| r.as_str())
+            .is_some_and(|r| r.trim().is_empty())
+        {
+            o.remove("abort_reason");
+        }
+    }
 }
 
 /// The model's own reason for giving up, when it wrote one.
@@ -1596,7 +1631,7 @@ pub fn parse_structured(
     raw: &str,
 ) -> LnaResult<Option<serde_json::Value>> {
     let candidate = strip_code_fences(raw);
-    let Ok(val) = serde_json::from_str::<serde_json::Value>(&candidate) else {
+    let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&candidate) else {
         return Ok(None);
     };
     if let Some(reason) = abort_reason(&val) {
@@ -1605,6 +1640,7 @@ pub fn parse_structured(
             format!("模型主动终止了任务：{reason}"),
         ));
     }
+    strip_empty_abort(&mut val);
     let validator = jsonschema::validator_for(schema)
         .map_err(|e| LnaError::invalid(format!("Invalid JSON schema: {e}")))?;
     Ok(validator.is_valid(&val).then_some(val))
@@ -1646,6 +1682,24 @@ mod abort_tests {
         let e = parse_structured(&schema, "{\"abort_reason\":\"图看不清\"}").unwrap_err();
         assert_eq!(e.code, ErrorCode::ModelRefused);
         assert!(e.message.contains("图看不清"));
+        // an empty abort_reason is "not giving up" and must not break a closed schema
+        let closed = json!({"type":"object","additionalProperties":false,"properties":{"a":{"type":"string"}},"required":["a"]});
+        assert_eq!(
+            parse_structured(&closed, "{\"abort_reason\":\"\",\"a\":\"x\"}").unwrap(),
+            Some(json!({"a":"x"}))
+        );
+    }
+
+    #[test]
+    fn abort_reason_is_the_first_property_the_model_writes() {
+        let s = with_abort_property(&json!({"type":"object","properties":{"z":{},"a":{}}}));
+        let keys: Vec<&str> = s["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["abort_reason", "z", "a"]);
     }
 }
 

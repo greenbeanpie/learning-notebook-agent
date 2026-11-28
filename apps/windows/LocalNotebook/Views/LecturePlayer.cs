@@ -355,10 +355,23 @@ internal sealed class LecturePlayer : IDisposable
     {
         if (_seq.Count == 0) return;
         var s = _seq[_pos];
-        await Js($"lecture.show({s.Slide},{StepBefore(_pos)})");
+        // browsing by hand: what this sentence reveals is already shown, and what it points at is marked
+        await Js($"lecture.show({s.Slide},{StepThrough(_pos)})");
         _shownSlide = s.Slide;
         await Js($"lecture.caption({(_captions ? JsStr(s.Text) : "''")})");
+        var marks = Cues(s).Where(c => Str(c, "type") == "laser").Select(c => c.GetRawText()).ToList();
+        if (marks.Count > 0) await Js($"lecture.marks([{string.Join(",", marks)}])");
         UpdateCounter();
+    }
+
+    /// The build step in force while sentence `pos` is spoken: its own step cues included.
+    private int StepThrough(int pos)
+    {
+        var step = StepBefore(pos);
+        foreach (var c in Cues(_seq[pos]))
+            if (Str(c, "type") == "step" && c.TryGetProperty("n", out var n) && n.TryGetInt32(out var k))
+                step = Math.Max(step, k);
+        return step;
     }
 
     private void UpdateCounter()

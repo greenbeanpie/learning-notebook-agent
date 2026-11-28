@@ -28,6 +28,8 @@ fun UnifiedSettingsSheet(
     presets: List<ProviderPresetItem> = emptyList(),
     profiles: List<ModelProfileItem> = emptyList(),
     mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
+    lectureRepairRounds: Int = 2,
+    onSaveLectureRepairRounds: (Int) -> Unit = {},
     onSavePrefs: (UiPreferences) -> Unit,
     onSaveModel: (
         profileId: String?,
@@ -229,6 +231,17 @@ fun UnifiedSettingsSheet(
                             Text(L10n.t("settings.show_suggestions", en), modifier = Modifier.weight(1f))
                             Switch(checked = draftPrefs.showSuggestedQuestions, onCheckedChange = { draftPrefs = draftPrefs.copy(showSuggestedQuestions = it) })
                         }
+                        Text(L10n.t("settings.lecture_repair_rounds", en), style = MaterialTheme.typography.labelMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            OutlinedButton(onClick = { onSaveLectureRepairRounds(lectureRepairRounds - 1) }, enabled = lectureRepairRounds > 0) { Text("−") }
+                            Text("$lectureRepairRounds", style = MaterialTheme.typography.titleMedium)
+                            OutlinedButton(onClick = { onSaveLectureRepairRounds(lectureRepairRounds + 1) }, enabled = lectureRepairRounds < 20) { Text("+") }
+                        }
+                        Text(
+                            L10n.t("settings.lecture_repair_rounds_hint", en),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         Button(onClick = { onSavePrefs(draftPrefs) }, modifier = Modifier.fillMaxWidth()) {
                             Text(L10n.t("settings.save", en))
                         }

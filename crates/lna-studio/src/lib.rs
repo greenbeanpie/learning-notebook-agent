@@ -1,6 +1,7 @@
 pub mod expr;
 pub mod figure;
 pub mod lecture;
+pub mod lecture_anim;
 pub(crate) mod material;
 pub mod mdlite;
 pub mod render;

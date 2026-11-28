@@ -2638,6 +2638,16 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     );
     quiz_submit_dd.set_selected(if st.prefs.borrow().quiz_submit_mode == "auto" { 1 } else { 0 });
 
+    // Lecture repair rounds per section ("lecture.limits"): 0 = no repair, no independent review.
+    let lecture_rounds_spin = gtk4::SpinButton::with_range(0.0, 20.0, 1.0);
+    lecture_rounds_spin.set_value(
+        call_core(&st.core, "settings.get", json!({ "key": "lecture.limits" }))
+            .ok()
+            .and_then(|v| v.pointer("/value/repair_rounds").and_then(Value::as_u64))
+            .map(|n| n.min(20) as f64)
+            .unwrap_or(2.0),
+    );
+
     let save_prefs_btn = Button::with_label(tr(en, "settings.save"));
     save_prefs_btn.add_css_class("lna-primary-btn");
     let st_p = st.clone();
@@ -2650,7 +2660,13 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     let studio_lang_dd_c = studio_lang_dd.clone();
     let quiz_view_dd_c = quiz_view_dd.clone();
     let quiz_submit_dd_c = quiz_submit_dd.clone();
+    let lecture_rounds_spin_c = lecture_rounds_spin.clone();
     save_prefs_btn.connect_clicked(move |_| {
+        let _ = call_core(
+            &st_p.core,
+            "settings.set",
+            json!({ "key": "lecture.limits", "value": { "repair_rounds": lecture_rounds_spin_c.value_as_int().clamp(0, 20) } }),
+        );
         {
             let mut p = st_p.prefs.borrow_mut();
             p.language = match lang_dd_c.selected() {
@@ -2737,6 +2753,13 @@ fn open_settings_dialog(parent: &ApplicationWindow, st: &Rc<UiState>) {
     gen_box.append(&quiz_view_dd);
     gen_box.append(&Label::new(Some(tr(en, "settings.quiz_submit_mode"))));
     gen_box.append(&quiz_submit_dd);
+    gen_box.append(&Label::new(Some(tr(en, "settings.lecture_repair_rounds"))));
+    gen_box.append(&lecture_rounds_spin);
+    let lecture_rounds_hint = Label::new(Some(tr(en, "settings.lecture_repair_rounds_hint")));
+    lecture_rounds_hint.set_wrap(true);
+    lecture_rounds_hint.set_xalign(0.0);
+    lecture_rounds_hint.add_css_class("dim-label");
+    gen_box.append(&lecture_rounds_hint);
     gen_box.append(&gen_extra_row);
     gen_box.append(&save_prefs_btn);
 

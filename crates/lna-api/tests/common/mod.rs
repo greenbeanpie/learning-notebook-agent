@@ -708,13 +708,30 @@ pub fn studio_reply(r: &Req) -> Reply {
         json!({"pages":[{"title":"基与维数","points":["定义","维数定理"],"needs_figure":false,"figure_hint":""},{"title":"一条曲线","points":["要点"],"needs_figure":true,"figure_hint":"曲线示意"}]})
     } else if s.contains("for lecture outline") {
         json!({"title":"基与维数讲解","objectives":["理解基","理解维数"],"sections":[{"title":"基与维数","focus":"3.5 节：基的定义与维数定理"}]})
+    } else if s.contains("review the animation order of finished lecture slides") {
+        // the mock lecture's figure slide is reported until its animation was re-authored once
+        // (the animator's repair marks its plan with "已修正"), so exactly one repair happens
+        if user_text.contains("一条曲线") && !user_text.contains("已修正") {
+            json!({"problems":[{"slide":2,"sentence":1,"element":"figure:f","fix":"animation","problem":"drawn before the sentence that explains it"}]})
+        } else {
+            json!({"problems":[]})
+        }
+    } else if s.contains("direct the animation of finished lecture slides") {
+        let fixed = user_text.contains("has these problems");
+        let mut point = json!({"target":"figure:f"});
+        if fixed {
+            point["at"] = json!("已修正");
+        }
+        json!({"slides":[
+            {"slide":1,"sentences":[{"sentence":1,"reveal":[],"points":[{"target":"title"}]}]},
+            {"slide":2,"sentences":[{"sentence":1,"reveal":["figure:f"],"effect":"draw","points":[point]}]}
+        ]})
     } else if s.contains("for lecture slides") {
         json!({"slides":[
-            {"layout":"title","title":"基与维数","narration":[{"text":"今天我们来讲基与维数。","cues":[{"type":"laser","target":"title","shape":"ellipse","scale":1.2,"speed":0.8,"duration_ms":1500}]}]},
+            {"layout":"title","title":"基与维数","narration":[{"text":"今天我们来讲基与维数。"}]},
             {"layout":"figure","title":"一条曲线","bullets":["要点"],"citations":[1],
              "figure_request":{"kind":"plot","purpose":"示意","details":"curve id f: y=x^2"},
-             "builds":[{"step":1,"targets":["figure:f"],"effect":"draw"}],
-             "narration":[{"text":"先看这条曲线。","cues":[{"type":"step","n":1},{"type":"laser","target":"figure:f","shape":"circle","speed":1.0,"duration_ms":2000}]}]}
+             "narration":[{"text":"先看这条曲线。"}]}
         ]})
     } else if s.contains("structured JSON for figure") {
         if user_text.contains("Render report") {

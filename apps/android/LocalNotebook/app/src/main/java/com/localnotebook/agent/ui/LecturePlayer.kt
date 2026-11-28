@@ -194,8 +194,19 @@ fun LecturePlayerView(artifact: StudioArtifactItem, core: CoreClient?, en: Boole
     fun showPosition() {
         if (seq.isEmpty()) return
         val s = seq[pos]
-        js("lecture.show(${s.slide},${stepBefore(pos)})")
+        // browsing by hand: what this sentence reveals is shown, what it points at is marked
+        var step = stepBefore(pos)
+        val marks = mutableListOf<String>()
+        for (k in 0 until s.cues.length()) {
+            val c = s.cues.optJSONObject(k) ?: continue
+            when (c.optString("type")) {
+                "step" -> step = maxOf(step, c.optInt("n"))
+                "laser" -> marks += c.toString()
+            }
+        }
+        js("lecture.show(${s.slide},$step)")
         js("lecture.caption(${if (captions) jsStr(s.text) else "''"})")
+        if (marks.isNotEmpty()) js("lecture.marks([${marks.joinToString(",")}])")
     }
 
     fun saveProgress() {

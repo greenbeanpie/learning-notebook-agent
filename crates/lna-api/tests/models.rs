@@ -210,7 +210,9 @@ fn upsert_params(mock: &MockLlm) -> Value {
 #[test]
 fn saving_a_profile_starts_a_probe_and_testing_repeats_it() {
     let env = Env::new("probe");
-    for (schema_ok, json_mode_ok) in [(true, true), (false, true)] {
+    // JSON mode is only tried when JSON Schema does not work (either is enough), so a schema-capable
+    // model leaves it unset
+    for (schema_ok, json_mode_ok) in [(true, false), (false, true)] {
         let mock = probe_mock(true, schema_ok);
         mock.raw_probe
             .store(true, std::sync::atomic::Ordering::SeqCst);

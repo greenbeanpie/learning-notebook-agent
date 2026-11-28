@@ -607,6 +607,40 @@ fn studio_export_supports_all_formats_and_audio_end_to_end() {
     assert_eq!(&wav_bytes[8..12], b"WAVE");
 }
 
+/// The repair limit saved in Settings ("lecture.limits") is what the lecture pipeline uses:
+/// with 0 rounds there is no independent review and no repair at all.
+#[test]
+fn lecture_repair_limit_comes_from_settings() {
+    let mock = studio_mock();
+    let env = Env::new("lecture_limits");
+    let nid = small_notebook(&env);
+    env.profile(&mock, 32000);
+    env.ok(
+        "settings.set",
+        json!({ "key": "lecture.limits", "value": { "repair_rounds": 0 } }),
+    );
+    let id = create(
+        &env,
+        &nid,
+        "lecture",
+        json!({ "mode": "general", "detail": "auto", "topic": "基与维数" }),
+    );
+    studio_wait(&env, &id, "READY", 60);
+    let titles: Vec<String> = env.query(|c| {
+        let mut st = c
+            .prepare("SELECT title FROM artifact_thoughts WHERE artifact_id = ?1 ORDER BY seq")
+            .unwrap();
+        st.query_map([&id], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
+    });
+    let count = |needle: &str| titles.iter().filter(|t| t.contains(needle)).count();
+    assert_eq!(count("编排动画："), 1, "{titles:?}");
+    assert_eq!(count("动画审查"), 0, "{titles:?}");
+    assert_eq!(count("动画返修"), 0, "{titles:?}");
+}
+
 /// Lecture (讲解): outline → section with a figure, step build and laser cues → figure assets
 /// and pptx; interruption Q&A, adaptation (insert / regenerate) and undo.
 #[test]
@@ -640,6 +674,22 @@ fn lecture_generates_figures_and_adapts() {
         2
     );
     assert!(p["estimated_minutes"].as_f64().unwrap() > 0.0);
+    // animation is its own step: written by a fresh-context call, reviewed by another, the
+    // reported problem sent back to a new animation call once (one review per section by default)
+    let titles: Vec<String> = env.query(|c| {
+        let mut st = c
+            .prepare("SELECT title FROM artifact_thoughts WHERE artifact_id = ?1 ORDER BY seq")
+            .unwrap();
+        st.query_map([&id], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect()
+    });
+    let count = |needle: &str| titles.iter().filter(|t| t.contains(needle)).count();
+    assert_eq!(count("编排动画："), 2, "{titles:?}");
+    assert_eq!(count("动画审查："), 1, "{titles:?}");
+    assert_eq!(count("动画返修"), 1, "{titles:?}");
+    assert_eq!(count("返修讲解"), 0, "{titles:?}");
     let dir = std::path::PathBuf::from(art["output_dir"].as_str().unwrap());
     assert!(dir.join("figures/s1-2.svg").is_file());
     assert!(dir.join("figures/s1-2_0.png").is_file() && dir.join("figures/s1-2_1.png").is_file());

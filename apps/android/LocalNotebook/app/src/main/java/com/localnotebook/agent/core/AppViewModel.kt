@@ -43,6 +43,8 @@ data class AppUiState(
     val providerPresets: List<ProviderPresetItem> = emptyList(),
     val modelProfiles: List<ModelProfileItem> = emptyList(),
     val mediaRouting: MediaRoutingConfig = MediaRoutingConfig(),
+    /** Lecture repair rounds per section ("lecture.limits"); 0 = no repair, no independent review. */
+    val lectureRepairRounds: Int = 2,
     val statusBanner: String = "",
     val isSendingChat: Boolean = false,
     val showCreateNotebook: Boolean = false,
@@ -71,6 +73,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             loadProviderPresets()
             loadModelProfiles()
             loadMediaRouting()
+            loadLectureLimits()
             loadInitialNotebook()
             launch {
                 core.events.collect { ev ->
@@ -875,6 +878,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 _ui.update { it.copy(modelProfiles = list) }
             }
+        }
+    }
+
+    private fun loadLectureLimits() {
+        viewModelScope.launch {
+            runCatching {
+                val res = core.call("settings.get", JSONObject().put("key", "lecture.limits"))
+                val mv = res.optJSONObject("value") ?: return@runCatching
+                _ui.update { it.copy(lectureRepairRounds = mv.optInt("repair_rounds", 2).coerceIn(0, 20)) }
+            }
+        }
+    }
+
+    fun saveLectureRepairRounds(rounds: Int) {
+        val n = rounds.coerceIn(0, 20)
+        _ui.update { it.copy(lectureRepairRounds = n) }
+        viewModelScope.launch {
+            runCatching {
+                core.call(
+                    "settings.set",
+                    JSONObject().put("key", "lecture.limits").put("value", JSONObject().put("repair_rounds", n)),
+                )
+            }.onFailure { reportError(it) }
         }
     }
 

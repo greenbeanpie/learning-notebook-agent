@@ -2219,7 +2219,13 @@ impl AgentService {
             model_id: profile.model_id.clone(),
             api_key,
             show_thinking: profile.show_thinking,
-            effort: profile.effort.clone(),
+            // `LNA_EFFORT_OVERRIDE` (a test hook for one process, never stored) replaces the
+            // profile's reasoning effort
+            effort: std::env::var("LNA_EFFORT_OVERRIDE")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .or_else(|| profile.effort.clone()),
             context_window: profile.context_window,
             max_output_tokens: profile.max_output_tokens,
             capabilities: profile.capabilities.clone(),

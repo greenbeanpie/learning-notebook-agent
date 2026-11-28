@@ -296,6 +296,12 @@
   #slideMount g.hl-glow path { animation: hlStroke .8s ease-in-out infinite; stroke-width: 3.6px; }
   #slideMount g.hl-glow path[fill-opacity="1.00"]:not([fill="none"]), #slideMount g.hl-glow circle[fill]:not([fill="#ffffff"]), #slideMount g.hl-glow text { animation: hlFill .8s ease-in-out infinite; }
   #slideMount g.hl-glow text { font-weight: 700; }
+  /* the same marks without motion (browsing by hand) */
+  #slideMount g.hl-static, #slideMount g.hl-static path, #slideMount g.hl-static circle, #slideMount g.hl-static text { animation: none !important; }
+  #slideMount g.hl-static { filter: drop-shadow(0 0 3px rgba(255,45,45,.9)) drop-shadow(0 0 8px rgba(255,120,0,.55)); }
+  #slideMount g.hl-static path { stroke: #e3262f; }
+  #slideMount g.hl-static path[fill-opacity="1.00"]:not([fill="none"]), #slideMount g.hl-static circle[fill]:not([fill="#ffffff"]), #slideMount g.hl-static text { fill: #e3262f; }
+  .hl-still { animation: none !important; }
   #slideMount g.hl-fade { opacity: .32; }
   #slideMount g.hl-soft { filter: drop-shadow(0 0 3px rgba(255,170,0,.9)); }
   #slideMount .hl-soft:not(g) { background-color: rgba(255,214,10,.22) !important; border-radius: 6px; }
@@ -857,6 +863,40 @@ function lasers(cfgs, text, rate, durMs) {
     hlTimers.push(setTimeout(() => pointAt(c, dur), starts[i]));
   });
 }
+// Static marks for browsing by hand (paused, arrow keys, slide jumps): every pointer cue of one
+// sentence is shown at once and stays until the next navigation or playback; no moving dot.
+function marks(cfgs) {
+  clearHighlights();
+  const list = (Array.isArray(cfgs) ? cfgs : []).filter(c => c && c.target);
+  const undo = [];
+  const lit = [];
+  list.forEach(c => {
+    const els = targetEls(c.target).filter(e => !e.classList.contains('bld-hidden'));
+    if (!els.length) return;
+    const style = pickStyle(c, els);
+    if (style === 'glow') {
+      els.forEach(e => { e.classList.add('hl-glow', 'hl-static'); lit.push(e); });
+      undo.push(() => els.forEach(e => e.classList.remove('hl-glow', 'hl-static')));
+    } else {
+      const r = unionRect(els);
+      const d = document.createElement('div');
+      d.className = style === 'marker' ? 'hl-marker hl-still' : 'hl-box hl-still';
+      const pad = style === 'marker' ? 2 : 4;
+      Object.assign(d.style, { left: (r.x - pad) + 'px', top: (r.y - pad) + 'px', width: (r.w + 2 * pad) + 'px', height: (r.h + 2 * pad) + 'px' });
+      hlLayer.appendChild(d);
+      undo.push(() => d.remove());
+    }
+  });
+  if (lit.length) {
+    const others = [...document.querySelectorAll('#slideMount [data-el="figure"] [data-part]')]
+      .filter(e => !lit.includes(e) && !lit.some(x => x.contains(e) || e.contains(x)));
+    others.forEach(e => e.classList.add('hl-fade'));
+    undo.push(() => others.forEach(e => e.classList.remove('hl-fade')));
+  }
+  if (!undo.length) return false;
+  hlCleanup = () => undo.forEach(f => f());
+  return true;
+}
 // Older hosts call laser() once per cue, all at once: queue them instead of overwriting.
 let legacyLastCall = 0, legacyChainEnd = 0;
 function laser(cfg) {
@@ -1054,6 +1094,8 @@ window.lecture = {
   // durMs = the sentence's real length when the host knows it
   lasers(cfgs, text, rate, durMs) { lasers(cfgs, text, rate, durMs); },
   stopLaser() { clearHighlights(); },
+  // static marks of one sentence's pointer cues, for browsing by hand
+  marks(cfgs) { return marks(cfgs); },
   caption(text) { const c = document.getElementById('captionBox'); c.textContent = text || ''; c.style.display = text ? 'block' : 'none'; },
   setSlides(arr, i, step) { if (Array.isArray(arr) && arr.length) { slides = arr; go(Math.min(i, slides.length - 1), 0, step || 0); } },
   current() { return current; },

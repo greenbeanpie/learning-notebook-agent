@@ -360,7 +360,7 @@ fn command(c: &[char], pos: &mut usize) -> String {
         }
         "text" | "textrm" | "textbf" | "textit" | "mathrm" | "mathbf" | "mathit" | "mathsf"
         | "mathtt" | "operatorname" | "boldsymbol" | "bm" | "mbox" | "mathcal" | "mathscr"
-        | "mathfrak" | "displaystyle" | "textstyle" => {
+        | "mathfrak" | "displaystyle" | "textstyle" | "underbrace" | "overbrace" => {
             if matches!(name.as_str(), "displaystyle" | "textstyle") {
                 String::new()
             } else {
@@ -676,6 +676,12 @@ fn symbol(name: &str) -> Option<&'static str> {
         "iff" => "⟺",
         "mapsto" => "↦",
         "longrightarrow" => "⟶",
+        "Longrightarrow" => "⟹",
+        "longleftarrow" => "⟵",
+        "Longleftarrow" => "⟸",
+        "longleftrightarrow" => "⟷",
+        "Longleftrightarrow" => "⟺",
+        "longmapsto" => "⟼",
         "uparrow" => "↑",
         "downarrow" => "↓",
         "in" => "∈",
@@ -786,6 +792,22 @@ mod tests {
             vec![r("x", 0), r("q", -1), r("+1", 0)]
         );
         assert_eq!(tex_to_runs("A^{-1}"), vec![r("A⁻¹", 0)]);
+    }
+
+    #[test]
+    fn underbrace_shows_its_content() {
+        let text = t(r"\underbrace{r_i\times F}_{note} + 1");
+        assert!(!text.contains("underbrace"), "{text}");
+        assert!(text.contains('×'), "{text}");
+    }
+
+    #[test]
+    fn long_arrows_become_symbols_not_words() {
+        let text = t(r"M=dL/dt \Longrightarrow M_z=dL_z/dt");
+        assert!(
+            text.contains('⟹') && !text.contains("Longrightarrow"),
+            "{text}"
+        );
     }
 
     #[test]
