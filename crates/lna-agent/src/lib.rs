@@ -627,7 +627,7 @@ impl AgentService {
             let rewrite_req = LlmRequest::simple(
                 QUERY_REWRITE_PROMPT,
                 format!("对话历史：\n{history_text}\n\n当前问题：\n{user_text}"),
-                512,
+                resolved.bounded_output(4096),
             )
             .with_output(OutputMode::JsonObject);
             let rewrite_result = tokio::time::timeout(
@@ -2185,7 +2185,7 @@ impl AgentService {
                 "active": true,
             }),
         );
-        let req = LlmRequest::simple(SUMMARY_PROMPT, titles_list, 1200)
+        let req = LlmRequest::simple(SUMMARY_PROMPT, titles_list, resolved.bounded_output(4096))
             .with_output(OutputMode::JsonObject)
             .with_reasoning(resolved.reasoning_options());
 
@@ -2376,7 +2376,7 @@ impl AgentService {
             let req = LlmRequest::simple(
                 HISTORY_SUMMARY_PROMPT,
                 format!("已有摘要：\n{previous}\n\n需要合并的新对话：\n{transcript}"),
-                512,
+                profile.bounded_output(4096),
             )
             .with_output(OutputMode::JsonObject);
             let schema = json!({
@@ -2476,7 +2476,7 @@ impl AgentService {
             let req = LlmRequest::simple(
                 FOLLOWUPS_PROMPT,
                 format!("问题：\n{question}\n\n回答：\n{answer}"),
-                256,
+                profile.bounded_output(2048),
             )
             .with_output(OutputMode::JsonObject);
             let fu_tid = format!("followups:{message_id}");

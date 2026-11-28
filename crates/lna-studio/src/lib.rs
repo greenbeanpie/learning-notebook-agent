@@ -1021,7 +1021,7 @@ User Revision Instruction:
             images,
         )
         .await;
-        let req = LlmRequest::from_parts(sys, parts, 2400)
+        let req = LlmRequest::from_parts(sys, parts, resolved.bounded_output(8192))
             .with_reasoning(resolved.reasoning_options());
 
         let (revised_raw, usage) = self
@@ -1810,7 +1810,7 @@ User Revision Instruction:
                         material::config_for_prompt(&art.config, direct_pictures),
                         evidence_txt
                     ),
-                    1800,
+                    resolved.bounded_output(8192),
                 )
                 .with_reasoning(reasoning.clone()),
                 &pictures,
@@ -2192,7 +2192,7 @@ User Revision Instruction:
                     ),
                     pictures_ref,
                 );
-                self.llm.warm_prefix(resolved, &warm_req, &cancel).await;
+                self.llm.warm_structured_prefix(resolved, &warm_req, schema_name, schema_ref, &cancel).await;
             }
             let system_prompt = format!(
                 "You are the Local Notebook Studio generator. Strictly ground your output in the provided sources to generate structured JSON for {}, preserving source citation indices [n] in the citations array. Match the language requested in config or the primary language of the sources. {sys_extra}",
@@ -2321,7 +2321,7 @@ User Revision Instruction:
                         art.draft.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "None".into()),
                         evidence_txt
                     ),
-                    2400,
+                    resolved.bounded_output(8192),
                 )
                 .with_reasoning(resolved.reasoning_options()),
                 pictures_ref,
@@ -2395,7 +2395,7 @@ Design rules:\n\
             };
             let ranges = split_ranges(target_pages as usize, deck_parts);
             if deck_parts > 1 {
-                self.llm.warm_prefix(resolved, &author_base, &cancel).await;
+                self.llm.warm_structured_prefix(resolved, &author_base, schema_name, &schema, &cancel).await;
                 self.append_thought(
                     artifact_id,
                     &art.notebook_id,
@@ -2869,7 +2869,7 @@ Design rules:\n\
             .collect::<Vec<_>>()
             .join("\n");
         if total > 1 {
-            self.llm.warm_prefix(resolved, gen_req, &cancel).await;
+            self.llm.warm_structured_prefix(resolved, gen_req, schema_name, schema, &cancel).await;
         }
         let results = self
             .run_parts(total, self.parallelism(profile), &cancel, |k| {
@@ -5219,7 +5219,7 @@ Design rules:\n\
                     messages.clone(),
                     // Reasoning models spend output tokens on thinking before emitting tool calls;
                     // a small cap silently ended the reading loop after the first round.
-                    resolved.output_budget().clamp(2048, 8192),
+                    resolved.bounded_output(16_384),
                 )
                 .with_tools(tools.clone(), ToolMode::Auto)
                 .with_reasoning(ReasoningOptions {
@@ -6173,7 +6173,7 @@ Core Topics: {}",
                     let batch_req = LlmRequest::simple(
                         "You are a document structure synthesis assistant. Merge this batch of section summaries while preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.",
                         batch_text,
-                        1200,
+                        resolved.bounded_output(8192),
                     )
                     .with_reasoning(ReasoningOptions {
                         show_summary: profile.show_thinking,
@@ -6203,7 +6203,7 @@ Core Topics: {}",
         let reduce_req = LlmRequest::simple(
             "You are a document structure synthesis assistant. Merge the section summaries into a cohesive global outline preserving hierarchy and key conclusions, without adding facts absent from the summaries. Keep the same language as the summaries.",
             reduced_text,
-            2400,
+            resolved.bounded_output(8192),
         )
         .with_reasoning(ReasoningOptions {
             show_summary: profile.show_thinking,
@@ -6423,7 +6423,7 @@ Core Topics: {}",
                     let req = LlmRequest::simple(
                         format!("You are a section summarization assistant. Summarize the following content from the same section in {}, preserving key concepts, equations, relationships, and conclusions without adding any facts not present in the source.", g.language),
                         chunk_text,
-                        700,
+                        profile.bounded_output(4096),
                     )
                     .with_reasoning(profile.reasoning_options());
                     let res = self

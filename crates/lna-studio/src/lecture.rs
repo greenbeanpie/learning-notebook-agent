@@ -1902,7 +1902,7 @@ impl StudioService {
                 let skel_user = format!(
                     "{user}\n\nPLANNING TASK (do NOT write full slides or narration yet): Output ONLY the per-page skeleton JSON ({{\"pages\": [{{\"title\": ..., \"points\": [...], \"needs_figure\": true|false, \"figure_hint\": ...}}]}}) for this section. Plan only as many pages as needed (2–4 concise points per page, needs_figure + short figure_hint when geometric/physical)."
                 );
-                let skel_req = mk_req(system.clone(), skel_user, resolved.hard_output_cap(8_192));
+                let skel_req = mk_req(system.clone(), skel_user, resolved.hard_output_cap(16_384));
                 let (skel_out, u) = self
                     .run_structured_with_thought_ex(
                         artifact_id,
@@ -2557,8 +2557,8 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                     &req,
                     "animation_plan",
                     &schema,
-                    1,
-                    None,
+                    2,
+                    Some("slides"),
                     cancel.clone(),
                 )
                 .await;
@@ -2776,7 +2776,7 @@ Output {{\"slides\": [...]}} containing ONLY these {} slide(s) in order, followi
                             kg_hint,
                             evidence_txt
                         ),
-                        resolved.hard_output_cap(8_192),
+                        resolved.hard_output_cap(16_384),
                     )
                     .with_reasoning(reasoning.clone()),
                     &images,

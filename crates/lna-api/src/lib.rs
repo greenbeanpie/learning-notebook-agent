@@ -1911,7 +1911,7 @@ impl CoreRuntime {
                 "You are a UI content translator. Translate all text values in the provided JSON into {lang_name}. Keep JSON keys strictly unchanged, preserve Markdown **bold** emphasis, and output valid JSON only with no code fences."
             ),
             input_payload.to_string(),
-            2048.min(resolved.output_budget().max(1024)),
+            resolved.bounded_output(8192),
         )
         .with_output(OutputMode::JsonObject);
 

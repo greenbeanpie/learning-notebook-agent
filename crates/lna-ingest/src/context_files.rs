@@ -1000,7 +1000,7 @@ async fn ask_media(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResu
     let req = LlmRequest::from_parts(
         "You answer questions about the attached audio or video strictly from what is actually said or shown in it. Give timestamps [MM:SS] for the parts you rely on. Do not invent content.",
         vec![part, Part::Text(format!("文件：{}\n问题：{question}", att.name))],
-        resolved.output_budget().clamp(1024, 4096),
+        resolved.bounded_output(8192),
     );
     let res = ctx
         .llm
@@ -1370,7 +1370,7 @@ async fn extract(ctx: &ToolCtx<'_>, att: &Attachment, args: &Value) -> LnaResult
             "材料（「{}」{where_} 的文字层，排版和公式可能有提取误差，请按原意修正为 LaTeX，但不要改动内容）：\n<material>\n{material}\n</material>\n\n提取：{instruction}\n{EXTRACT_RULES}",
             att.name
         ),
-        ctx.profile.output_budget().clamp(1024, 8192),
+        ctx.profile.bounded_output(16_384),
     );
     let (text, usage) = ctx
         .llm
@@ -1429,7 +1429,7 @@ pub async fn brief(
         let req = LlmRequest::conversation(
             "Read attached reference files via tools and return only task-relevant passages with file name and page.",
             messages.clone(),
-            ctx.profile.output_budget().clamp(2048, 8192),
+            ctx.profile.bounded_output(16_384),
         )
         .with_tools(
             tools.clone(),

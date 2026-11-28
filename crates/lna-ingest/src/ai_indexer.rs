@@ -298,7 +298,7 @@ pub async fn run_ai_index_nodes(
     let req = LlmRequest::simple(
         AI_NODES_SYSTEM_PROMPT,
         probe,
-        2048.min(resolved.output_budget().max(1024)),
+        resolved.bounded_output(8192),
     )
     .with_output(OutputMode::JsonObject);
     let (value, usage) = llm
@@ -356,7 +356,7 @@ pub async fn run_ai_guide(
     let req = LlmRequest::simple(
         AI_GUIDE_SYSTEM_PROMPT,
         text,
-        1024.min(resolved.output_budget().max(512)),
+        resolved.bounded_output(4096),
     )
     .with_output(OutputMode::JsonObject);
     let (value, usage) = llm
@@ -518,7 +518,7 @@ pub async fn run_ai_vision_toc_index(
     let req = LlmRequest::from_parts(
         AI_INDEX_SYSTEM_PROMPT,
         parts,
-        resolved.output_budget().clamp(2048, 4096),
+        resolved.bounded_output(16_384),
     )
     .with_output(OutputMode::JsonObject);
 

@@ -359,7 +359,7 @@ pub async fn describe(
         let req = LlmRequest::from_parts(
             "Visual reading assistant: extract only exact visible text, chart values, and LaTeX equations without guessing.",
             parts,
-            profile.output_budget().clamp(1024, 4096),
+            profile.bounded_output(8192),
         );
         if let Ok((txt, usage)) = llm
             .complete_text(profile, &req, CancellationToken::new())

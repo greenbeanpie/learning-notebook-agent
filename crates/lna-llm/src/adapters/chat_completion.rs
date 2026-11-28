@@ -497,7 +497,16 @@ impl StreamDecoder for ChatCompletionDecoder {
             let cached = u
                 .pointer("/prompt_tokens_details/cached_tokens")
                 .and_then(|x| x.as_u64())
+                .or_else(|| {
+                    u.pointer("/prompt_tokens_details/cache_read_tokens")
+                        .and_then(|x| x.as_u64())
+                })
+                .or_else(|| {
+                    u.pointer("/input_tokens_details/cached_tokens")
+                        .and_then(|x| x.as_u64())
+                })
                 .or_else(|| u.get("prompt_cache_hit_tokens").and_then(|x| x.as_u64()))
+                .or_else(|| u.get("cache_read_input_tokens").and_then(|x| x.as_u64()))
                 .unwrap_or(0);
             out.push(LlmEvent::Usage(Usage {
                 input_tokens: inp,

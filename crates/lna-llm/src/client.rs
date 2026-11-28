@@ -362,6 +362,22 @@ impl LlmClient {
         }
     }
 
+    /// Like `warm_prefix`, but prepares the request through the exact same structured-output
+    /// transformation (`ABORT_NOTE` + `JsonSchema`/`JsonObject`) used by
+    /// `complete_structured_continuing`, so the warmed provider KV cache matches 100% identically.
+    pub async fn warm_structured_prefix(
+        &self,
+        profile: &ResolvedProfile,
+        base_req: &LlmRequest,
+        schema_name: &str,
+        schema: &serde_json::Value,
+        cancel: &CancellationToken,
+    ) {
+        if let Ok((prepared, _)) = prepare_structured_request(profile, base_req, schema_name, schema) {
+            self.warm_prefix(profile, &prepared, cancel).await;
+        }
+    }
+
     /// Sets how many requests the profile may have in flight at once. 0 means unlimited (the
     /// default); other values are a hard cap (clamped to 1..=1024 by the storage layer). A
     /// changed limit takes effect for requests that start afterwards; running ones finish normally.
@@ -731,17 +747,44 @@ impl LlmClient {
     {
         let mut text = String::new();
         let mut usage = Usage::default();
-        let stop = self
-            .stream(profile, req, cancel, |ev| match ev {
+        let mut ws_run = 0usize;
+        let mut stalled = false;
+        let inner_cancel = cancel.child_token();
+        let inner_cancel_cb = inner_cancel.clone();
+        let stream_res = self
+            .stream(profile, req, inner_cancel, |ev| match ev {
                 LlmEvent::ThoughtDelta(t) => on_thinking(&t),
                 LlmEvent::TextDelta(t) => {
+                    for ch in t.chars() {
+                        if ch.is_whitespace() {
+                            ws_run += 1;
+                        } else {
+                            ws_run = 0;
+                        }
+                    }
                     text.push_str(&t);
                     on_text(&text);
+                    if !stalled && (ws_run >= 512 || has_degenerate_tail_loop(&text)) {
+                        stalled = true;
+                        inner_cancel_cb.cancel();
+                    }
                 }
                 LlmEvent::Usage(u) => usage = u,
                 _ => {}
             })
-            .await?;
+            .await;
+        let stop = match stream_res {
+            Ok(s) => s,
+            Err(_) if stalled && !cancel.is_cancelled() => {
+                tracing::warn!(
+                    profile = %profile.id,
+                    chars = text.len(),
+                    "aborted runaway repetition/whitespace stream early"
+                );
+                StopReason::MaxTokens
+            }
+            Err(e) => return Err(e),
+        };
         Ok((text, usage, stop))
     }
 
@@ -876,48 +919,9 @@ impl LlmClient {
     {
         let validator = jsonschema::validator_for(schema)
             .map_err(|e| LnaError::invalid(format!("Invalid JSON schema: {e}")))?;
-
-        let mut req = base_req.clone();
-        // Every structured answer may be an abort: the model that cannot do the task says why
-        // instead of inventing content that fits the schema.
-        let sent_schema = with_abort_property(schema);
+        let (req, sent_schema) =
+            prepare_structured_request(profile, base_req, schema_name, schema)?;
         let schema = &sent_schema;
-        req.system.push_str(ABORT_NOTE);
-        // A profile that was never checked (saving does not probe) is tried with JSON Schema;
-        // once checked, what the probe found decides.
-        let unchecked = profile.capabilities.probed_at.is_none() && !profile.capabilities.json_mode;
-        if profile.capabilities.json_schema || unchecked {
-            req.output = OutputMode::JsonSchema {
-                name: schema_name.to_string(),
-                schema: schema.clone(),
-            };
-        } else if profile.capabilities.json_mode {
-            req.output = OutputMode::JsonObject;
-            // The schema goes at the END of the last user message, not into the system prompt:
-            // calls of one job that differ only in their schema then still share the whole
-            // system + message prefix, which is what the provider's prompt cache matches on.
-            let note = format!("\n\n请只输出符合以下 JSON Schema 的 JSON：\n{schema}");
-            let last_text = req
-                .messages
-                .iter_mut()
-                .rev()
-                .find(|m| m.role == Role::User)
-                .and_then(|m| {
-                    m.parts.iter_mut().rev().find_map(|p| match p {
-                        Part::Text(t) => Some(t),
-                        _ => None,
-                    })
-                });
-            match last_text {
-                Some(t) => t.push_str(&note),
-                None => req.system.push_str(&note),
-            }
-        } else {
-            return Err(LnaError::new(
-                ErrorCode::CapabilityMissing,
-                "该模型不支持结构化输出（JSON Schema / JSON 模式），无法使用。",
-            ));
-        }
 
         let mut total_usage = Usage::default();
         let (raw, u, mut stop) = self
@@ -1030,6 +1034,51 @@ impl LlmClient {
             let note = "
 
 （上一次尝试把输出额度全部用在了思考上，没有输出内容。这一次请把思考压缩到最少，立刻输出完整的 JSON。）";
+            let last_text = retry
+                .messages
+                .iter_mut()
+                .rev()
+                .find(|m| m.role == Role::User)
+                .and_then(|m| {
+                    m.parts.iter_mut().rev().find_map(|p| match p {
+                        Part::Text(t) => Some(t),
+                        _ => None,
+                    })
+                });
+            match last_text {
+                Some(t) => t.push_str(note),
+                None => retry.system.push_str(note),
+            }
+            let (again, au, astop) = self
+                .complete_text_with_stop(
+                    profile,
+                    &retry,
+                    cancel.clone(),
+                    &mut on_thinking,
+                    &mut on_text,
+                )
+                .await?;
+            total_usage.add(&au);
+            stop = astop;
+            candidate = strip_code_fences(&again);
+        }
+
+        // Truncated mid-JSON (e.g. small built-in cap or degenerate repetition loop): retry the
+        // original request once with full context (preserving the warm prompt cache) and a raised
+        // output ceiling before falling back to context-less JSON repair.
+        if matches!(stop, StopReason::MaxTokens)
+            && !candidate.trim().is_empty()
+            && serde_json::from_str::<serde_json::Value>(&candidate).is_err()
+        {
+            on_status(&bilingual_status(
+                "输出在 JSON 未闭合前被截断，正在保留原上下文并提高输出上限重试…",
+                "Output was cut off before closing JSON; retrying with full context and a higher output limit…",
+            ));
+            let mut retry = req.clone();
+            if retry.max_output_tokens > 0 && retry.max_output_tokens < 32_768 {
+                retry.max_output_tokens = profile.bounded_output(32_768);
+            }
+            let note = "\n\n（上一次输出在 JSON 闭合前被截断或陷入重复。请精简思考与措辞，不要重复空白或文字，直接输出完整且合法的 JSON。）";
             let last_text = retry
                 .messages
                 .iter_mut()
@@ -1946,5 +1995,84 @@ mod parallel_and_cap_tests {
         assert_eq!(p.hard_output_cap(32_768), 32_768);
         p.max_output_tokens = 8_192;
         assert_eq!(p.hard_output_cap(32_768), 8_192);
+    }
+}
+
+/// Transforms `base_req` into the exact wire-level structured request (`ABORT_NOTE` +
+/// `JsonSchema` or `JsonObject` schema suffix). Shared by both `complete_structured_continuing`
+/// and `warm_structured_prefix` so warmed KV caches match 100% identically.
+fn prepare_structured_request(
+    profile: &ResolvedProfile,
+    base_req: &LlmRequest,
+    schema_name: &str,
+    schema: &serde_json::Value,
+) -> LnaResult<(LlmRequest, serde_json::Value)> {
+    let mut req = base_req.clone();
+    let sent_schema = with_abort_property(schema);
+    req.system.push_str(ABORT_NOTE);
+    let unchecked = profile.capabilities.probed_at.is_none() && !profile.capabilities.json_mode;
+    if profile.capabilities.json_schema || unchecked {
+        req.output = OutputMode::JsonSchema {
+            name: schema_name.to_string(),
+            schema: sent_schema.clone(),
+        };
+    } else if profile.capabilities.json_mode {
+        req.output = OutputMode::JsonObject;
+        let note = format!("\n\n请只输出符合以下 JSON Schema 的 JSON：\n{sent_schema}");
+        let last_text = req
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .and_then(|m| {
+                m.parts.iter_mut().rev().find_map(|p| match p {
+                    Part::Text(t) => Some(t),
+                    _ => None,
+                })
+            });
+        match last_text {
+            Some(t) => t.push_str(&note),
+            None => req.system.push_str(&note),
+        }
+    } else {
+        return Err(LnaError::new(
+            ErrorCode::CapabilityMissing,
+            "该模型不支持结构化输出（JSON Schema / JSON 模式），无法使用。",
+        ));
+    }
+    Ok((req, sent_schema))
+}
+
+/// Detects a degenerate repetition loop at the tail of streamed text (the exact same 4..=64-byte
+/// pattern repeated >= 24 consecutive times) so runaway generations are aborted early.
+fn has_degenerate_tail_loop(text: &str) -> bool {
+    let b = text.as_bytes();
+    if b.len() < 96 {
+        return false;
+    }
+    for pat_len in 4..=64usize {
+        let need = pat_len * 24;
+        if b.len() < need {
+            continue;
+        }
+        let tail = &b[b.len() - need..];
+        let pat = &tail[..pat_len];
+        if tail.chunks_exact(pat_len).all(|c| c == pat) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod degenerate_loop_tests {
+    use super::has_degenerate_tail_loop;
+
+    #[test]
+    fn detects_runaway_repetition_and_ignores_normal_json() {
+        let normal = r#"{"slides":[{"title":"A","bullets":["x","y","z"]},{"title":"B","bullets":["1","2","3"]}]}"#;
+        assert!(!has_degenerate_tail_loop(normal));
+        let stuck = format!("{{\"a\":\"{}", "abcd".repeat(30));
+        assert!(has_degenerate_tail_loop(&stuck));
     }
 }
